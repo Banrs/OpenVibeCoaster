@@ -6,6 +6,7 @@ import {
   vec3Add,
   vec3Cross,
   vec3Dot,
+  vec3Length,
   vec3Normalize,
   vec3Scale,
   type ParametricSpan,
@@ -93,7 +94,8 @@ const validateParameters = <K extends ElementKind>(
     }
     case "topHat": {
       const p = parameters as ElementParameterMap["topHat"];
-      range("height", p.height, 80, 200);
+      finite("height", p.height);
+      if (p.height !== 80) throw new RangeError("height must be exactly 80 m");
       range("width", p.width, 10, 300);
       angle("bank", p.bank, -Math.PI, Math.PI);
       break;
@@ -111,6 +113,7 @@ const validateParameters = <K extends ElementKind>(
       const p = parameters as ElementParameterMap["overbankedTurn"];
       range("radius", p.radius, 5, 200);
       angle("angle", p.angle, -Math.PI * 4, Math.PI * 4);
+      if (p.angle === 0) throw new RangeError("angle must not be zero");
       angle("bank", p.bank, -Math.PI, Math.PI);
       break;
     }
@@ -184,16 +187,42 @@ export const defaultPose = (): Pose => ({
   bank: 0,
 });
 
+export const orthonormalizePose = (pose: Pose): Pose => {
+  const tangent = vec3Normalize(pose.tangent);
+  const projected = vec3Add(
+    pose.normal,
+    vec3Scale(tangent, -vec3Dot(pose.normal, tangent)),
+  );
+  const normal =
+    vec3Length(projected) > 1e-12
+      ? vec3Normalize(projected)
+      : vec3Normalize(
+          Math.abs(tangent[1]) < 0.9
+            ? vec3(
+                -tangent[1] * tangent[0],
+                1 - tangent[1] ** 2,
+                -tangent[1] * tangent[2],
+              )
+            : vec3(
+                1 - tangent[0] ** 2,
+                -tangent[0] * tangent[1],
+                -tangent[0] * tangent[2],
+              ),
+        );
+  return { ...pose, tangent, normal };
+};
+
 interface Basis {
   readonly tangent: Vec3;
   readonly normal: Vec3;
   readonly binormal: Vec3;
 }
 const basisFor = (pose: Pose): Basis => {
-  const tangent = vec3Normalize(pose.tangent);
+  const normalizedPose = orthonormalizePose(pose);
+  const tangent = normalizedPose.tangent;
   const projected = vec3Add(
-    pose.normal,
-    vec3Scale(tangent, -vec3Dot(pose.normal, tangent)),
+    normalizedPose.normal,
+    vec3Scale(tangent, -vec3Dot(normalizedPose.normal, tangent)),
   );
   const normal = vec3Normalize(projected);
   return {
@@ -229,6 +258,41 @@ const polynomialDerivative = (
   return value;
 };
 const bumpCoefficients = [0, 0, 0, 0, 256, -1024, 1536, -1024, 256] as const;
+const smoothRampCoefficients = [0, 0, 0, 0, 35, -84, 70, -20] as const;
+const quinticRampCoefficients = [0, 0, 0, 10, -15, 6] as const;
+
+const plateau = (u: number, order = 0): number => {
+  const ramp = (value: number, derivativeOrder: number): number =>
+    polynomialDerivative(smoothRampCoefficients, value, derivativeOrder);
+  if (u < 0.2 || u > 0.8) return 0;
+  if (u < 0.35) return ramp((u - 0.2) / 0.15, order) / 0.15 ** order;
+  if (u <= 0.65) return order === 0 ? 1 : 0;
+  return (order === 0 ? 1 : -ramp((u - 0.65) / 0.15, order)) / 0.15 ** order;
+};
+
+const integrate = (
+  functionValue: (u: number) => number,
+  upper: number,
+): number => {
+  if (upper <= 0) return 0;
+  const nodes = [
+    0.0950125098376374, 0.281603550779259, 0.458016777657227, 0.617876244402644,
+    0.755404408355003, 0.865631202387832, 0.944575023073233, 0.98940093499165,
+  ];
+  const weights = [
+    0.189450610455069, 0.182603415044924, 0.169156519395003, 0.149595988816577,
+    0.124628971255534, 0.095158511682493, 0.062253523938648, 0.0271524594117541,
+  ];
+  const midpoint = upper / 2;
+  let result = 0;
+  for (let index = 0; index < nodes.length; index += 1) {
+    const offset = midpoint * nodes[index]!;
+    result +=
+      weights[index]! *
+      (functionValue(midpoint - offset) + functionValue(midpoint + offset));
+  }
+  return midpoint * result;
+};
 
 const profileSpan = (
   pose: Pose,
@@ -258,12 +322,163 @@ const profileSpan = (
   const tangent = vec3Normalize(span.derivative(1, 1));
   return {
     span,
-    endPose: {
+    endPose: orthonormalizePose({
       position: span.position(1),
       tangent,
       normal: basis.normal,
       bank: pose.bank,
+    }),
+  };
+};
+
+const forceProfileSpan = (
+  pose: Pose,
+  length: number,
+  height: number,
+  targetForceG: number,
+  referenceSpeed: number,
+): { span: ParametricSpan<Vec3>; endPose: Pose } => {
+  const basis = basisFor(pose);
+  const normalUp = Math.abs(basis.normal[1]) > 1e-6 ? basis.normal[1] : 1;
+  const targetVerticalCurvature =
+    ((targetForceG - 1) * gravity) / (referenceSpeed ** 2 * normalUp);
+  const halfWindowIntegral = integrate(plateau, 0.5);
+  let targetCurvature = targetVerticalCurvature;
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const halfHeading = targetCurvature * length * halfWindowIntegral;
+    const cosine = Math.cos(halfHeading);
+    const functionValue = targetCurvature * cosine - targetVerticalCurvature;
+    const derivative =
+      cosine -
+      targetCurvature * Math.sin(halfHeading) * length * halfWindowIntegral;
+    if (Math.abs(derivative) < 1e-9) break;
+    targetCurvature -= functionValue / derivative;
+  }
+  const heading = (u: number): number =>
+    targetCurvature * length * integrate(plateau, u);
+  const baseHeight =
+    length * integrate((value) => Math.sin(heading(value)), 0.5);
+  const heightCorrection = height - baseHeight;
+  const localDerivative = (u: number, order: number): Vec3 => {
+    const theta = heading(u);
+    if (order === 1)
+      return vec3(
+        length * Math.cos(theta),
+        length * Math.sin(theta) + heightCorrection * plateau(u, 1),
+        0,
+      );
+    if (order === 2) {
+      const thetaPrime = targetCurvature * length * plateau(u);
+      return vec3(
+        -length * Math.sin(theta) * thetaPrime,
+        length * Math.cos(theta) * thetaPrime +
+          heightCorrection * plateau(u, 2),
+        0,
+      );
+    }
+    if (order === 3) {
+      const thetaPrime = targetCurvature * length * plateau(u);
+      const thetaSecond = targetCurvature * length * plateau(u, 1);
+      return vec3(
+        -length *
+          (Math.cos(theta) * thetaPrime ** 2 + Math.sin(theta) * thetaSecond),
+        length *
+          (-Math.sin(theta) * thetaPrime ** 2 + Math.cos(theta) * thetaSecond) +
+          heightCorrection * plateau(u, 3),
+        0,
+      );
+    }
+    return vec3(0, 0, 0);
+  };
+  const span: ParametricSpan<Vec3> = {
+    position: (u) =>
+      worldPoint(
+        pose,
+        basis,
+        vec3(
+          length * integrate((value) => Math.cos(heading(value)), u),
+          length * integrate((value) => Math.sin(heading(value)), u) +
+            heightCorrection * plateau(u),
+          0,
+        ),
+      ),
+    derivative: (u, order = 1) => worldVector(basis, localDerivative(u, order)),
+  };
+  const tangent = vec3Normalize(span.derivative(1, 1));
+  return {
+    span,
+    endPose: orthonormalizePose({
+      position: span.position(1),
+      tangent,
+      normal: basis.normal,
+      bank: pose.bank,
+    }),
+  };
+};
+
+const topHatSpan = (
+  pose: Pose,
+  width: number,
+  endBank: number,
+): {
+  span: ParametricSpan<Vec3>;
+  endPose: Pose;
+  bank: ParametricSpan<number>;
+} => {
+  const basis = basisFor(pose);
+  const localDerivative = (u: number, order: number): Vec3 =>
+    order === 0
+      ? vec3(width * u, 80 * plateau(u), 0)
+      : order === 1
+        ? vec3(width, 80 * plateau(u, 1), 0)
+        : order === 2
+          ? vec3(0, 80 * plateau(u, 2), 0)
+          : order === 3
+            ? vec3(0, 80 * plateau(u, 3), 0)
+            : vec3(0, 0, 0);
+  const span: ParametricSpan<Vec3> = {
+    position: (u) => worldPoint(pose, basis, localDerivative(u, 0)),
+    derivative: (u, order = 1) => worldVector(basis, localDerivative(u, order)),
+  };
+  const invertedBank = pose.bank + Math.PI;
+  const bank: ParametricSpan<number> = {
+    position: (u) => {
+      if (u < 0.2) return pose.bank;
+      if (u < 0.4)
+        return (
+          pose.bank +
+          (invertedBank - pose.bank) *
+            polynomialDerivative(quinticRampCoefficients, (u - 0.2) / 0.2, 0)
+        );
+      if (u <= 0.6) return invertedBank;
+      if (u < 0.8)
+        return (
+          invertedBank +
+          (endBank - invertedBank) *
+            polynomialDerivative(quinticRampCoefficients, (u - 0.6) / 0.2, 0)
+        );
+      return endBank;
     },
+    derivative: (u, order = 1) => {
+      if (u <= 0.2 || u >= 0.8 || (u >= 0.4 && u <= 0.6)) return 0;
+      const rising = u < 0.4;
+      const t = rising ? (u - 0.2) / 0.2 : (u - 0.6) / 0.2;
+      const delta = rising ? invertedBank - pose.bank : endBank - invertedBank;
+      return (
+        (delta * polynomialDerivative(quinticRampCoefficients, t, order)) /
+        0.2 ** order
+      );
+    },
+  };
+  return {
+    span,
+    bank,
+    endPose: orthonormalizePose({
+      position: span.position(1),
+      tangent: span.derivative(1, 1),
+      normal: basis.normal,
+      bank: endBank,
+    }),
   };
 };
 
@@ -303,12 +518,12 @@ const circularSpan = (
   };
   return {
     span,
-    endPose: {
+    endPose: orthonormalizePose({
       position: span.position(1),
       tangent: vec3Normalize(span.derivative(1, 1)),
       normal: basis.normal,
       bank: pose.bank,
-    },
+    }),
   };
 };
 
@@ -325,12 +540,12 @@ const lineSpan = (
     worldPoint(pose, basis, vec3(length, 0, 0)),
   );
   const bank = bankLaw(pose.bank, endBank);
-  const endPose: Pose = {
+  const endPose = orthonormalizePose({
     position: span.position(1),
     tangent: basis.tangent,
     normal: basis.normal,
     bank: endBank,
-  };
+  });
   return { span, bank, endPose, solvedSpan: { id: "", span, bank } };
 };
 
@@ -338,20 +553,22 @@ export const buildElement = (
   element: AnySemanticElement,
   pose: Pose,
 ): ElementBuildResult => {
+  const normalizedPose = orthonormalizePose(pose);
   let span: ParametricSpan<Vec3>;
   let endPose: Pose;
-  let endBank = pose.bank;
+  let endBank = normalizedPose.bank;
+  let bank: ParametricSpan<number> | undefined;
   switch (element.type) {
     case "station": {
       const p = element.parameters as ElementParameterMap["station"];
       const curve = p.closed
-        ? circularSpan(pose, p.length / (2 * Math.PI), 1, 1)
+        ? circularSpan(normalizedPose, p.length / (2 * Math.PI), 1, 1)
         : undefined;
       if (curve) {
         span = curve.span;
         endPose = { ...curve.endPose, bank: p.bank };
       } else {
-        const line = lineSpan(pose, p.length, p.bank);
+        const line = lineSpan(normalizedPose, p.length, p.bank);
         span = line.span;
         endPose = line.endPose;
       }
@@ -362,7 +579,7 @@ export const buildElement = (
     case "boost":
     case "brake": {
       const p = element.parameters as ElementParameterMap["launch"];
-      const line = lineSpan(pose, p.length, p.bank);
+      const line = lineSpan(normalizedPose, p.length, p.bank);
       span = line.span;
       endPose = line.endPose;
       endBank = p.bank;
@@ -370,13 +587,17 @@ export const buildElement = (
     }
     case "transition": {
       const p = element.parameters as ElementParameterMap["transition"];
-      const basis = basisFor(pose);
-      const target = worldPoint(pose, basis, vec3(p.length, p.rise, 0));
+      const basis = basisFor(normalizedPose);
+      const target = worldPoint(
+        normalizedPose,
+        basis,
+        vec3(p.length, p.rise, 0),
+      );
       const endTangent = vec3Normalize(
         vec3Add(basis.tangent, vec3Scale(basis.normal, p.pitch)),
       );
       span = new SeventhOrderHermiteSpan({
-        p0: pose.position,
+        p0: normalizedPose.position,
         d10: vec3Scale(basis.tangent, p.length),
         d20: vec3(0, 0, 0),
         d30: vec3(0, 0, 0),
@@ -385,30 +606,33 @@ export const buildElement = (
         d21: vec3(0, 0, 0),
         d31: vec3(0, 0, 0),
       });
-      endPose = {
+      endPose = orthonormalizePose({
         position: span.position(1),
         tangent: endTangent,
         normal: basis.normal,
         bank: p.bank,
-      };
+      });
       endBank = p.bank;
       break;
     }
     case "topHat": {
       const p = element.parameters as ElementParameterMap["topHat"];
-      const profile = profileSpan(pose, p.width, p.height);
+      const profile = topHatSpan(normalizedPose, p.width, p.bank);
       span = profile.span;
       endPose = { ...profile.endPose, bank: p.bank };
+      bank = profile.bank;
       endBank = p.bank;
       break;
     }
     case "airtimeHill": {
       const p = element.parameters as ElementParameterMap["airtimeHill"];
-      const height =
-        p.height === 0
-          ? (p.targetForceG * p.referenceSpeed ** 2) / (2 * gravity)
-          : p.height;
-      const profile = profileSpan(pose, p.length, height);
+      const profile = forceProfileSpan(
+        normalizedPose,
+        p.length,
+        p.height,
+        p.targetForceG,
+        p.referenceSpeed,
+      );
       span = profile.span;
       endPose = { ...profile.endPose, bank: p.bank };
       endBank = p.bank;
@@ -417,7 +641,7 @@ export const buildElement = (
     case "overbankedTurn": {
       const p = element.parameters as ElementParameterMap["overbankedTurn"];
       const curve = circularSpan(
-        pose,
+        normalizedPose,
         p.radius,
         Math.abs(p.angle) / (2 * Math.PI),
         Math.sign(p.angle) || 1,
@@ -429,22 +653,26 @@ export const buildElement = (
     }
     case "zeroGRoll": {
       const p = element.parameters as ElementParameterMap["zeroGRoll"];
-      const line = lineSpan(pose, p.length, pose.bank + p.roll);
+      const line = lineSpan(
+        normalizedPose,
+        p.length,
+        normalizedPose.bank + p.roll,
+      );
       span = line.span;
       endPose = line.endPose;
-      endBank = pose.bank + p.roll;
+      endBank = normalizedPose.bank + p.roll;
       break;
     }
     case "stall": {
       const p = element.parameters as ElementParameterMap["stall"];
-      const profile = profileSpan(pose, p.length, p.height);
+      const profile = profileSpan(normalizedPose, p.length, p.height);
       span = profile.span;
       endPose = { ...profile.endPose, bank: p.bank };
       endBank = p.bank;
       break;
     }
   }
-  const bank = bankLaw(pose.bank, endBank);
+  bank ??= bankLaw(normalizedPose.bank, endBank);
   const points = Array.from({ length: 33 }, (_, i) => span.position(i / 32));
   return {
     span,

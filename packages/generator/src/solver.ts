@@ -1,18 +1,21 @@
 import {
   compileTrack,
   vec3,
+  vec3Add,
   vec3Cross,
   vec3Distance,
   vec3Dot,
   vec3Length,
   vec3Normalize,
   vec3Sub,
+  vec3Scale,
+  QuinticScalarSpan,
   type Diagnostic,
   type ParametricSpan,
   type SolvedSpan,
   type Vec3,
 } from "@openvibecoaster/core";
-import { buildElement, defaultPose } from "./elements";
+import { buildElement, defaultPose, orthonormalizePose } from "./elements";
 import type {
   CompileResult,
   HardTarget,
@@ -61,10 +64,15 @@ const curvature = (span: ParametricSpan<Vec3>, u: number): number => {
 };
 const curvatureVector = (span: ParametricSpan<Vec3>, u: number): Vec3 => {
   const d1 = span.derivative(u, 1);
-  const cross = vec3Cross(d1, span.derivative(u, 2));
-  const speed = vec3Length(d1);
-  return speed > 1e-12
-    ? vec3(cross[0] / speed ** 3, cross[1] / speed ** 3, cross[2] / speed ** 3)
+  const d2 = span.derivative(u, 2);
+  const speedSquared = vec3Dot(d1, d1);
+  const projection = vec3Dot(d1, d2);
+  return speedSquared > 1e-24
+    ? vec3(
+        (d2[0] * speedSquared - d1[0] * projection) / speedSquared ** 2,
+        (d2[1] * speedSquared - d1[1] * projection) / speedSquared ** 2,
+        (d2[2] * speedSquared - d1[2] * projection) / speedSquared ** 2,
+      )
     : vec3(0, 0, 0);
 };
 const curvatureGradient = (span: ParametricSpan<Vec3>, u: number): number => {
@@ -80,7 +88,7 @@ const curvatureGradient = (span: ParametricSpan<Vec3>, u: number): number => {
   );
 };
 const forceG = (span: ParametricSpan<Vec3>, u: number, speed: number): number =>
-  (speed ** 2 * curvature(span, u)) / gravity;
+  1 + (speed ** 2 * curvatureVector(span, u)[1]) / gravity;
 const bankValue = (span: SolvedSpan, u: number): number =>
   span.bank?.position(u) ?? 0;
 const bankDerivative = (span: SolvedSpan, u: number): number =>
@@ -195,12 +203,21 @@ export const diagnoseSeams = (
   spans: readonly SolvedSpan[],
   options: Pick<
     SolveOptions,
-    "referenceSpeed" | "softForceTargetG" | "seamTolerances"
+    "referenceSpeed" | "softForceTargetG" | "seamTolerances" | "closed"
   > = {},
 ): readonly SeamDiagnostics[] => {
   const speed = options.referenceSpeed ?? 25;
-  return spans.slice(0, -1).map((left, index) => {
-    const right = spans[index + 1]!;
+  const seamPairs = spans.slice(0, -1).map((left, index) => ({
+    left,
+    right: spans[index + 1]!,
+    seamId: `${left.id}->${spans[index + 1]!.id}`,
+  }));
+  if (options.closed && spans.length > 0) {
+    const left = spans[spans.length - 1]!;
+    const right = spans[0]!;
+    seamPairs.push({ left, right, seamId: `${left.id}->${right.id}` });
+  }
+  return seamPairs.map(({ left, right, seamId }) => {
     const leftPosition = left.span.position(1);
     const rightPosition = right.span.position(0);
     const leftTangent = vec3Normalize(left.span.derivative(1, 1));
@@ -245,7 +262,7 @@ export const diagnoseSeams = (
       sustainedForceDeviationG: residual.sustainedForceDeviationG,
     };
     return {
-      seamId: `${left.id}->${right.id}`,
+      seamId,
       ...residual,
       hardResiduals,
       softResiduals,
@@ -313,11 +330,215 @@ const targetTolerance = (
   }
 };
 
+interface SemanticVariable {
+  readonly elementIndex: number;
+  readonly key: string;
+  readonly initial: number;
+  readonly lower: number;
+  readonly upper: number;
+}
+
+interface ChainState {
+  readonly elements: readonly AnySemanticElement[];
+  readonly solvedSpans: readonly SolvedSpan[];
+  readonly endPose: Pose;
+}
+
+const variableBounds = (
+  value: number,
+  minimum: number,
+  maximum: number,
+): readonly [number, number] => [
+  Math.max(minimum, Math.min(maximum, value * 0.5)),
+  Math.min(maximum, Math.max(minimum, value * 1.5)),
+];
+
+const semanticVariables = (
+  elements: readonly AnySemanticElement[],
+): readonly SemanticVariable[] => {
+  const variables: SemanticVariable[] = [];
+  const add = (
+    elementIndex: number,
+    key: string,
+    initial: number,
+    lower: number,
+    upper: number,
+  ): void => {
+    variables.push({
+      elementIndex,
+      key,
+      initial,
+      lower: Math.min(lower, upper),
+      upper: Math.max(lower, upper),
+    });
+  };
+  for (
+    let elementIndex = 0;
+    elementIndex < elements.length;
+    elementIndex += 1
+  ) {
+    const element = elements[elementIndex]!;
+    const parameters = element.parameters as Record<string, number | boolean>;
+    const length = parameters.length;
+    if (typeof length === "number") {
+      const [lower, upper] = variableBounds(length, 2, 500);
+      add(elementIndex, "length", length, lower, upper);
+    }
+    if (element.type === "topHat") {
+      const [lower, upper] = variableBounds(
+        parameters.width as number,
+        10,
+        300,
+      );
+      add(elementIndex, "width", parameters.width as number, lower, upper);
+    }
+    if (element.type === "overbankedTurn") {
+      const [lower, upper] = variableBounds(
+        parameters.radius as number,
+        5,
+        200,
+      );
+      add(elementIndex, "radius", parameters.radius as number, lower, upper);
+    }
+    if (element.type === "transition") {
+      const rise = parameters.rise as number;
+      add(elementIndex, "rise", rise, rise - 200, rise + 200);
+      const pitch = parameters.pitch as number;
+      add(elementIndex, "pitch", pitch, -Math.PI * 4, Math.PI * 4);
+    }
+    if (element.type === "airtimeHill")
+      add(
+        elementIndex,
+        "targetForceG",
+        parameters.targetForceG as number,
+        -1.2,
+        5,
+      );
+    if (element.type === "zeroGRoll")
+      add(
+        elementIndex,
+        "roll",
+        parameters.roll as number,
+        -Math.PI * 4,
+        Math.PI * 4,
+      );
+    if (typeof parameters.bank === "number")
+      add(elementIndex, "bank", parameters.bank, -Math.PI, Math.PI);
+  }
+  return variables;
+};
+
+const elementsAt = (
+  elements: readonly AnySemanticElement[],
+  bindings: readonly SemanticVariable[],
+  values: readonly number[],
+): readonly AnySemanticElement[] => {
+  const patches = new Map<number, Record<string, number>>();
+  for (let index = 0; index < bindings.length; index += 1) {
+    const binding = bindings[index]!;
+    const patch = patches.get(binding.elementIndex) ?? {};
+    patch[binding.key] = values[index]!;
+    patches.set(binding.elementIndex, patch);
+  }
+  return elements.map((element, index) => {
+    const patch = patches.get(index);
+    return patch
+      ? ({
+          ...element,
+          parameters: { ...element.parameters, ...patch },
+        } as AnySemanticElement)
+      : element;
+  });
+};
+
+const buildChain = (
+  elements: readonly AnySemanticElement[],
+  startPose: Pose,
+): ChainState => {
+  const solvedSpans: SolvedSpan[] = [];
+  let pose = startPose;
+  for (const element of elements) {
+    const built = buildElement(element, pose);
+    solvedSpans.push({ ...built.solvedSpan, id: element.id });
+    pose = built.endPose;
+  }
+  return { elements, solvedSpans, endPose: pose };
+};
+
+const appendEndpointResiduals = (
+  residual: number[],
+  pose: Pose,
+  target: Pose,
+  tolerances: SeamTolerances,
+): void => {
+  residual.push(
+    (pose.position[0] - target.position[0]) / tolerances.positionM,
+    (pose.position[1] - target.position[1]) / tolerances.positionM,
+    (pose.position[2] - target.position[2]) / tolerances.positionM,
+    (1 - vec3Dot(vec3Normalize(pose.tangent), vec3Normalize(target.tangent))) /
+      tolerances.tangentRad,
+    (1 - vec3Dot(vec3Normalize(pose.normal), vec3Normalize(target.normal))) /
+      tolerances.tangentRad,
+    (pose.bank - target.bank) / tolerances.bankRad,
+  );
+};
+
+const diagnosticResiduals = (
+  state: ChainState,
+  options: SolveOptions,
+  tolerances: SeamTolerances,
+  startPose: Pose,
+): readonly number[] => {
+  const seams = diagnoseSeams(state.solvedSpans, options);
+  const residual: number[] = [];
+  for (const seam of seams) {
+    residual.push(
+      seam.positionM / tolerances.positionM,
+      seam.tangentRad / tolerances.tangentRad,
+      seam.curvaturePerM / tolerances.curvaturePerM,
+      seam.curvatureVectorJumpPerM / tolerances.curvaturePerM,
+      seam.curvatureGradientPerM2 / tolerances.curvatureGradientPerM2,
+      seam.bankRad / tolerances.bankRad,
+      seam.bankDerivativeRadPerM / tolerances.bankDerivativeRadPerM,
+      seam.specificForceJumpG / tolerances.specificForceJumpG,
+    );
+    if (options.softForceTargetG !== undefined)
+      residual.push(
+        seam.softResiduals.sustainedForceDeviationG /
+          tolerances.sustainedForceDeviationG,
+      );
+  }
+  if (options.softForceTargetG !== undefined) {
+    const speed = options.referenceSpeed ?? 25;
+    for (const span of state.solvedSpans)
+      for (const sample of [0.25, 0.5, 0.75])
+        residual.push(
+          (forceG(span.span, sample, speed) - options.softForceTargetG) /
+            tolerances.sustainedForceDeviationG,
+        );
+  }
+  for (const target of options.targets ?? [])
+    residual.push(
+      targetResidual(target, state.endPose) /
+        targetTolerance(target, tolerances),
+    );
+  if (options.endPose)
+    appendEndpointResiduals(
+      residual,
+      state.endPose,
+      options.endPose,
+      tolerances,
+    );
+  if (options.closed)
+    appendEndpointResiduals(residual, state.endPose, startPose, tolerances);
+  return residual;
+};
+
 export const solveSemanticChain = (
   elements: readonly AnySemanticElement[],
   options: SolveOptions = {},
 ): SolveResult => {
-  const startPose = options.startPose ?? defaultPose();
+  const startPose = orthonormalizePose(options.startPose ?? defaultPose());
   const seen = new Set<string>();
   for (const element of elements) {
     if (seen.has(element.id))
@@ -326,26 +547,76 @@ export const solveSemanticChain = (
   }
   if (elements.length === 0)
     throw new RangeError("A semantic chain needs at least one element");
-  const solvedSpans: SolvedSpan[] = [];
-  let pose = startPose;
-  for (const element of elements) {
-    const built = buildElement(element, pose);
-    solvedSpans.push({ ...built.solvedSpan, id: element.id });
-    pose = built.endPose;
-  }
-
-  const seamDiagnostics = diagnoseSeams(solvedSpans, options);
+  const firstElement = elements[0];
+  const firstIsClosedStation =
+    firstElement?.type === "station" &&
+    (firstElement.parameters as ElementParameterMap["station"]).closed;
+  const closureEnabled = options.closed === true || firstIsClosedStation;
+  const solveOptions = closureEnabled ? { ...options, closed: true } : options;
   const tolerances = { ...defaultTolerances, ...options.seamTolerances };
+  const bindings = semanticVariables(elements);
+  const initial = bindings.map((binding) => binding.initial);
+  const stateFor = (values: readonly number[]): ChainState =>
+    buildChain(elementsAt(elements, bindings, values), startPose);
+  const initialState = stateFor(initial);
+  const residualAt = (values: readonly number[]): readonly number[] => [
+    ...diagnosticResiduals(
+      stateFor(values),
+      solveOptions,
+      tolerances,
+      startPose,
+    ),
+    ...values.map(
+      (value, index) =>
+        (1e-3 * (value - initial[index]!)) /
+        Math.max(1, bindings[index]!.upper - bindings[index]!.lower),
+    ),
+  ];
+  const initialResidual = residualAt(initial);
+  const optimized = initialResidual.every((value) => Math.abs(value) <= 1)
+    ? { variables: initial }
+    : boundedLevenbergMarquardt({
+        initial,
+        lower: bindings.map((binding) => binding.lower),
+        upper: bindings.map((binding) => binding.upper),
+        ...(options.maxIterations === undefined
+          ? {}
+          : { maxIterations: options.maxIterations }),
+        residual: residualAt,
+      });
+  const state = stateFor(optimized.variables);
+  const solvedSpans = [...state.solvedSpans];
+  const seamDiagnostics = diagnoseSeams(state.solvedSpans, solveOptions);
   const diagnostics: Diagnostic[] = [];
+  const relaxations: string[] = [];
   for (const seam of seamDiagnostics) {
     if (exceedsHardTolerance(seam.hardResiduals, tolerances)) {
-      diagnostics.push({
-        code: "SEAM_HARD_RESIDUAL",
-        severity: "error",
-        message: `Hard seam residual at ${seam.seamId}: position ${seam.positionM.toExponential(3)} m, tangent ${seam.tangentRad.toExponential(3)} rad`,
-        suggestedRelaxation:
-          "Relax the named seam tolerance only after reviewing the element endpoint constraints",
-      });
+      const failures = [
+        seam.positionM > tolerances.positionM ? "position" : undefined,
+        seam.tangentRad > tolerances.tangentRad ? "tangent" : undefined,
+        seam.curvaturePerM > tolerances.curvaturePerM ? "curvature" : undefined,
+        seam.curvatureVectorJumpPerM > tolerances.curvaturePerM
+          ? "curvature vector"
+          : undefined,
+        seam.curvatureGradientPerM2 > tolerances.curvatureGradientPerM2
+          ? "curvature gradient"
+          : undefined,
+        seam.bankRad > tolerances.bankRad ? "bank" : undefined,
+        seam.bankDerivativeRadPerM > tolerances.bankDerivativeRadPerM
+          ? "bank derivative"
+          : undefined,
+        seam.specificForceJumpG > tolerances.specificForceJumpG
+          ? "specific-force jump"
+          : undefined,
+      ].filter((failure): failure is string => failure !== undefined);
+      diagnostics.push(
+        hardConflict(
+          [seam.seamId],
+          `${failures.join(", ")} residual remains after bounded solve`,
+        ),
+      );
+      if (relaxations.length < 3)
+        relaxations.push(`Relax hard seam ${seam.seamId}`);
     }
     if (
       seam.softResiduals.sustainedForceDeviationG >
@@ -360,9 +631,8 @@ export const solveSemanticChain = (
 
   const targets = options.targets ?? [];
   const hardIds: string[] = [];
-  const relaxations: string[] = [];
   for (const target of targets) {
-    const error = targetResidual(target, pose);
+    const error = targetResidual(target, state.endPose);
     if (target.hard !== false && error > targetTolerance(target, tolerances)) {
       hardIds.push(target.id);
       diagnostics.push(
@@ -385,28 +655,33 @@ export const solveSemanticChain = (
     }
   }
 
-  const firstElement = elements[0];
-  const firstIsClosedStation =
-    firstElement?.type === "station" &&
-    (firstElement.parameters as ElementParameterMap["station"]).closed;
-  if (options.closed || firstIsClosedStation) {
+  if (closureEnabled) {
     const desired = options.endPose ?? startPose;
-    const positionError = vec3Distance(pose.position, desired.position);
+    const positionError = vec3Distance(
+      state.endPose.position,
+      desired.position,
+    );
     const tangentError = Math.acos(
       clamp(
-        vec3Dot(vec3Normalize(pose.tangent), vec3Normalize(desired.tangent)),
+        vec3Dot(
+          vec3Normalize(state.endPose.tangent),
+          vec3Normalize(desired.tangent),
+        ),
         -1,
         1,
       ),
     );
     const normalError = Math.acos(
       clamp(
-        vec3Dot(vec3Normalize(pose.normal), vec3Normalize(desired.normal)),
+        vec3Dot(
+          vec3Normalize(state.endPose.normal),
+          vec3Normalize(desired.normal),
+        ),
         -1,
         1,
       ),
     );
-    const bankError = Math.abs(pose.bank - desired.bank);
+    const bankError = Math.abs(state.endPose.bank - desired.bank);
     if (
       positionError > tolerances.positionM ||
       tangentError > tolerances.tangentRad ||
@@ -415,6 +690,9 @@ export const solveSemanticChain = (
     ) {
       const ids = ["closed station pose"];
       if (options.endPose) ids.push("endPose");
+      const closure = seamDiagnostics[seamDiagnostics.length - 1];
+      if (closure?.seamId.endsWith(`->${firstElement?.id}`))
+        ids.push(closure.seamId);
       diagnostics.push(
         hardConflict(
           ids,
@@ -437,6 +715,8 @@ export const solveSemanticChain = (
         "multiple hard endpoint targets cannot be satisfied simultaneously",
       ),
     );
+  if (initialState.solvedSpans.length !== solvedSpans.length)
+    throw new Error("Semantic solve changed element count");
   return {
     feasible: !diagnostics.some(
       (diagnostic) => diagnostic.severity === "error",
@@ -446,7 +726,7 @@ export const solveSemanticChain = (
     seamDiagnostics: Object.freeze(seamDiagnostics),
     relaxations: Object.freeze(relaxations.slice(0, 3)),
     startPose,
-    endPose: pose,
+    endPose: state.endPose,
   };
 };
 
@@ -465,9 +745,50 @@ export const compileSemanticChain = (
       ? {}
       : { tolerance: options.tolerance }),
   };
+  const first = result.solvedSpans[0];
+  const compilationSpans = result.solvedSpans.map((span, index) => {
+    if (index !== 0 || !first?.bank) return span;
+    const tangent = vec3Normalize(first.span.derivative(0, 1));
+    const reference =
+      Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    const projected = vec3Sub(
+      reference,
+      vec3Scale(tangent, vec3Dot(reference, tangent)),
+    );
+    const defaultNormal = vec3Normalize(projected);
+    const bankAtStart = first.bank.position(0);
+    const currentNormal = vec3Normalize(
+      vec3Add(
+        vec3Scale(defaultNormal, Math.cos(bankAtStart)),
+        vec3Scale(vec3Cross(tangent, defaultNormal), Math.sin(bankAtStart)),
+      ),
+    );
+    const authoredNormal = result.startPose.normal;
+    const correction = Math.atan2(
+      vec3Dot(tangent, vec3Cross(currentNormal, authoredNormal)),
+      vec3Dot(currentNormal, authoredNormal),
+    );
+    const correctionSpan = new QuinticScalarSpan({
+      v0: correction,
+      d10: 0,
+      d20: 0,
+      v1: 0,
+      d11: 0,
+      d21: 0,
+    });
+    return {
+      ...span,
+      bank: {
+        position: (u: number) =>
+          span.bank!.position(u) + correctionSpan.position(u),
+        derivative: (u: number, order = 1) =>
+          span.bank!.derivative(u, order) + correctionSpan.derivative(u, order),
+      },
+    };
+  });
   return {
     ...result,
-    track: compileTrack(result.solvedSpans, compileOptions),
+    track: compileTrack(compilationSpans, compileOptions),
   };
 };
 
