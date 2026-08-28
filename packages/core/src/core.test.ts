@@ -235,8 +235,8 @@ describe("rotation-minimizing frames", () => {
         vec3Dot(vec3Cross(frame.tangent, frame.normal), frame.binormal),
       ).toBeCloseTo(1, 10);
     }
-    expect(frames[0].bank).toBeCloseTo(0);
-    expect(frames[3].bank).toBeCloseTo((Math.PI * 3) / 10);
+    expect(frames[0]!.bank).toBeCloseTo(0);
+    expect(frames[3]!.bank).toBeCloseTo((Math.PI * 3) / 10);
   });
 
   it("uses double reflection across a changing path without frame flips", () => {
@@ -261,20 +261,19 @@ describe("rotation-minimizing frames", () => {
       () => 0,
     );
     for (let index = 0; index < frames.length; index += 1) {
-      expect(vec3Length(frames[index].normal)).toBeCloseTo(1, 10);
-      expect(vec3Dot(frames[index].tangent, frames[index].normal)).toBeCloseTo(
-        0,
-        10,
-      );
+      expect(vec3Length(frames[index]!.normal)).toBeCloseTo(1, 10);
+      expect(
+        vec3Dot(frames[index]!.tangent, frames[index]!.normal),
+      ).toBeCloseTo(0, 10);
       expect(
         vec3Dot(
-          vec3Cross(frames[index].tangent, frames[index].normal),
-          frames[index].binormal,
+          vec3Cross(frames[index]!.tangent, frames[index]!.normal),
+          frames[index]!.binormal,
         ),
       ).toBeCloseTo(1, 10);
       if (index > 0)
         expect(
-          vec3Dot(frames[index - 1].normal, frames[index].normal),
+          vec3Dot(frames[index - 1]!.normal, frames[index]!.normal),
         ).toBeGreaterThan(0);
     }
     expect(frames).toHaveLength(positions.length);
@@ -297,6 +296,7 @@ describe("compiled track and heightfield", () => {
       { samples: 9 },
     );
     expect(data.positions.length).toBe(27);
+    expect(data.curvatureVector.length).toBe(27);
     expect(data.elementBoundaries).toEqual(new Uint32Array([0, 8]));
     expect(data.zoneMasks.length).toBe(9);
     expect(data.distances[0]).toBe(0);
@@ -337,11 +337,90 @@ describe("compiled track and heightfield", () => {
       [{ id: "curve", span, bank: (u: number) => u * u }],
       { samples: 5 },
     );
-    const u = data.parameters[2];
+    const u = data.parameters[2]!;
     const expectedCurvature = 2 / (1 + 4 * u * u) ** 1.5;
     expect(u).not.toBeCloseTo(0.5, 3);
     expect(data.curvature[2]).toBeCloseTo(expectedCurvature, 9);
     expect(data.bank[2]).toBeCloseTo(u * u, 12);
+  });
+
+  it("exposes signed curvature vectors for a horizontal circle", () => {
+    const radius = 4;
+    const data = compileTrack(
+      [
+        {
+          id: "circle",
+          span: {
+            position: (u: number) =>
+              vec3(radius * Math.cos(u), 0, radius * Math.sin(u)),
+            derivative: (u: number, order = 1) =>
+              order === 1
+                ? vec3(-radius * Math.sin(u), 0, radius * Math.cos(u))
+                : vec3(-radius * Math.cos(u), 0, -radius * Math.sin(u)),
+          },
+        },
+      ],
+      { samples: 33 },
+    );
+    const index = 8;
+    const u = data.parameters[index]!;
+    const vector = vec3(
+      data.curvatureVector[index * 3]!,
+      data.curvatureVector[index * 3 + 1]!,
+      data.curvatureVector[index * 3 + 2]!,
+    );
+    expect(vector[0]).toBeCloseTo(-Math.cos(u) / radius, 10);
+    expect(vector[1]).toBeCloseTo(0, 10);
+    expect(vector[2]).toBeCloseTo(-Math.sin(u) / radius, 10);
+    expect(vec3Length(vector)).toBeCloseTo(1 / radius, 10);
+    expect(data.curvature[index]).toBeCloseTo(1 / radius, 10);
+    const sample = sampleCompiledTrack(
+      data,
+      data.distances[index]! / data.totalLength,
+    );
+    expect(sample.curvatureVector).toEqual(
+      expect.arrayContaining([
+        expect.closeTo(vector[0], 10),
+        expect.closeTo(vector[1], 10),
+        expect.closeTo(vector[2], 10),
+      ]),
+    );
+  });
+
+  it("points curvature down at a crest and up at a valley", () => {
+    const makeSpan = (direction: -1 | 1) => ({
+      position: (u: number) => vec3(u, direction * (u - 0.5) ** 2, 0),
+      derivative: (u: number, order = 1) =>
+        order === 1
+          ? vec3(1, direction * 2 * (u - 0.5), 0)
+          : vec3(0, direction * 2, 0),
+    });
+    const crest = compileTrack([{ id: "crest", span: makeSpan(-1) }], {
+      samples: 5,
+    });
+    const valley = compileTrack([{ id: "valley", span: makeSpan(1) }], {
+      samples: 5,
+    });
+    expect(crest.curvatureVector[2 * 3 + 1]).toBeCloseTo(-2, 10);
+    expect(valley.curvatureVector[2 * 3 + 1]).toBeCloseTo(2, 10);
+  });
+
+  it("reports bank derivative in radians per metre", () => {
+    const data = compileTrack(
+      [
+        {
+          id: "banked-line",
+          span: {
+            position: (u: number) => vec3(u * 4, 0, 0),
+            derivative: () => vec3(4, 0, 0),
+          },
+          bank: (u: number) => u * 2,
+        },
+      ],
+      { samples: 5 },
+    );
+    expect(Array.from(data.bankDerivative)).toEqual([0.5, 0.5, 0.5, 0.5, 0.5]);
+    expect(sampleCompiledTrack(data, 0.5).bankDerivative).toBeCloseTo(0.5, 10);
   });
 
   it("does not expose authoritative arrays and includes metadata in checksums", () => {
@@ -381,6 +460,7 @@ describe("compiled track and heightfield", () => {
       ],
       { samples: 9 },
     );
+    const checksum = data.checksum;
     const prototype = Object.getPrototypeOf(data) as object;
     const keys = [
       "distances",
@@ -389,6 +469,7 @@ describe("compiled track and heightfield", () => {
       "normals",
       "binormals",
       "curvature",
+      "curvatureVector",
       "bank",
       "bankDerivative",
     ];
@@ -418,6 +499,10 @@ describe("compiled track and heightfield", () => {
     const exposedDistances = data.distances;
     exposedDistances[0] = 999;
     expect(data.distances[0]).toBe(0);
+    const exposedCurvatureVector = data.curvatureVector;
+    exposedCurvatureVector[0] = 999;
+    expect(data.curvatureVector[0]).toBe(0);
+    expect(data.checksum).toBe(checksum);
   });
 
   it("answers heightfield distance and raycast queries", () => {
@@ -581,6 +666,12 @@ describe("coaster file v1", () => {
     expect(() =>
       parseCoasterFile(JSON.stringify({ schemaVersion: 1, name: "bad" })),
     ).toThrow("seed: expected uint32 integer");
+  });
+
+  it("rejects truncated UTF-8 input", () => {
+    expect(() => parseCoasterFile(new Uint8Array([0xc2]))).toThrow(
+      "Invalid UTF-8 encoding",
+    );
   });
 
   it("rejects malformed nested fields with precise paths", () => {

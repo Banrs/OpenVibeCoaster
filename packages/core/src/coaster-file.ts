@@ -171,25 +171,34 @@ const validateDesign: (value: unknown) => asserts value is DesignIntentV1 = (
 };
 const decodeUtf8 = (bytes: Uint8Array): string => {
   let text = "";
-  for (let index = 0; index < bytes.length;) {
-    const first = bytes[index++];
+  const readByte = (): number => {
+    const byte = bytes[index++];
+    if (byte === undefined)
+      throw new CoasterFileError("Invalid UTF-8 encoding");
+    return byte;
+  };
+  const readContinuation = (): number => {
+    const byte = readByte();
+    if ((byte & 0xc0) !== 0x80)
+      throw new CoasterFileError("Invalid UTF-8 encoding");
+    return byte & 0x3f;
+  };
+  let index = 0;
+  while (index < bytes.length) {
+    const first = readByte();
     if (first < 0x80) text += String.fromCodePoint(first);
     else if (first < 0xe0)
-      text += String.fromCodePoint(
-        ((first & 0x1f) << 6) | (bytes[index++] & 0x3f),
-      );
+      text += String.fromCodePoint(((first & 0x1f) << 6) | readContinuation());
     else if (first < 0xf0)
       text += String.fromCodePoint(
-        ((first & 0x0f) << 12) |
-          ((bytes[index++] & 0x3f) << 6) |
-          (bytes[index++] & 0x3f),
+        ((first & 0x0f) << 12) | (readContinuation() << 6) | readContinuation(),
       );
     else
       text += String.fromCodePoint(
         ((first & 0x07) << 18) |
-          ((bytes[index++] & 0x3f) << 12) |
-          ((bytes[index++] & 0x3f) << 6) |
-          (bytes[index++] & 0x3f),
+          (readContinuation() << 12) |
+          (readContinuation() << 6) |
+          readContinuation(),
       );
   }
   return text;

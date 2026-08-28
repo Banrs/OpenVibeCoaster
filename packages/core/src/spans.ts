@@ -41,22 +41,22 @@ export class SeventhOrderHermiteSpan<
     const start = [spec.p0, spec.d10, spec.d20, spec.d30].map(components);
     const end = [spec.p1, spec.d11, spec.d21, spec.d31].map(components);
     this.endpointConditions = [start, end];
-    this.coefficients = start[0].map((_, component) => {
+    this.coefficients = start[0]!.map((_, component) => {
       const result = [
-        start[0][component],
-        start[1][component],
-        start[2][component] / 2,
-        start[3][component] / 6,
+        start[0]![component]!,
+        start[1]![component]!,
+        start[2]![component]! / 2,
+        start[3]![component]! / 6,
         0,
         0,
         0,
         0,
       ];
       const rhs = [
-        end[0][component] - result[0] - result[1] - result[2] - result[3],
-        end[1][component] - result[1] - 2 * result[2] - 3 * result[3],
-        end[2][component] - 2 * result[2] - 6 * result[3],
-        end[3][component] - 6 * result[3],
+        end[0]![component]! - result[0]! - result[1]! - result[2]! - result[3]!,
+        end[1]![component]! - result[1]! - 2 * result[2]! - 3 * result[3]!,
+        end[2]![component]! - 2 * result[2]! - 6 * result[3]!,
+        end[3]![component]! - 6 * result[3]!,
       ];
       const matrix = [
         [1, 1, 1, 1],
@@ -67,26 +67,28 @@ export class SeventhOrderHermiteSpan<
       for (let row = 0; row < 4; row += 1) {
         let pivot = row;
         for (let candidate = row + 1; candidate < 4; candidate += 1)
-          if (Math.abs(matrix[candidate][row]) > Math.abs(matrix[pivot][row]))
+          if (
+            Math.abs(matrix[candidate]![row]!) > Math.abs(matrix[pivot]![row]!)
+          )
             pivot = candidate;
-        [matrix[row], matrix[pivot]] = [matrix[pivot], matrix[row]];
-        [rhs[row], rhs[pivot]] = [rhs[pivot], rhs[row]];
-        const divisor = matrix[row][row];
+        [matrix[row], matrix[pivot]] = [matrix[pivot]!, matrix[row]!];
+        [rhs[row], rhs[pivot]] = [rhs[pivot]!, rhs[row]!];
+        const divisor = matrix[row]![row]!;
         for (let column = row; column < 4; column += 1)
-          matrix[row][column] /= divisor;
-        rhs[row] /= divisor;
+          matrix[row]![column]! /= divisor;
+        rhs[row]! /= divisor;
         for (let other = 0; other < 4; other += 1) {
           if (other === row) continue;
-          const factor = matrix[other][row];
+          const factor = matrix[other]![row]!;
           for (let column = row; column < 4; column += 1)
-            matrix[other][column] -= factor * matrix[row][column];
-          rhs[other] -= factor * rhs[row];
+            matrix[other]![column]! -= factor * matrix[row]![column]!;
+          rhs[other]! -= factor * rhs[row]!;
         }
       }
-      result[4] = rhs[0];
-      result[5] = rhs[1];
-      result[6] = rhs[2];
-      result[7] = rhs[3];
+      result[4] = rhs[0]!;
+      result[5] = rhs[1]!;
+      result[6] = rhs[2]!;
+      result[7] = rhs[3]!;
       return result;
     });
   }
@@ -96,7 +98,7 @@ export class SeventhOrderHermiteSpan<
     p1: T,
   ): SeventhOrderHermiteSpan<T> {
     const start = components(p0);
-    const delta = components(p1).map((value, index) => value - start[index]);
+    const delta = components(p1).map((value, index) => value - start[index]!);
     const deltaValue = fromComponents(delta, p0);
     const zero = typeof p0 === "number" ? 0 : vec3(0, 0, 0);
     return new SeventhOrderHermiteSpan({
@@ -138,14 +140,15 @@ export class SeventhOrderHermiteSpan<
       throw new RangeError("Derivative order must be an integer from 0 to 7");
     if ((u === 0 || u === 1) && order <= 3) {
       const endpoint = u === 0 ? 0 : 1;
-      const values = this.endpointConditions[endpoint][order];
+      const values = this.endpointConditions[endpoint]![order]!;
       return fromComponents(values, this.template);
     }
     const values = this.coefficients.map((coefficient) => {
       let result = 0;
       for (let power = order; power < coefficient.length; power += 1)
         result +=
-          ((coefficient[power] * factorial(power)) / factorial(power - order)) *
+          ((coefficient[power]! * factorial(power)) /
+            factorial(power - order)) *
           u ** (power - order);
       return result;
     });
@@ -187,11 +190,11 @@ export class QuinticScalarSpan implements ParametricSpan<number> {
     if (order < 0 || order > 5 || !Number.isInteger(order))
       throw new RangeError("Derivative order must be an integer from 0 to 5");
     if ((u === 0 || u === 1) && order <= 2)
-      return this.endpoints[(u === 0 ? 0 : 3) + order];
+      return this.endpoints[(u === 0 ? 0 : 3) + order]!;
     let result = 0;
     for (let power = order; power < this.coefficients.length; power += 1)
       result +=
-        ((this.coefficients[power] * factorial(power)) /
+        ((this.coefficients[power]! * factorial(power)) /
           factorial(power - order)) *
         u ** (power - order);
     return result;

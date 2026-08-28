@@ -51,7 +51,7 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     const tx = clampedX - x0;
     const tz = clampedZ - z0;
     const at = (column: number, row: number): number =>
-      this.heights[row * this.width + column];
+      this.heights[row * this.width + column]!;
     return (
       (1 - tz) * ((1 - tx) * at(x0, z0) + tx * at(x0 + 1, z0)) +
       tz * ((1 - tx) * at(x0, z0 + 1) + tx * at(x0 + 1, z0 + 1))
@@ -89,7 +89,7 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     const tx = localX - x0;
     const tz = localZ - z0;
     const at = (column: number, row: number): number =>
-      this.heights[row * this.width + column];
+      this.heights[row * this.width + column]!;
     const h00 = at(x0, z0);
     const h10 = at(x0 + 1, z0);
     const h01 = at(x0, z0 + 1);
@@ -196,12 +196,12 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     for (const breakpoint of breakpoints)
       if (
         sortedBreakpoints.length === 0 ||
-        breakpoint > sortedBreakpoints[sortedBreakpoints.length - 1]
+        breakpoint > sortedBreakpoints[sortedBreakpoints.length - 1]!
       )
         sortedBreakpoints.push(breakpoint);
 
     const at = (column: number, row: number): number =>
-      this.heights[row * this.width + column];
+      this.heights[row * this.width + column]!;
     const findRoot = (
       low: number,
       high: number,
@@ -255,8 +255,8 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       interval + 1 < sortedBreakpoints.length;
       interval += 1
     ) {
-      const low = sortedBreakpoints[interval];
-      const high = sortedBreakpoints[interval + 1];
+      const low = sortedBreakpoints[interval]!;
+      const high = sortedBreakpoints[interval + 1]!;
       const middle = (low + high) / 2;
       const rawX =
         (origin[0] + dir[0] * middle - this.origin[0]) / this.cellSize;

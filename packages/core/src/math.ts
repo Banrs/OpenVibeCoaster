@@ -72,17 +72,17 @@ export const aabb = (min: Vec3, max: Vec3): Aabb =>
 export const aabbFromPoints = (points: readonly Vec3[]): Aabb => {
   if (points.length === 0)
     throw new RangeError("An AABB needs at least one point");
-  const min = [...points[0]];
-  const max = [...points[0]];
+  const min: [number, number, number] = [...points[0]!];
+  const max: [number, number, number] = [...points[0]!];
   for (const point of points.slice(1)) {
     for (let i = 0; i < 3; i += 1) {
-      min[i] = Math.min(min[i], point[i]);
-      max[i] = Math.max(max[i], point[i]);
+      min[i] = Math.min(min[i]!, point[i]!);
+      max[i] = Math.max(max[i]!, point[i]!);
     }
   }
   return aabb(vec3(...min), vec3(...max));
 };
 export const aabbContains = (box: Aabb, point: Vec3): boolean =>
-  point.every((value, i) => value >= box.min[i] && value <= box.max[i]);
+  point.every((value, i) => value >= box.min[i]! && value <= box.max[i]!);
 export const aabbIntersects = (a: Aabb, b: Aabb): boolean =>
-  a.min.every((value, i) => value <= b.max[i] && a.max[i] >= b.min[i]);
+  a.min.every((value, i) => value <= b.max[i]! && a.max[i]! >= b.min[i]!);

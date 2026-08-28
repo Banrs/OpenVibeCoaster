@@ -72,22 +72,22 @@ export const transportFrames = (
     ? vec3Normalize(
         vec3Sub(
           initialNormal,
-          vec3Scale(normalized[0], vec3Dot(initialNormal, normalized[0])),
+          vec3Scale(normalized[0]!, vec3Dot(initialNormal, normalized[0]!)),
         ),
       )
-    : defaultNormal(normalized[0]);
+    : defaultNormal(normalized[0]!);
   for (let i = 0; i < normalized.length; i += 1) {
     if (i > 0)
       transportedNormal = orthogonalize(
-        rotateMinimal(transportedNormal, normalized[i - 1], normalized[i]),
-        normalized[i],
+        rotateMinimal(transportedNormal, normalized[i - 1]!, normalized[i]!),
+        normalized[i]!,
       );
-    const tangent = normalized[i];
+    const tangent = normalized[i]!;
     const unbankedBinormal = vec3Normalize(
       vec3Cross(tangent, transportedNormal),
     );
     const bank =
-      typeof bankAt === "function" ? bankAt(parameters[i]) : (bankAt[i] ?? 0);
+      typeof bankAt === "function" ? bankAt(parameters[i]!) : (bankAt[i] ?? 0);
     const normalBanked = vec3Normalize(
       vec3Add(
         vec3Scale(transportedNormal, Math.cos(bank)),
@@ -164,27 +164,27 @@ export const transportFramesAlongPath = (
     ? vec3Normalize(
         vec3Sub(
           initialNormal,
-          vec3Scale(normalized[0], vec3Dot(initialNormal, normalized[0])),
+          vec3Scale(normalized[0]!, vec3Dot(initialNormal, normalized[0]!)),
         ),
       )
-    : defaultNormal(normalized[0]);
+    : defaultNormal(normalized[0]!);
   for (let index = 0; index < normalized.length; index += 1) {
     if (index > 0)
       transportedNormal = orthogonalize(
         doubleReflect(
           transportedNormal,
-          normalized[index - 1],
-          normalized[index],
-          positions[index - 1],
-          positions[index],
+          normalized[index - 1]!,
+          normalized[index]!,
+          positions[index - 1]!,
+          positions[index]!,
         ),
-        normalized[index],
+        normalized[index]!,
       );
-    const tangent = normalized[index];
+    const tangent = normalized[index]!;
     const binormal = vec3Normalize(vec3Cross(tangent, transportedNormal));
     const bank =
       typeof bankAt === "function"
-        ? bankAt(parameters[index])
+        ? bankAt(parameters[index]!)
         : (bankAt[index] ?? 0);
     const normal = vec3Normalize(
       vec3Add(

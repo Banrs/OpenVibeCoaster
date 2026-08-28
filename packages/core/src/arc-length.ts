@@ -2,11 +2,11 @@ import type { ParametricSpan } from "./spans";
 import { vec3Length } from "./math";
 import type { Vec3 } from "./math";
 
-const nodes = [
+const nodes: readonly [number, number, number, number, number] = [
   0.0, -0.5384693101056831, 0.5384693101056831, -0.906179845938664,
   0.906179845938664,
 ];
-const weights = [
+const weights: readonly [number, number, number, number, number] = [
   0.5688888888888889, 0.47862867049936647, 0.47862867049936647,
   0.23692688505618908, 0.23692688505618908,
 ];
@@ -21,7 +21,7 @@ const gauss5 = (span: PositionSpan, a: number, b: number): number => {
     half *
     nodes.reduce(
       (sum, node, index) =>
-        sum + weights[index] * speed(span, mid + half * node),
+        sum + weights[index]! * speed(span, mid + half * node),
       0,
     )
   );
@@ -86,13 +86,18 @@ export const buildArcLengthLut = (
     parameters[i] = i / segments;
     if (i > 0)
       distances[i] =
-        distances[i - 1] +
-        arcLength(span, parameters[i - 1], parameters[i], tolerance / segments);
+        distances[i - 1]! +
+        arcLength(
+          span,
+          parameters[i - 1]!,
+          parameters[i]!,
+          tolerance / segments,
+        );
   }
   return Object.freeze({
     parameters,
     distances,
-    totalLength: distances[segments],
+    totalLength: distances[segments]!,
   });
 };
 
@@ -106,17 +111,17 @@ const invert = (
   let lowIndex = 0;
   while (
     lowIndex + 1 < lut.distances.length &&
-    lut.distances[lowIndex + 1] < distance
+    lut.distances[lowIndex + 1]! < distance
   )
     lowIndex += 1;
-  let low = lut.parameters[lowIndex];
-  let high = lut.parameters[lowIndex + 1];
+  let low = lut.parameters[lowIndex]!;
+  let high = lut.parameters[lowIndex + 1]!;
   let u =
     low +
-    ((distance - lut.distances[lowIndex]) /
-      (lut.distances[lowIndex + 1] - lut.distances[lowIndex])) *
+    ((distance - lut.distances[lowIndex]!) /
+      (lut.distances[lowIndex + 1]! - lut.distances[lowIndex]!)) *
       (high - low);
-  const base = lut.distances[lowIndex];
+  const base = lut.distances[lowIndex]!;
   for (let iteration = 0; iteration < 12; iteration += 1) {
     const travelled = base + arcLength(span, low, u, 1e-11);
     const error = travelled - distance;

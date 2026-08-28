@@ -15,13 +15,14 @@ export interface CompileTrackOptions {
   readonly samples?: number;
   readonly tolerance?: number;
 }
-interface CompiledTrackDataInput {
+export interface CompiledTrackDataInput {
   readonly positions: Float64Array;
   readonly tangents: Float64Array;
   readonly normals: Float64Array;
   readonly binormals: Float64Array;
   readonly distances: Float64Array;
   readonly curvature: Float64Array;
+  readonly curvatureVector: Float64Array;
   readonly bank: Float64Array;
   readonly bankDerivative: Float64Array;
   readonly zoneMasks: Uint32Array;
@@ -73,6 +74,18 @@ const hashText = (text: string): string => {
   );
   return (hash >>> 0).toString(16).padStart(8, "0");
 };
+const spanSpeed = (span: ParametricSpan<Vec3>, u: number): number => {
+  const derivative = span.derivative(u, 1);
+  return Math.hypot(derivative[0], derivative[1], derivative[2]);
+};
+const requireValidSpeed = (value: number): number => {
+  if (!(value > 1e-12))
+    throw new RangeError("A span derivative must be non-zero");
+  return value;
+};
+const validSpanSpeed = (span: ParametricSpan<Vec3>, u: number): number => {
+  return requireValidSpeed(spanSpeed(span, u));
+};
 const checksum = (data: CompiledTrackDataInput): string => {
   const canonical = JSON.stringify({
     positions: Array.from(data.positions),
@@ -81,6 +94,7 @@ const checksum = (data: CompiledTrackDataInput): string => {
     binormals: Array.from(data.binormals),
     distances: Array.from(data.distances),
     curvature: Array.from(data.curvature),
+    curvatureVector: Array.from(data.curvatureVector),
     bank: Array.from(data.bank),
     bankDerivative: Array.from(data.bankDerivative),
     zoneMasks: Array.from(data.zoneMasks),
@@ -105,6 +119,7 @@ export class CompiledTrackData {
   readonly #binormals: Float64Array;
   readonly #distances: Float64Array;
   readonly #curvature: Float64Array;
+  readonly #curvatureVector: Float64Array;
   readonly #bank: Float64Array;
   readonly #bankDerivative: Float64Array;
   readonly #zoneMasks: Uint32Array;
@@ -122,6 +137,7 @@ export class CompiledTrackData {
     this.#binormals = new Float64Array(input.binormals);
     this.#distances = new Float64Array(input.distances);
     this.#curvature = new Float64Array(input.curvature);
+    this.#curvatureVector = new Float64Array(input.curvatureVector);
     this.#bank = new Float64Array(input.bank);
     this.#bankDerivative = new Float64Array(input.bankDerivative);
     this.#zoneMasks = new Uint32Array(input.zoneMasks);
@@ -137,6 +153,7 @@ export class CompiledTrackData {
       binormals: this.#binormals,
       distances: this.#distances,
       curvature: this.#curvature,
+      curvatureVector: this.#curvatureVector,
       bank: this.#bank,
       bankDerivative: this.#bankDerivative,
       zoneMasks: this.#zoneMasks,
@@ -153,6 +170,7 @@ export class CompiledTrackData {
       binormals: this.#binormals,
       distances: this.#distances,
       curvature: this.#curvature,
+      curvatureVector: this.#curvatureVector,
       bank: this.#bank,
       bankDerivative: this.#bankDerivative,
       zoneMasks: this.#zoneMasks,
@@ -180,6 +198,9 @@ export class CompiledTrackData {
   }
   public get curvature(): Float64Array {
     return new Float64Array(this.#curvature);
+  }
+  public get curvatureVector(): Float64Array {
+    return new Float64Array(this.#curvatureVector);
   }
   public get bank(): Float64Array {
     return new Float64Array(this.#bank);
@@ -230,28 +251,32 @@ export const compileTrack = (
   const elementBoundaries = new Uint32Array(elements.length * 2);
   const parameters = new Float64Array(count);
   const localDistances = new Float64Array(count);
+  const speeds = new Float64Array(count);
   const banks = new Float64Array(count);
   const bankDerivatives = new Float64Array(count);
   const zoneSets = new Set<string>();
   for (const element of elements)
     for (const zone of element.zones ?? []) zoneSets.add(zone);
   const zoneNames = [...zoneSets];
-  const luts = elements.map((element) =>
-    buildArcLengthLut(
+  const luts = elements.map((element) => {
+    validSpanSpeed(element.span, 0);
+    validSpanSpeed(element.span, 1);
+    return buildArcLengthLut(
       element.span,
       Math.max(32, perElement),
       options.tolerance ?? 1e-8,
-    ),
-  );
+    );
+  });
   const offsets = new Float64Array(elements.length + 1);
   for (let index = 0; index < elements.length; index += 1)
-    offsets[index + 1] = offsets[index] + luts[index].totalLength;
+    offsets[index + 1] = offsets[index]! + luts[index]!.totalLength;
   for (
     let elementIndex = 0;
     elementIndex < elements.length;
     elementIndex += 1
   ) {
-    const element = elements[elementIndex];
+    const element = elements[elementIndex]!;
+    const lut = luts[elementIndex]!;
     const startIndex = elementIndex * (perElement - 1);
     elementBoundaries[elementIndex * 2] = startIndex;
     elementBoundaries[elementIndex * 2 + 1] = startIndex + perElement - 1;
@@ -263,17 +288,17 @@ export const compileTrack = (
           ? sample / (perElement - 1)
           : invertArcLength(
               element.span,
-              luts[elementIndex],
-              (luts[elementIndex].totalLength * sample) / (perElement - 1),
+              lut,
+              (lut.totalLength * sample) / (perElement - 1),
             );
-      localDistances[index] =
-        (luts[elementIndex].totalLength * sample) / (perElement - 1);
+      localDistances[index] = (lut.totalLength * sample) / (perElement - 1);
       writeVec3(positions, index, element.span.position(u));
-      writeVec3(tangents, index, vec3Normalize(element.span.derivative(u, 1)));
+      const d1 = element.span.derivative(u, 1);
+      speeds[index] = requireValidSpeed(Math.hypot(d1[0], d1[1], d1[2]));
+      writeVec3(tangents, index, vec3Normalize(d1));
       parameters[index] = u;
       elementIndices[index] = elementIndex;
       banks[index] = bankValue(element, u);
-      bankDerivatives[index] = bankDerivative(element, u);
     }
   }
   const frameInputs = Array.from({ length: count }, (_, index) =>
@@ -296,25 +321,32 @@ export const compileTrack = (
   const binormals = new Float64Array(count * 3);
   const distances = new Float64Array(count);
   const curvature = new Float64Array(count);
+  const curvatureVector = new Float64Array(count * 3);
   const zoneMasks = new Uint32Array(count);
   for (let index = 0; index < count; index += 1) {
-    writeVec3(normals, index, frames[index].normal);
-    writeVec3(binormals, index, frames[index].binormal);
-    distances[index] = offsets[elementIndices[index]] + localDistances[index];
-    const element = elements[elementIndices[index]];
-    const u = parameters[index];
+    const frame = frames[index]!;
+    writeVec3(normals, index, frame.normal);
+    writeVec3(binormals, index, frame.binormal);
+    const elementIndex = elementIndices[index]!;
+    distances[index] = offsets[elementIndex]! + localDistances[index]!;
+    const element = elements[elementIndex]!;
+    const u = parameters[index]!;
     const d1 = element.span.derivative(u, 1);
     const d2 = element.span.derivative(u, 2);
-    const cross = vec3(
-      d1[1] * d2[2] - d1[2] * d2[1],
-      d1[2] * d2[0] - d1[0] * d2[2],
-      d1[0] * d2[1] - d1[1] * d2[0],
+    const speed = speeds[index]!;
+    const speedSquared = speed ** 2;
+    const tangentSpeedDerivative =
+      (d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]) / speed;
+    const vector = vec3(
+      d2[0] / speedSquared - (d1[0] * tangentSpeedDerivative) / speed ** 3,
+      d2[1] / speedSquared - (d1[1] * tangentSpeedDerivative) / speed ** 3,
+      d2[2] / speedSquared - (d1[2] * tangentSpeedDerivative) / speed ** 3,
     );
-    const speed = Math.hypot(d1[0], d1[1], d1[2]);
-    curvature[index] =
-      speed > 1e-12 ? Math.hypot(cross[0], cross[1], cross[2]) / speed ** 3 : 0;
+    writeVec3(curvatureVector, index, vector);
+    curvature[index] = Math.hypot(vector[0], vector[1], vector[2]);
+    bankDerivatives[index] = bankDerivative(element, u) / speeds[index]!;
     for (const zone of element.zones ?? [])
-      zoneMasks[index] |= 1 << zoneNames.indexOf(zone);
+      zoneMasks[index] = zoneMasks[index]! | (1 << zoneNames.indexOf(zone));
   }
   return new CompiledTrackData({
     positions,
@@ -323,6 +355,7 @@ export const compileTrack = (
     binormals,
     distances,
     curvature,
+    curvatureVector,
     bank: banks,
     bankDerivative: bankDerivatives,
     zoneMasks,
@@ -330,7 +363,7 @@ export const compileTrack = (
     elementIndices,
     elementBoundaries,
     parameters,
-    totalLength: offsets[elements.length],
+    totalLength: offsets[elements.length]!,
   });
 };
 
@@ -341,6 +374,7 @@ export interface TrackSample {
   readonly binormal: Vec3;
   readonly distance: number;
   readonly curvature: number;
+  readonly curvatureVector: Vec3;
   readonly bank: number;
   readonly bankDerivative: number;
 }
@@ -357,22 +391,23 @@ export const sampleCompiledTrack = (
   const fraction = floating - low;
   const { positions, tangents, normals, binormals } = storage;
   const { curvature: curvatures, bank: banks } = storage;
+  const { curvatureVector: curvatureVectors } = storage;
   const { bankDerivative: bankDerivatives } = storage;
   const interpolate = (array: Float64Array): number =>
-    array[low] * (1 - fraction) + array[high] * fraction;
+    array[low]! * (1 - fraction) + array[high]! * fraction;
   const tangent = vec3Normalize(
     vec3(
-      tangents[low * 3] * (1 - fraction) + tangents[high * 3] * fraction,
-      tangents[low * 3 + 1] * (1 - fraction) +
-        tangents[high * 3 + 1] * fraction,
-      tangents[low * 3 + 2] * (1 - fraction) +
-        tangents[high * 3 + 2] * fraction,
+      tangents[low * 3]! * (1 - fraction) + tangents[high * 3]! * fraction,
+      tangents[low * 3 + 1]! * (1 - fraction) +
+        tangents[high * 3 + 1]! * fraction,
+      tangents[low * 3 + 2]! * (1 - fraction) +
+        tangents[high * 3 + 2]! * fraction,
     ),
   );
   const rawNormal = vec3(
-    normals[low * 3] * (1 - fraction) + normals[high * 3] * fraction,
-    normals[low * 3 + 1] * (1 - fraction) + normals[high * 3 + 1] * fraction,
-    normals[low * 3 + 2] * (1 - fraction) + normals[high * 3 + 2] * fraction,
+    normals[low * 3]! * (1 - fraction) + normals[high * 3]! * fraction,
+    normals[low * 3 + 1]! * (1 - fraction) + normals[high * 3 + 1]! * fraction,
+    normals[low * 3 + 2]! * (1 - fraction) + normals[high * 3 + 2]! * fraction,
   );
   const projectedNormal = vec3(
     rawNormal[0] -
@@ -392,11 +427,11 @@ export const sampleCompiledTrack = (
           tangent[2] * rawNormal[2]),
   );
   const rawBinormal = vec3(
-    binormals[low * 3] * (1 - fraction) + binormals[high * 3] * fraction,
-    binormals[low * 3 + 1] * (1 - fraction) +
-      binormals[high * 3 + 1] * fraction,
-    binormals[low * 3 + 2] * (1 - fraction) +
-      binormals[high * 3 + 2] * fraction,
+    binormals[low * 3]! * (1 - fraction) + binormals[high * 3]! * fraction,
+    binormals[low * 3 + 1]! * (1 - fraction) +
+      binormals[high * 3 + 1]! * fraction,
+    binormals[low * 3 + 2]! * (1 - fraction) +
+      binormals[high * 3 + 2]! * fraction,
   );
   const normal =
     projectedNormal[0] ** 2 +
@@ -418,19 +453,28 @@ export const sampleCompiledTrack = (
       tangent[0] * normal[1] - tangent[1] * normal[0],
     ),
   );
+  const curvatureVector = vec3(
+    curvatureVectors[low * 3]! * (1 - fraction) +
+      curvatureVectors[high * 3]! * fraction,
+    curvatureVectors[low * 3 + 1]! * (1 - fraction) +
+      curvatureVectors[high * 3 + 1]! * fraction,
+    curvatureVectors[low * 3 + 2]! * (1 - fraction) +
+      curvatureVectors[high * 3 + 2]! * fraction,
+  );
   return {
     position: vec3(
-      positions[low * 3] * (1 - fraction) + positions[high * 3] * fraction,
-      positions[low * 3 + 1] * (1 - fraction) +
-        positions[high * 3 + 1] * fraction,
-      positions[low * 3 + 2] * (1 - fraction) +
-        positions[high * 3 + 2] * fraction,
+      positions[low * 3]! * (1 - fraction) + positions[high * 3]! * fraction,
+      positions[low * 3 + 1]! * (1 - fraction) +
+        positions[high * 3 + 1]! * fraction,
+      positions[low * 3 + 2]! * (1 - fraction) +
+        positions[high * 3 + 2]! * fraction,
     ),
     tangent,
     normal,
     binormal,
     distance: data.totalLength * t,
     curvature: interpolate(curvatures),
+    curvatureVector,
     bank: interpolate(banks),
     bankDerivative: interpolate(bankDerivatives),
   };
