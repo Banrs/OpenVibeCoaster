@@ -1,4 +1,3 @@
-// @ts-nocheck
 import * as THREE from "three";
 import "./styles.css";
 import {
@@ -19,8 +18,9 @@ import {
   type MetricId,
 } from "./viewState.js";
 import { createRendererHandle } from "./render/renderer.js";
-import { getCameraState, clampFovForSpeed } from "./render/cameras.js";
+import { createRendererController } from "./render/controller.js";
 import { RenderMetrics } from "./render/metrics.js";
+import type { CompiledTrackData } from "./shim/core.js";
 
 function supportsWebGL(): boolean {
   try {
@@ -317,6 +317,10 @@ for (const input of cameraInputs) {
   input.addEventListener("change", () => {
     if (input.checked) {
       state.camera = selectCamera(input.value as CameraId, state.camera);
+      controller?.applyCamera(state.camera, {
+        reducedMotion: state.reducedMotion,
+        deltaMs: 16,
+      });
       render();
     }
   });
@@ -324,6 +328,7 @@ for (const input of cameraInputs) {
 
 metricSelect.addEventListener("change", () => {
   state.metric = selectMetric(metricSelect.value as MetricId, state.metric);
+  controller?.setMetric(state.metric);
   render();
 });
 
@@ -341,6 +346,15 @@ playbackSelect.addEventListener("change", () => {
 
 scrubber.addEventListener("input", () => {
   scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
+  if (controller?.hasTrack()) {
+    const t =
+      Number.parseInt(scrubber.value, 10) / Number.parseInt(scrubber.max, 10);
+    const data = controller.getTrackData();
+    if (data) {
+      const dist = t * data.totalLength;
+      controller.updatePlayback(dist, 0);
+    }
+  }
 });
 
 pauseBtn.addEventListener("click", () => {
@@ -486,19 +500,27 @@ window
   });
 
 // Three renderer lifecycle – terrain/grid only before generation (no fixture coaster)
+// Concrete integration for Wave 3: controller owns track/support/train and camera
 let rendererHandle: ReturnType<typeof createRendererHandle> = null;
 let threeCamera: THREE.PerspectiveCamera | null = null;
+let controller: ReturnType<typeof createRendererController> | null = null;
 let metrics = new RenderMetrics();
-let prevCameraState: ReturnType<typeof getCameraState> | undefined;
-let animationId = 0;
 let lastFrameMs = performance.now();
 
 function initRenderer(): void {
+  if (controller) {
+    try {
+      controller.dispose();
+    } catch {
+      // ignore
+    }
+    controller = null;
+  }
   if (rendererHandle) {
     try {
       rendererHandle.dispose();
     } catch {
-      /* ignore */
+      // ignore
     }
     rendererHandle = null;
   }
@@ -517,101 +539,27 @@ function initRenderer(): void {
   }
   hasWebGL = true;
   rendererHandle = handle;
-  // Verify renderer config matches spec: shadows capped, DPR capped, tone mapping
   threeCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 1200);
   threeCamera.position.set(0, 28, 52);
+  controller = createRendererController(handle, threeCamera);
+  (
+    window as unknown as { __vibecoasterController?: typeof controller }
+  ).__vibecoasterController = controller;
   render();
 
-  const onResize = (): void => {
-    if (!rendererHandle || !threeCamera) return;
-    const rect = viewportCanvas.getBoundingClientRect();
-    const w = Math.max(1, Math.round(rect.width));
-    const h = Math.max(1, Math.round(rect.height));
-    rendererHandle.resize(w, h);
-    threeCamera.aspect = w / Math.max(1, h);
-    threeCamera.updateProjectionMatrix();
-  };
-  // Attach once; remove previous if re-init
-  window.removeEventListener("resize", onResize as EventListener);
-  window.addEventListener("resize", onResize as EventListener);
-  onResize();
-
-  if (animationId) cancelAnimationFrame(animationId);
   const tick = (): void => {
-    animationId = requestAnimationFrame(tick);
+    if (!rendererHandle || !threeCamera || !controller) return;
     const now = performance.now();
     const deltaMs = now - lastFrameMs;
     lastFrameMs = now;
-    if (!rendererHandle || !threeCamera) return;
     metrics.beginFrame();
-    // Visual-only camera damping; no authoritative data mutation
-    // Before generation there is no track, so chase camera falls back to orbiting terrain center
-    // Use a lightweight placeholder track distance 0 with capped FOV
-    // Clamped speed FOV: use 0 speed before playback
-    const speed = 0;
-    threeCamera.fov = clampFovForSpeed(speed);
-    // Reduced-motion path: when prefers-reduced-motion, freeze orbit animation
-    try {
-      // Dummy compiled-track-like stub for terrain-only view: provide minimal orbit
-      // For now terrain-only orbit around origin
-      const orbitRadius = state.reducedMotion ? 0 : 0; // keep static when reduced, otherwise subtle
-      void orbitRadius;
-      // Simple idle orbit when no track: slow yaw around terrain center
-      const idleAngle = state.reducedMotion
-        ? 0
-        : (now * 0.00007) % (Math.PI * 2);
-      const radius = 62;
-      const height = 28;
-      const target = new THREE.Vector3(0, 0, 0);
-      // Apply damping visually: lerp towards target
-      const rawPos = new THREE.Vector3(
-        Math.cos(idleAngle) * radius,
-        height,
-        Math.sin(idleAngle) * radius,
-      );
-      if (prevCameraState) {
-        const damp = state.reducedMotion ? 0.02 : 0.08;
-        threeCamera.position.lerp(rawPos, damp);
-      } else {
-        threeCamera.position.copy(rawPos);
-      }
-      threeCamera.lookAt(target);
-      threeCamera.updateProjectionMatrix();
-      // Keep a dummy cameraState for damping parity with track cameras
-      prevCameraState = getCameraState(
-        state.camera,
-        {
-          positions: new Float64Array([0, 0, 0, 0, 0, 0]),
-          tangents: new Float64Array([1, 0, 0, 1, 0, 0]),
-          normals: new Float64Array([0, 1, 0, 0, 1, 0]),
-          binormals: new Float64Array([0, 0, 1, 0, 0, 1]),
-          distances: new Float64Array([0, 1]),
-          curvature: new Float64Array([0, 0]),
-          bank: new Float64Array([0, 0]),
-          bankDerivative: new Float64Array([0, 0]),
-          zoneMasks: new Uint32Array([0, 0]),
-          zoneNames: [],
-          elementIndices: new Uint32Array([0, 0]),
-          elementBoundaries: new Uint32Array([0, 1]),
-          parameters: new Float64Array([0, 1]),
-          totalLength: 1,
-          checksum: "terrain-only",
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any,
-        0,
-        speed,
-        {
-          reducedMotion: state.reducedMotion,
-          previous: prevCameraState,
-          deltaMs,
-        },
-      );
-    } catch {
-      // ignore camera errors before track load
-    }
+    controller.applyCamera(state.camera, {
+      reducedMotion: state.reducedMotion,
+      deltaMs,
+    });
+    threeCamera.updateProjectionMatrix();
     rendererHandle.renderer?.render(rendererHandle.scene, threeCamera);
     metrics.endFrame();
-    // Record frame metrics (drawCalls/triangles would be queried from renderer.info if available)
     const info = (
       rendererHandle.renderer as unknown as {
         info?: { render?: { calls?: number; triangles?: number } };
@@ -624,8 +572,9 @@ function initRenderer(): void {
         info.render.triangles ?? 0,
       );
     }
+    requestAnimationFrame(tick);
   };
-  tick();
+  requestAnimationFrame(tick);
 }
 
 initRenderer();
@@ -636,34 +585,70 @@ webglRetry.addEventListener("click", () => {
     initRenderer();
     render();
   } else {
-    webglFallback.querySelector("p")!.textContent =
-      "Still unavailable — try restarting the browser with hardware acceleration enabled.";
+    const p = webglFallback.querySelector("p");
+    if (p) {
+      p.textContent =
+        "Still unavailable — try restarting the browser with hardware acceleration enabled.";
+    }
   }
 });
+
+// Expose concrete integration for Wave 3 – never fabricate a generated result
+function attachCompiledTrack(
+  data: CompiledTrackData,
+  options: {
+    metric?: import("./render/trackGeometry.js").MetricId;
+    metricData?: import("./render/controller.js").MetricData;
+    timeline?: { distances: Float64Array; speeds: Float64Array };
+  } = {},
+): void {
+  if (!controller || !rendererHandle) {
+    initRenderer();
+    if (!controller || !rendererHandle) return;
+  }
+  controller.attachTrack(data, {
+    metric: options.metric ?? state.metric,
+    metricData: options.metricData,
+    timeline: options.timeline,
+  });
+  // Drive initial playback from timeline if provided
+  if (options.timeline && options.timeline.distances.length > 0) {
+    const d0 = options.timeline.distances[0] ?? 0;
+    const s0 = options.timeline.speeds[0] ?? 0;
+    controller.updatePlayback(d0, s0);
+  }
+  state.generationStatus = "ready";
+  render();
+}
+function clearCompiledTrack(): void {
+  controller?.clearTrack();
+  state.generationStatus = "pending";
+  render();
+}
 
 // Re-init terrain deterministically when seed changes and user generates (still error path)
 // For now terrain seed follows state.seed via initRenderer on generation attempt
 const originalHandleGenerate = handleGenerate;
 function wrappedGenerate(): void {
   originalHandleGenerate();
-  // after short timeout, re-seed terrain if needed (visual only, no track)
   window.setTimeout(() => {
-    if (rendererHandle) {
-      try {
-        rendererHandle.dispose();
-      } catch {
-        /* ignore */
-      }
-      initRenderer();
-    }
+    initRenderer();
   }, 950);
 }
-// Replace handler
 generateBtn.removeEventListener("click", handleGenerate);
 generateBtn.addEventListener("click", wrappedGenerate);
 
-// Keep metrics accessible for debugging
+// Keep metrics and integration accessible for debugging and Wave 3
 window.__vibecoasterMetrics = metrics;
+(
+  window as unknown as { __vibecoasterAttachTrack?: typeof attachCompiledTrack }
+).__vibecoasterAttachTrack = attachCompiledTrack;
+(
+  window as unknown as { __vibecoasterClearTrack?: typeof clearCompiledTrack }
+).__vibecoasterClearTrack = clearCompiledTrack;
+(
+  window as unknown as { __vibecoasterController?: typeof controller }
+).__vibecoasterController = controller;
 
 // Initial paint
 render();
@@ -674,6 +659,9 @@ declare global {
   interface Window {
     __vibecoasterState?: AppState;
     __vibecoasterMetrics?: RenderMetrics;
+    __vibecoasterAttachTrack?: typeof attachCompiledTrack;
+    __vibecoasterClearTrack?: typeof clearCompiledTrack;
+    __vibecoasterController?: typeof controller;
   }
 }
 window.__vibecoasterState = state;

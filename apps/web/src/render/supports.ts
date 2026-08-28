@@ -1,10 +1,6 @@
-// @ts-nocheck
 import * as THREE from "three";
-import type {
-  CompiledTrackData,
-  EnvironmentQuery,
-} from "@openvibecoaster/core";
-import { vec3 } from "@openvibecoaster/core";
+import type { CompiledTrackData, EnvironmentQuery } from "../shim/core.js";
+import { vec3 } from "../shim/core.js";
 
 export interface SupportResult {
   meshes: THREE.Mesh[];

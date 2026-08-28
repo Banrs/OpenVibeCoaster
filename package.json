@@ -27,6 +27,7 @@
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/node": "24.13.3",
+    "@types/three": "0.185.4",
     "@vitest/coverage-v8": "4.1.11",
     "fast-check": "4.9.0",
     "oxlint": "1.80.0",

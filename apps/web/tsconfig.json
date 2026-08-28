@@ -1,8 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2023", "DOM", "DOM.Iterable", "WebWorker"],
-    "noUncheckedIndexedAccess": false
+    "lib": ["ES2023", "DOM", "DOM.Iterable", "WebWorker"]
   },
   "include": ["src/**/*.ts", "vite.config.ts"]
 }

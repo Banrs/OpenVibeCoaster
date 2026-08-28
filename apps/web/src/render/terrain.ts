@@ -1,10 +1,9 @@
-// @ts-nocheck
 import * as THREE from "three";
 import {
   HeightfieldEnvironment,
   hashSeed,
   Xoshiro128ss,
-} from "@openvibecoaster/core";
+} from "../shim/core.js";
 
 export function createDeterministicHeightfield(
   seed: string | number,
@@ -78,9 +77,9 @@ export function buildTerrainMesh(
   for (let z = 0; z < depth; z += 1) {
     for (let x = 0; x < width; x += 1) {
       const idx = z * width + x;
-      const worldX = origin[0] + x * cellSize;
-      const worldZ = origin[1] + z * cellSize;
-      const h = heights[idx];
+      const worldX = (origin[0] ?? 0) + x * cellSize;
+      const worldZ = (origin[1] ?? 0) + z * cellSize;
+      const h = heights[idx] ?? 0;
       positions[idx * 3] = worldX;
       positions[idx * 3 + 1] = h;
       positions[idx * 3 + 2] = worldZ;

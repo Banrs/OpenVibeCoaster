@@ -1,7 +1,6 @@
-// @ts-nocheck
 import { describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
-import { compileTrack, vec3 } from "@openvibecoaster/core";
+import { compileTrack, vec3 } from "../shim/core.js";
 
 // These imports will fail in red phase – that preserves evidence.
 import { createDeterministicHeightfield, buildTerrainMesh } from "./terrain.js";
@@ -105,6 +104,9 @@ describe("render – track geometry from CompiledTrackData", () => {
     expect(result.triangles).toBeGreaterThan(0);
     expect(result.drawCalls).toBeGreaterThanOrEqual(4);
     expect(result.buildTimeMs).toBeGreaterThanOrEqual(0);
+    expect(result.metricAvailable).toBe(true);
+    const speedNoData = buildTrackGeometries(data, { metric: "speed" });
+    expect(speedNoData.metricAvailable).toBe(false);
   });
 
   it("vertex colors encode metric and highlight selected/seam", () => {
@@ -145,19 +147,27 @@ describe("render – track geometry from CompiledTrackData", () => {
   it("does not maintain a second independent spline – vertices derived from CompiledTrackData", () => {
     const data = makeSimpleTrack();
     const result = buildTrackGeometries(data, { metric: "height" });
-    // Sample a few centerline points and verify they are near original positions offset by gauge
-    // Left/right rails should be offset along normal/binormal, not arbitrary.
-    // We check that the source does not contain a hidden extra spline file.
-    // At minimum, geometry count scales with compiled samples.
     const expectedMinVertices = data.positions.length / 3;
     expect(
       result.leftRail.getAttribute("position").count,
     ).toBeGreaterThanOrEqual(expectedMinVertices);
-    // No second spline: the only Vec3 sources are data positions/tangents/normals/binormals
-    // This test documents the invariant; implementation must not invent an independent spline.
     expect(
-      (result as unknown as { splineCount?: number }).splineCount ?? 1,
-    ).toBe(1);
+      (result as unknown as { splineCount?: unknown }).splineCount,
+    ).toBeUndefined();
+    expect(
+      (result.leftRail.userData as Record<string, unknown>).curve,
+    ).toBeUndefined();
+    expect(
+      (result as unknown as Record<string, unknown>).curve,
+    ).toBeUndefined();
+    const posAttr = result.leftRail.getAttribute(
+      "position",
+    ) as THREE.BufferAttribute;
+    const firstX = posAttr.getX(0);
+    const canonicalX = data.positions[0] as number;
+    expect(Math.abs(firstX - canonicalX)).toBeLessThan(1.5);
+    expect(result.metricAvailable).toBe(true);
+    expect(result.metric).toBe("height");
   });
 });
 
@@ -179,15 +189,18 @@ describe("render – train six-car LSM", () => {
     const transformsA = getCarTransforms(data, front);
     const transformsB = getCarTransforms(data, front);
     expect(transformsA.length).toBe(6);
-    expect(transformsA[0].position).toEqual(transformsB[0].position);
+    expect(transformsA[0]!.position).toEqual(transformsB[0]!.position);
     // No motion independent of timeline: same distance -> same transforms
-    expect(transformsA[0].quaternion).toEqual(transformsB[0].quaternion);
+    expect(transformsA[0]!.quaternion).toEqual(transformsB[0]!.quaternion);
     // Advancing distance moves cars forward
     const later = getCarTransforms(data, front + 5);
-    expect(later[0].position[0]).not.toBeCloseTo(transformsA[0].position[0], 2);
+    expect(later[0]!.position[0]).not.toBeCloseTo(
+      transformsA[0]!.position[0],
+      2,
+    );
     // Spacing matches car pitch (Euclidean chord approximates arc length; allow 1.0 m tolerance for curvature)
-    const pos0 = transformsA[0].position;
-    const pos1 = transformsA[1].position;
+    const pos0 = transformsA[0]!.position;
+    const pos1 = transformsA[1]!.position;
     const dist = Math.hypot(
       pos0[0] - pos1[0],
       pos0[1] - pos1[1],
@@ -201,10 +214,10 @@ describe("render – train six-car LSM", () => {
     const group = createTrainGroup();
     const t0 = getCarTransforms(data, 10);
     updateTrainTransforms(group, t0);
-    const firstPos = group.cars[0].position.clone();
+    const firstPos = group.cars[0]!.position.clone();
     const t1 = getCarTransforms(data, 10);
     updateTrainTransforms(group, t1);
-    expect(group.cars[0].position.distanceTo(firstPos)).toBeCloseTo(0, 5);
+    expect(group.cars[0]!.position.distanceTo(firstPos)).toBeCloseTo(0, 5);
   });
 });
 
@@ -215,15 +228,13 @@ describe("render – support columns via raycast", () => {
     const supports = buildSupportColumns(data, env, 10);
     expect(supports.meshes.length).toBeGreaterThan(0);
     for (let i = 0; i < supports.meshes.length; i++) {
-      const mesh = supports.meshes[i];
+      const mesh = supports.meshes[i]!;
       expect(mesh.geometry).toBeInstanceOf(THREE.BufferGeometry);
-      // mesh position y should be near terrain height underneath
-      const trackPoint = supports.trackPoints[i];
+      const trackPoint = supports.trackPoints[i]!;
       const hit = env.raycast(trackPoint, vec3(0, -1, 0), 1000);
       expect(hit).toBeDefined();
       if (hit) {
-        // column height should approximately equal distance to ground
-        const colHeight = supports.heights[i];
+        const colHeight = supports.heights[i]!;
         expect(colHeight).toBeCloseTo(hit.distance, 1);
       }
     }

@@ -1,10 +1,6 @@
-// @ts-nocheck
 import * as THREE from "three";
-import {
-  sampleCompiledTrack,
-  type CompiledTrackData,
-} from "@openvibecoaster/core";
-import type { Vec3, Quat } from "@openvibecoaster/core";
+import { sampleCompiledTrack, type CompiledTrackData } from "../shim/core.js";
+import type { Vec3, Quat } from "../shim/core.js";
 
 export const TRAIN_CAR_COUNT = 6;
 export const CAR_PITCH_M = 3.4;
@@ -151,12 +147,17 @@ export function updateTrainTransforms(
   for (let i = 0; i < Math.min(group.cars.length, transforms.length); i++) {
     const car = group.cars[i];
     const tr = transforms[i];
-    car.position.set(tr.position[0], tr.position[1], tr.position[2]);
+    if (!car || !tr) continue;
+    car.position.set(
+      tr.position[0] ?? 0,
+      tr.position[1] ?? 0,
+      tr.position[2] ?? 0,
+    );
     car.quaternion.set(
-      tr.quaternion[0],
-      tr.quaternion[1],
-      tr.quaternion[2],
-      tr.quaternion[3],
+      tr.quaternion[0] ?? 0,
+      tr.quaternion[1] ?? 0,
+      tr.quaternion[2] ?? 0,
+      tr.quaternion[3] ?? 1,
     );
   }
 }

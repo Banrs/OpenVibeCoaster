@@ -1,6 +1,6 @@
-import type { CompiledTrackData } from "@openvibecoaster/core";
-import { sampleCompiledTrack } from "@openvibecoaster/core";
-import type { Vec3 } from "@openvibecoaster/core";
+import type { CompiledTrackData } from "../shim/core.js";
+import { sampleCompiledTrack } from "../shim/core.js";
+import type { Vec3 } from "../shim/core.js";
 
 export type CameraId = "front" | "middle" | "rear" | "chase" | "orbit";
 

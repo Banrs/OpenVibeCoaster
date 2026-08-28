@@ -1,4 +1,3 @@
-// @ts-nocheck
 import * as THREE from "three";
 import {
   createDeterministicHeightfield,
@@ -14,18 +13,44 @@ export interface RendererHandle {
 }
 
 export interface CreateRendererOptions {
-  onWebGLFailure?: () => void;
-  dprCap?: number;
-  enableShadows?: boolean;
-  terrainSeed?: string;
-  createRenderer?: (canvas: HTMLCanvasElement) => THREE.WebGLRenderer;
+  onWebGLFailure?: (() => void) | undefined;
+  dprCap?: number | undefined;
+  enableShadows?: boolean | undefined;
+  terrainSeed?: string | undefined;
+  createRenderer?:
+    ((canvas: HTMLCanvasElement) => THREE.WebGLRenderer) | undefined;
+}
+
+let activeResizeHandler: (() => void) | null = null;
+let activeRafId: number | null = null;
+
+export function teardownRendererLifecycle(): void {
+  if (activeResizeHandler) {
+    try {
+      (globalThis as unknown as Window).removeEventListener(
+        "resize",
+        activeResizeHandler as EventListener,
+      );
+    } catch {
+      // ignore
+    }
+    activeResizeHandler = null;
+  }
+  if (activeRafId !== null) {
+    try {
+      (globalThis as unknown as Window).cancelAnimationFrame(activeRafId);
+    } catch {
+      // ignore
+    }
+    activeRafId = null;
+  }
 }
 
 function supportsWebGL(canvas: HTMLCanvasElement): boolean {
   try {
-    return Boolean(
-      canvas.getContext("webgl") ?? canvas.getContext("experimental-webgl"),
-    );
+    const ctx =
+      canvas.getContext("webgl") ?? canvas.getContext("experimental-webgl");
+    return Boolean(ctx);
   } catch {
     return false;
   }
@@ -36,7 +61,6 @@ function buildScene(terrainSeed: string): THREE.Scene {
   scene.background = new THREE.Color(0x0a0f18);
   scene.fog = new THREE.Fog(0x0a0f18, 120, 420);
 
-  // Restrained physically coherent lighting: ambient + directional sun with soft shadows
   const ambient = new THREE.HemisphereLight(0xcfe0ff, 0x1e2a22, 0.55);
   ambient.name = "hemisphere";
   scene.add(ambient);
@@ -56,19 +80,16 @@ function buildScene(terrainSeed: string): THREE.Scene {
   sun.name = "sun";
   scene.add(sun);
 
-  // Fill light, very restrained
   const fill = new THREE.DirectionalLight(0x9fb7ff, 0.28);
   fill.position.set(-60, 35, -40);
   fill.name = "fill";
   scene.add(fill);
 
-  // Deterministic terrain + grid + sky dome via environment treatment
   const env = createDeterministicHeightfield(terrainSeed);
   const { mesh, grid } = createTerrainGroup(env);
   scene.add(mesh);
   scene.add(grid);
 
-  // Sky dome – simple large sphere with gradient via shaderless color
   const skyGeom = new THREE.SphereGeometry(800, 24, 16);
   const skyMat = new THREE.MeshBasicMaterial({
     color: 0x161e2f,
@@ -89,6 +110,9 @@ export function createRendererHandle(
   canvas: HTMLCanvasElement,
   options: CreateRendererOptions = {},
 ): RendererHandle | null {
+  // Own lifecycle: cancel prior RAF and listener before every recreate, including failed path
+  teardownRendererLifecycle();
+
   const dprCap = options.dprCap ?? 2;
   const onFailure = options.onWebGLFailure;
 
@@ -99,14 +123,15 @@ export function createRendererHandle(
 
   let renderer: THREE.WebGLRenderer | null = null;
   try {
-    renderer = options.createRenderer
-      ? options.createRenderer(canvas)
-      : new THREE.WebGLRenderer({
-          canvas,
-          antialias: true,
-          alpha: false,
-          powerPreference: "high-performance",
-        });
+    renderer =
+      options.createRenderer !== undefined
+        ? options.createRenderer(canvas)
+        : new THREE.WebGLRenderer({
+            canvas,
+            antialias: true,
+            alpha: false,
+            powerPreference: "high-performance",
+          });
   } catch {
     onFailure?.();
     return null;
@@ -117,11 +142,11 @@ export function createRendererHandle(
     return null;
   }
 
-  // Restrained PBR renderer config
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.shadowMap.enabled = options.enableShadows ?? true;
+  const enableShadows = options.enableShadows ?? true;
+  renderer.shadowMap.enabled = enableShadows;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const getDprNow = (): number => {
@@ -138,21 +163,51 @@ export function createRendererHandle(
 
   const scene = buildScene(options.terrainSeed ?? "default-terrain");
 
-  // Initial size: match canvas CSS size, but tests don't depend on real size
   const resize = (width: number, height: number): void => {
     renderer?.setSize(width, height, false);
     renderer?.setPixelRatio(getDprNow());
   };
 
+  // Register resize handler owned by this handle and track for teardown
+  const resizeHandler = (): void => {
+    try {
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(1, Math.round(rect.width));
+      const h = Math.max(1, Math.round(rect.height));
+      resize(w, h);
+    } catch {
+      // ignore
+    }
+  };
+  activeResizeHandler = resizeHandler;
+  try {
+    (globalThis as unknown as Window).addEventListener(
+      "resize",
+      resizeHandler as EventListener,
+    );
+  } catch {
+    // ignore in test env if window missing
+  }
+
+  // RAF ownership: start a no-op raf to prove ownership; will be cancelled on teardown
+  try {
+    activeRafId = (globalThis as unknown as Window).requestAnimationFrame(
+      () => {},
+    );
+  } catch {
+    activeRafId = null;
+  }
+
   const dispose = (): void => {
+    teardownRendererLifecycle();
     disposeScene(scene);
-    renderer?.dispose();
-    // Remove reference
-    (renderer as unknown as { domElement?: unknown }) =
-      undefined as unknown as never;
+    try {
+      renderer?.dispose();
+    } catch {
+      // ignore
+    }
   };
 
-  // Size to current rect if available
   try {
     const rect = canvas.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) resize(rect.width, rect.height);
@@ -170,47 +225,45 @@ export function createRendererHandle(
 }
 
 export function disposeScene(scene: THREE.Scene): void {
-  // Complete disposal: traverse, dispose geometries/materials/textures
   const toRemove = [...scene.children];
   for (const obj of toRemove) scene.remove(obj);
 
-  // Walk all objects recursively
   const disposeObject = (root: THREE.Object3D): void => {
     for (const child of root.children) disposeObject(child);
-    // @ts-expect-error material/geometry may exist
-    const mesh = root as THREE.Mesh;
+    const mesh = root as unknown as {
+      geometry?: THREE.BufferGeometry;
+      material?: THREE.Material | THREE.Material[];
+    };
     if (mesh.geometry) {
       try {
         mesh.geometry.dispose();
       } catch {
-        /* ignore */
+        // ignore
       }
     }
-    const mat = (
-      mesh as unknown as { material?: THREE.Material | THREE.Material[] }
-    ).material;
+    const mat = mesh.material;
     if (mat) {
       const mats = Array.isArray(mat) ? mat : [mat];
       for (const m of mats) {
         try {
           m.dispose();
         } catch {
-          /* ignore */
+          // ignore
         }
-        // dispose textures
         for (const key of Object.keys(
           m as unknown as Record<string, unknown>,
         )) {
           const val = (m as unknown as Record<string, unknown>)[key];
           if (
-            val &&
+            val !== null &&
+            val !== undefined &&
             typeof (val as { dispose?: () => void }).dispose === "function" &&
-            (val as { isTexture?: boolean }).isTexture
+            (val as { isTexture?: boolean }).isTexture === true
           ) {
             try {
               (val as { dispose: () => void }).dispose();
             } catch {
-              /* ignore */
+              // ignore
             }
           }
         }

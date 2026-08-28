@@ -1,13 +1,19 @@
-// @ts-nocheck
 import * as THREE from "three";
-import type { CompiledTrackData } from "@openvibecoaster/core";
+import type { CompiledTrackData } from "../shim/core.js";
 
 export type MetricId = "speed" | "gForce" | "height" | "energy";
 
+export interface MetricData {
+  speed?: Float64Array | undefined;
+  gForce?: Float64Array | undefined;
+  energy?: Float64Array | undefined;
+}
+
 export interface BuildTrackOptions {
-  metric?: MetricId;
-  selectedElementIndex?: number;
-  seamIndices?: number[];
+  metric?: MetricId | undefined;
+  metricData?: MetricData | undefined;
+  selectedElementIndex?: number | undefined;
+  seamIndices?: number[] | undefined;
 }
 
 export interface TrackGeometries {
@@ -18,81 +24,60 @@ export interface TrackGeometries {
   drawCalls: number;
   triangles: number;
   buildTimeMs: number;
-  // marker to assert no second spline invades
-  splineCount: number;
+  metricAvailable: boolean;
+  metric: MetricId;
 }
 
-const GAUGE = 1.2; // meters between rail centers
+const GAUGE = 1.2;
 const RAIL_RADIUS = 0.06;
 const SPINE_RADIUS = 0.09;
-const RAIL_SEGMENTS = 6; // around circumference
-const TIE_INTERVAL = 6; // every N samples
-const SPINE_OFFSET = -0.42; // below rail plane along -normal
-
-function metricValue(
-  data: CompiledTrackData,
-  index: number,
-  metric: MetricId,
-): number {
-  const positions = data.positions;
-  const curvature = data.curvature;
-  // Use curvature as proxy for gForce, height for height, distance for speed placeholder, bank for energy
-  // In real integration, telemetry would supply speed; here we derive a deterministic stand-in from curvature/distance
-  // to keep vertex coloring functional without inventing simulation numbers.
-  switch (metric) {
-    case "height":
-      return positions[index * 3 + 1];
-    case "gForce":
-      return curvature[index] * 12; // scale curvature to ~g
-    case "energy":
-      return data.bank[index] ?? 0;
-    case "speed":
-    default: {
-      // Approximate speed proxy: normalized distance along track
-      const d = data.distances[index];
-      return d / Math.max(1, data.totalLength);
-    }
-  }
-}
+const RAIL_SEGMENTS = 6;
+const TIE_INTERVAL = 6;
+const SPINE_OFFSET = -0.42;
+const NEUTRAL = [0.6, 0.6, 0.64] as const;
 
 function colorForMetric(t: number, metric: MetricId): [number, number, number] {
-  // Clamp t to 0..1 via linear remap per metric range
-  // Use simple gradient palettes restrained for PBR coherence
   const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
   const tt = clamp01(t);
   switch (metric) {
     case "speed":
-      // blue -> cyan -> yellow
       return [0.2 + tt * 0.8, 0.45 + tt * 0.45, 1 - tt * 0.6];
     case "gForce":
-      // green -> yellow -> red
       return [tt, 1 - Math.abs(tt - 0.5), 0.15];
     case "height":
-      // dark green -> light
       return [0.2 + tt * 0.4, 0.35 + tt * 0.4, 0.2 + tt * 0.2];
     case "energy":
-      // purple -> pinkish
       return [0.55 + tt * 0.3, 0.35 + tt * 0.2, 0.75];
     default:
       return [0.6, 0.6, 0.65];
   }
 }
 
-function normalizeMetricValues(
+function resolveMetricAvailability(
   data: CompiledTrackData,
   metric: MetricId,
-): { values: Float64Array; min: number; max: number } {
+  metricData: MetricData | undefined,
+): { available: boolean; values: Float64Array | null } {
   const count = data.distances.length;
-  const vals = new Float64Array(count);
-  let min = Infinity;
-  let max = -Infinity;
-  for (let i = 0; i < count; i++) {
-    const v = metricValue(data, i, metric);
-    vals[i] = v;
-    min = Math.min(min, v);
-    max = Math.max(max, v);
+  if (metric === "height") {
+    const vals = new Float64Array(count);
+    const pos = data.positions;
+    for (let i = 0; i < count; i++) {
+      vals[i] = pos[i * 3 + 1] ?? 0;
+    }
+    return { available: true, values: vals };
   }
-  return { values: vals, min, max };
+  let arr: Float64Array | undefined;
+  if (metric === "speed") arr = metricData?.speed;
+  else if (metric === "gForce") arr = metricData?.gForce;
+  else if (metric === "energy") arr = metricData?.energy;
+  if (!arr || arr.length !== count) return { available: false, values: null };
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (v === undefined || !Number.isFinite(v))
+      return { available: false, values: null };
+  }
+  return { available: true, values: arr };
 }
 
 function createTubeGeometry(
@@ -111,20 +96,19 @@ function createTubeGeometry(
   const indices: number[] = [];
 
   for (let i = 0; i < pointCount; i++) {
-    const cx = centers[i * 3];
-    const cy = centers[i * 3 + 1];
-    const cz = centers[i * 3 + 2];
-    const nx = frames.normal[i * 3];
-    const ny = frames.normal[i * 3 + 1];
-    const nz = frames.normal[i * 3 + 2];
-    const bx = frames.binormal[i * 3];
-    const by = frames.binormal[i * 3 + 1];
-    const bz = frames.binormal[i * 3 + 2];
+    const cx = centers[i * 3] ?? 0;
+    const cy = centers[i * 3 + 1] ?? 0;
+    const cz = centers[i * 3 + 2] ?? 0;
+    const nx = frames.normal[i * 3] ?? 0;
+    const ny = frames.normal[i * 3 + 1] ?? 0;
+    const nz = frames.normal[i * 3 + 2] ?? 0;
+    const bx = frames.binormal[i * 3] ?? 0;
+    const by = frames.binormal[i * 3 + 1] ?? 0;
+    const bz = frames.binormal[i * 3 + 2] ?? 0;
     for (let r = 0; r < radialSegments; r++) {
       const theta = (r / radialSegments) * Math.PI * 2;
       const cos = Math.cos(theta);
       const sin = Math.sin(theta);
-      // ring offset = normal * cos * r + binormal * sin * r
       const ox = nx * cos * radius + bx * sin * radius;
       const oy = ny * cos * radius + by * sin * radius;
       const oz = nz * cos * radius + bz * sin * radius;
@@ -132,20 +116,18 @@ function createTubeGeometry(
       positions[vi * 3] = cx + ox;
       positions[vi * 3 + 1] = cy + oy;
       positions[vi * 3 + 2] = cz + oz;
-      // normal is normalized offset direction
       const len = Math.hypot(ox, oy, oz) || 1;
       normals[vi * 3] = ox / len;
       normals[vi * 3 + 1] = oy / len;
       normals[vi * 3 + 2] = oz / len;
       if (colors) {
-        // colors per point replicated around ring
-        colorArray[vi * 3] = colors[i * 3];
-        colorArray[vi * 3 + 1] = colors[i * 3 + 1];
-        colorArray[vi * 3 + 2] = colors[i * 3 + 2];
+        colorArray[vi * 3] = colors[i * 3] ?? NEUTRAL[0];
+        colorArray[vi * 3 + 1] = colors[i * 3 + 1] ?? NEUTRAL[1];
+        colorArray[vi * 3 + 2] = colors[i * 3 + 2] ?? NEUTRAL[2];
       } else {
-        colorArray[vi * 3] = 0.62;
-        colorArray[vi * 3 + 1] = 0.62;
-        colorArray[vi * 3 + 2] = 0.64;
+        colorArray[vi * 3] = NEUTRAL[0];
+        colorArray[vi * 3 + 1] = NEUTRAL[1];
+        colorArray[vi * 3 + 2] = NEUTRAL[2];
       }
     }
   }
@@ -189,7 +171,7 @@ export function buildTrackGeometries(
   options: BuildTrackOptions = {},
 ): TrackGeometries {
   const start = performance.now();
-  const metric: MetricId = options.metric ?? "speed";
+  const metric: MetricId = options.metric ?? "height";
   const count = data.distances.length;
   if (count < 2) throw new RangeError("CompiledTrackData has too few samples");
 
@@ -197,30 +179,49 @@ export function buildTrackGeometries(
   const normalsArr = data.normals;
   const binormalsArr = data.binormals;
 
-  // Compute per-sample metric colors with highlight
-  const { values, min, max } = normalizeMetricValues(data, metric);
+  const metricRes = resolveMetricAvailability(data, metric, options.metricData);
+  const available = metricRes.available;
+  let min = Infinity;
+  let max = -Infinity;
+  if (available && metricRes.values) {
+    for (let i = 0; i < metricRes.values.length; i++) {
+      const v = metricRes.values[i] ?? 0;
+      min = Math.min(min, v);
+      max = Math.max(max, v);
+    }
+  }
   const range = Math.max(1e-6, max - min);
+
   const isSelected = (idx: number): boolean => {
     if (options.selectedElementIndex === undefined) return false;
     return data.elementIndices[idx] === options.selectedElementIndex;
   };
   const seamSet = new Set(options.seamIndices ?? []);
-  // Also consider element boundaries as seams
   const elementBoundaries = data.elementBoundaries;
-  for (let i = 0; i < elementBoundaries.length; i++)
-    seamSet.add(elementBoundaries[i]);
+  for (let i = 0; i < elementBoundaries.length; i++) {
+    const b = elementBoundaries[i];
+    if (b !== undefined) seamSet.add(b);
+  }
 
   const baseColors = new Float32Array(count * 3);
   for (let i = 0; i < count; i++) {
-    const t = (values[i] - min) / range;
-    let [r, g, b] = colorForMetric(t, metric);
-    // highlight selected element: brighten
+    let r: number;
+    let g: number;
+    let b: number;
+    if (!available || !metricRes.values) {
+      r = NEUTRAL[0];
+      g = NEUTRAL[1];
+      b = NEUTRAL[2];
+    } else {
+      const v = metricRes.values[i] ?? 0;
+      const t = (v - min) / range;
+      [r, g, b] = colorForMetric(t, metric);
+    }
     if (isSelected(i)) {
       r = Math.min(1, r * 1.35 + 0.12);
       g = Math.min(1, g * 1.35 + 0.12);
       b = Math.min(1, b * 1.35 + 0.12);
     }
-    // highlight seam: make distinctly white/yellowish outline
     if (seamSet.has(i)) {
       r = 1;
       g = 0.96;
@@ -231,21 +232,20 @@ export function buildTrackGeometries(
     baseColors[i * 3 + 2] = b;
   }
 
-  // Compute rail centers offset from centerline along binormal (track width)
   const halfGauge = GAUGE / 2;
   const leftCenters = new Float32Array(count * 3);
   const rightCenters = new Float32Array(count * 3);
   const spineCenters = new Float32Array(count * 3);
   for (let i = 0; i < count; i++) {
-    const px = positions[i * 3];
-    const py = positions[i * 3 + 1];
-    const pz = positions[i * 3 + 2];
-    const bx = binormalsArr[i * 3];
-    const by = binormalsArr[i * 3 + 1];
-    const bz = binormalsArr[i * 3 + 2];
-    const nx = normalsArr[i * 3];
-    const ny = normalsArr[i * 3 + 1];
-    const nz = normalsArr[i * 3 + 2];
+    const px = positions[i * 3] ?? 0;
+    const py = positions[i * 3 + 1] ?? 0;
+    const pz = positions[i * 3 + 2] ?? 0;
+    const bx = binormalsArr[i * 3] ?? 0;
+    const by = binormalsArr[i * 3 + 1] ?? 0;
+    const bz = binormalsArr[i * 3 + 2] ?? 0;
+    const nx = normalsArr[i * 3] ?? 0;
+    const ny = normalsArr[i * 3 + 1] ?? 0;
+    const nz = normalsArr[i * 3 + 2] ?? 0;
     leftCenters[i * 3] = px + bx * halfGauge;
     leftCenters[i * 3 + 1] = py + by * halfGauge;
     leftCenters[i * 3 + 2] = pz + bz * halfGauge;
@@ -257,7 +257,6 @@ export function buildTrackGeometries(
     spineCenters[i * 3 + 2] = pz + nz * SPINE_OFFSET;
   }
 
-  // normalsArr/binormals are Float64; convert to Float32 for tube builder
   const normalF32 = new Float32Array(normalsArr);
   const binormalF32 = new Float32Array(binormalsArr);
   const frame32 = { normal: normalF32, binormal: binormalF32 };
@@ -287,7 +286,6 @@ export function buildTrackGeometries(
     baseColors,
   );
 
-  // Ties: simple boxes between rails at intervals, oriented per frame
   const tieCount = Math.floor(count / TIE_INTERVAL);
   const tieGeometry = new THREE.BufferGeometry();
   if (tieCount > 0) {
@@ -301,21 +299,19 @@ export function buildTrackGeometries(
     const tieDepth = 0.18;
     for (let t = 0; t < tieCount; t++) {
       const i = t * TIE_INTERVAL;
-      const px = positions[i * 3];
-      const py = positions[i * 3 + 1];
-      const pz = positions[i * 3 + 2];
-      // Build oriented box around center point, aligned to frame
-      const tx = data.tangents[i * 3];
-      const ty = data.tangents[i * 3 + 1];
-      const tz = data.tangents[i * 3 + 2];
-      const nx = normalF32[i * 3];
-      const ny = normalF32[i * 3 + 1];
-      const nz = normalF32[i * 3 + 2];
-      const bx = binormalF32[i * 3];
-      const by = binormalF32[i * 3 + 1];
-      const bz = binormalF32[i * 3 + 2];
+      const px = positions[i * 3] ?? 0;
+      const py = positions[i * 3 + 1] ?? 0;
+      const pz = positions[i * 3 + 2] ?? 0;
+      const tx = data.tangents[i * 3] ?? 0;
+      const ty = data.tangents[i * 3 + 1] ?? 0;
+      const tz = data.tangents[i * 3 + 2] ?? 0;
+      const nx = normalF32[i * 3] ?? 0;
+      const ny = normalF32[i * 3 + 1] ?? 0;
+      const nz = normalF32[i * 3 + 2] ?? 0;
+      const bx = binormalF32[i * 3] ?? 0;
+      const by = binormalF32[i * 3 + 1] ?? 0;
+      const bz = binormalF32[i * 3 + 2] ?? 0;
 
-      // 8 corners of box: offset along binormal (width), tangent (depth), normal (height)
       const corners: [number, number, number][] = [];
       for (const sx of [-1, 1]) {
         for (const sy of [-1, 1]) {
@@ -342,7 +338,6 @@ export function buildTrackGeometries(
           }
         }
       }
-      // box faces indices (12 triangles)
       const faces = [
         [0, 1, 3, 2],
         [4, 6, 7, 5],
@@ -353,10 +348,9 @@ export function buildTrackGeometries(
       ];
       for (const face of faces) {
         const idx0 = vertexBase;
-        // compute face normal
-        const p0 = corners[face[0]] as [number, number, number];
-        const p1 = corners[face[1]] as [number, number, number];
-        const p2 = corners[face[2]] as [number, number, number];
+        const p0 = corners[face[0] as number] as [number, number, number];
+        const p1 = corners[face[1] as number] as [number, number, number];
+        const p2 = corners[face[2] as number] as [number, number, number];
         const ux = p1[0] - p0[0];
         const uy = p1[1] - p0[1];
         const uz = p1[2] - p0[2];
@@ -371,14 +365,13 @@ export function buildTrackGeometries(
         fny /= fl;
         fnz /= fl;
         for (const cornerIdx of face) {
-          const c = corners[cornerIdx] as [number, number, number];
+          const c = corners[cornerIdx as number] as [number, number, number];
           tieVerts.push(c[0], c[1], c[2]);
           tieNormals.push(fnx, fny, fnz);
-          // color per tie uses base color at sample, darkened for wood/metal
-          const r = baseColors[i * 3] * 0.5;
-          const g = baseColors[i * 3 + 1] * 0.45;
-          const b = baseColors[i * 3 + 2] * 0.4;
-          tieColors.push(r, g, b);
+          const r = baseColors[i * 3] ?? NEUTRAL[0];
+          const g2 = baseColors[i * 3 + 1] ?? NEUTRAL[1];
+          const b2 = baseColors[i * 3 + 2] ?? NEUTRAL[2];
+          tieColors.push(r * 0.5, g2 * 0.45, b2 * 0.4);
         }
         tieIndices.push(idx0, idx0 + 1, idx0 + 2, idx0, idx0 + 2, idx0 + 3);
         vertexBase += 4;
@@ -406,7 +399,6 @@ export function buildTrackGeometries(
     );
   }
 
-  // Mark userData for identification
   leftRail.name = "leftRail";
   rightRail.name = "rightRail";
   spine.name = "spine";
@@ -431,6 +423,7 @@ export function buildTrackGeometries(
     drawCalls: 4,
     triangles,
     buildTimeMs: end - start,
-    splineCount: 1,
+    metricAvailable: available,
+    metric,
   };
 }
