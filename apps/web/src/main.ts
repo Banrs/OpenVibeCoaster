@@ -512,9 +512,16 @@ const lifecycle = createAppLifecycle({
   },
 });
 
+function syncReadyDowngrade(ok: boolean): void {
+  if (!ok && state.generationStatus === "ready" && !lifecycle.hasTrack()) {
+    state.generationStatus = "error";
+  }
+}
+
 function initRenderer(): void {
   const ok = lifecycle.init();
   hasWebGL = ok;
+  syncReadyDowngrade(ok);
   render();
 }
 
@@ -525,6 +532,7 @@ webglRetry.addEventListener("click", () => {
   if (hasWebGL) {
     const ok = lifecycle.reinitialize();
     hasWebGL = ok;
+    syncReadyDowngrade(ok);
     render();
     if (!ok) {
       const p = webglFallback.querySelector("p");
@@ -555,11 +563,17 @@ function attachCompiledTrack(
     const ok = lifecycle.reinitialize();
     if (!ok) return;
   }
-  lifecycle.attachTrack(data, {
-    metric: options.metric ?? state.metric,
-    metricData: options.metricData,
-    timeline: options.timeline,
-  });
+  try {
+    lifecycle.attachTrack(data, {
+      metric: options.metric ?? state.metric,
+      metricData: options.metricData,
+      timeline: options.timeline,
+    });
+  } catch {
+    // transactional attachTrack rejected – do not mark ready, keep truthful status
+    render();
+    return;
+  }
   state.generationStatus = "ready";
   render();
 }
@@ -593,23 +607,8 @@ window.__vibecoasterMetrics = metrics;
 (window as unknown as Record<string, unknown>).__vibecoasterController =
   lifecycle.getController() ?? undefined;
 
-// Initial paint
+// Initial paint – lifecycle manager is sole resize owner (no duplicate direct resize)
 render();
-try {
-  const h = lifecycle.getRendererHandle();
-  const cam = lifecycle.getCamera();
-  if (h && cam) {
-    const rect = viewportCanvas.getBoundingClientRect();
-    const w = Math.max(1, Math.round(rect.width));
-    const hgt = Math.max(1, Math.round(rect.height));
-    h.resize(w, hgt);
-    cam.aspect = w / Math.max(1, hgt);
-    cam.updateProjectionMatrix();
-  }
-} catch {
-  // ignore
-}
-resizeCanvases();
 
 // Expose for manual inspection in devtools (not used in tests)
 declare global {

@@ -46,6 +46,7 @@ export interface AppLifecycle {
   getRafId(): number | null;
   getResizeHandler(): (() => void) | null;
   hasTrack(): boolean;
+  getMetricState(): { metric: MetricId; metricAvailable: boolean } | null;
 }
 
 function resolveWindow(
@@ -168,24 +169,51 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     const ctrlFactory = config.createController ?? createRendererController;
     const dprCap = config.getDprCap?.() ?? 2;
     const terrainSeed = config.getTerrainSeed?.() ?? "default-terrain";
-    const handle = handleFactory(config.canvas, {
-      dprCap,
-      terrainSeed,
-      onWebGLFailure: config.onWebGLFailure,
-      ...(config.createRenderer
-        ? { createRenderer: config.createRenderer }
-        : {}),
-    });
+    let handle: RendererHandle | null = null;
+    try {
+      handle = handleFactory(config.canvas, {
+        dprCap,
+        terrainSeed,
+        onWebGLFailure: config.onWebGLFailure,
+        ...(config.createRenderer
+          ? { createRenderer: config.createRenderer }
+          : {}),
+      });
+    } catch {
+      // factory threw – ensure no partial resources
+      handle = null;
+    }
     if (!handle) {
+      // transactionally clean up any partial allocation (none yet) and clear globals
+      disposeHandles();
       clearGlobal();
       return false;
     }
+    // handle succeeded – now try to create camera + controller transactionally
+    let localCamera: THREE.PerspectiveCamera | null = null;
+    let localController: RendererController | null = null;
+    try {
+      localCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 1200);
+      localCamera.position.set(0, 28, 52);
+      localController = ctrlFactory(handle, localCamera);
+      if (!localController) throw new Error("controller factory returned null");
+    } catch {
+      // any throw or null – dispose handle and clear references transactionally
+      try {
+        handle.dispose();
+      } catch {
+        // ignore
+      }
+      disposeHandles();
+      clearGlobal();
+      return false;
+    }
+    // commit
     rendererHandle = handle;
-    camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1200);
-    camera.position.set(0, 28, 52);
-    controller = ctrlFactory(handle, camera);
+    camera = localCamera;
+    controller = localController;
     setGlobal(controller);
-    // reattach preserved authoritative attachment if any
+    // reattach preserved authoritative attachment if any – transactional
     if (attachment) {
       try {
         controller.attachTrack(attachment.data, attachment.options);
@@ -193,7 +221,10 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
           controller.updatePlayback(lastPlayback.distance, lastPlayback.speed);
         }
       } catch {
-        // truthfully downgrade – attachment stays for retry but controller has no track
+        // reattachment failed – clean up new controller/handle/camera transactionally
+        disposeHandles();
+        clearGlobal();
+        return false;
       }
     }
     return true;
@@ -345,26 +376,106 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     return init();
   };
 
+  const validateTimelineSnapshot = (
+    timeline: { distances: Float64Array; speeds: Float64Array } | undefined,
+  ): void => {
+    if (!timeline) return;
+    if (
+      !(timeline.distances instanceof Float64Array) ||
+      !(timeline.speeds instanceof Float64Array)
+    ) {
+      throw new TypeError("timeline distances/speeds must be Float64Array");
+    }
+    if (timeline.distances.length !== timeline.speeds.length) {
+      throw new RangeError("timeline distances/speeds length mismatch");
+    }
+    for (let i = 0; i < timeline.distances.length; i++) {
+      const d = timeline.distances[i];
+      const s = timeline.speeds[i];
+      if (
+        d === undefined ||
+        s === undefined ||
+        !Number.isFinite(d) ||
+        !Number.isFinite(s)
+      ) {
+        throw new RangeError("timeline distances/speeds must be finite");
+      }
+    }
+  };
+
   const attachTrack = (
     data: CompiledTrackData,
     options: AttachOptions = {},
   ): void => {
-    attachment = { data, options: { ...options } };
+    // two-phase: validate and apply through controller first, then commit snapshot
+    const snapshot: AttachmentSnapshot = {
+      data,
+      options: { ...options },
+    };
+    // Determine next playback snapshot to commit only after success
+    let nextPlayback: { distance: number; speed: number } | null = null;
     if (options.timeline && options.timeline.distances.length > 0) {
-      lastPlayback = {
+      nextPlayback = {
         distance: options.timeline.distances[0] ?? 0,
         speed: options.timeline.speeds[0] ?? 0,
       };
-    } else if (lastPlayback === null) {
-      // initial playback at 0 if not previously set
-      lastPlayback = { distance: 0, speed: 0 };
+    } else if (lastPlayback !== null) {
+      nextPlayback = { ...lastPlayback };
+    } else {
+      nextPlayback = { distance: 0, speed: 0 };
     }
-    // if timeline not supplied but we have a lastPlayback from prior updatePlayback, keep it
+
     if (controller) {
-      controller.attachTrack(data, options);
-      if (lastPlayback) {
-        controller.updatePlayback(lastPlayback.distance, lastPlayback.speed);
+      const prevAttachment = attachment
+        ? { data: attachment.data, options: { ...attachment.options } }
+        : null;
+      const prevPlayback = lastPlayback ? { ...lastPlayback } : null;
+      try {
+        // validate timeline shape early to avoid partial clearTrack side effects
+        validateTimelineSnapshot(options.timeline);
+        controller.attachTrack(data, options);
+        if (nextPlayback) {
+          controller.updatePlayback(nextPlayback.distance, nextPlayback.speed);
+        }
+      } catch (e) {
+        // attempt to restore previous last-known-good attachment when feasible
+        if (prevAttachment) {
+          try {
+            controller.attachTrack(prevAttachment.data, prevAttachment.options);
+            if (prevPlayback) {
+              controller.updatePlayback(
+                prevPlayback.distance,
+                prevPlayback.speed,
+              );
+            }
+          } catch {
+            // restore failed – leave controller in truthfully cleared state
+            // ensure controller has no track if restore also failed
+            try {
+              controller.clearTrack();
+            } catch {
+              // ignore
+            }
+          }
+        } else {
+          // no previous attachment – ensure controller cleared
+          try {
+            controller.clearTrack();
+          } catch {
+            // ignore
+          }
+        }
+        throw e;
       }
+      // success – commit snapshot and playback
+      attachment = snapshot;
+      lastPlayback = nextPlayback;
+    } else {
+      // No controller yet (pending lifecycle) – validate timeline but commit for future retry
+      validateTimelineSnapshot(options.timeline);
+      // still attempt to catch mesh-build failure on next init; for now commit
+      attachment = snapshot;
+      lastPlayback = nextPlayback;
     }
   };
 
@@ -381,26 +492,51 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
 
   const setMetric = (metric: MetricId, metricData?: MetricData): void => {
     const hasData = metricData !== undefined;
+    // lifecycle snapshot update is two-phase with controller success
+    const prevAttachment = attachment
+      ? { data: attachment.data, options: { ...attachment.options } }
+      : null;
     if (attachment) {
       const prevMetricData = attachment.options.metricData;
       const nextMetricData = hasData ? metricData : prevMetricData;
-      attachment.options = {
+      const nextOptions: AttachOptions = {
         ...attachment.options,
         metric,
         ...(nextMetricData !== undefined ? { metricData: nextMetricData } : {}),
       };
-      // if hasData is false and prev was undefined, ensure metricData not present
+      // store tentative next snapshot for commit after controller success
+      // do not mutate attachment yet – wait for controller.setMetric success
+      const tentativeAttachment: AttachmentSnapshot = {
+        data: attachment.data,
+        options: nextOptions,
+      };
       if (!hasData && prevMetricData === undefined) {
-        const { metricData: _omit, ...rest } = attachment.options as Record<
-          string,
-          unknown
-        >;
-        attachment.options = rest as AttachOptions;
+        const { metricData: _omit2, ...rest2 } =
+          nextOptions as unknown as Record<string, unknown>;
+        tentativeAttachment.options = rest2 as AttachOptions;
       }
+      try {
+        controller?.setMetric(metric, metricData);
+      } catch (e) {
+        // restore previous attachment snapshot if controller failed
+        if (prevAttachment) {
+          attachment = prevAttachment;
+        }
+        throw e;
+      }
+      // success – commit tentative
+      attachment = tentativeAttachment;
+      // if metricData was omitted and previous was undefined, ensure omitted
+      if (!hasData && prevMetricData === undefined) {
+        const { metricData: _omit3, ...rest3 } =
+          attachment.options as unknown as Record<string, unknown>;
+        attachment.options = rest3 as AttachOptions;
+      }
+      // controller.setMetric already preserves playback
+      return;
     }
-    // controller.setMetric already preserves playback and metric arrays when omitted
+    // no attachment – just delegate
     controller?.setMetric(metric, metricData);
-    // lastPlayback unchanged – setMetric preserves it via controller
   };
 
   return {
@@ -421,5 +557,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     getRafId: () => rafId,
     getResizeHandler: () => resizeHandler,
     hasTrack: () => controller?.hasTrack() ?? false,
+    getMetricState: () => controller?.getMetricState() ?? null,
   };
 }

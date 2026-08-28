@@ -50,6 +50,7 @@ export interface RendererController {
   setMetric(metric: MetricId, metricData?: MetricData | undefined): void;
   dispose(): void;
   getScene(): THREE.Scene;
+  getMetricState(): { metric: MetricId; metricAvailable: boolean } | null;
 }
 
 export function createRendererController(
@@ -67,6 +68,7 @@ export function createRendererController(
   let playbackDistance = 0;
   let playbackSpeed = 0;
   let cameraPrevious: ReturnType<typeof getCameraState> | undefined;
+  let lastMetricAvailable: boolean | null = null;
 
   function validateTimeline(timeline: {
     distances: Float64Array;
@@ -117,6 +119,7 @@ export function createRendererController(
       ...(selectedElementIndex !== undefined ? { selectedElementIndex } : {}),
       ...(seamIndices !== undefined ? { seamIndices } : {}),
     });
+    lastMetricAvailable = built.metricAvailable;
 
     const env = handle.scene.userData.terrainEnv as unknown as
       { raycast?: unknown } | undefined;
@@ -249,6 +252,7 @@ export function createRendererController(
     trackData = null;
     playbackDistance = 0;
     playbackSpeed = 0;
+    lastMetricAvailable = null;
   };
 
   const updatePlayback = (distance: number, speed: number): void => {
@@ -377,5 +381,9 @@ export function createRendererController(
     },
     dispose,
     getScene: () => handle.scene,
+    getMetricState: () => {
+      if (!trackData || lastMetricAvailable === null) return null;
+      return { metric: currentMetric, metricAvailable: lastMetricAvailable };
+    },
   };
 }
