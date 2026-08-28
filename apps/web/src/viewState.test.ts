@@ -64,6 +64,14 @@ describe("viewState – pending versus ready enablement", () => {
     expect(getStatusText("generating")).toMatch(/generat/i);
     expect(getStatusText("error")).toMatch(/error|failed/i);
   });
+
+  it("error status is neutral and truthful for load, generate, and regenerate while integration unavailable", () => {
+    const err = getStatusText("error");
+    expect(err).not.toMatch(/Load failed/i);
+    expect(err).toMatch(/canonical/i);
+    expect(err).toMatch(/unavailable|integration/i);
+    expect(err).toMatch(/error|failed|unavailable/i);
+  });
 });
 
 describe("viewState – Ride mode panel visibility", () => {

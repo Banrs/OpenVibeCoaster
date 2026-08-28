@@ -69,7 +69,7 @@ export function getStatusText(status: GenerationStatus): string {
     case "generating":
       return "Generating…";
     case "error":
-      return "Load failed — canonical track validation unavailable until integration";
+      return "Action failed — canonical track validation unavailable until integration";
     default:
       return "Unknown status";
   }
