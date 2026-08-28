@@ -11,7 +11,7 @@ export interface SupportResult {
   heights: number[];
 }
 
-export interface SupportBuildHooks {
+interface SupportBuildHooks {
   onSupportCreated?: (index: number, mesh: THREE.Mesh) => void;
 }
 

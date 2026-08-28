@@ -151,7 +151,15 @@ export interface TerrainGroup {
   env: HeightfieldEnvironment;
 }
 
-export function createTerrainGroup(env: HeightfieldEnvironment): TerrainGroup {
+// Private injection hook – not re-exported via render barrel; test imports directly from terrain module.
+interface TerrainBuildHooks {
+  afterGrid?: (mesh: THREE.Mesh, grid: THREE.GridHelper) => void;
+}
+
+export function createTerrainGroup(
+  env: HeightfieldEnvironment,
+  hooks?: TerrainBuildHooks,
+): TerrainGroup {
   let geometry: THREE.BufferGeometry | null = null;
   let material: THREE.Material | null = null;
   let grid: THREE.GridHelper | null = null;
@@ -175,6 +183,9 @@ export function createTerrainGroup(env: HeightfieldEnvironment): TerrainGroup {
     const centerH = env.heightAt(0, 0);
     grid.position.set(0, centerH + 0.08, 0);
     grid.userData.isTerrainGrid = true;
+
+    // Deterministic internal boundary – injected failure after GridHelper but before commit.
+    hooks?.afterGrid?.(mesh, grid);
 
     // success – prevent double dispose (grid ownership transferred)
     const retGrid = grid;

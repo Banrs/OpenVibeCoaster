@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import { sampleCompiledTrack } from "@openvibecoaster/core";
 import type { CompiledTrackData, Vec3, Quat } from "@openvibecoaster/core";
+import {
+  addMeshDisposables,
+  collectFromGroups,
+  disposeSets,
+} from "./dispose.js";
 
 export const TRAIN_CAR_COUNT = 6;
 export const CAR_PITCH_M = 3.4;
@@ -137,31 +142,16 @@ function createSingleCarMesh(): THREE.Group {
     if (roofMat) mats.add(roofMat);
     if (wheelMat) mats.add(wheelMat);
     for (const child of car.children) {
-      const mesh = child as THREE.Mesh;
-      const geom = mesh.geometry as THREE.BufferGeometry | undefined;
-      if (geom) geoms.add(geom);
-      const mat = (
-        mesh as unknown as { material?: THREE.Material | THREE.Material[] }
-      ).material;
-      if (mat) {
-        const arr = Array.isArray(mat) ? mat : [mat];
-        for (const mm of arr) mats.add(mm);
-      }
+      addMeshDisposables(
+        child as unknown as {
+          geometry?: THREE.BufferGeometry;
+          material?: THREE.Material | THREE.Material[];
+        },
+        geoms,
+        mats,
+      );
     }
-    for (const g of geoms) {
-      try {
-        g.dispose();
-      } catch {
-        // ignore
-      }
-    }
-    for (const m of mats) {
-      try {
-        m.dispose();
-      } catch {
-        // ignore
-      }
-    }
+    disposeSets(geoms, mats);
     throw e;
   }
 }
@@ -194,34 +184,8 @@ export function createTrainGroup(): TrainGroup {
     if (currentCar && !cars.includes(currentCar)) toDispose.push(currentCar);
     const geoms = new Set<THREE.BufferGeometry>();
     const mats = new Set<THREE.Material>();
-    for (const car of toDispose) {
-      for (const child of car.children) {
-        const mesh = child as THREE.Mesh;
-        const geom = mesh.geometry as THREE.BufferGeometry | undefined;
-        if (geom) geoms.add(geom);
-        const mat = (
-          mesh as unknown as { material?: THREE.Material | THREE.Material[] }
-        ).material;
-        if (mat) {
-          const arr = Array.isArray(mat) ? mat : [mat];
-          for (const mm of arr) mats.add(mm);
-        }
-      }
-    }
-    for (const g of geoms) {
-      try {
-        g.dispose();
-      } catch {
-        // ignore
-      }
-    }
-    for (const m of mats) {
-      try {
-        m.dispose();
-      } catch {
-        // ignore
-      }
-    }
+    collectFromGroups(toDispose, geoms, mats);
+    disposeSets(geoms, mats);
     throw e;
   }
 }

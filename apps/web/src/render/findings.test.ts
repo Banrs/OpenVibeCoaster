@@ -6,6 +6,85 @@ import { createRendererController } from "./controller.js";
 import { buildTrackGeometries } from "./trackGeometry.js";
 import { createRendererHandle } from "./renderer.js";
 import { createAppLifecycle, type AttachmentSnapshot } from "./lifecycle.js";
+import {
+  createDeterministicHeightfield,
+  createTerrainGroup,
+} from "./terrain.js";
+
+function createDisposalTracker() {
+  const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+  const disposedMats = new Map<THREE.Material, number>();
+  const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
+  const origMatDispose = THREE.Material.prototype.dispose;
+  const geomDisposeSpy = vi
+    .spyOn(THREE.BufferGeometry.prototype, "dispose")
+    .mockImplementation(function (this: THREE.BufferGeometry) {
+      disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
+      return origGeomDispose.call(this);
+    });
+  const matDisposeSpy = vi
+    .spyOn(THREE.Material.prototype, "dispose")
+    .mockImplementation(function (this: THREE.Material) {
+      disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
+      return origMatDispose.call(this as unknown as THREE.MeshStandardMaterial);
+    });
+  const spies: ReturnType<typeof vi.spyOn>[] = [geomDisposeSpy, matDisposeSpy];
+  return {
+    disposedGeoms,
+    disposedMats,
+    restore(): void {
+      for (const s of spies) s.mockRestore();
+    },
+  };
+}
+
+function expectExactDisposals<T>(
+  allocated: Set<T>,
+  disposed: Map<T, number>,
+): void {
+  expect(disposed.size).toBe(allocated.size);
+  expect(new Set(disposed.keys())).toEqual(allocated);
+  for (const identity of allocated) {
+    expect(disposed.get(identity)).toBe(1);
+  }
+}
+
+function collectObjectDisposables(
+  root: THREE.Object3D,
+  geoms: Set<THREE.BufferGeometry>,
+  mats: Set<THREE.Material>,
+): void {
+  root.traverse((object) => {
+    const mesh = object as unknown as {
+      geometry?: THREE.BufferGeometry;
+      material?: THREE.Material | THREE.Material[];
+    };
+    if (mesh.geometry) geoms.add(mesh.geometry);
+    if (mesh.material) {
+      const materials = Array.isArray(mesh.material)
+        ? mesh.material
+        : [mesh.material];
+      for (const material of materials) mats.add(material);
+    }
+  });
+}
+
+function collectOwnedTrackDisposables(
+  scene: THREE.Scene,
+  geoms: Set<THREE.BufferGeometry>,
+  mats: Set<THREE.Material>,
+): void {
+  for (const child of scene.children) {
+    const userData = child.userData as {
+      isTrack?: boolean;
+      isSupport?: boolean;
+      isTrain?: boolean;
+    };
+    if (userData.isTrack || userData.isSupport || userData.isTrain) {
+      collectObjectDisposables(child, geoms, mats);
+    }
+  }
+}
 
 function makeTrack() {
   return compileTrack(
@@ -1031,14 +1110,29 @@ describe("findings round5 – controller transactional construction", () => {
     const data = makeTrack();
     ctl.attachTrack(data);
     expect(ctl.hasTrack()).toBe(true);
-    // inject failure in support building after geometries allocated
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
+    collectOwnedTrackDisposables(handle.scene, allocatedGeoms, allocatedMats);
+    const disposalTracker = createDisposalTracker();
+    const origObjectAdd = THREE.Object3D.prototype.add;
+    const objectAddSpy = vi
+      .spyOn(THREE.Object3D.prototype, "add")
+      .mockImplementation(function (
+        this: THREE.Object3D,
+        ...args: THREE.Object3D[]
+      ): THREE.Object3D {
+        for (const object of args) {
+          collectObjectDisposables(object, allocatedGeoms, allocatedMats);
+        }
+        return origObjectAdd.apply(this, args);
+      });
+    // inject failure in support building after track resources were allocated
     const supportsMod = await import("./supports.js");
     const supportSpy = vi
       .spyOn(supportsMod, "buildSupportColumns")
       .mockImplementationOnce(() => {
         throw new Error("injected support failure");
       });
-    const geomDisposeSpy = vi.spyOn(THREE.BufferGeometry.prototype, "dispose");
     let threw = false;
     try {
       ctl.attachTrack(data);
@@ -1051,9 +1145,10 @@ describe("findings round5 – controller transactional construction", () => {
     expect(
       handle.scene.children.some((c) => c.userData?.isTrack === true),
     ).toBe(false);
-    // partial geometries should have been disposed
-    expect(geomDisposeSpy.mock.calls.length).toBeGreaterThan(0);
-    geomDisposeSpy.mockRestore();
+    expectExactDisposals(allocatedGeoms, disposalTracker.disposedGeoms);
+    expectExactDisposals(allocatedMats, disposalTracker.disposedMats);
+    objectAddSpy.mockRestore();
+    disposalTracker.restore();
     supportSpy.mockRestore();
     ctl.dispose();
     handle.dispose();
@@ -1134,118 +1229,217 @@ describe("findings – behavior: no second spline, vertices from core fixture vi
 });
 
 describe("findings round7 – buildScene owns every resource, disposes partial and renderer exactly once with identity-level exact-once", () => {
-  it("throw after terrain allocation (sky) disposes terrain/grid and renderer exactly once, no leaked scene children – identity verified", async () => {
+  it("throw after terrain allocation (sky) disposes terrain/grid and renderer exactly once – allocated equals disposed", async () => {
     const canvas = fakeCanvas();
     const mockR = mockRenderer(canvas);
     const rendererDispose = vi.fn();
     mockR.dispose = rendererDispose;
-    const geomCounts = new Map<THREE.BufferGeometry, number>();
-    const matCounts = new Map<THREE.Material, number>();
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+    const disposedMats = new Map<THREE.Material, number>();
     const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
     const origMatDispose = THREE.Material.prototype.dispose;
     const geomSpy = vi
       .spyOn(THREE.BufferGeometry.prototype, "dispose")
       .mockImplementation(function (this: THREE.BufferGeometry) {
-        geomCounts.set(this, (geomCounts.get(this) ?? 0) + 1);
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
         return origGeomDispose.call(this);
       });
     const matSpy = vi
       .spyOn(THREE.Material.prototype, "dispose")
       .mockImplementation(function (this: THREE.Material) {
-        matCounts.set(this, (matCounts.get(this) ?? 0) + 1);
+        disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
         return origMatDispose.call(
           this as unknown as THREE.MeshStandardMaterial,
         );
       });
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
     let addCalls = 0;
     const origAdd = THREE.Scene.prototype.add;
     const addSpy = vi
       .spyOn(THREE.Scene.prototype, "add")
-      .mockImplementation(function (this: THREE.Scene, ...args: unknown[]) {
+      .mockImplementation(function (
+        this: THREE.Scene,
+        ...args: THREE.Object3D[]
+      ): THREE.Scene {
         addCalls++;
+        const obj = args[0] as unknown as {
+          geometry?: THREE.BufferGeometry;
+          material?: THREE.Material | THREE.Material[];
+        };
+        if (obj && typeof obj === "object") {
+          if ((obj as { geometry?: THREE.BufferGeometry }).geometry)
+            allocatedGeoms.add(
+              (obj as { geometry: THREE.BufferGeometry }).geometry,
+            );
+          const mat = (obj as { material?: THREE.Material | THREE.Material[] })
+            .material;
+          if (mat) {
+            const arr = Array.isArray(mat) ? mat : [mat];
+            for (const mm of arr) allocatedMats.add(mm);
+          }
+        }
         if (addCalls === 6)
           throw new Error("injected sky failure after terrain");
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (origAdd as unknown as (...a: any[]) => any).apply(this, args);
+        return origAdd.apply(this, args);
       });
-    let threw = false;
     try {
-      createRendererHandle(canvas, {
-        createRenderer: () => mockR as unknown as THREE.WebGLRenderer,
-        terrainSeed: "round7-sky-fail",
-      });
-    } catch {
-      threw = true;
+      let threw = false;
+      try {
+        createRendererHandle(canvas, {
+          createRenderer: () => mockR as unknown as THREE.WebGLRenderer,
+          terrainSeed: "round7-sky-fail",
+        });
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+      expect(rendererDispose).toHaveBeenCalledTimes(1);
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+      expectExactDisposals(allocatedMats, disposedMats);
+    } finally {
+      addSpy.mockRestore();
+      geomSpy.mockRestore();
+      matSpy.mockRestore();
     }
-    expect(threw).toBe(true);
-    expect(rendererDispose).toHaveBeenCalledTimes(1);
-    // identity-level: each allocated geometry/material disposed exactly once
-    expect(geomCounts.size).toBeGreaterThanOrEqual(2);
-    expect(matCounts.size).toBeGreaterThanOrEqual(2);
-    for (const cnt of geomCounts.values()) expect(cnt).toBe(1);
-    for (const cnt of matCounts.values()) expect(cnt).toBe(1);
-    // no leaked scene children would be disposed via disposeScene – verify no duplicate disposals
-    addSpy.mockRestore();
-    geomSpy.mockRestore();
-    matSpy.mockRestore();
   });
-
-  it("throw during terrain group material creation disposes partial terrain geometry exactly once – identity verified", async () => {
+  it("throw during terrain group material creation disposes partial terrain geometry exactly once – allocated equals disposed", async () => {
     const canvas = fakeCanvas();
     const mockR = mockRenderer(canvas);
     const rendererDispose = vi.fn();
     mockR.dispose = rendererDispose;
-    const geomCounts = new Map<THREE.BufferGeometry, number>();
-    const matCounts = new Map<THREE.Material, number>();
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+    const disposedMats = new Map<THREE.Material, number>();
     const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
     const origMatDispose = THREE.Material.prototype.dispose;
     const geomSpy = vi
       .spyOn(THREE.BufferGeometry.prototype, "dispose")
       .mockImplementation(function (this: THREE.BufferGeometry) {
-        geomCounts.set(this, (geomCounts.get(this) ?? 0) + 1);
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
         return origGeomDispose.call(this);
       });
     const matSpy = vi
       .spyOn(THREE.Material.prototype, "dispose")
       .mockImplementation(function (this: THREE.Material) {
-        matCounts.set(this, (matCounts.get(this) ?? 0) + 1);
+        disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
         return origMatDispose.call(
           this as unknown as THREE.MeshStandardMaterial,
         );
       });
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
     let addCalls2 = 0;
     const origAdd2 = THREE.Scene.prototype.add;
     const addSpy2 = vi
       .spyOn(THREE.Scene.prototype, "add")
-      .mockImplementation(function (this: THREE.Scene, ...args: unknown[]) {
+      .mockImplementation(function (
+        this: THREE.Scene,
+        ...args: THREE.Object3D[]
+      ): THREE.Scene {
         addCalls2++;
+        const obj = args[0] as unknown as {
+          geometry?: THREE.BufferGeometry;
+          material?: THREE.Material | THREE.Material[];
+        };
+        if (obj && typeof obj === "object") {
+          if ((obj as { geometry?: THREE.BufferGeometry }).geometry)
+            allocatedGeoms.add(
+              (obj as { geometry: THREE.BufferGeometry }).geometry,
+            );
+          const mat = (obj as { material?: THREE.Material | THREE.Material[] })
+            .material;
+          if (mat) {
+            const arr = Array.isArray(mat) ? mat : [mat];
+            for (const mm of arr) allocatedMats.add(mm);
+          }
+        }
         if (addCalls2 === 5)
           throw new Error("injected terrain grid failure after mesh");
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (origAdd2 as unknown as (...a: any[]) => any).apply(this, args);
+        return origAdd2.apply(this, args);
       });
+    try {
+      let threw = false;
+      try {
+        createRendererHandle(canvas, {
+          createRenderer: () => mockR as unknown as THREE.WebGLRenderer,
+          terrainSeed: "round7-terrain-mat-fail",
+        });
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+      expect(rendererDispose).toHaveBeenCalledTimes(1);
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+      expectExactDisposals(allocatedMats, disposedMats);
+    } finally {
+      addSpy2.mockRestore();
+      geomSpy.mockRestore();
+      matSpy.mockRestore();
+    }
+  });
+});
+describe("findings round8 – terrain internal boundary after GridHelper before commit", () => {
+  it("createTerrainGroup disposes mesh/grid geometries/materials exactly once when afterGrid hook throws – internal boundary", () => {
+    const env = createDeterministicHeightfield("terrain-internal-8", 8, 8, 4);
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+    const disposedMats = new Map<THREE.Material, number>();
+    const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
+    const origMatDispose = THREE.Material.prototype.dispose;
+    const geomSpy = vi
+      .spyOn(THREE.BufferGeometry.prototype, "dispose")
+      .mockImplementation(function (this: THREE.BufferGeometry) {
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
+        return origGeomDispose.call(this);
+      });
+    const matSpy = vi
+      .spyOn(THREE.Material.prototype, "dispose")
+      .mockImplementation(function (this: THREE.Material) {
+        disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
+        return origMatDispose.call(
+          this as unknown as THREE.MeshStandardMaterial,
+        );
+      });
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
     let threw = false;
     try {
-      createRendererHandle(canvas, {
-        createRenderer: () => mockR as unknown as THREE.WebGLRenderer,
-        terrainSeed: "round7-terrain-mat-fail",
+      createTerrainGroup(env, {
+        afterGrid: (mesh, grid) => {
+          allocatedGeoms.add(mesh.geometry as THREE.BufferGeometry);
+          const mat = (mesh as unknown as { material?: THREE.Material })
+            .material;
+          if (mat) {
+            const arr = Array.isArray(mat) ? mat : [mat];
+            for (const mm of arr) allocatedMats.add(mm);
+          }
+          const gGeom = (grid as unknown as { geometry?: THREE.BufferGeometry })
+            .geometry;
+          if (gGeom) allocatedGeoms.add(gGeom);
+          const gMat = (
+            grid as unknown as { material?: THREE.Material | THREE.Material[] }
+          ).material;
+          if (gMat) {
+            const arr = Array.isArray(gMat) ? gMat : [gMat];
+            for (const mm of arr) allocatedMats.add(mm);
+          }
+          throw new Error("injected afterGrid failure");
+        },
       });
     } catch {
       threw = true;
     }
-    expect(threw).toBe(true);
-    expect(rendererDispose).toHaveBeenCalledTimes(1);
-    expect(geomCounts.size).toBeGreaterThanOrEqual(1);
-    for (const cnt of geomCounts.values()) expect(cnt).toBe(1);
-    for (const cnt of matCounts.values()) expect(cnt).toBe(1);
-    addSpy2.mockRestore();
-    geomSpy.mockRestore();
-    matSpy.mockRestore();
+    try {
+      expect(threw).toBe(true);
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+      expectExactDisposals(allocatedMats, disposedMats);
+    } finally {
+      geomSpy.mockRestore();
+      matSpy.mockRestore();
+    }
   });
 });
-
 describe("findings round7 – controller does not null ownership before throwing post-build updatePlayback – identity exact-once", () => {
-  it("throw from post-build updatePlayback disposes newly allocated meshes/supports/train exactly once and leaves truthful state", async () => {
+  it("throw from post-build updatePlayback disposes newly allocated meshes/supports/train exactly once – allocated equals disposed", async () => {
     const canvas = fakeCanvas();
     const handle = createRendererHandle(canvas, {
       createRenderer: () => mockRenderer(canvas),
@@ -1257,23 +1451,38 @@ describe("findings round7 – controller does not null ownership before throwing
     const data = makeTrack();
     ctl.attachTrack(data);
     expect(ctl.hasTrack()).toBe(true);
-    const geomCounts = new Map<THREE.BufferGeometry, number>();
-    const matCounts = new Map<THREE.Material, number>();
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+    const disposedMats = new Map<THREE.Material, number>();
     const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
     const origMatDispose = THREE.Material.prototype.dispose;
     const geomSpy = vi
       .spyOn(THREE.BufferGeometry.prototype, "dispose")
       .mockImplementation(function (this: THREE.BufferGeometry) {
-        geomCounts.set(this, (geomCounts.get(this) ?? 0) + 1);
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
         return origGeomDispose.call(this);
       });
     const matSpy = vi
       .spyOn(THREE.Material.prototype, "dispose")
       .mockImplementation(function (this: THREE.Material) {
-        matCounts.set(this, (matCounts.get(this) ?? 0) + 1);
+        disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
         return origMatDispose.call(
           this as unknown as THREE.MeshStandardMaterial,
         );
+      });
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
+    collectOwnedTrackDisposables(handle.scene, allocatedGeoms, allocatedMats);
+    const origObjAdd = THREE.Object3D.prototype.add;
+    const objAddSpy = vi
+      .spyOn(THREE.Object3D.prototype, "add")
+      .mockImplementation(function (
+        this: THREE.Object3D,
+        ...args: THREE.Object3D[]
+      ): THREE.Object3D {
+        for (const object of args) {
+          collectObjectDisposables(object, allocatedGeoms, allocatedMats);
+        }
+        return origObjAdd.apply(this, args);
       });
     const trainMod = await import("./train.js");
     const updateSpy = vi
@@ -1281,79 +1490,81 @@ describe("findings round7 – controller does not null ownership before throwing
       .mockImplementationOnce(() => {
         throw new Error("injected updatePlayback failure");
       });
-    let threw = false;
     try {
-      ctl.attachTrack(data);
-    } catch {
-      threw = true;
+      let threw = false;
+      try {
+        ctl.attachTrack(data);
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+      expect(ctl.hasTrack()).toBe(false);
+      expect(ctl.getTrackData()).toBeNull();
+      expect(
+        handle.scene.children.some((c) => c.userData?.isTrack === true),
+      ).toBe(false);
+      expect(
+        handle.scene.children.some((c) => c.userData?.isSupport === true),
+      ).toBe(false);
+      expect(
+        handle.scene.children.some((c) => c.userData?.isTrain === true),
+      ).toBe(false);
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+      expectExactDisposals(allocatedMats, disposedMats);
+    } finally {
+      updateSpy.mockRestore();
+      objAddSpy.mockRestore();
+      geomSpy.mockRestore();
+      matSpy.mockRestore();
+      ctl.dispose();
+      handle.dispose();
     }
-    expect(threw).toBe(true);
-    expect(ctl.hasTrack()).toBe(false);
-    expect(ctl.getTrackData()).toBeNull();
-    expect(
-      handle.scene.children.some((c) => c.userData?.isTrack === true),
-    ).toBe(false);
-    expect(
-      handle.scene.children.some((c) => c.userData?.isSupport === true),
-    ).toBe(false);
-    expect(
-      handle.scene.children.some((c) => c.userData?.isTrain === true),
-    ).toBe(false);
-    expect(geomCounts.size).toBeGreaterThan(0);
-    expect(matCounts.size).toBeGreaterThan(0);
-    for (const cnt of geomCounts.values()) expect(cnt).toBe(1);
-    for (const cnt of matCounts.values()) expect(cnt).toBe(1);
-    geomSpy.mockRestore();
-    matSpy.mockRestore();
-    updateSpy.mockRestore();
-    ctl.dispose();
-    handle.dispose();
   });
 });
-
-describe("findings round7 – builders individually transactional after partial allocations – identity exact-once", () => {
-  it("buildTrackGeometries disposes first tube and second partially created tube each exactly once – second tube cleaned", () => {
+describe("findings round7 – builders individually transactional after partial allocations – allocated equals disposed", () => {
+  it("buildTrackGeometries disposes first tube and second partially created tube each exactly once – allocated equals disposed", () => {
     const data = makeTrack();
-    const origSetIndex = THREE.BufferGeometry.prototype.setIndex;
-    const geomCounts = new Map<THREE.BufferGeometry, number>();
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
     const origDispose = THREE.BufferGeometry.prototype.dispose;
     const disposeSpy = vi
       .spyOn(THREE.BufferGeometry.prototype, "dispose")
       .mockImplementation(function (this: THREE.BufferGeometry) {
-        geomCounts.set(this, (geomCounts.get(this) ?? 0) + 1);
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
         return origDispose.call(this);
       });
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const origSetIndex = THREE.BufferGeometry.prototype.setIndex;
     let callCount = 0;
     const setIndexSpy = vi
       .spyOn(THREE.BufferGeometry.prototype, "setIndex")
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockImplementation(function (
         this: THREE.BufferGeometry,
-        ...args: any[]
-      ) {
+        ...args: [THREE.BufferAttribute | number[] | null]
+      ): THREE.BufferGeometry {
         callCount++;
-        if (callCount === 2) throw new Error("injected rightRail failure");
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (origSetIndex as unknown as (...a: any[]) => any).apply(
-          this,
-          args,
-        );
+        if (callCount === 1) allocatedGeoms.add(this);
+        if (callCount === 2) {
+          allocatedGeoms.add(this);
+          throw new Error("injected rightRail failure");
+        }
+        return origSetIndex.apply(this, args);
       });
-    let threw = false;
     try {
-      buildTrackGeometries(data, { metric: "height" });
-    } catch {
-      threw = true;
+      let threw = false;
+      try {
+        buildTrackGeometries(data, { metric: "height" });
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+      expect(allocatedGeoms.size).toBe(2);
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+    } finally {
+      setIndexSpy.mockRestore();
+      disposeSpy.mockRestore();
     }
-    expect(threw).toBe(true);
-    // leftRail + second partially created tube both disposed exactly once (2 geometries)
-    expect(geomCounts.size).toBe(2);
-    for (const cnt of geomCounts.values()) expect(cnt).toBe(1);
-    setIndexSpy.mockRestore();
-    disposeSpy.mockRestore();
   });
-
-  it("buildSupportColumns disposes prior support and partial later mesh each exactly once – fails after prior support recorded", async () => {
+  it("buildSupportColumns disposes prior support and partial later mesh each exactly once – allocated equals disposed", async () => {
     const data = makeTrack();
     const env = {
       raycast: () => ({
@@ -1363,31 +1574,39 @@ describe("findings round7 – builders individually transactional after partial 
       }),
       heightAt: () => 0,
     } as unknown as import("@openvibecoaster/core").EnvironmentQuery;
-    const geomCounts = new Map<THREE.BufferGeometry, number>();
-    const matCounts = new Map<THREE.Material, number>();
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+    const disposedMats = new Map<THREE.Material, number>();
     const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
     const origMatDispose = THREE.Material.prototype.dispose;
     const disposeGeom = vi
       .spyOn(THREE.BufferGeometry.prototype, "dispose")
       .mockImplementation(function (this: THREE.BufferGeometry) {
-        geomCounts.set(this, (geomCounts.get(this) ?? 0) + 1);
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
         return origGeomDispose.call(this);
       });
     const disposeMat = vi
       .spyOn(THREE.Material.prototype, "dispose")
       .mockImplementation(function (this: THREE.Material) {
-        matCounts.set(this, (matCounts.get(this) ?? 0) + 1);
+        disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
         return origMatDispose.call(
           this as unknown as THREE.MeshStandardMaterial,
         );
       });
-    // inject after first support recorded via typed hook (deterministic after-allocation)
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
     let hookCalls = 0;
     let threw = false;
     try {
       const { buildSupportColumns: bsc } = await import("./supports.js");
       bsc(data, env, 1, {
-        onSupportCreated: () => {
+        onSupportCreated: (idx, mesh) => {
+          allocatedGeoms.add(mesh.geometry as THREE.BufferGeometry);
+          const mat = (mesh as unknown as { material?: THREE.Material })
+            .material;
+          if (mat) {
+            const arr = Array.isArray(mat) ? mat : [mat];
+            for (const mm of arr) allocatedMats.add(mm);
+          }
           hookCalls++;
           if (hookCalls === 2)
             throw new Error("injected support failure after prior recorded");
@@ -1396,75 +1615,87 @@ describe("findings round7 – builders individually transactional after partial 
     } catch {
       threw = true;
     }
-    expect(threw).toBe(true);
-    // first support + second support (both allocated) disposed exactly once each
-    // hook throws after second support pushed, so 2 supports allocated before failure
-    expect(geomCounts.size).toBe(2);
-    expect(matCounts.size).toBe(2);
-    for (const cnt of geomCounts.values()) expect(cnt).toBe(1);
-    for (const cnt of matCounts.values()) expect(cnt).toBe(1);
-    disposeGeom.mockRestore();
-    disposeMat.mockRestore();
+    try {
+      expect(threw).toBe(true);
+      expect(allocatedGeoms.size).toBe(2);
+      expect(allocatedMats.size).toBe(2);
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+      expectExactDisposals(allocatedMats, disposedMats);
+    } finally {
+      disposeGeom.mockRestore();
+      disposeMat.mockRestore();
+    }
   });
-
-  it("createTrainGroup disposes prior cars and partial later car each exactly once with deduplicated shared wheel – fails on later car after earlier exist", async () => {
-    const geomCounts = new Map<THREE.BufferGeometry, number>();
-    const matCounts = new Map<THREE.Material, number>();
+  it("createTrainGroup disposes prior cars and partial later car each exactly once with deduplicated shared wheel – allocated equals disposed", async () => {
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+    const disposedMats = new Map<THREE.Material, number>();
     const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
     const origMatDispose = THREE.Material.prototype.dispose;
     const disposeGeom = vi
       .spyOn(THREE.BufferGeometry.prototype, "dispose")
       .mockImplementation(function (this: THREE.BufferGeometry) {
-        geomCounts.set(this, (geomCounts.get(this) ?? 0) + 1);
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
         return origGeomDispose.call(this);
       });
     const disposeMat = vi
       .spyOn(THREE.Material.prototype, "dispose")
       .mockImplementation(function (this: THREE.Material) {
-        matCounts.set(this, (matCounts.get(this) ?? 0) + 1);
+        disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
         return origMatDispose.call(
           this as unknown as THREE.MeshStandardMaterial,
         );
       });
-    // inject on later car after earlier cars exist: throw on third car's group addition (after createSingleCarMesh and color mutation)
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
     const origGroupAdd = THREE.Group.prototype.add;
     let groupAddCalls = 0;
     const groupAddSpy = vi
       .spyOn(THREE.Group.prototype, "add")
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .mockImplementation(function (this: THREE.Group, ...args: any[]) {
-        // only count adds to the train group (name === "train")
+      .mockImplementation(function (
+        this: THREE.Group,
+        ...args: THREE.Object3D[]
+      ): THREE.Group {
         if ((this as THREE.Group).name === "train") {
           groupAddCalls++;
+          for (const a of args) {
+            const car = a as unknown as THREE.Group;
+            for (const child of car.children) {
+              const mesh = child as unknown as {
+                geometry?: THREE.BufferGeometry;
+                material?: THREE.Material | THREE.Material[];
+              };
+              if (mesh.geometry) allocatedGeoms.add(mesh.geometry);
+              const mat = mesh.material;
+              if (mat) {
+                const arr = Array.isArray(mat) ? mat : [mat];
+                for (const mm of arr) allocatedMats.add(mm);
+              }
+            }
+          }
           if (groupAddCalls === 3)
             throw new Error("injected train car failure on later car");
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (origGroupAdd as unknown as (...a: any[]) => any).apply(
-          this,
-          args,
-        );
+        return origGroupAdd.apply(this, args);
       });
-    let threw = false;
     try {
-      const { createTrainGroup: ctg } = await import("./train.js");
-      ctg();
-    } catch {
-      threw = true;
+      let threw = false;
+      try {
+        const { createTrainGroup: ctg } = await import("./train.js");
+        ctg();
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+      expectExactDisposals(allocatedMats, disposedMats);
+    } finally {
+      groupAddSpy.mockRestore();
+      disposeGeom.mockRestore();
+      disposeMat.mockRestore();
     }
-    expect(threw).toBe(true);
-    // 2 prior cars each have 3 unique geometries/materials (body, roof, wheel shared) = 6 each; third partially created car also disposed but deduplicated
-    expect(geomCounts.size).toBeGreaterThanOrEqual(6);
-    expect(matCounts.size).toBeGreaterThanOrEqual(6);
-    for (const cnt of geomCounts.values()) expect(cnt).toBe(1);
-    for (const cnt of matCounts.values()) expect(cnt).toBe(1);
-    groupAddSpy.mockRestore();
-    disposeGeom.mockRestore();
-    disposeMat.mockRestore();
   });
 });
-
-describe("findings round7 – lifecycle setMetric restores controller last-known-good track/playback", () => {
+describe("findings round7 – lifecycle setMetric restores controller last-known-good track/playback – allocated equals disposed", () => {
   function polyfillWindow7(): Window & typeof globalThis {
     const g = globalThis as unknown as Record<string, unknown>;
     if (!g.requestAnimationFrame)
@@ -1494,7 +1725,7 @@ describe("findings round7 – lifecycle setMetric restores controller last-known
       (win as unknown as Record<string, unknown>).performance = g.performance;
     return win as Window & typeof globalThis;
   }
-  it("failed setMetric restores metadata and controller hasTrack/getAttachment consistent", async () => {
+  it("failed setMetric restores metadata and controller hasTrack/getAttachment consistent – allocated equals disposed", async () => {
     const win = polyfillWindow7();
     const canvas = fakeCanvas();
     const data = makeTrack();
@@ -1511,7 +1742,31 @@ describe("findings round7 – lifecycle setMetric restores controller last-known
     const beforePos = lc.getController()?.getTrainFrontPosition();
     expect(lc.getAttachment()?.options.metric).toBe("height");
     expect(lc.hasTrack()).toBe(true);
-    // inject failure in controller.setMetric rebuild by making buildTrackGeometries throw on next metric rebuild
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
+    collectOwnedTrackDisposables(
+      lc.getController()?.getScene() ?? new THREE.Scene(),
+      allocatedGeoms,
+      allocatedMats,
+    );
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+    const disposedMats = new Map<THREE.Material, number>();
+    const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
+    const origMatDispose = THREE.Material.prototype.dispose;
+    const geomSpy = vi
+      .spyOn(THREE.BufferGeometry.prototype, "dispose")
+      .mockImplementation(function (this: THREE.BufferGeometry) {
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
+        return origGeomDispose.call(this);
+      });
+    const matSpy = vi
+      .spyOn(THREE.Material.prototype, "dispose")
+      .mockImplementation(function (this: THREE.Material) {
+        disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
+        return origMatDispose.call(
+          this as unknown as THREE.MeshStandardMaterial,
+        );
+      });
     const trackMod = await import("./trackGeometry.js");
     const origBuild = trackMod.buildTrackGeometries;
     let buildCalls = 0;
@@ -1523,28 +1778,33 @@ describe("findings round7 – lifecycle setMetric restores controller last-known
           throw new Error("injected metric rebuild failure");
         return origBuild(d as never, o as never);
       }) as unknown as typeof trackMod.buildTrackGeometries);
-    let threw = false;
     try {
-      lc.setMetric("speed", { speed: speeds });
-    } catch {
-      threw = true;
+      let threw = false;
+      try {
+        lc.setMetric("speed", { speed: speeds });
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+      expect(lc.getAttachment()?.options.metric).toBe("height");
+      expect(lc.getAttachment()?.data.checksum).toBe(data.checksum);
+      expect(lc.hasTrack()).toBe(true);
+      expect(lc.getController()?.hasTrack()).toBe(true);
+      const afterPos = lc.getController()?.getTrainFrontPosition();
+      if (beforePos && afterPos) {
+        expect(afterPos[0]).toBeCloseTo(beforePos[0], 4);
+        expect(afterPos[1]).toBeCloseTo(beforePos[1], 4);
+      }
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+      expectExactDisposals(allocatedMats, disposedMats);
+    } finally {
+      buildSpy.mockRestore();
+      geomSpy.mockRestore();
+      matSpy.mockRestore();
+      lc.dispose();
     }
-    expect(threw).toBe(true);
-    // restored: attachment still height, hasTrack true, controller has track
-    expect(lc.getAttachment()?.options.metric).toBe("height");
-    expect(lc.getAttachment()?.data.checksum).toBe(data.checksum);
-    expect(lc.hasTrack()).toBe(true);
-    expect(lc.getController()?.hasTrack()).toBe(true);
-    const afterPos = lc.getController()?.getTrainFrontPosition();
-    if (beforePos && afterPos) {
-      expect(afterPos[0]).toBeCloseTo(beforePos[0], 4);
-      expect(afterPos[1]).toBeCloseTo(beforePos[1], 4);
-    }
-    buildSpy.mockRestore();
-    lc.dispose();
   });
-
-  it("if restoration itself fails, clear both truthfully and propagate original failure", async () => {
+  it("if restoration itself fails, clear both truthfully and propagate original failure – allocated equals disposed", async () => {
     const win = polyfillWindow7();
     const canvas = fakeCanvas();
     const data = makeTrack();
@@ -1558,7 +1818,31 @@ describe("findings round7 – lifecycle setMetric restores controller last-known
     lc.attachTrack(data, { metric: "height" });
     expect(lc.hasTrack()).toBe(true);
     expect(lc.getAttachment()).not.toBeNull();
-    // make buildTrackGeometries throw for both initial setMetric failure and restoration attempt
+    const allocatedGeoms = new Set<THREE.BufferGeometry>();
+    const allocatedMats = new Set<THREE.Material>();
+    collectOwnedTrackDisposables(
+      lc.getController()?.getScene() ?? new THREE.Scene(),
+      allocatedGeoms,
+      allocatedMats,
+    );
+    const disposedGeoms = new Map<THREE.BufferGeometry, number>();
+    const disposedMats = new Map<THREE.Material, number>();
+    const origGeomDispose = THREE.BufferGeometry.prototype.dispose;
+    const origMatDispose = THREE.Material.prototype.dispose;
+    const geomSpy = vi
+      .spyOn(THREE.BufferGeometry.prototype, "dispose")
+      .mockImplementation(function (this: THREE.BufferGeometry) {
+        disposedGeoms.set(this, (disposedGeoms.get(this) ?? 0) + 1);
+        return origGeomDispose.call(this);
+      });
+    const matSpy = vi
+      .spyOn(THREE.Material.prototype, "dispose")
+      .mockImplementation(function (this: THREE.Material) {
+        disposedMats.set(this, (disposedMats.get(this) ?? 0) + 1);
+        return origMatDispose.call(
+          this as unknown as THREE.MeshStandardMaterial,
+        );
+      });
     const trackMod2 = await import("./trackGeometry.js");
     const origBuild2 = trackMod2.buildTrackGeometries;
     const buildSpy2 = vi
@@ -1566,24 +1850,43 @@ describe("findings round7 – lifecycle setMetric restores controller last-known
       .mockImplementation((() => {
         throw new Error("double failure");
       }) as unknown as typeof trackMod2.buildTrackGeometries);
-    let threw = false;
-    let thrownMsg = "";
     try {
-      lc.setMetric("speed");
-    } catch (e) {
-      threw = true;
-      thrownMsg = (e as Error).message;
+      let threw = false;
+      let thrownMsg = "";
+      try {
+        lc.setMetric("speed");
+      } catch (e) {
+        threw = true;
+        thrownMsg = (e as Error).message;
+      }
+      expect(threw).toBe(true);
+      expect(thrownMsg).toBe("double failure");
+      expect(lc.getAttachment()).toBeNull();
+      expect(lc.hasTrack()).toBe(false);
+      expect(lc.getController()?.hasTrack()).toBe(false);
+      expectExactDisposals(allocatedGeoms, disposedGeoms);
+      expectExactDisposals(allocatedMats, disposedMats);
+    } finally {
+      buildSpy2.mockRestore();
+      void origBuild2;
+      geomSpy.mockRestore();
+      matSpy.mockRestore();
+      lc.dispose();
     }
-    expect(threw).toBe(true);
-    // original failure propagated, not restoration failure masking
-    expect(thrownMsg).toBe("double failure");
-    // both cleared truthfully
-    expect(lc.getAttachment()).toBeNull();
-    expect(lc.hasTrack()).toBe(false);
-    expect(lc.getController()?.hasTrack()).toBe(false);
-    buildSpy2.mockRestore();
-    // ensure orig still works for later
-    void origBuild2;
-    lc.dispose();
+  });
+});
+describe("findings round8 – render barrel hides test seams", () => {
+  it("SupportBuildHooks and TerrainBuildHooks are not re-exported from render/index.ts", async () => {
+    const barrel = await import("./index.js");
+    expect(
+      (barrel as unknown as Record<string, unknown>).SupportBuildHooks,
+    ).toBeUndefined();
+    expect(
+      (barrel as unknown as Record<string, unknown>).TerrainBuildHooks,
+    ).toBeUndefined();
+    const supportsMod = await import("./supports.js");
+    expect(typeof supportsMod.buildSupportColumns).toBe("function");
+    const terrainMod = await import("./terrain.js");
+    expect(typeof terrainMod.createTerrainGroup).toBe("function");
   });
 });
