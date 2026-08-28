@@ -10,7 +10,6 @@ import {
   getReducedMotionState,
   getStatusText,
   isPlaybackSpeedValid,
-  isValidTrackImport,
   METRIC_IDS,
   PLAYBACK_SPEED_MAX,
   PLAYBACK_SPEED_MIN,
@@ -189,56 +188,33 @@ describe("viewState – reduced motion", () => {
 });
 
 describe("viewState – import validation and generation guard", () => {
-  it("rejects arbitrary JSON including empty object", () => {
-    expect(isValidTrackImport({})).toBe(false);
-    expect(isValidTrackImport({ seed: "123" })).toBe(false);
-    expect(isValidTrackImport({ random: 1 })).toBe(false);
-    expect(isValidTrackImport(null)).toBe(false);
-    expect(isValidTrackImport("string")).toBe(false);
-    expect(isValidTrackImport([])).toBe(false);
-  });
-
-  it("rejects incomplete track payloads", () => {
-    expect(isValidTrackImport({ format: "openvibecoaster/track-v1" })).toBe(
-      false,
-    );
-    expect(isValidTrackImport({ compiledTrackData: {} })).toBe(false);
-    expect(
-      isValidTrackImport({
-        format: "wrong/format",
-        compiledTrackData: {},
-      }),
-    ).toBe(false);
-  });
-
-  it("accepts minimal valid track payload when canonical fields present", () => {
-    expect(
-      isValidTrackImport({
-        format: "openvibecoaster/track-v1",
-        compiledTrackData: { spans: [] },
-      }),
-    ).toBe(true);
-  });
-
   it("never transitions to ready on generate without canonical data", () => {
     expect(getNextStatusAfterGenerate("pending")).not.toBe("ready");
     expect(getNextStatusAfterGenerate("error")).not.toBe("ready");
     expect(getNextStatusAfterGenerate("generating")).not.toBe("ready");
+    expect(getNextStatusAfterGenerate("ready")).not.toBe("ready");
     expect(
       getActionEnabled("save", getNextStatusAfterGenerate("pending")),
     ).toBe(false);
+    expect(
+      getActionEnabled("export", getNextStatusAfterGenerate("pending")),
+    ).toBe(false);
   });
 
-  it("never transitions to ready on load with invalid payload", () => {
+  it("never transitions to ready on load with arbitrary JSON", () => {
     expect(getNextStatusAfterLoad({}, "pending")).not.toBe("ready");
     expect(getNextStatusAfterLoad({}, "generating")).not.toBe("ready");
     expect(getNextStatusAfterLoad({ random: 1 }, "pending")).not.toBe("ready");
+    expect(getNextStatusAfterLoad(null, "pending")).not.toBe("ready");
+    expect(getNextStatusAfterLoad("string" as unknown, "pending")).not.toBe(
+      "ready",
+    );
     expect(
       getActionEnabled("save", getNextStatusAfterLoad({}, "pending")),
     ).toBe(false);
   });
 
-  it("transitions to ready only with valid canonical payload", () => {
+  it("never transitions to ready even for shallow track-v1 shape – canonical validation unavailable", () => {
     expect(
       getNextStatusAfterLoad(
         {
@@ -247,6 +223,44 @@ describe("viewState – import validation and generation guard", () => {
         },
         "pending",
       ),
-    ).toBe("ready");
+    ).not.toBe("ready");
+    expect(
+      getNextStatusAfterLoad(
+        {
+          format: "openvibecoaster/track-v1",
+          compiledTrackData: { spans: [{ kind: "line" }] },
+        },
+        "generating",
+      ),
+    ).not.toBe("ready");
+    expect(
+      getActionEnabled(
+        "scrub",
+        getNextStatusAfterLoad(
+          {
+            format: "openvibecoaster/track-v1",
+            compiledTrackData: { spans: [] },
+          },
+          "pending",
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps data actions disabled after any import attempt", () => {
+    for (const payload of [
+      {},
+      { seed: "123" },
+      { format: "openvibecoaster/track-v1", compiledTrackData: { spans: [] } },
+      null,
+    ] as unknown[]) {
+      const next = getNextStatusAfterLoad(payload, "pending");
+      expect(getActionEnabled("save", next)).toBe(false);
+      expect(getActionEnabled("export", next)).toBe(false);
+      expect(getActionEnabled("scrub", next)).toBe(false);
+      expect(getActionEnabled("playback", next)).toBe(false);
+      expect(getActionEnabled("seamInspect", next)).toBe(false);
+      expect(getActionEnabled("localRegenerate", next)).toBe(false);
+    }
   });
 });

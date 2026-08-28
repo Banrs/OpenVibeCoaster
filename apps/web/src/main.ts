@@ -9,7 +9,6 @@ import {
   getPanelVisibility,
   getReducedMotionState,
   getStatusText,
-  isValidTrackImport,
   selectCamera,
   selectMetric,
   selectSeat,
@@ -259,35 +258,10 @@ function handleLoadFile(file: File | undefined): void {
   reader.addEventListener("load", () => {
     try {
       const parsed: unknown = JSON.parse(String(reader.result));
-      if (!isValidTrackImport(parsed)) {
-        state.generationStatus = getNextStatusAfterLoad(
-          parsed,
-          state.generationStatus,
-        );
-        render();
-        return;
-      }
-      const data = parsed as {
-        seed?: unknown;
-        camera?: unknown;
-        metric?: unknown;
-        compiledTrackData?: unknown;
-      };
-      if (typeof data.seed === "string") {
-        state.seed = data.seed.slice(0, 64);
-      }
-      if (
-        typeof data.camera === "string" &&
-        ["front", "middle", "rear", "chase", "orbit"].includes(data.camera)
-      ) {
-        state.camera = data.camera as CameraId;
-      }
-      if (
-        typeof data.metric === "string" &&
-        ["speed", "gForce", "height", "energy"].includes(data.metric)
-      ) {
-        state.metric = data.metric as MetricId;
-      }
+      // Wave 1 has no real CoasterFileV1 parser; distinguish well-formed JSON from malformed,
+      // but never transition to ready. Keep data-dependent actions disabled.
+      // We intentionally do not apply seed/camera from unvalidated payload.
+      void parsed;
       state.generationStatus = getNextStatusAfterLoad(
         parsed,
         state.generationStatus,

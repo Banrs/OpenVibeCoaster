@@ -69,7 +69,7 @@ export function getStatusText(status: GenerationStatus): string {
     case "generating":
       return "Generating…";
     case "error":
-      return "Generation failed — adjust constraints and try again";
+      return "Load failed — canonical track validation unavailable until integration";
     default:
       return "Unknown status";
   }
@@ -207,46 +207,19 @@ export function getLayoutClass(state: AppState): string {
   return parts.join(" ");
 }
 
-export function isValidTrackImport(payload: unknown): boolean {
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    Array.isArray(payload)
-  ) {
-    return false;
-  }
-  const obj = payload as Record<string, unknown>;
-  if (obj.format !== "openvibecoaster/track-v1") {
-    return false;
-  }
-  const data = obj.compiledTrackData;
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    return false;
-  }
-  const spans = (data as Record<string, unknown>).spans;
-  if (!Array.isArray(spans)) {
-    return false;
-  }
-  return true;
-}
-
 export function getNextStatusAfterGenerate(
-  current: GenerationStatus,
+  _current: GenerationStatus,
 ): GenerationStatus {
-  // Shell has no canonical worker data yet; never claim ready.
-  // Generating always resolves to error (worker not integrated) so data actions stay disabled.
-  if (current === "generating") {
-    return "error";
-  }
+  // Wave 1 shell has no canonical worker data or CompiledTrackData yet; never claim ready.
   return "error";
 }
 
 export function getNextStatusAfterLoad(
-  payload: unknown,
+  _payload: unknown,
   _current: GenerationStatus,
 ): GenerationStatus {
-  if (isValidTrackImport(payload)) {
-    return "ready";
-  }
+  // Wave 1 has no real CoasterFileV1 parser or CompiledTrackData integration.
+  // JSON is parsed only to distinguish malformed input; canonical validation is unavailable,
+  // so we never transition to ready. Always return error to keep data-dependent actions disabled.
   return "error";
 }
