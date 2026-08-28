@@ -11,15 +11,10 @@ export interface SupportResult {
   heights: number[];
 }
 
-interface SupportBuildHooks {
-  onSupportCreated?: (index: number, mesh: THREE.Mesh) => void;
-}
-
 export function buildSupportColumns(
   data: CompiledTrackData,
   env: EnvironmentQuery,
   interval = 10,
-  hooks: SupportBuildHooks = {},
 ): SupportResult {
   const meshes: THREE.Mesh[] = [];
   const trackPoints: ReturnType<typeof vec3>[] = [];
@@ -64,8 +59,6 @@ export function buildSupportColumns(
         meshes.push(mesh);
         geom = null;
         mat = null;
-        // test-only hook: deterministic after-allocation injection
-        hooks.onSupportCreated?.(i, mesh);
       } catch (e) {
         if (geom) {
           try {
@@ -115,7 +108,6 @@ export function buildSupportColumns(
           heights.push(height);
           geom = null;
           mat = null;
-          hooks.onSupportCreated?.(0, mesh);
         } catch (e) {
           if (geom) {
             try {
