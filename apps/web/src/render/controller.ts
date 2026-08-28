@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { CompiledTrackData } from "../shim/core.js";
+import type { CompiledTrackData } from "@openvibecoaster/core";
 import { buildTrackGeometries, type MetricId } from "./trackGeometry.js";
 import { buildSupportColumns } from "./supports.js";
 import {
@@ -10,6 +10,7 @@ import {
 } from "./train.js";
 import { clampFovForSpeed, getCameraState, type CameraId } from "./cameras.js";
 import type { RendererHandle } from "./renderer.js";
+import type { EnvironmentQuery } from "@openvibecoaster/core";
 
 export interface MetricData {
   speed?: Float64Array;
@@ -51,38 +52,10 @@ export interface RendererController {
   getScene(): THREE.Scene;
 }
 
-let activeResizeHandler: (() => void) | null = null;
-let activeRafId: number | null = null;
-
-export function teardownRendererLifecycle(): void {
-  if (activeResizeHandler) {
-    try {
-      window.removeEventListener(
-        "resize",
-        activeResizeHandler as EventListener,
-      );
-    } catch {
-      // ignore
-    }
-    activeResizeHandler = null;
-  }
-  if (activeRafId !== null) {
-    try {
-      cancelAnimationFrame(activeRafId);
-    } catch {
-      // ignore
-    }
-    activeRafId = null;
-  }
-}
-
 export function createRendererController(
   handle: RendererHandle,
   camera: THREE.PerspectiveCamera,
 ): RendererController {
-  // Ensure prior lifecycle is torn down before new controller owns it
-  teardownRendererLifecycle();
-
   let trackData: CompiledTrackData | null = null;
   let currentMetric: MetricId = "height";
   let currentMetricData: MetricData | undefined;
@@ -94,37 +67,6 @@ export function createRendererController(
   let playbackDistance = 0;
   let playbackSpeed = 0;
   let cameraPrevious: ReturnType<typeof getCameraState> | undefined;
-
-  const onResize = (): void => {
-    const canvas = handle.renderer?.domElement as unknown as
-      HTMLCanvasElement | undefined;
-    const rect = canvas?.getBoundingClientRect();
-    const w = Math.max(1, Math.round(rect?.width ?? 800));
-    const h = Math.max(1, Math.round(rect?.height ?? 600));
-    handle.resize(w, h);
-    camera.aspect = w / Math.max(1, h);
-    camera.updateProjectionMatrix();
-  };
-
-  activeResizeHandler = onResize;
-  try {
-    (globalThis as unknown as Window).addEventListener(
-      "resize",
-      onResize as EventListener,
-    );
-  } catch {
-    // ignore in non-browser test
-  }
-  onResize();
-
-  const loop = (): void => {
-    activeRafId = (globalThis as unknown as Window).requestAnimationFrame(loop);
-  };
-  try {
-    activeRafId = (globalThis as unknown as Window).requestAnimationFrame(loop);
-  } catch {
-    activeRafId = null;
-  }
 
   const attachTrack = (
     data: CompiledTrackData,
@@ -194,7 +136,7 @@ export function createRendererController(
     if (env && typeof (env as { raycast?: unknown }).raycast === "function") {
       const supports = buildSupportColumns(
         data,
-        env as unknown as import("../shim/core.js").EnvironmentQuery,
+        env as unknown as EnvironmentQuery,
         10,
       );
       supportMeshes = supports.meshes;
@@ -354,7 +296,6 @@ export function createRendererController(
 
   const dispose = (): void => {
     clearTrack();
-    teardownRendererLifecycle();
   };
 
   return {

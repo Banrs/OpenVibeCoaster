@@ -20,7 +20,7 @@ import {
 import { createRendererHandle } from "./render/renderer.js";
 import { createRendererController } from "./render/controller.js";
 import { RenderMetrics } from "./render/metrics.js";
-import type { CompiledTrackData } from "./shim/core.js";
+import type { CompiledTrackData } from "@openvibecoaster/core";
 
 function supportsWebGL(): boolean {
   try {
@@ -487,8 +487,6 @@ function resizeCanvases(): void {
   }
 }
 
-window.addEventListener("resize", resizeCanvases);
-
 // Change reduced motion live if system preference changes
 window
   .matchMedia("(prefers-reduced-motion: reduce)")
@@ -500,14 +498,40 @@ window
   });
 
 // Three renderer lifecycle – terrain/grid only before generation (no fixture coaster)
-// Concrete integration for Wave 3: controller owns track/support/train and camera
+// Single RAF and single resize owner (app/main loop)
 let rendererHandle: ReturnType<typeof createRendererHandle> = null;
 let threeCamera: THREE.PerspectiveCamera | null = null;
 let controller: ReturnType<typeof createRendererController> | null = null;
 let metrics = new RenderMetrics();
 let lastFrameMs = performance.now();
+let appRafId: number | null = null;
+let appResizeHandler: (() => void) | null = null;
+
+function handleAppResize(): void {
+  resizeCanvases();
+  if (rendererHandle && threeCamera) {
+    const rect = viewportCanvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    rendererHandle.resize(w, h);
+    threeCamera.aspect = w / Math.max(1, h);
+    threeCamera.updateProjectionMatrix();
+  }
+}
+
+function teardownAppLifecycle(): void {
+  if (appRafId !== null) {
+    cancelAnimationFrame(appRafId);
+    appRafId = null;
+  }
+  if (appResizeHandler) {
+    window.removeEventListener("resize", appResizeHandler);
+    appResizeHandler = null;
+  }
+}
 
 function initRenderer(): void {
+  teardownAppLifecycle();
   if (controller) {
     try {
       controller.dispose();
@@ -547,8 +571,15 @@ function initRenderer(): void {
   ).__vibecoasterController = controller;
   render();
 
+  appResizeHandler = handleAppResize;
+  window.addEventListener("resize", appResizeHandler);
+  handleAppResize();
+
   const tick = (): void => {
-    if (!rendererHandle || !threeCamera || !controller) return;
+    if (!rendererHandle || !threeCamera || !controller) {
+      appRafId = null;
+      return;
+    }
     const now = performance.now();
     const deltaMs = now - lastFrameMs;
     lastFrameMs = now;
@@ -572,9 +603,10 @@ function initRenderer(): void {
         info.render.triangles ?? 0,
       );
     }
-    requestAnimationFrame(tick);
+    appRafId = requestAnimationFrame(tick);
   };
-  requestAnimationFrame(tick);
+  lastFrameMs = performance.now();
+  appRafId = requestAnimationFrame(tick);
 }
 
 initRenderer();
@@ -652,7 +684,7 @@ window.__vibecoasterMetrics = metrics;
 
 // Initial paint
 render();
-resizeCanvases();
+handleAppResize();
 
 // Expose for manual inspection in devtools (not used in tests)
 declare global {

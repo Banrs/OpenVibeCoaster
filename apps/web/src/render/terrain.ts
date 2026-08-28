@@ -3,7 +3,7 @@ import {
   HeightfieldEnvironment,
   hashSeed,
   Xoshiro128ss,
-} from "../shim/core.js";
+} from "@openvibecoaster/core";
 
 export function createDeterministicHeightfield(
   seed: string | number,

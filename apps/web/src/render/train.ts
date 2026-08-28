@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import { sampleCompiledTrack, type CompiledTrackData } from "../shim/core.js";
-import type { Vec3, Quat } from "../shim/core.js";
+import { sampleCompiledTrack } from "@openvibecoaster/core";
+import type { CompiledTrackData, Vec3, Quat } from "@openvibecoaster/core";
 
 export const TRAIN_CAR_COUNT = 6;
 export const CAR_PITCH_M = 3.4;

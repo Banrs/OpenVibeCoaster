@@ -21,31 +21,6 @@ export interface CreateRendererOptions {
     ((canvas: HTMLCanvasElement) => THREE.WebGLRenderer) | undefined;
 }
 
-let activeResizeHandler: (() => void) | null = null;
-let activeRafId: number | null = null;
-
-export function teardownRendererLifecycle(): void {
-  if (activeResizeHandler) {
-    try {
-      (globalThis as unknown as Window).removeEventListener(
-        "resize",
-        activeResizeHandler as EventListener,
-      );
-    } catch {
-      // ignore
-    }
-    activeResizeHandler = null;
-  }
-  if (activeRafId !== null) {
-    try {
-      (globalThis as unknown as Window).cancelAnimationFrame(activeRafId);
-    } catch {
-      // ignore
-    }
-    activeRafId = null;
-  }
-}
-
 function supportsWebGL(canvas: HTMLCanvasElement): boolean {
   try {
     const ctx =
@@ -110,9 +85,6 @@ export function createRendererHandle(
   canvas: HTMLCanvasElement,
   options: CreateRendererOptions = {},
 ): RendererHandle | null {
-  // Own lifecycle: cancel prior RAF and listener before every recreate, including failed path
-  teardownRendererLifecycle();
-
   const dprCap = options.dprCap ?? 2;
   const onFailure = options.onWebGLFailure;
 
@@ -168,38 +140,7 @@ export function createRendererHandle(
     renderer?.setPixelRatio(getDprNow());
   };
 
-  // Register resize handler owned by this handle and track for teardown
-  const resizeHandler = (): void => {
-    try {
-      const rect = canvas.getBoundingClientRect();
-      const w = Math.max(1, Math.round(rect.width));
-      const h = Math.max(1, Math.round(rect.height));
-      resize(w, h);
-    } catch {
-      // ignore
-    }
-  };
-  activeResizeHandler = resizeHandler;
-  try {
-    (globalThis as unknown as Window).addEventListener(
-      "resize",
-      resizeHandler as EventListener,
-    );
-  } catch {
-    // ignore in test env if window missing
-  }
-
-  // RAF ownership: start a no-op raf to prove ownership; will be cancelled on teardown
-  try {
-    activeRafId = (globalThis as unknown as Window).requestAnimationFrame(
-      () => {},
-    );
-  } catch {
-    activeRafId = null;
-  }
-
   const dispose = (): void => {
-    teardownRendererLifecycle();
     disposeScene(scene);
     try {
       renderer?.dispose();

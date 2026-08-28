@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { CompiledTrackData } from "../shim/core.js";
+import type { CompiledTrackData } from "@openvibecoaster/core";
 
 export type MetricId = "speed" | "gForce" | "height" | "energy";
 

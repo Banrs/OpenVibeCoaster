@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
-import { compileTrack, vec3 } from "../shim/core.js";
+import { compileTrack, vec3, sampleCompiledTrack } from "@openvibecoaster/core";
 
 // These imports will fail in red phase – that preserves evidence.
 import { createDeterministicHeightfield, buildTerrainMesh } from "./terrain.js";
@@ -40,7 +40,8 @@ function makeSimpleTrack() {
         id: "b",
         span: {
           position: (u: number) => vec3(40 + u * 30, 5, u * 20),
-          derivative: () => vec3(30, 0, 20),
+          derivative: (_u: number, order = 1) =>
+            order === 1 ? vec3(30, 0, 20) : vec3(0, 0, 0),
         },
       },
     ],
@@ -144,28 +145,43 @@ describe("render – track geometry from CompiledTrackData", () => {
     }
   });
 
-  it("does not maintain a second independent spline – vertices derived from CompiledTrackData", () => {
+  it("geometry is direct tessellation of authoritative CompiledTrackData samples – no second spline", () => {
     const data = makeSimpleTrack();
     const result = buildTrackGeometries(data, { metric: "height" });
     const expectedMinVertices = data.positions.length / 3;
     expect(
       result.leftRail.getAttribute("position").count,
     ).toBeGreaterThanOrEqual(expectedMinVertices);
-    expect(
-      (result as unknown as { splineCount?: unknown }).splineCount,
-    ).toBeUndefined();
-    expect(
-      (result.leftRail.userData as Record<string, unknown>).curve,
-    ).toBeUndefined();
-    expect(
-      (result as unknown as Record<string, unknown>).curve,
-    ).toBeUndefined();
+    const sampled = sampleCompiledTrack(data, 0);
+    expect(sampled.position[0]).toBeCloseTo(data.positions[0] ?? 0, 5);
+    expect(sampled.position[1]).toBeCloseTo(data.positions[1] ?? 0, 5);
     const posAttr = result.leftRail.getAttribute(
       "position",
     ) as THREE.BufferAttribute;
-    const firstX = posAttr.getX(0);
-    const canonicalX = data.positions[0] as number;
-    expect(Math.abs(firstX - canonicalX)).toBeLessThan(1.5);
+    const segments = 6;
+    let avgX = 0;
+    let avgY = 0;
+    let avgZ = 0;
+    for (let r = 0; r < segments; r++) {
+      avgX += posAttr.getX(r);
+      avgY += posAttr.getY(r);
+      avgZ += posAttr.getZ(r);
+    }
+    avgX /= segments;
+    avgY /= segments;
+    avgZ /= segments;
+    const bx = data.binormals[0] ?? 0;
+    const by = data.binormals[1] ?? 0;
+    const bz = data.binormals[2] ?? 0;
+    const expectedX = (data.positions[0] ?? 0) + bx * 0.6;
+    const expectedY = (data.positions[1] ?? 0) + by * 0.6;
+    const expectedZ = (data.positions[2] ?? 0) + bz * 0.6;
+    expect(Math.abs(avgX - expectedX)).toBeLessThan(1e-5);
+    expect(Math.abs(avgY - expectedY)).toBeLessThan(1e-5);
+    expect(Math.abs(avgZ - expectedZ)).toBeLessThan(1e-5);
+    expect(
+      (result as unknown as Record<string, unknown>).curve,
+    ).toBeUndefined();
     expect(result.metricAvailable).toBe(true);
     expect(result.metric).toBe("height");
   });
