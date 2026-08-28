@@ -385,6 +385,36 @@ describe("compiled track and heightfield", () => {
     });
   });
 
+  it("rejects adjacent tangent interpolation that is too close to zero", () => {
+    const input = validCompiledTrackInput() as MutableCompiledTrackDataInput;
+    input.tangents = new Float64Array([1, 0, 0, -1, 1e-13, 0]);
+    expect(() => new CompiledTrackData(input)).toThrow(
+      "adjacent tangent interpolation must remain non-zero",
+    );
+  });
+
+  it("rejects a real two-sample U-turn before sampling can normalize zero", () => {
+    const halfCircle = {
+      position: (u: number) =>
+        vec3(
+          Math.sin(Math.PI * u) / Math.PI,
+          (1 - Math.cos(Math.PI * u)) / Math.PI,
+          0,
+        ),
+      derivative: (u: number, order = 1) =>
+        order === 1
+          ? vec3(Math.cos(Math.PI * u), Math.sin(Math.PI * u), 0)
+          : vec3(
+              -Math.PI * Math.sin(Math.PI * u),
+              Math.PI * Math.cos(Math.PI * u),
+              0,
+            ),
+    };
+    expect(() =>
+      compileTrack([{ id: "u-turn", span: halfCircle }], { samples: 2 }),
+    ).toThrow("adjacent tangent interpolation must remain non-zero");
+  });
+
   it("rejects non-finite span derivative magnitudes before frame construction", () => {
     expect(() =>
       compileTrack(
@@ -409,6 +439,18 @@ describe("compiled track and heightfield", () => {
     const span = {
       position: (u: number) => vec3(u, 0, 0),
       derivative: (u: number) => (u === 0.5 ? vec3(0, 0, 0) : vec3(1, 0, 0)),
+    };
+    expect(() => buildArcLengthLut(span, 4)).toThrow("finite and non-zero");
+  });
+
+  it("rejects a smooth off-grid stationary derivative", () => {
+    const stationaryParameter = 0.37;
+    const span = {
+      position: (u: number) => vec3((u - stationaryParameter) ** 3 / 3, 0, 0),
+      derivative: (u: number, order = 1) =>
+        order === 1
+          ? vec3((u - stationaryParameter) ** 2, 0, 0)
+          : vec3(2 * (u - stationaryParameter), 0, 0),
     };
     expect(() => buildArcLengthLut(span, 4)).toThrow("finite and non-zero");
   });

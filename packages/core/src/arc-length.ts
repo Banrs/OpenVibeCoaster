@@ -12,11 +12,69 @@ const weights: readonly [number, number, number, number, number] = [
 ];
 
 export type PositionSpan = ParametricSpan<Vec3>;
+const MIN_SPEED = 1e-12;
+const REGULARITY_SEARCH_STEPS = 8;
+const REGULARITY_ROOT_ITERATIONS = 50;
+const MIN_NEWTON_SPEED = 1e-10;
+
 const speed = (span: PositionSpan, u: number): number => {
   const value = vec3Length(span.derivative(u, 1));
-  if (!Number.isFinite(value) || !(value > 1e-12))
+  if (!Number.isFinite(value) || !(value > MIN_SPEED))
     throw new RangeError("A span derivative must be finite and non-zero");
   return value;
+};
+const speedSlope = (span: PositionSpan, u: number): number => {
+  const first = span.derivative(u, 1);
+  const value = vec3Length(first);
+  if (!Number.isFinite(value) || !(value > MIN_SPEED))
+    throw new RangeError("A span derivative must be finite and non-zero");
+  const second = span.derivative(u, 2);
+  const slope =
+    first[0] * second[0] + first[1] * second[1] + first[2] * second[2];
+  if (!Number.isFinite(slope))
+    throw new RangeError("A span derivative must be finite and non-zero");
+  return slope;
+};
+const hasOppositeSigns = (left: number, right: number): boolean =>
+  (left < 0 && right > 0) || (left > 0 && right < 0);
+const validateSpeedRegularity = (
+  span: PositionSpan,
+  start: number,
+  end: number,
+): void => {
+  // This is a bounded search for the smooth analytic spans supported here;
+  // opaque callbacks can still change between any two evaluated parameters.
+  let previous = start;
+  let previousSlope = speedSlope(span, previous);
+  for (let step = 1; step <= REGULARITY_SEARCH_STEPS; step += 1) {
+    const current = start + ((end - start) * step) / REGULARITY_SEARCH_STEPS;
+    const currentSlope = speedSlope(span, current);
+    if (previousSlope === 0) speed(span, previous);
+    if (currentSlope === 0) speed(span, current);
+    if (hasOppositeSigns(previousSlope, currentSlope)) {
+      let low = previous;
+      let high = current;
+      let lowSlope = previousSlope;
+      let root = (low + high) / 2;
+      for (
+        let iteration = 0;
+        iteration < REGULARITY_ROOT_ITERATIONS;
+        iteration += 1
+      ) {
+        root = (low + high) / 2;
+        const rootSlope = speedSlope(span, root);
+        if (rootSlope === 0) break;
+        if (hasOppositeSigns(lowSlope, rootSlope)) high = root;
+        else {
+          low = root;
+          lowSlope = rootSlope;
+        }
+      }
+      speed(span, root);
+    }
+    previous = current;
+    previousSlope = currentSlope;
+  }
 };
 const gauss5 = (span: PositionSpan, a: number, b: number): number => {
   const half = (b - a) / 2;
@@ -88,9 +146,8 @@ export const buildArcLengthLut = (
   const distances = new Float64Array(segments + 1);
   for (let i = 0; i <= segments; i += 1) {
     parameters[i] = i / segments;
-    speed(span, parameters[i]!);
-    if (i > 0) speed(span, (parameters[i - 1]! + parameters[i]!) / 2);
-    if (i > 0)
+    if (i > 0) {
+      validateSpeedRegularity(span, parameters[i - 1]!, parameters[i]!);
       distances[i] =
         distances[i - 1]! +
         arcLength(
@@ -99,6 +156,7 @@ export const buildArcLengthLut = (
           parameters[i]!,
           tolerance / segments,
         );
+    }
   }
   return Object.freeze({
     parameters,
@@ -128,14 +186,18 @@ const invert = (
       (lut.distances[lowIndex + 1]! - lut.distances[lowIndex]!)) *
       (high - low);
   const base = lut.distances[lowIndex]!;
+  const baseParameter = lut.parameters[lowIndex]!;
   for (let iteration = 0; iteration < 12; iteration += 1) {
-    const travelled = base + arcLength(span, low, u, 1e-11);
+    const travelled = base + arcLength(span, baseParameter, u, 1e-11);
     const error = travelled - distance;
     if (Math.abs(error) < 1e-10 * Math.max(1, lut.totalLength)) return u;
     if (error > 0) high = u;
     else low = u;
     const derivative = speed(span, u);
-    const candidate = derivative > 1e-12 ? u - error / derivative : Number.NaN;
+    const candidate =
+      Math.abs(derivative) > MIN_NEWTON_SPEED
+        ? u - error / derivative
+        : Number.NaN;
     u =
       Number.isFinite(candidate) && candidate > low && candidate < high
         ? candidate

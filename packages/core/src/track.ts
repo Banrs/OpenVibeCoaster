@@ -112,6 +112,23 @@ const validateFiniteArray = (array: Float64Array, name: string): void => {
     if (!Number.isFinite(array[index]))
       invalidCompiledTrackData(`${name}[${index}] must be finite`);
 };
+const minimumInterpolatedTangentLength = (left: Vec3, right: Vec3): number => {
+  const delta = [
+    right[0] - left[0],
+    right[1] - left[1],
+    right[2] - left[2],
+  ] as const;
+  const denominator = vec3Dot(delta, delta);
+  const parameter =
+    denominator > 0
+      ? Math.max(0, Math.min(1, -vec3Dot(left, delta) / denominator))
+      : 0;
+  return Math.hypot(
+    left[0] + delta[0] * parameter,
+    left[1] + delta[1] * parameter,
+    left[2] + delta[2] * parameter,
+  );
+};
 const validateCompiledTrackDataInput: (
   value: unknown,
 ) => asserts value is CompiledTrackDataInput = (value) => {
@@ -228,6 +245,14 @@ const validateCompiledTrackDataInput: (
   for (let index = 0; index < zoneMasks.length; index += 1)
     if (names.length < 32 && zoneMasks[index]! >>> names.length !== 0)
       invalidCompiledTrackData(`zoneMasks[${index}] contains unknown zones`);
+  for (let index = 1; index < count; index += 1) {
+    const previous = readVec3(tangents, index - 1);
+    const current = readVec3(tangents, index);
+    if (minimumInterpolatedTangentLength(previous, current) < 1e-12)
+      invalidCompiledTrackData(
+        `adjacent tangent interpolation must remain non-zero between samples ${index - 1} and ${index}`,
+      );
+  }
   for (let index = 0; index < count; index += 1) {
     const tangent = readVec3(tangents, index);
     const normal = readVec3(normals, index);
