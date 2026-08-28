@@ -114,55 +114,75 @@ export function createRendererHandle(
     return null;
   }
 
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  const enableShadows = options.enableShadows ?? true;
-  renderer.shadowMap.enabled = enableShadows;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // transactional setup after renderer allocation – any throw disposes renderer + scene
+  let scene: THREE.Scene | null = null;
+  try {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    const enableShadows = options.enableShadows ?? true;
+    renderer.shadowMap.enabled = enableShadows;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  const getDprNow = (): number => {
-    const maybeWin = globalThis as unknown as {
-      devicePixelRatio?: number;
-      window?: { devicePixelRatio?: number };
+    const getDprNow = (): number => {
+      const maybeWin = globalThis as unknown as {
+        devicePixelRatio?: number;
+        window?: { devicePixelRatio?: number };
+      };
+      const raw =
+        maybeWin.window?.devicePixelRatio ?? maybeWin.devicePixelRatio ?? 1;
+      return Math.min(raw, dprCap);
     };
-    const raw =
-      maybeWin.window?.devicePixelRatio ?? maybeWin.devicePixelRatio ?? 1;
-    return Math.min(raw, dprCap);
-  };
-  const dpr = getDprNow();
-  renderer.setPixelRatio(dpr);
+    const dpr = getDprNow();
+    renderer.setPixelRatio(dpr);
 
-  const scene = buildScene(options.terrainSeed ?? "default-terrain");
+    scene = buildScene(options.terrainSeed ?? "default-terrain");
 
-  const resize = (width: number, height: number): void => {
-    renderer?.setSize(width, height, false);
-    renderer?.setPixelRatio(getDprNow());
-  };
+    const localScene = scene;
+    const localRenderer = renderer;
+    const resize = (width: number, height: number): void => {
+      localRenderer?.setSize(width, height, false);
+      localRenderer?.setPixelRatio(getDprNow());
+    };
 
-  const dispose = (): void => {
-    disposeScene(scene);
+    const dispose = (): void => {
+      disposeScene(localScene);
+      try {
+        localRenderer?.dispose();
+      } catch {
+        // ignore
+      }
+    };
+
     try {
-      renderer?.dispose();
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) resize(rect.width, rect.height);
     } catch {
       // ignore
     }
-  };
 
-  try {
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) resize(rect.width, rect.height);
-  } catch {
-    // ignore
+    return {
+      scene: localScene,
+      renderer: localRenderer,
+      dispose,
+      resize,
+      getDpr: () => getDprNow(),
+    };
+  } catch (e) {
+    if (scene) {
+      try {
+        disposeScene(scene);
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      renderer.dispose();
+    } catch {
+      // ignore
+    }
+    throw e;
   }
-
-  return {
-    scene,
-    renderer,
-    dispose,
-    resize,
-    getDpr: () => getDprNow(),
-  };
 }
 
 export function disposeScene(scene: THREE.Scene): void {

@@ -512,10 +512,18 @@ const lifecycle = createAppLifecycle({
   },
 });
 
-function syncReadyDowngrade(ok: boolean): void {
-  if (!ok && state.generationStatus === "ready" && !lifecycle.hasTrack()) {
+function truthfulDowngrade(): void {
+  if (
+    !lifecycle.hasTrack() &&
+    (state.generationStatus === "ready" ||
+      state.generationStatus === "generating")
+  ) {
     state.generationStatus = "error";
   }
+}
+
+function syncReadyDowngrade(ok: boolean): void {
+  if (!ok) truthfulDowngrade();
 }
 
 function initRenderer(): void {
@@ -542,6 +550,8 @@ webglRetry.addEventListener("click", () => {
       }
     }
   } else {
+    truthfulDowngrade();
+    render();
     const p = webglFallback.querySelector("p");
     if (p) {
       p.textContent =
@@ -561,7 +571,11 @@ function attachCompiledTrack(
 ): void {
   if (!lifecycle.getController() || !lifecycle.getRendererHandle()) {
     const ok = lifecycle.reinitialize();
-    if (!ok) return;
+    if (!ok) {
+      syncReadyDowngrade(ok);
+      render();
+      return;
+    }
   }
   try {
     lifecycle.attachTrack(data, {
@@ -570,7 +584,8 @@ function attachCompiledTrack(
       timeline: options.timeline,
     });
   } catch {
-    // transactional attachTrack rejected – do not mark ready, keep truthful status
+    // transactional attachTrack rejected – do not mark ready, downgrade truthfully
+    syncReadyDowngrade(false);
     render();
     return;
   }

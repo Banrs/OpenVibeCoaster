@@ -105,88 +105,224 @@ export function createRendererController(
       validateTimeline(options.timeline);
     }
     clearTrack();
-    trackData = data;
-    currentMetric = options.metric ?? "height";
-    currentMetricData = options.metricData;
-    selectedElementIndex = options.selectedElementIndex;
-    seamIndices = options.seamIndices;
+    // transactional construction – allocate locally first, commit only on full success
+    let built: ReturnType<typeof buildTrackGeometries> | null = null;
+    let leftMat: THREE.Material | null = null;
+    let rightMat: THREE.Material | null = null;
+    let spineMat: THREE.Material | null = null;
+    let tiesMat: THREE.Material | null = null;
+    let trackMeshesLocal: THREE.Mesh[] = [];
+    let supportMeshesLocal: THREE.Mesh[] = [];
+    let trainGroupLocal: TrainGroup | null = null;
+    try {
+      trackData = data;
+      currentMetric = options.metric ?? "height";
+      currentMetricData = options.metricData;
+      selectedElementIndex = options.selectedElementIndex;
+      seamIndices = options.seamIndices;
 
-    const built = buildTrackGeometries(data, {
-      metric: currentMetric,
-      ...(currentMetricData !== undefined
-        ? { metricData: currentMetricData }
-        : {}),
-      ...(selectedElementIndex !== undefined ? { selectedElementIndex } : {}),
-      ...(seamIndices !== undefined ? { seamIndices } : {}),
-    });
-    lastMetricAvailable = built.metricAvailable;
+      built = buildTrackGeometries(data, {
+        metric: currentMetric,
+        ...(currentMetricData !== undefined
+          ? { metricData: currentMetricData }
+          : {}),
+        ...(selectedElementIndex !== undefined ? { selectedElementIndex } : {}),
+        ...(seamIndices !== undefined ? { seamIndices } : {}),
+      });
+      lastMetricAvailable = built.metricAvailable;
 
-    const env = handle.scene.userData.terrainEnv as unknown as
-      { raycast?: unknown } | undefined;
+      const env = handle.scene.userData.terrainEnv as unknown as
+        { raycast?: unknown } | undefined;
 
-    const leftMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.52,
-      metalness: 0.12,
-    });
-    const rightMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.52,
-      metalness: 0.12,
-    });
-    const spineMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.6,
-      metalness: 0.08,
-    });
-    const tiesMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.9,
-      metalness: 0.02,
-    });
+      leftMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.52,
+        metalness: 0.12,
+      });
+      rightMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.52,
+        metalness: 0.12,
+      });
+      spineMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.6,
+        metalness: 0.08,
+      });
+      tiesMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.9,
+        metalness: 0.02,
+      });
 
-    const mk = (
-      geom: THREE.BufferGeometry,
-      mat: THREE.Material,
-      name: string,
-    ): THREE.Mesh => {
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.name = name;
-      mesh.userData.isTrack = true;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      return mesh;
-    };
+      const mk = (
+        geom: THREE.BufferGeometry,
+        mat: THREE.Material,
+        name: string,
+      ): THREE.Mesh => {
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.name = name;
+        mesh.userData.isTrack = true;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        return mesh;
+      };
 
-    const left = mk(built.leftRail, leftMat, "leftRail");
-    const right = mk(built.rightRail, rightMat, "rightRail");
-    const spine = mk(built.spine, spineMat, "spine");
-    const ties = mk(built.ties, tiesMat, "ties");
+      const left = mk(built.leftRail, leftMat, "leftRail");
+      const right = mk(built.rightRail, rightMat, "rightRail");
+      const spine = mk(built.spine, spineMat, "spine");
+      const ties = mk(built.ties, tiesMat, "ties");
 
-    trackMeshes = [left, right, spine, ties];
-    for (const m of trackMeshes) handle.scene.add(m);
+      trackMeshesLocal = [left, right, spine, ties];
+      for (const m of trackMeshesLocal) handle.scene.add(m);
 
-    if (env && typeof (env as { raycast?: unknown }).raycast === "function") {
-      const supports = buildSupportColumns(
-        data,
-        env as unknown as EnvironmentQuery,
-        10,
-      );
-      supportMeshes = supports.meshes;
-      for (const s of supportMeshes) handle.scene.add(s);
+      if (env && typeof (env as { raycast?: unknown }).raycast === "function") {
+        const supports = buildSupportColumns(
+          data,
+          env as unknown as EnvironmentQuery,
+          10,
+        );
+        supportMeshesLocal = supports.meshes;
+        for (const s of supportMeshesLocal) handle.scene.add(s);
+      }
+
+      trainGroupLocal = createTrainGroup();
+      handle.scene.add(trainGroupLocal.group);
+
+      // commit ownership
+      trackMeshes = trackMeshesLocal;
+      supportMeshes = supportMeshesLocal;
+      trainGroup = trainGroupLocal;
+      // prevent double-dispose in catch
+      built = null;
+      leftMat = null;
+      rightMat = null;
+      spineMat = null;
+      tiesMat = null;
+      trackMeshesLocal = [];
+      supportMeshesLocal = [];
+      trainGroupLocal = null;
+
+      // timeline owns documented initialization – apply first distance/speed directly
+      if (options.timeline && options.timeline.distances.length > 0) {
+        const d0 = options.timeline.distances[0] ?? 0;
+        const s0 = options.timeline.speeds[0] ?? 0;
+        playbackDistance = d0;
+        playbackSpeed = s0;
+      }
+      // initial placement
+      updatePlayback(playbackDistance, playbackSpeed);
+    } catch (e) {
+      // dispose partially allocated geometry/material/support/train before rethrowing
+      if (built) {
+        try {
+          built.leftRail.dispose();
+        } catch {
+          // ignore
+        }
+        try {
+          built.rightRail.dispose();
+        } catch {
+          // ignore
+        }
+        try {
+          built.spine.dispose();
+        } catch {
+          // ignore
+        }
+        try {
+          built.ties.dispose();
+        } catch {
+          // ignore
+        }
+      }
+      for (const mat of [leftMat, rightMat, spineMat, tiesMat]) {
+        if (mat) {
+          try {
+            mat.dispose();
+          } catch {
+            // ignore
+          }
+        }
+      }
+      for (const m of trackMeshesLocal) {
+        try {
+          handle.scene.remove(m);
+        } catch {
+          // ignore
+        }
+        try {
+          m.geometry.dispose();
+        } catch {
+          // ignore
+        }
+        const mat = m.material as THREE.Material | THREE.Material[];
+        const mats = Array.isArray(mat) ? mat : [mat];
+        for (const mm of mats) {
+          try {
+            mm.dispose();
+          } catch {
+            // ignore
+          }
+        }
+      }
+      for (const s of supportMeshesLocal) {
+        try {
+          handle.scene.remove(s);
+        } catch {
+          // ignore
+        }
+        try {
+          s.geometry.dispose();
+        } catch {
+          // ignore
+        }
+        const mat = s.material as THREE.Material | THREE.Material[];
+        const mats = Array.isArray(mat) ? mat : [mat];
+        for (const mm of mats) {
+          try {
+            mm.dispose();
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (trainGroupLocal) {
+        try {
+          handle.scene.remove(trainGroupLocal.group);
+        } catch {
+          // ignore
+        }
+        for (const car of trainGroupLocal.cars) {
+          for (const child of car.children) {
+            const mesh = child as THREE.Mesh;
+            try {
+              mesh.geometry.dispose();
+            } catch {
+              // ignore
+            }
+            const mat = (mesh as unknown as { material?: THREE.Material })
+              .material;
+            if (mat) {
+              try {
+                mat.dispose();
+              } catch {
+                // ignore
+              }
+            }
+          }
+        }
+      }
+      // reset authoritative state truthfully – no usable track
+      trackData = null;
+      trackMeshes = [];
+      supportMeshes = [];
+      trainGroup = null;
+      lastMetricAvailable = null;
+      playbackDistance = 0;
+      playbackSpeed = 0;
+      throw e;
     }
-
-    trainGroup = createTrainGroup();
-    handle.scene.add(trainGroup.group);
-    // timeline owns documented initialization – apply first distance/speed directly
-    if (options.timeline && options.timeline.distances.length > 0) {
-      const d0 = options.timeline.distances[0] ?? 0;
-      const s0 = options.timeline.speeds[0] ?? 0;
-      playbackDistance = d0;
-      playbackSpeed = s0;
-    }
-    // initial placement
-    updatePlayback(playbackDistance, playbackSpeed);
   };
 
   const clearTrack = (): void => {

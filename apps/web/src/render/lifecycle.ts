@@ -43,6 +43,7 @@ export interface AppLifecycle {
   getRendererHandle(): RendererHandle | null;
   getCamera(): THREE.PerspectiveCamera | null;
   getAttachment(): AttachmentSnapshot | null;
+  getPendingAttachment(): AttachmentSnapshot | null;
   getRafId(): number | null;
   getResizeHandler(): (() => void) | null;
   hasTrack(): boolean;
@@ -71,6 +72,10 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   let resizeHandler: (() => void) | null = null;
   let attachment: AttachmentSnapshot | null = null;
   let lastPlayback: { distance: number; speed: number } | null = null;
+  // pending retry semantics: when no controller exists, attachTrack stores pending
+  // and does NOT overwrite last-known-good attachment until a controller successfully builds it
+  let pendingAttachment: AttachmentSnapshot | null = null;
+  let pendingPlayback: { distance: number; speed: number } | null = null;
   let lastFrameMs = 0;
 
   const getWin = (): Window & typeof globalThis =>
@@ -213,18 +218,30 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     camera = localCamera;
     controller = localController;
     setGlobal(controller);
-    // reattach preserved authoritative attachment if any – transactional
-    if (attachment) {
+    // reattach authoritative attachment – pending takes precedence, transactional
+    const targetAttachment = pendingAttachment ?? attachment;
+    const targetPlayback = pendingAttachment ? pendingPlayback : lastPlayback;
+    if (targetAttachment) {
       try {
-        controller.attachTrack(attachment.data, attachment.options);
-        if (lastPlayback) {
-          controller.updatePlayback(lastPlayback.distance, lastPlayback.speed);
+        controller.attachTrack(targetAttachment.data, targetAttachment.options);
+        if (targetPlayback) {
+          controller.updatePlayback(
+            targetPlayback.distance,
+            targetPlayback.speed,
+          );
         }
       } catch {
-        // reattachment failed – clean up new controller/handle/camera transactionally
+        // reattachment failed – clean up new controller/handle/camera transactionally, keep pending/attachment for retry
         disposeHandles();
         clearGlobal();
         return false;
+      }
+      // success – if pending was used, promote it to last-known-good
+      if (pendingAttachment) {
+        attachment = pendingAttachment;
+        lastPlayback = pendingPlayback;
+        pendingAttachment = null;
+        pendingPlayback = null;
       }
     }
     return true;
@@ -369,6 +386,8 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     clearGlobal();
     attachment = null;
     lastPlayback = null;
+    pendingAttachment = null;
+    pendingPlayback = null;
   };
 
   const reinitialize = (): boolean => {
@@ -471,23 +490,34 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       attachment = snapshot;
       lastPlayback = nextPlayback;
     } else {
-      // No controller yet (pending lifecycle) – validate timeline but commit for future retry
+      // No controller yet (pending lifecycle) – validate but do NOT overwrite last-known-good
+      // Store as pending so prior snapshot is preserved until a controller successfully builds the replacement
       validateTimelineSnapshot(options.timeline);
-      // still attempt to catch mesh-build failure on next init; for now commit
-      attachment = snapshot;
-      lastPlayback = nextPlayback;
+      pendingAttachment = snapshot;
+      pendingPlayback = nextPlayback;
     }
   };
 
   const clearTrackInternal = (): void => {
     attachment = null;
     lastPlayback = null;
+    pendingAttachment = null;
+    pendingPlayback = null;
     controller?.clearTrack();
   };
 
   const updatePlayback = (distance: number, speed: number): void => {
-    lastPlayback = { distance, speed };
-    controller?.updatePlayback(distance, speed);
+    if (controller) {
+      lastPlayback = { distance, speed };
+      controller.updatePlayback(distance, speed);
+    } else {
+      // no controller – update pending playback if pending exists, else lastPlayback for next pending
+      if (pendingAttachment) {
+        pendingPlayback = { distance, speed };
+      } else {
+        lastPlayback = { distance, speed };
+      }
+    }
   };
 
   const setMetric = (metric: MetricId, metricData?: MetricData): void => {
@@ -553,6 +583,13 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     getAttachment: () =>
       attachment
         ? { data: attachment.data, options: { ...attachment.options } }
+        : null,
+    getPendingAttachment: () =>
+      pendingAttachment
+        ? {
+            data: pendingAttachment.data,
+            options: { ...pendingAttachment.options },
+          }
         : null,
     getRafId: () => rafId,
     getResizeHandler: () => resizeHandler,

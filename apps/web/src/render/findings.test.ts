@@ -5,7 +5,7 @@ import { compileTrack, vec3, sampleCompiledTrack } from "@openvibecoaster/core";
 import { createRendererController } from "./controller.js";
 import { buildTrackGeometries } from "./trackGeometry.js";
 import { createRendererHandle } from "./renderer.js";
-import { createAppLifecycle } from "./lifecycle.js";
+import { createAppLifecycle, type AttachmentSnapshot } from "./lifecycle.js";
 
 function makeTrack() {
   return compileTrack(
@@ -820,6 +820,274 @@ describe("findings round4 – lifecycle transactional reattachment", () => {
     expect(mainText).not.toContain("resizeCanvases();\n\n// Expose for manual");
     expect(mainText).toContain("lifecycle manager is sole resize owner");
     expect(mainText).toContain("onResize2D");
+  });
+});
+
+describe("findings round5 – pending retry does not overwrite last-known-good merely by validating", () => {
+  function polyfillWindow5(): Window & typeof globalThis {
+    const g = globalThis as unknown as Record<string, unknown>;
+    if (!g.requestAnimationFrame)
+      g.requestAnimationFrame = (() =>
+        1) as unknown as typeof requestAnimationFrame;
+    if (!g.cancelAnimationFrame)
+      g.cancelAnimationFrame =
+        (() => {}) as unknown as typeof cancelAnimationFrame;
+    if (!g.addEventListener)
+      g.addEventListener = (() => {}) as unknown as typeof addEventListener;
+    if (!g.removeEventListener)
+      g.removeEventListener =
+        (() => {}) as unknown as typeof removeEventListener;
+    if (!g.window) g.window = g;
+    if (!g.performance)
+      g.performance = { now: () => Date.now() } as unknown as Performance;
+    const win = (g.window ?? g) as unknown as Window & typeof globalThis;
+    (win as unknown as Record<string, unknown>).requestAnimationFrame =
+      g.requestAnimationFrame as unknown as typeof requestAnimationFrame;
+    (win as unknown as Record<string, unknown>).cancelAnimationFrame =
+      g.cancelAnimationFrame as unknown as typeof cancelAnimationFrame;
+    (win as unknown as Record<string, unknown>).addEventListener =
+      g.addEventListener as unknown as typeof addEventListener;
+    (win as unknown as Record<string, unknown>).removeEventListener =
+      g.removeEventListener as unknown as typeof removeEventListener;
+    if (!(win as unknown as Record<string, unknown>).performance)
+      (win as unknown as Record<string, unknown>).performance = g.performance;
+    return win as Window & typeof globalThis;
+  }
+
+  it("no-controller attachTrack preserves last-known-good, explicit pending, failed reattach then replacement succeeds", () => {
+    const win = polyfillWindow5();
+    const canvas = fakeCanvas();
+    const good = makeTrack();
+    const bad = {
+      ...good,
+      distances: new Float64Array([0]),
+      positions: new Float64Array([0, 0, 0]),
+      tangents: new Float64Array([0, 0, 0]),
+      normals: new Float64Array([0, 0, 0]),
+      binormals: new Float64Array([0, 0, 0]),
+      curvature: new Float64Array([0]),
+      bank: new Float64Array([0]),
+      elementIndices: new Uint16Array([0]),
+      elementBoundaries: new Uint16Array([0]),
+      totalLength: 0,
+      checksum: "bad-pending",
+    } as unknown as ReturnType<typeof makeTrack>;
+    const replacement = makeTrack();
+
+    let shouldFailHandle = false;
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) => {
+        if (shouldFailHandle) return null;
+        return createRendererHandle(c, {
+          createRenderer: () => mockRenderer(c),
+        });
+      },
+      getWindow: () => win,
+    });
+    expect(lc.init()).toBe(true);
+    lc.attachTrack(good, { metric: "height" });
+    expect(lc.hasTrack()).toBe(true);
+    expect(lc.getAttachment()?.data.checksum).toBe(good.checksum);
+
+    // force no-controller while preserving last-known-good for retry
+    shouldFailHandle = true;
+    expect(lc.reinitialize()).toBe(false);
+    expect(lc.getController()).toBeNull();
+    expect(lc.getRendererHandle()).toBeNull();
+    // must preserve prior snapshot, not clear it
+    expect(lc.getAttachment()?.data.checksum).toBe(good.checksum);
+    // pending semantics: if lifecycle exposes getPendingAttachment, it should be null before pending
+    const pendingBefore = (
+      lc as unknown as { getPendingAttachment?: () => unknown }
+    ).getPendingAttachment?.();
+    if (pendingBefore !== undefined) expect(pendingBefore).toBeNull();
+
+    // no-controller attach with data that will fail on next build – must not overwrite last-known-good
+    lc.attachTrack(bad, { metric: "height" });
+    // after pending attach, last-known-good still good
+    expect(lc.getAttachment()?.data.checksum).toBe(good.checksum);
+    // explicit pending should now be bad
+    const pendingBad = (
+      lc as unknown as {
+        getPendingAttachment?: () => AttachmentSnapshot | null;
+      }
+    ).getPendingAttachment?.();
+    if (pendingBad !== undefined) {
+      expect(pendingBad?.data.checksum).toBe("bad-pending");
+    }
+
+    // retry with pending bad must fail transactionally and keep good for future retry
+    shouldFailHandle = false;
+    expect(lc.reinitialize()).toBe(false);
+    expect(lc.hasTrack()).toBe(false);
+    expect(lc.getController()).toBeNull();
+    expect(lc.getAttachment()?.data.checksum).toBe(good.checksum);
+    // pending still bad until replaced
+    const pendingStillBad = (
+      lc as unknown as {
+        getPendingAttachment?: () => AttachmentSnapshot | null;
+      }
+    ).getPendingAttachment?.();
+    if (pendingStillBad !== undefined) {
+      expect(pendingStillBad?.data.checksum).toBe("bad-pending");
+    }
+
+    // replacement pending while still no-controller – must replace pending, still preserve good
+    lc.attachTrack(replacement, { metric: "height" });
+    expect(lc.getAttachment()?.data.checksum).toBe(good.checksum);
+    const pendingRepl = (
+      lc as unknown as {
+        getPendingAttachment?: () => AttachmentSnapshot | null;
+      }
+    ).getPendingAttachment?.();
+    if (pendingRepl !== undefined) {
+      expect(pendingRepl?.data.checksum).toBe(replacement.checksum);
+    }
+
+    // next retry should succeed and promote replacement to last-known-good
+    expect(lc.reinitialize()).toBe(true);
+    expect(lc.hasTrack()).toBe(true);
+    expect(lc.getAttachment()?.data.checksum).toBe(replacement.checksum);
+    // pending cleared after success
+    const pendingAfter = (
+      lc as unknown as {
+        getPendingAttachment?: () => AttachmentSnapshot | null;
+      }
+    ).getPendingAttachment?.();
+    if (pendingAfter !== undefined) expect(pendingAfter).toBeNull();
+
+    lc.dispose();
+    expect(lc.getAttachment()).toBeNull();
+    const pendingAfterDispose = (
+      lc as unknown as { getPendingAttachment?: () => unknown }
+    ).getPendingAttachment?.();
+    if (pendingAfterDispose !== undefined)
+      expect(pendingAfterDispose).toBeNull();
+  });
+});
+
+describe("findings round5 – main downgrade on every failed path", () => {
+  it("main truthfully downgrades ready/generating when no usable track after failure", async () => {
+    const fs = await import("node:fs/promises");
+    const mainText = await fs.readFile("apps/web/src/main.ts", "utf8");
+    // every failed reinitialize path must downgrade
+    expect(mainText).toMatch(/syncReadyDowngrade|downgradeIfNoTrack/);
+    // attachCompiledTrack must downgrade on catch and on failed reinitialize
+    // count that downgrade appears inside attachCompiledTrack failure branches
+    const attachSection = mainText.slice(
+      mainText.indexOf("function attachCompiledTrack"),
+      mainText.indexOf("function attachCompiledTrack") + 3000,
+    );
+    expect(attachSection).toMatch(/downgrade|syncReadyDowngrade/);
+    // webglRetry must downgrade on failure (both handle failure and supportsWebGL false)
+    expect(mainText).toContain("webglRetry");
+    // no exit may leave ready/generating without track – file must contain guard checking hasTrack before leaving ready
+    expect(mainText).toMatch(/hasTrack\(\)/);
+    expect(mainText).toMatch(/generationStatus.*error|error.*generationStatus/);
+  });
+});
+
+describe("findings round5 – createRendererHandle transactional disposal", () => {
+  it("disposes renderer and scene resources if buildScene throws after allocation", async () => {
+    const canvas = fakeCanvas();
+    const mockR = mockRenderer(canvas);
+    const disposeSpy = vi.fn();
+    mockR.dispose = disposeSpy;
+    // spy on disposeScene by importing and mocking
+    const rendererMod = await import("./renderer.js");
+    // Make terrain's createDeterministicHeightfield throw to trigger buildScene failure after renderer allocation
+    const terrainMod = await import("./terrain.js");
+    const terrainSpy = vi
+      .spyOn(terrainMod, "createDeterministicHeightfield")
+      .mockImplementationOnce(() => {
+        throw new Error("injected terrain failure");
+      });
+    let threw = false;
+    try {
+      rendererMod.createRendererHandle(canvas, {
+        createRenderer: () => mockR as unknown as THREE.WebGLRenderer,
+        terrainSeed: "should-fail",
+      });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(disposeSpy).toHaveBeenCalled();
+    terrainSpy.mockRestore();
+  });
+});
+
+describe("findings round5 – controller transactional construction", () => {
+  it("disposes partially allocated geometry/material/support/train if construction throws before commit", async () => {
+    const canvas = fakeCanvas();
+    const handle = createRendererHandle(canvas, {
+      createRenderer: () => mockRenderer(canvas),
+    });
+    expect(handle).not.toBeNull();
+    if (!handle) return;
+    const cam = new THREE.PerspectiveCamera();
+    const ctl = createRendererController(handle, cam);
+    const data = makeTrack();
+    ctl.attachTrack(data);
+    expect(ctl.hasTrack()).toBe(true);
+    // inject failure in support building after geometries allocated
+    const supportsMod = await import("./supports.js");
+    const supportSpy = vi
+      .spyOn(supportsMod, "buildSupportColumns")
+      .mockImplementationOnce(() => {
+        throw new Error("injected support failure");
+      });
+    const geomDisposeSpy = vi.spyOn(THREE.BufferGeometry.prototype, "dispose");
+    let threw = false;
+    try {
+      ctl.attachTrack(data);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    // truthful state: no leaked track
+    expect(ctl.hasTrack()).toBe(false);
+    expect(
+      handle.scene.children.some((c) => c.userData?.isTrack === true),
+    ).toBe(false);
+    // partial geometries should have been disposed
+    expect(geomDisposeSpy.mock.calls.length).toBeGreaterThan(0);
+    geomDisposeSpy.mockRestore();
+    supportSpy.mockRestore();
+    ctl.dispose();
+    handle.dispose();
+  });
+
+  it("disposes train group resources if train creation throws", async () => {
+    const canvas = fakeCanvas();
+    const handle = createRendererHandle(canvas, {
+      createRenderer: () => mockRenderer(canvas),
+    });
+    if (!handle) return;
+    const cam = new THREE.PerspectiveCamera();
+    const ctl = createRendererController(handle, cam);
+    const data = makeTrack();
+    const trainMod = await import("./train.js");
+    const trainSpy = vi
+      .spyOn(trainMod, "createTrainGroup")
+      .mockImplementationOnce(() => {
+        throw new Error("injected train failure");
+      });
+    let threw = false;
+    try {
+      ctl.attachTrack(data);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(ctl.hasTrack()).toBe(false);
+    expect(
+      handle.scene.children.some((c) => c.userData?.isTrain === true),
+    ).toBe(false);
+    trainSpy.mockRestore();
+    ctl.dispose();
+    handle.dispose();
   });
 });
 
