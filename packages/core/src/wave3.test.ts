@@ -181,6 +181,63 @@ describe("wave 3 core contracts", () => {
     ).toThrow("target: expected finite number");
   });
 
+  it("rejects vector constraint values for scalar constraint kinds", () => {
+    for (const kind of ["max-height", "min-height", "track-clearance"])
+      expect(() =>
+        validateDesignIntentV1({
+          ...intent,
+          constraints: [
+            { id: kind, kind, value: [0, 0, 0] as const, hard: true },
+          ],
+        }),
+      ).toThrow(`constraints[0].value: expected finite number`);
+  });
+
+  it("keeps legacy gates, enforces their three-gate limit, and rejects unknown strict spans", () => {
+    const legacy = {
+      schemaVersion: 1,
+      name: "legacy",
+      seed: 1,
+      design: {
+        elements: [],
+        gates: [
+          { id: "a", at: 0, kind: "gate" },
+          { id: "b", at: 1, kind: "gate" },
+          { id: "c", at: 2, kind: "gate" },
+          { id: "d", at: 3, kind: "gate" },
+        ],
+      },
+    };
+    expect(() => deserializeCoasterFileV1(JSON.stringify(legacy))).toThrow(
+      "design.gates: expected at most 3 items",
+    );
+
+    const emptyIntent = { ...intent, elements: [], gates: [] };
+    const span = {
+      id: "unknown",
+      kind: "station",
+      length: 1,
+      positionCoefficients: SeventhOrderHermiteSpan.line(
+        vec3(0, 0, 0),
+        vec3(1, 0, 0),
+      ).coefficients,
+      rollCoefficients: QuinticScalarSpan.fromCoefficients([0, 0, 0, 0, 0, 0])
+        .coefficients,
+    };
+    expect(() =>
+      createCoasterFileV1({
+        name: "empty",
+        intent: emptyIntent,
+        solvedSpans: [span],
+        seed: emptyIntent.seed,
+        generatorVersion: emptyIntent.generatorVersion,
+        profileVersion: "profile-v1",
+        researchSnapshotIds: [],
+        compiledDataChecksum: "00000000",
+      }),
+    ).toThrow("solvedSpans[0].id");
+  });
+
   it("provides signed solid samples and finite terrain bounds", () => {
     const environment = new HeightfieldEnvironment({
       width: 2,

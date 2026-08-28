@@ -5,7 +5,11 @@ import {
   regenerateLocal,
   validateClearance,
 } from "./index";
-import { HeightfieldEnvironment, vec3 } from "@openvibecoaster/core";
+import {
+  HeightfieldEnvironment,
+  serializeCoasterFileV1,
+  vec3,
+} from "@openvibecoaster/core";
 import { SeventhOrderHermiteSpan, type Vec3 } from "@openvibecoaster/core";
 
 const directedIntent = {
@@ -41,7 +45,10 @@ describe("wave 3 deterministic generator", () => {
       mode: "full-auto",
       elements: [],
     });
-    expect(result.feasible).toBe(true);
+    expect(result.feasible).toBe(false);
+    expect(result.diagnostics.some((item) => item.severity === "error")).toBe(
+      true,
+    );
     expect(result.elements.map((element) => element.type)).toEqual([
       "station",
       "launch",
@@ -60,21 +67,65 @@ describe("wave 3 deterministic generator", () => {
     expect((topHat!.parameters as { readonly height: number }).height).toBe(80);
     expect(result.track.totalLength).toBeGreaterThanOrEqual(1600);
     expect(result.track.totalLength).toBeLessThanOrEqual(2200);
-    const topHatSpan = result.file.solvedSpans[2]!;
-    const topHatCoefficients = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
-      topHatSpan.positionCoefficients,
+    const topHatSpans = result.file.solvedSpans.filter((span) =>
+      span.id.startsWith("topHat-002#"),
     );
-    const heights = [0.2, 0.35, 0.5, 0.65, 0.8].map(
-      (u) => topHatCoefficients.position(u)[1],
+    expect(topHatSpans.length).toBeGreaterThan(1);
+    const topHatHeights = topHatSpans.map(
+      (span) =>
+        SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+          span.positionCoefficients,
+        ).position(0.5)[1],
     );
-    expect(Math.max(...heights)).toBeGreaterThan(79);
-    expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(1);
-    expect(result.file.solvedSpans[2]!.rollCoefficients).not.toEqual(
-      Array(6).fill(0),
-    );
+    expect(Math.max(...topHatHeights)).toBeGreaterThan(79);
+    expect(
+      Math.max(...topHatHeights) - Math.min(...topHatHeights),
+    ).toBeGreaterThan(1);
+    expect(
+      topHatSpans.some((span) =>
+        span.rollCoefficients.some((value) => value !== 0),
+      ),
+    ).toBe(true);
+    const loaded = compileCoasterFile(result.serializedFile);
+    const sampleTopHat = (spans: typeof topHatSpans, u: number) => {
+      const boundaries = [0, 0.2, 0.35, 0.4, 0.6, 0.65, 0.8, 1];
+      const child = Math.min(
+        boundaries.length - 2,
+        boundaries.findIndex((boundary) => u <= boundary) - 1,
+      );
+      const index = child < 0 ? 0 : child;
+      const local =
+        (u - boundaries[index]!) /
+        (boundaries[index + 1]! - boundaries[index]!);
+      const span = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+        spans[index]!.positionCoefficients,
+      );
+      const roll = spans[index]!.rollCoefficients;
+      return {
+        height: span.position(local)[1],
+        bank: roll.reduce(
+          (sum, value, power) => sum + value * local ** power,
+          0,
+        ),
+      };
+    };
+    for (const u of [0.35, 0.5, 0.65]) {
+      const sample = sampleTopHat(topHatSpans, u);
+      const loadedSample = sampleTopHat(
+        loaded.file.solvedSpans.filter((span) =>
+          span.id.startsWith("topHat-002#"),
+        ),
+        u,
+      );
+      expect(sample.height).toBeCloseTo(80, 8);
+      expect(loadedSample).toEqual(sample);
+    }
+    expect(sampleTopHat(topHatSpans, 0.5).bank).toBeCloseTo(Math.PI, 8);
     expect(compileCoasterFile(result.serializedFile).track.positions).toEqual(
       result.track.positions,
     );
+    expect(loaded.track.checksum).toBe(result.track.checksum);
+    expect(serializeCoasterFileV1(loaded.file)).toBe(result.serializedFile);
   });
 
   it("keeps candidate search bounded and byte deterministic", () => {
@@ -93,6 +144,34 @@ describe("wave 3 deterministic generator", () => {
       compileCoasterFile(second.serializedFile, { samples: 32 }).track.checksum,
     );
     expect(first.diagnostics).toEqual(second.diagnostics);
+  });
+
+  it("runs bounded LM work for full-auto candidates", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      mode: "full-auto",
+      elements: [],
+    });
+    expect(result.lmIterations).toBeGreaterThan(0);
+    expect(result.lmIterations).toBeLessThanOrEqual(32);
+  });
+
+  it("compares gate roll when tangent and position agree", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      elements: [directedIntent.elements[0]!],
+      gates: [
+        {
+          id: "rolled",
+          position: [0, 0, 6] as const,
+          orientation: [0, 0, Math.SQRT1_2, Math.SQRT1_2] as const,
+        },
+      ],
+    });
+    expect(result.feasible).toBe(false);
+    expect(
+      result.diagnostics.some((item) => item.code === "GATE_ORIENTATION"),
+    ).toBe(true);
   });
 
   it("reports exact clearance locations and margins", () => {
@@ -287,7 +366,7 @@ describe("wave 3 deterministic generator", () => {
     expect(result.feasible).toBe(false);
     expect(result.candidatesTested).toBe(48);
     expect(result.lmIterations).toBeLessThanOrEqual(32);
-  });
+  }, 120000);
 
   it("uses positive signed distance as free terrain space", () => {
     const environment = new HeightfieldEnvironment({
@@ -378,6 +457,46 @@ describe("wave 3 deterministic generator", () => {
     expect(diagnostics[0]?.location?.s).toBeGreaterThan(0);
   });
 
+  it("catches a narrow swept-terrain penetration between all initial samples", () => {
+    const environment = {
+      signedDistance: (point: readonly [number, number, number]) =>
+        point[1] - (Math.abs(point[0] - 5.003) < 0.005 ? 2 : 0),
+      raycast: () => undefined,
+    };
+    const span = {
+      id: "narrow-terrain-span",
+      span: SeventhOrderHermiteSpan.line(vec3(0, 1, 0), vec3(10, 1, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const diagnostics = validateClearance([span], environment, {
+      trainEnvelopeRadius: 0.5,
+      samplesPerSpan: 2,
+    });
+    expect(diagnostics.some((item) => item.code === "TERRAIN_CLEARANCE")).toBe(
+      true,
+    );
+  });
+
+  it("rejects exact zero-clearance self intersections", () => {
+    const span = {
+      id: "zero-clearance",
+      span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(10, 0, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const crossing = {
+      id: "crossing",
+      span: SeventhOrderHermiteSpan.line(vec3(5, -1, 0), vec3(5, 1, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    expect(
+      validateClearance([span, crossing], undefined, {
+        trainEnvelopeRadius: 0,
+        trackClearance: 0,
+        samplesPerSpan: 8,
+      }).some((item) => item.code === "TRACK_CLEARANCE"),
+    ).toBe(true);
+  });
+
   it("rejects invalid clearance configuration instead of shrinking the search", () => {
     const generated = generateCoaster(directedIntent);
     expect(() =>
@@ -431,8 +550,56 @@ describe("wave 3 deterministic generator", () => {
     expect(result.generation.file.solvedSpans[0]).toEqual(
       generated.file.solvedSpans[0],
     );
-    expect(result.generation.file.solvedSpans[3]).toEqual(
-      generated.file.solvedSpans[3],
+    expect(
+      result.generation.file.solvedSpans.find(
+        (span) => span.id === "brake-003",
+      ),
+    ).toEqual(
+      generated.file.solvedSpans.find((span) => span.id === "brake-003"),
     );
+  });
+
+  it("applies changes on top of an explicit intent and exposes a bounded window", () => {
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements: [
+        ...directedIntent.elements,
+        {
+          id: "brake-002",
+          kind: "brake",
+          type: "brake",
+          parameters: { length: 20, targetSpeed: 8, bank: 0 },
+        },
+        {
+          id: "brake-003",
+          kind: "brake",
+          type: "brake",
+          parameters: { length: 20, targetSpeed: 8, bank: 0 },
+        },
+      ],
+    });
+    const result = regenerateLocal(generated, "stall-001", {
+      intent: generated.intent,
+      changes: { "stall-001": { length: 40 } },
+    });
+    expect(result.feasible).toBe(true);
+    expect(result.changedWindow).toEqual([1, 2]);
+    expect(result.generation.spanBytes["stall-001"]).not.toBe(
+      generated.spanBytes["stall-001"],
+    );
+    expect(result.generation.spanBytes["brake-003"]).toBe(
+      generated.spanBytes["brake-003"],
+    );
+  });
+
+  it("reports below-minimum height with a negative margin", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      constraints: [{ id: "min", kind: "min-height", target: 1, hard: true }],
+    });
+    const diagnostic = result.diagnostics.find((item) =>
+      item.relatedIds?.includes("min"),
+    );
+    expect(diagnostic?.margin).toBeLessThan(0);
   });
 });

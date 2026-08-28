@@ -760,18 +760,18 @@ export const solveSemanticChain = (
         Math.max(1, bindings[index]!.upper - bindings[index]!.lower),
     ),
   ];
-  const initialResidual = residualAt(initial);
-  const optimized = initialResidual.every((value) => Math.abs(value) <= 1)
-    ? { variables: initial, iterations: 0 }
-    : boundedLevenbergMarquardt({
-        initial,
-        lower: bindings.map((binding) => binding.lower),
-        upper: bindings.map((binding) => binding.upper),
-        ...(options.maxIterations === undefined
-          ? {}
-          : { maxIterations: options.maxIterations }),
-        residual: residualAt,
-      });
+  const optimized =
+    bindings.length === 0
+      ? { variables: initial, iterations: 0 }
+      : boundedLevenbergMarquardt({
+          initial,
+          lower: bindings.map((binding) => binding.lower),
+          upper: bindings.map((binding) => binding.upper),
+          ...(options.maxIterations === undefined
+            ? {}
+            : { maxIterations: options.maxIterations }),
+          residual: residualAt,
+        });
   const state = stateFor(optimized.variables);
   const solvedSpans = [...state.solvedSpans];
   const seamDiagnostics = diagnoseSeams(state.solvedSpans, solveOptions);

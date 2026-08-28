@@ -238,6 +238,7 @@ export interface LocalRegenerationResult {
   readonly feasible: boolean;
   readonly generation: GenerationResult;
   readonly diagnostics: readonly Diagnostic[];
+  readonly changedWindow: readonly [number, number];
   readonly untouchedSpanHashes: Readonly<Record<string, string>>;
   readonly untouchedSpanBytes: Readonly<Record<string, string>>;
 }

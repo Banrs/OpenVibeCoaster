@@ -213,12 +213,22 @@ const validateElement = (value: unknown, path: string): void => {
 };
 const validateGate = (value: unknown, path: string): void => {
   const gate = record(value, path);
-  exactKeys(gate, ["id", "position", "orientation"], path);
+  exactKeys(
+    gate,
+    ["id", "position", "orientation", "at", "kind", "target", "pinned"],
+    path,
+  );
   if (string(gate.id, `${path}.id`).trim().length === 0)
     fail(`${path}.id`, "unique non-empty id");
-  vector(gate.position, `${path}.position`);
+  if (gate.position === undefined && gate.at === undefined)
+    fail(`${path}.position`, "3-vector");
+  if (gate.position !== undefined) vector(gate.position, `${path}.position`);
   if (gate.orientation !== undefined)
     quaternion(gate.orientation, `${path}.orientation`);
+  if (gate.at !== undefined) finite(gate.at, `${path}.at`);
+  if (gate.kind !== undefined) string(gate.kind, `${path}.kind`);
+  if (gate.target !== undefined) constraintValue(gate.target, `${path}.target`);
+  if (gate.pinned !== undefined) boolean(gate.pinned, `${path}.pinned`);
 };
 const validateTarget = (value: unknown, path: string): void => {
   const target = record(value, path);
@@ -266,8 +276,11 @@ const validateConstraint = (value: unknown, path: string): void => {
     ].includes(kind)
   )
     fail(`${path}.kind`, "supported constraint kind");
-  if (constraint.value !== undefined)
-    constraintValue(constraint.value, `${path}.value`);
+  if (constraint.value !== undefined) {
+    if (["max-height", "min-height", "track-clearance"].includes(kind))
+      finite(constraint.value, `${path}.value`);
+    else constraintValue(constraint.value, `${path}.value`);
+  }
   if (constraint.hard !== undefined) boolean(constraint.hard, `${path}.hard`);
   if (constraint.target !== undefined) {
     if (["max-height", "min-height", "track-clearance"].includes(kind))
@@ -275,6 +288,10 @@ const validateConstraint = (value: unknown, path: string): void => {
     else constraintValue(constraint.target, `${path}.target`);
   }
   const requested = constraint.target ?? constraint.value;
+  if (["max-height", "min-height", "track-clearance"].includes(kind)) {
+    if (requested === undefined) fail(`${path}.target`, "finite number");
+    finite(requested, `${path}.target`);
+  }
   if (kind === "required-element" && typeof requested !== "string")
     fail(`${path}.target`, "element kind string");
   if (
@@ -420,8 +437,24 @@ const validateSerializedSpan = (value: unknown, path: string): void => {
     ["id", "kind", "positionCoefficients", "rollCoefficients", "length"],
     path,
   );
-  string(span.id, `${path}.id`);
-  string(span.kind, `${path}.kind`);
+  if (string(span.id, `${path}.id`).trim().length === 0)
+    fail(`${path}.id`, "non-empty known span id");
+  const kind = string(span.kind, `${path}.kind`);
+  if (
+    ![
+      "station",
+      "launch",
+      "boost",
+      "brake",
+      "transition",
+      "topHat",
+      "airtimeHill",
+      "overbankedTurn",
+      "zeroGRoll",
+      "stall",
+    ].includes(kind)
+  )
+    fail(`${path}.kind`, "known element kind");
   const position = array(
     span.positionCoefficients,
     `${path}.positionCoefficients`,
@@ -461,7 +494,7 @@ const legacyIntent = (
   mode: "directed",
   family: "steel-sitdown-lsm-v1",
   elements: [...(design?.elements ?? [])],
-  gates: [],
+  gates: [...(design?.gates ?? [])],
   targets: [],
   constraints: [...(design?.constraints ?? [])],
   pinnedElementIds: [],
@@ -515,6 +548,7 @@ export const createCoasterFileV1 = (
     value: design,
     enumerable: false,
   }) as unknown as CoasterFileV1;
+  validateCoasterFile(file);
   return Object.freeze(file);
 };
 
@@ -649,7 +683,9 @@ const validateLegacyDesign = (value: unknown): void => {
   }
   if (design.gates !== undefined) {
     if (!Array.isArray(design.gates)) fail("design.gates", "array");
-    for (const [index, value] of (design.gates as unknown[]).entries()) {
+    const gates = design.gates as unknown[];
+    if (gates.length > 3) fail("design.gates", "at most 3 items");
+    for (const [index, value] of gates.entries()) {
       const gate = record(value, `design.gates[${index}]`);
       exactKeys(
         gate,
@@ -737,16 +773,29 @@ function validateCoasterFile(value: unknown): asserts value is CoasterFileV1 {
       element.kind ?? element.type,
     ]),
   );
+  const ownerForSpan = (id: string): string | undefined => {
+    if (intentKinds.has(id)) return id;
+    const separator = id.lastIndexOf("#");
+    if (separator <= 0 || !/^\d+$/.test(id.slice(separator + 1)))
+      return undefined;
+    const owner = id.slice(0, separator);
+    return intentKinds.has(owner) ? owner : undefined;
+  };
+  const spansPerElement = new Set<string>();
   for (const [index, value] of solvedSpans.entries()) {
     const span = value as Record<string, unknown>;
     const id = span.id as string;
     if (spanIds.has(id)) fail(`solvedSpans[${index}].id`, "unique id");
     spanIds.add(id);
-    if (intentKinds.size > 0 && intentKinds.get(id) !== span.kind)
+    const owner =
+      ownerForSpan(id) ??
+      fail(`solvedSpans[${index}].id`, "known intent element span id");
+    spansPerElement.add(owner);
+    if (intentKinds.get(owner) !== span.kind)
       fail(`solvedSpans[${index}].kind`, "consistent with intent element");
   }
-  if (intentKinds.size > 0 && solvedSpans.length !== intentKinds.size)
-    fail("solvedSpans", "one coefficient span per intent element");
+  if (spansPerElement.size !== intentKinds.size)
+    fail("solvedSpans", "at least one coefficient span per intent element");
   if (file.seed !== file.intent.seed) fail("seed", "matching intent.seed");
   uint32(file.seed, "seed");
   string(file.generatorVersion, "generatorVersion");

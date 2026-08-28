@@ -740,6 +740,7 @@ export const buildElement = (
     endPose,
     solvedSpan: {
       id: element.id,
+      kind: element.type,
       span,
       bank,
       zones: [element.type],

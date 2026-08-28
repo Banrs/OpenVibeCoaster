@@ -5,10 +5,6 @@ import {
   type SolvedSpan,
   type Vec3,
   vec3,
-  vec3Add,
-  vec3Cross,
-  vec3Dot,
-  vec3Normalize,
 } from "@openvibecoaster/core";
 import type { ClearanceOptions } from "./types";
 
@@ -152,33 +148,21 @@ export const validateClearance = (
   const segments: Segment[] = [];
   let distance = 0;
   let segmentId = 0;
-  const terrainSubdivisions = 16;
   for (let spanIndex = 0; spanIndex < spans.length; spanIndex += 1) {
     const span = spans[spanIndex]!;
     const spanLength = arcLength(span.span, 0, 1);
-    const points = Array.from(
-      { length: (count - 1) * terrainSubdivisions + 1 },
-      (_, index) => {
-        const u = index / ((count - 1) * terrainSubdivisions);
-        return {
-          u,
-          point: span.span.position(u),
-          s: distance + spanLength * u,
-        };
-      },
-    );
     for (let index = 0; index < count - 1; index += 1) {
-      const left = points[index * terrainSubdivisions]!;
-      const right = points[(index + 1) * terrainSubdivisions]!;
+      const startU = index / (count - 1);
+      const endU = (index + 1) / (count - 1);
       const segment = {
         segmentId,
         spanIndex,
         segmentIndex: index,
         segmentCount: count - 1,
-        start: left.point,
-        end: right.point,
-        startS: left.s,
-        endS: right.s,
+        start: span.span.position(startU),
+        end: span.span.position(endU),
+        startS: distance + spanLength * startU,
+        endS: distance + spanLength * endU,
       };
       segmentId += 1;
       segments.push(segment);
@@ -187,68 +171,14 @@ export const validateClearance = (
   }
   const diagnostics: Diagnostic[] = [];
   if (environment) {
-    const envelopePoints = (span: SolvedSpan, u: number): readonly Vec3[] => {
-      const point = span.span.position(u);
-      const tangent = vec3Normalize(span.span.derivative(u, 1));
-      const up = Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
-      const baseNormal = vec3Normalize(
-        vec3(
-          up[0] - tangent[0] * vec3Dot(up, tangent),
-          up[1] - tangent[1] * vec3Dot(up, tangent),
-          up[2] - tangent[2] * vec3Dot(up, tangent),
-        ),
-      );
-      const baseBinormal = vec3Normalize(vec3Cross(tangent, baseNormal));
-      const bank = span.bank?.position(u) ?? 0;
-      const normal = vec3Normalize(
-        vec3(
-          baseNormal[0] * Math.cos(bank) + baseBinormal[0] * Math.sin(bank),
-          baseNormal[1] * Math.cos(bank) + baseBinormal[1] * Math.sin(bank),
-          baseNormal[2] * Math.cos(bank) + baseBinormal[2] * Math.sin(bank),
-        ),
-      );
-      const binormal = vec3Normalize(vec3Cross(tangent, normal));
-      const directions = [
-        vec3(0, 0, 0),
-        normal,
-        vec3(-normal[0], -normal[1], -normal[2]),
-        binormal,
-        vec3(-binormal[0], -binormal[1], -binormal[2]),
-        vec3Normalize(vec3Add(normal, binormal)),
-        vec3Normalize(
-          vec3Add(normal, vec3(-binormal[0], -binormal[1], -binormal[2])),
-        ),
-        vec3Normalize(
-          vec3Add(vec3(-normal[0], -normal[1], -normal[2]), binormal),
-        ),
-        vec3Normalize(
-          vec3Add(
-            vec3(-normal[0], -normal[1], -normal[2]),
-            vec3(-binormal[0], -binormal[1], -binormal[2]),
-          ),
-        ),
-      ];
-      return directions.map((direction) =>
-        vec3(
-          point[0] + direction[0] * radius,
-          point[1] + direction[1] * radius,
-          point[2] + direction[2] * radius,
-        ),
-      );
-    };
     const terrainDistance = (span: SolvedSpan, u: number): number =>
-      Math.min(
-        ...envelopePoints(span, u).map((point) =>
-          environment.signedDistance(point),
-        ),
-      );
+      environment.signedDistance(span.span.position(u)) - radius;
     for (const segment of segments) {
       const span = spans[segment.spanIndex]!;
       const startU = segment.segmentIndex / segment.segmentCount;
       const endU = (segment.segmentIndex + 1) / segment.segmentCount;
-      const visit = (u: number): void => {
-        const actual = terrainDistance(span, u);
-        if (actual < 0) {
+      const report = (u: number, actual: number): void => {
+        if (actual <= 0) {
           const point = span.span.position(u);
           const sampleS =
             segment.startS +
@@ -267,15 +197,43 @@ export const validateClearance = (
           );
         }
       };
-      const chordLength = length(
-        sub(span.span.position(endU), span.span.position(startU)),
+      const sweptTolerance = 1e-3;
+      const recurse = (
+        leftU: number,
+        rightU: number,
+        leftDistance: number,
+        rightDistance: number,
+      ): void => {
+        report(leftU, leftDistance);
+        report(rightU, rightDistance);
+        if (leftDistance <= 0 || rightDistance <= 0) return;
+        const leftPoint = span.span.position(leftU);
+        const rightPoint = span.span.position(rightU);
+        const chordLength = length(sub(rightPoint, leftPoint));
+        if (
+          Math.min(leftDistance, rightDistance) - chordLength >
+          sweptTolerance
+        )
+          return;
+        const middleU = (leftU + rightU) / 2;
+        const middleDistance = terrainDistance(span, middleU);
+        report(middleU, middleDistance);
+        if (middleDistance <= 0) return;
+        if (
+          chordLength <= sweptTolerance ||
+          middleU === leftU ||
+          middleU === rightU
+        )
+          return;
+        recurse(leftU, middleU, leftDistance, middleDistance);
+        recurse(middleU, rightU, middleDistance, rightDistance);
+      };
+      recurse(
+        startU,
+        endU,
+        terrainDistance(span, startU),
+        terrainDistance(span, endU),
       );
-      const divisions = Math.min(
-        64,
-        Math.max(8, Math.ceil(chordLength / Math.max(0.25, radius * 0.5))),
-      );
-      for (let index = 0; index <= divisions; index += 1)
-        visit(startU + ((endU - startU) * index) / divisions);
     }
   }
   const limit = radius * 2 + requestedClearance;
@@ -309,7 +267,8 @@ export const validateClearance = (
             seenPairs.add(pairKey);
             if (!overlaps(aabb(other, limit), box)) continue;
             const closest = segmentDistance(other, segment);
-            if (closest.distance < limit) {
+            const clearanceTolerance = 1e-10 * Math.max(1, limit);
+            if (closest.distance <= limit + clearanceTolerance) {
               const point = add(
                 other.start,
                 scale(sub(other.end, other.start), closest.firstT),

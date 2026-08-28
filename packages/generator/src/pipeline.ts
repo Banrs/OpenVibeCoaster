@@ -11,15 +11,18 @@ import {
   reconstructSolvedSpan,
   validateDesignIntentV1,
   compileTrack,
+  aabbFromPoints,
   quatRotateVector,
   vec3Distance,
   vec3Dot,
   vec3Normalize,
   vec3,
+  transportFramesAlongPath,
   type Diagnostic,
   type DesignIntentV1,
   type EnvironmentQuery,
   type SolvedSpan,
+  type ParametricSpan,
   type Vec3,
 } from "@openvibecoaster/core";
 import { validateClearance } from "./clearance";
@@ -95,40 +98,80 @@ const asElements = (
   });
 };
 
-const coefficientSpan = (span: SolvedSpan): SolvedSpan => {
-  const position = span.positionCoefficients
-    ? SeventhOrderHermiteSpan.fromCoefficients<Vec3>(span.positionCoefficients)
-    : span.span instanceof SeventhOrderHermiteSpan
-      ? span.span
-      : new SeventhOrderHermiteSpan({
-          p0: span.span.position(0),
-          d10: span.span.derivative(0, 1),
-          d20: span.span.derivative(0, 2),
-          d30: span.span.derivative(0, 3),
-          p1: span.span.position(1),
-          d11: span.span.derivative(1, 1),
-          d21: span.span.derivative(1, 2),
-          d31: span.span.derivative(1, 3),
-        });
-  const bank = span.rollCoefficients
-    ? QuinticScalarSpan.fromCoefficients(span.rollCoefficients)
-    : span.bank instanceof QuinticScalarSpan
-      ? span.bank
-      : new QuinticScalarSpan({
-          v0: span.bank?.position(0) ?? 0,
-          d10: span.bank?.derivative(0, 1) ?? 0,
-          d20: span.bank?.derivative(0, 2) ?? 0,
-          v1: span.bank?.position(1) ?? 0,
-          d11: span.bank?.derivative(1, 1) ?? 0,
-          d21: span.bank?.derivative(1, 2) ?? 0,
-        });
+const childBoundaries = (span: SolvedSpan): readonly number[] => {
+  if (span.kind === "topHat") return [0, 0.2, 0.35, 0.4, 0.6, 0.65, 0.8, 1];
+  if (span.span instanceof SeventhOrderHermiteSpan) return [0, 1];
+  return Array.from({ length: 9 }, (_, index) => index / 8);
+};
+
+const subspan = <T extends number | Vec3>(
+  source: ParametricSpan<T>,
+  start: number,
+  end: number,
+): ParametricSpan<T> => {
+  const width = end - start;
   return {
-    ...span,
-    span: position,
-    bank,
-    positionCoefficients: position.coefficients,
-    rollCoefficients: bank.coefficients,
+    position: (u) => source.position(start + width * u),
+    derivative: (u, order = 1) => {
+      const value = source.derivative(start + width * u, order);
+      const scale = width ** order;
+      return (
+        typeof value === "number"
+          ? value * scale
+          : vec3(value[0] * scale, value[1] * scale, value[2] * scale)
+      ) as T;
+    },
   };
+};
+
+const coefficientSpan = (span: SolvedSpan): SolvedSpan[] => {
+  const boundaries = childBoundaries(span);
+  return boundaries.slice(0, -1).map((start, childIndex) => {
+    const end = boundaries[childIndex + 1]!;
+    const source = subspan(span.span, start, end);
+    const position = new SeventhOrderHermiteSpan({
+      p0: source.position(0),
+      d10: source.derivative(0, 1),
+      d20: source.derivative(0, 2),
+      d30: source.derivative(0, 3),
+      p1: source.position(1),
+      d11: source.derivative(1, 1),
+      d21: source.derivative(1, 2),
+      d31: source.derivative(1, 3),
+    });
+    const sourceBank =
+      span.bank ??
+      new QuinticScalarSpan({
+        v0: 0,
+        d10: 0,
+        d20: 0,
+        v1: 0,
+        d11: 0,
+        d21: 0,
+      });
+    const bankSource = subspan(sourceBank, start, end);
+    const bank = new QuinticScalarSpan({
+      v0: bankSource.position(0),
+      d10: bankSource.derivative(0, 1),
+      d20: bankSource.derivative(0, 2),
+      v1: bankSource.position(1),
+      d11: bankSource.derivative(1, 1),
+      d21: bankSource.derivative(1, 2),
+    });
+    const id = boundaries.length === 2 ? span.id : `${span.id}#${childIndex}`;
+    const points = Array.from({ length: 17 }, (_, index) =>
+      position.position(index / 16),
+    );
+    return {
+      ...span,
+      id,
+      span: position,
+      bank,
+      bounds: aabbFromPoints(points),
+      positionCoefficients: position.coefficients,
+      rollCoefficients: bank.coefficients,
+    };
+  });
 };
 
 const spanBytes = (span: SolvedSpan): string => {
@@ -180,6 +223,8 @@ const pathSamples = (
   readonly u: number;
   readonly s: number;
   readonly point: Vec3;
+  readonly tangent: Vec3;
+  readonly normal: Vec3;
 }[] => {
   const points: { span: SolvedSpan; u: number; s: number; point: Vec3 }[] = [];
   let distance = 0;
@@ -196,7 +241,19 @@ const pathSamples = (
     }
     distance += length;
   }
-  return points;
+  const frames = transportFramesAlongPath(
+    points.map((sample) => sample.point),
+    points.map((sample) =>
+      vec3Normalize(sample.span.span.derivative(sample.u, 1)),
+    ),
+    points.map((_, index) => index),
+    points.map((sample) => sample.span.bank?.position(sample.u) ?? 0),
+  );
+  return points.map((sample, index) => ({
+    ...sample,
+    tangent: frames[index]!.tangent,
+    normal: frames[index]!.normal,
+  }));
 };
 
 const gateDiagnostics = (
@@ -208,6 +265,7 @@ const gateDiagnostics = (
   const diagnostics: Diagnostic[] = [];
   let start = 0;
   for (const gate of intent.gates) {
+    if (!gate.position) continue;
     let best = samples[start];
     for (let index = start; index < samples.length; index += 1)
       if (
@@ -231,21 +289,28 @@ const gateDiagnostics = (
         ),
       );
     if (gate.orientation) {
-      const target = vec3Normalize(
+      const targetTangent = vec3Normalize(
         quatRotateVector(gate.orientation, vec3(0, 0, 1)),
       );
-      const actual = Math.acos(
+      const targetNormal = vec3Normalize(
+        quatRotateVector(gate.orientation, vec3(0, 1, 0)),
+      );
+      const tangentError = Math.acos(
         Math.max(
           -1,
           Math.min(
             1,
             vec3Dot(
               vec3Normalize(best.span.span.derivative(best.u, 1)),
-              target,
+              targetTangent,
             ),
           ),
         ),
       );
+      const rollError = Math.acos(
+        Math.max(-1, Math.min(1, vec3Dot(best.normal, targetNormal))),
+      );
+      const actual = Math.max(tangentError, rollError);
       if (actual > 1e-5)
         diagnostics.push(
           hardDiagnostic(
@@ -422,6 +487,10 @@ const constraintDiagnostics = (
         value,
         { s: failure.s, position: failure.point },
       ),
+      margin:
+        constraint.kind === "min-height"
+          ? failure.point[1] - value
+          : value - failure.point[1],
       severity: hard ? "error" : "warning",
       provenance: hard ? "PROJECT_ENGINEERING_LIMIT" : "DESIGN_ASSUMPTION",
     });
@@ -501,6 +570,7 @@ const relaxationMargins = (
 
 interface CandidateEvaluation {
   readonly elements: readonly AnySemanticElement[];
+  readonly elementSpans: readonly (readonly SolvedSpan[])[];
   readonly spans: readonly SolvedSpan[];
   readonly solved: ReturnType<typeof solveSemanticChain>;
   readonly diagnostics: readonly Diagnostic[];
@@ -519,17 +589,13 @@ const evaluateCandidate = (
   const solved = solveSemanticChain(elements, {
     ...(targets && targets.length > 0 ? { targets } : {}),
     referenceSpeed: 44,
-    maxIterations: intent.mode === "directed" ? 32 : 0,
+    maxIterations: intent.mode === "directed" ? 32 : 8,
   });
   const solvingMs = now() - solvingStart;
-  const spans = solved.solvedSpans.map(coefficientSpan);
+  const elementSpans = solved.solvedSpans.map(coefficientSpan);
+  const spans = elementSpans.flat();
   const validationStart = now();
-  const solverDiagnostics =
-    intent.mode === "directed" ||
-    intent.targets.length > 0 ||
-    intent.constraints.length > 0
-      ? solved.diagnostics
-      : [];
+  const solverDiagnostics = solved.diagnostics;
   const diagnostics: Diagnostic[] = [
     ...solverDiagnostics,
     ...gateDiagnostics(spans, intent),
@@ -617,6 +683,7 @@ const evaluateCandidate = (
   }
   return {
     elements,
+    elementSpans,
     spans,
     solved,
     diagnostics,
@@ -636,9 +703,14 @@ const buildFileResult = (
   totalStart: number,
 ): GenerationResult => {
   const compilationStart = now();
-  const serializedSpans = evaluation.spans.map((span, index) => {
-    const parameters = evaluation.elements[index]!
-      .parameters as unknown as Record<string, unknown>;
+  const elementById = new Map(
+    evaluation.elements.map((element) => [element.id, element]),
+  );
+  const ownerId = (id: string): string => id.split("#", 1)[0]!;
+  const serializedSpans = evaluation.spans.map((span) => {
+    const element = elementById.get(ownerId(span.id));
+    if (!element) throw new Error(`Missing semantic owner for span ${span.id}`);
+    const parameters = element.parameters as unknown as Record<string, unknown>;
     const lengthKey = spanBytes(span);
     let curvedLength = spanLengthCache.get(lengthKey);
     if (curvedLength === undefined) {
@@ -649,11 +721,7 @@ const buildFileResult = (
       typeof parameters.length === "number"
         ? parameters.length
         : (span.length ?? curvedLength);
-    return serializeSolvedSpanV1(
-      span,
-      evaluation.elements[index]!.type,
-      length,
-    );
+    return serializeSolvedSpanV1(span, element.type, length);
   });
   const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
   const trackKey = canonicalSpans.map(spanBytes).join("|");
@@ -687,10 +755,19 @@ const buildFileResult = (
   const serializedFile = serializeCoasterFileV1(file);
   const bytes = Object.fromEntries(
     evaluation.spans.map((span) => [span.id, spanBytes(span)]),
-  );
+  ) as Record<string, string>;
   const hashes = Object.fromEntries(
     evaluation.spans.map((span) => [span.id, hashSpan(span)]),
-  );
+  ) as Record<string, string>;
+  for (const element of evaluation.elements) {
+    const first = evaluation.spans.find(
+      (span) => ownerId(span.id) === element.id,
+    );
+    if (first) {
+      bytes[element.id] = spanBytes(first);
+      hashes[element.id] = hashSpan(first);
+    }
+  }
   const track =
     options.samples === undefined || options.samples === 32
       ? canonicalTrack
@@ -742,7 +819,11 @@ export const generateCoaster = (
   const totalStart = now();
   const searchStart = now();
   validateDesignIntentV1(intent);
-  const maxCandidates = intent.mode === "directed" ? 1 : 48;
+  const maxCandidates =
+    intent.mode === "directed" ||
+    (intent.targets.length === 0 && intent.constraints.length === 0)
+      ? 1
+      : 48;
   let selected: CandidateEvaluation | undefined;
   let last: CandidateEvaluation | undefined;
   let candidatesTested = 0;
@@ -845,13 +926,87 @@ export const generateCoaster = (
   );
 };
 
+const generationWithSpans = (
+  candidate: GenerationResult,
+  spans: readonly SolvedSpan[],
+  intent: DesignIntentV1,
+): GenerationResult => {
+  const elementById = new Map(
+    candidate.elements.map((element) => [element.id, element]),
+  );
+  const ownerId = (id: string): string => id.split("#", 1)[0]!;
+  const serializedSpans = spans.map((span) => {
+    const element = elementById.get(ownerId(span.id));
+    if (!element) throw new Error(`Missing semantic owner for span ${span.id}`);
+    const parameters = element.parameters as Record<string, unknown>;
+    const length =
+      typeof parameters.length === "number"
+        ? parameters.length
+        : (span.length ?? arcLength(span.span));
+    return serializeSolvedSpanV1(span, element.type, length);
+  });
+  const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
+  const canonicalTrack = compileTrack(canonicalSpans, { samples: 32 });
+  const file = createCoasterFileV1({
+    name: candidate.file.name,
+    intent,
+    solvedSpans: serializedSpans,
+    seed: intent.seed,
+    generatorVersion: candidate.file.generatorVersion,
+    profileVersion: candidate.file.profileVersion,
+    researchSnapshotIds: candidate.file.researchSnapshotIds,
+    compiledDataChecksum: canonicalTrack.checksum,
+  });
+  const spanBytesMap = Object.fromEntries(
+    canonicalSpans.map((span) => [span.id, spanBytes(span)]),
+  ) as Record<string, string>;
+  const spanHashesMap = Object.fromEntries(
+    canonicalSpans.map((span) => [span.id, hashSpan(span)]),
+  ) as Record<string, string>;
+  for (const element of candidate.elements) {
+    const first = canonicalSpans.find(
+      (span) => ownerId(span.id) === element.id,
+    );
+    if (first) {
+      spanBytesMap[element.id] = spanBytes(first);
+      spanHashesMap[element.id] = hashSpan(first);
+    }
+  }
+  const track =
+    candidate.options.samples === undefined || candidate.options.samples === 32
+      ? canonicalTrack
+      : compileTrack(canonicalSpans, { samples: candidate.options.samples });
+  return {
+    ...candidate,
+    intent,
+    solvedSpans: Object.freeze(canonicalSpans),
+    track,
+    file,
+    serializedFile: serializeCoasterFileV1(file),
+    spanBytes: spanBytesMap,
+    spanHashes: spanHashesMap,
+    feasible: !candidate.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.severity === "error" || diagnostic.severity === "fatal",
+    ),
+  };
+};
+
+const spanOwner = (id: string): string => id.split("#", 1)[0]!;
+const selectedIndexOrMinusOne = (
+  generated: GenerationResult,
+  id: string,
+): number => generated.elements.findIndex((element) => element.id === id);
+
 export const regenerateLocal = (
   generated: GenerationResult,
   selectedElementId: string,
   options: LocalRegenerationOptions = {},
 ): LocalRegenerationResult => {
+  const baseIntent = options.intent ?? generated.intent;
   const pinned = new Set([
     ...(generated.intent.pinnedElementIds ?? []),
+    ...(baseIntent.pinnedElementIds ?? []),
     ...(options.pinnedElementIds ?? []),
   ]);
   if (pinned.has(selectedElementId)) {
@@ -864,6 +1019,10 @@ export const regenerateLocal = (
       feasible: false,
       generation: generated,
       diagnostics: [{ ...item, severity: "fatal" }],
+      changedWindow: [
+        selectedIndexOrMinusOne(generated, selectedElementId),
+        selectedIndexOrMinusOne(generated, selectedElementId),
+      ],
       untouchedSpanHashes: generated.spanHashes,
       untouchedSpanBytes: generated.spanBytes,
     };
@@ -881,13 +1040,14 @@ export const regenerateLocal = (
       feasible: false,
       generation: generated,
       diagnostics: [{ ...item, severity: "fatal" }],
+      changedWindow: [-1, -1],
       untouchedSpanHashes: generated.spanHashes,
       untouchedSpanBytes: generated.spanBytes,
     };
   }
-  const changedIntent = (options.intent ?? {
-    ...generated.intent,
-    elements: generated.intent.elements.map((element) => {
+  const changedIntent = {
+    ...baseIntent,
+    elements: baseIntent.elements.map((element) => {
       const patch = options.changes?.[element.id];
       if (!patch) return element;
       const parameters = Object.fromEntries(
@@ -897,7 +1057,7 @@ export const regenerateLocal = (
       ) as Record<string, number | string | boolean>;
       return { ...element, parameters };
     }),
-  }) as unknown as DesignIntentV1;
+  } as unknown as DesignIntentV1;
   const candidate = generateCoaster(changedIntent, generated.options);
   if (!candidate.feasible) {
     const item = hardDiagnostic(
@@ -909,6 +1069,7 @@ export const regenerateLocal = (
       feasible: false,
       generation: generated,
       diagnostics: [...candidate.diagnostics, { ...item, severity: "fatal" }],
+      changedWindow: [selectedIndex, selectedIndex],
       untouchedSpanHashes: generated.spanHashes,
       untouchedSpanBytes: generated.spanBytes,
     };
@@ -928,15 +1089,55 @@ export const regenerateLocal = (
     rightPinnedCandidates.length === 0
       ? generated.elements.length
       : Math.min(...rightPinnedCandidates);
-  const localStart = leftPinned + 1;
-  const localEnd = rightPinned - 1;
+  let localStart = Math.max(leftPinned + 1, selectedIndex - 1);
+  let localEnd = Math.min(rightPinned - 1, selectedIndex + 1);
+  const changedOwners = new Set(
+    candidate.solvedSpans
+      .filter((span) => generated.spanBytes[span.id] !== spanBytes(span))
+      .map((span) => spanOwner(span.id)),
+  );
   for (let index = 0; index < generated.elements.length; index += 1) {
-    if (index === selectedIndex) continue;
+    const id = generated.elements[index]!.id;
+    if (index < localStart && changedOwners.has(id) && leftPinned >= 0)
+      localStart = leftPinned + 1;
+    if (
+      index > localEnd &&
+      changedOwners.has(id) &&
+      rightPinned < generated.elements.length
+    )
+      localEnd = rightPinned - 1;
+  }
+  const mergedSpans = candidate.solvedSpans.map((span) => {
+    const index = generated.elements.findIndex(
+      (element) => element.id === spanOwner(span.id),
+    );
+    return index >= localStart && index <= localEnd
+      ? span
+      : (generated.solvedSpans.find((old) => old.id === span.id) ?? span);
+  });
+  const localGeneration = generationWithSpans(
+    candidate,
+    mergedSpans,
+    changedIntent,
+  );
+  for (let index = 0; index < generated.elements.length; index += 1) {
     const id = generated.elements[index]!.id;
     if (index >= localStart && index <= localEnd) continue;
     untouchedSpanHashes[id] = generated.spanHashes[id]!;
     untouchedSpanBytes[id] = generated.spanBytes[id]!;
-    if (candidate.spanBytes[id] !== generated.spanBytes[id]) {
+    const oldSpans = generated.solvedSpans.filter(
+      (span) => spanOwner(span.id) === id,
+    );
+    const newSpans = localGeneration.solvedSpans.filter(
+      (span) => spanOwner(span.id) === id,
+    );
+    if (
+      oldSpans.length !== newSpans.length ||
+      oldSpans.some(
+        (span, spanIndex) =>
+          spanBytes(span) !== spanBytes(newSpans[spanIndex]!),
+      )
+    ) {
       const item = hardDiagnostic(
         "LOCAL_REGENERATION",
         `Untouched solved span ${id} changed during local regeneration`,
@@ -946,15 +1147,17 @@ export const regenerateLocal = (
         feasible: false,
         generation: generated,
         diagnostics: [{ ...item, severity: "fatal" }],
+        changedWindow: [localStart, localEnd],
         untouchedSpanHashes,
         untouchedSpanBytes,
       };
     }
   }
   return {
-    feasible: candidate.feasible,
-    generation: candidate,
-    diagnostics: candidate.diagnostics,
+    feasible: localGeneration.feasible,
+    generation: localGeneration,
+    diagnostics: localGeneration.diagnostics,
+    changedWindow: [localStart, localEnd],
     untouchedSpanHashes,
     untouchedSpanBytes,
   };
