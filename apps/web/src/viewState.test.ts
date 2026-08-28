@@ -4,10 +4,13 @@ import {
   clampPlaybackSpeed,
   createInitialState,
   getActionEnabled,
+  getNextStatusAfterGenerate,
+  getNextStatusAfterLoad,
   getPanelVisibility,
   getReducedMotionState,
   getStatusText,
   isPlaybackSpeedValid,
+  isValidTrackImport,
   METRIC_IDS,
   PLAYBACK_SPEED_MAX,
   PLAYBACK_SPEED_MIN,
@@ -182,5 +185,68 @@ describe("viewState – reduced motion", () => {
   it("initial state defaults to not reduced unless system prefers", () => {
     const state = createInitialState();
     expect(typeof state.reducedMotion).toBe("boolean");
+  });
+});
+
+describe("viewState – import validation and generation guard", () => {
+  it("rejects arbitrary JSON including empty object", () => {
+    expect(isValidTrackImport({})).toBe(false);
+    expect(isValidTrackImport({ seed: "123" })).toBe(false);
+    expect(isValidTrackImport({ random: 1 })).toBe(false);
+    expect(isValidTrackImport(null)).toBe(false);
+    expect(isValidTrackImport("string")).toBe(false);
+    expect(isValidTrackImport([])).toBe(false);
+  });
+
+  it("rejects incomplete track payloads", () => {
+    expect(isValidTrackImport({ format: "openvibecoaster/track-v1" })).toBe(
+      false,
+    );
+    expect(isValidTrackImport({ compiledTrackData: {} })).toBe(false);
+    expect(
+      isValidTrackImport({
+        format: "wrong/format",
+        compiledTrackData: {},
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts minimal valid track payload when canonical fields present", () => {
+    expect(
+      isValidTrackImport({
+        format: "openvibecoaster/track-v1",
+        compiledTrackData: { spans: [] },
+      }),
+    ).toBe(true);
+  });
+
+  it("never transitions to ready on generate without canonical data", () => {
+    expect(getNextStatusAfterGenerate("pending")).not.toBe("ready");
+    expect(getNextStatusAfterGenerate("error")).not.toBe("ready");
+    expect(getNextStatusAfterGenerate("generating")).not.toBe("ready");
+    expect(
+      getActionEnabled("save", getNextStatusAfterGenerate("pending")),
+    ).toBe(false);
+  });
+
+  it("never transitions to ready on load with invalid payload", () => {
+    expect(getNextStatusAfterLoad({}, "pending")).not.toBe("ready");
+    expect(getNextStatusAfterLoad({}, "generating")).not.toBe("ready");
+    expect(getNextStatusAfterLoad({ random: 1 }, "pending")).not.toBe("ready");
+    expect(
+      getActionEnabled("save", getNextStatusAfterLoad({}, "pending")),
+    ).toBe(false);
+  });
+
+  it("transitions to ready only with valid canonical payload", () => {
+    expect(
+      getNextStatusAfterLoad(
+        {
+          format: "openvibecoaster/track-v1",
+          compiledTrackData: { spans: [] },
+        },
+        "pending",
+      ),
+    ).toBe("ready");
   });
 });

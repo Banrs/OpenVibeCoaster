@@ -4,9 +4,12 @@ import {
   createInitialState,
   getActionEnabled,
   getCanvasAriaLabel,
+  getNextStatusAfterGenerate,
+  getNextStatusAfterLoad,
   getPanelVisibility,
   getReducedMotionState,
   getStatusText,
+  isValidTrackImport,
   selectCamera,
   selectMetric,
   selectSeat,
@@ -215,10 +218,10 @@ function handleGenerate(): void {
   }
   state.generationStatus = "generating";
   render();
-  // Simulate worker round-trip without fabricating numbers: end in ready
-  // so controls become enabled for inspection, but graph stays empty.
+  // Worker not yet integrated — never claim ready without canonical data.
+  // Resolve to error so data-dependent actions stay disabled and status remains truthful.
   window.setTimeout(() => {
-    state.generationStatus = "ready";
+    state.generationStatus = getNextStatusAfterGenerate(state.generationStatus);
     render();
   }, 900);
 }
@@ -255,17 +258,40 @@ function handleLoadFile(file: File | undefined): void {
   const reader = new FileReader();
   reader.addEventListener("load", () => {
     try {
-      const data = JSON.parse(String(reader.result)) as Partial<AppState>;
+      const parsed: unknown = JSON.parse(String(reader.result));
+      if (!isValidTrackImport(parsed)) {
+        state.generationStatus = getNextStatusAfterLoad(
+          parsed,
+          state.generationStatus,
+        );
+        render();
+        return;
+      }
+      const data = parsed as {
+        seed?: unknown;
+        camera?: unknown;
+        metric?: unknown;
+        compiledTrackData?: unknown;
+      };
       if (typeof data.seed === "string") {
         state.seed = data.seed.slice(0, 64);
       }
       if (
-        data.camera &&
+        typeof data.camera === "string" &&
         ["front", "middle", "rear", "chase", "orbit"].includes(data.camera)
       ) {
         state.camera = data.camera as CameraId;
       }
-      state.generationStatus = "ready";
+      if (
+        typeof data.metric === "string" &&
+        ["speed", "gForce", "height", "energy"].includes(data.metric)
+      ) {
+        state.metric = data.metric as MetricId;
+      }
+      state.generationStatus = getNextStatusAfterLoad(
+        parsed,
+        state.generationStatus,
+      );
       render();
     } catch {
       state.generationStatus = "error";
@@ -372,7 +398,7 @@ localRegenerateBtn.addEventListener("click", () => {
   state.generationStatus = "generating";
   render();
   window.setTimeout(() => {
-    state.generationStatus = "ready";
+    state.generationStatus = getNextStatusAfterGenerate(state.generationStatus);
     render();
   }, 700);
 });

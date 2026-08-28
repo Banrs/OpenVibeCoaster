@@ -206,3 +206,47 @@ export function getLayoutClass(state: AppState): string {
   }
   return parts.join(" ");
 }
+
+export function isValidTrackImport(payload: unknown): boolean {
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
+    return false;
+  }
+  const obj = payload as Record<string, unknown>;
+  if (obj.format !== "openvibecoaster/track-v1") {
+    return false;
+  }
+  const data = obj.compiledTrackData;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return false;
+  }
+  const spans = (data as Record<string, unknown>).spans;
+  if (!Array.isArray(spans)) {
+    return false;
+  }
+  return true;
+}
+
+export function getNextStatusAfterGenerate(
+  current: GenerationStatus,
+): GenerationStatus {
+  // Shell has no canonical worker data yet; never claim ready.
+  // Generating always resolves to error (worker not integrated) so data actions stay disabled.
+  if (current === "generating") {
+    return "error";
+  }
+  return "error";
+}
+
+export function getNextStatusAfterLoad(
+  payload: unknown,
+  _current: GenerationStatus,
+): GenerationStatus {
+  if (isValidTrackImport(payload)) {
+    return "ready";
+  }
+  return "error";
+}
