@@ -291,14 +291,22 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
         zHeight * zSlope +
         crossHeight * (xIntercept * zSlope + zIntercept * xSlope);
       const heightQuadratic = crossHeight * xSlope * zSlope;
-      const root = findRoot(low, high, [
+      const coefficients = [
         -heightQuadratic,
         dir[1] - heightLinear,
         origin[1] - heightConstant,
-      ]);
-      if (root !== undefined && Math.abs(columnValue(root)) <= valueTolerance) {
-        hitDistance = root;
-        break;
+      ] as const;
+      const root = findRoot(low, high, coefficients);
+      if (root !== undefined) {
+        const rootScale =
+          Math.abs(coefficients[0] * root * root) +
+          Math.abs(coefficients[1] * root) +
+          Math.abs(coefficients[2]);
+        const rootTolerance = 64 * Number.EPSILON * rootScale;
+        if (Math.abs(columnValue(root)) <= rootTolerance) {
+          hitDistance = root;
+          break;
+        }
       }
     }
     if (hitDistance === undefined) return undefined;

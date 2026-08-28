@@ -496,6 +496,24 @@ describe("compiled track and heightfield", () => {
     expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
   });
 
+  it("accepts a valid root at extreme finite height scale", () => {
+    const extremeHeight = 1e12 * Math.PI;
+    const crossingCoordinate = 0.009;
+    const env = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: new Float64Array([0, 0, 0, extremeHeight]),
+    });
+    const hit = env.raycast(
+      vec3(0, extremeHeight * crossingCoordinate ** 2, 0),
+      vec3(1, 0, 1),
+      0.1,
+    );
+    expect(hit).toBeDefined();
+    expect(hit?.distance).toBeCloseTo(crossingCoordinate * Math.sqrt(2), 12);
+  });
+
   it("bounds no-hit work for an extreme terrain slope", () => {
     const env = new HeightfieldEnvironment({
       width: 2,
