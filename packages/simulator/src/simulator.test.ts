@@ -198,27 +198,126 @@ describe("pure multi-car simulator", () => {
   });
 
   it("converges with smaller fixed steps and is deterministic", () => {
+    const curved = compileTrack(
+      [
+        {
+          id: "curved-graded",
+          span: {
+            position: (u: number) =>
+              vec3(
+                80 * u,
+                6 * Math.sin(2 * Math.PI * u),
+                12 * u + 4 * Math.sin(Math.PI * u),
+              ),
+            derivative: (u: number, order = 1) => {
+              if (order === 1)
+                return vec3(
+                  80,
+                  12 * Math.PI * Math.cos(2 * Math.PI * u),
+                  12 + 4 * Math.PI * Math.cos(Math.PI * u),
+                );
+              return vec3(
+                0,
+                -24 * Math.PI ** 2 * Math.sin(2 * Math.PI * u),
+                -4 * Math.PI ** 2 * Math.sin(Math.PI * u),
+              );
+            },
+          },
+        },
+      ],
+      { samples: 257 },
+    );
+    expect(
+      sampleTrackAtDistance(curved, curved.totalLength / 2).curvature,
+    ).toBeGreaterThan(0);
     const run = (stepSeconds: number) =>
-      simulateRide(line(100, 5), {
+      simulateRide(curved, {
         durationSeconds: 0.5,
         config: config({ fixedStepSeconds: stepSeconds }),
-        initial: { headDistanceM: 0, speedMps: 2 },
+        initial: { headDistanceM: 30, speedMps: 8 },
       });
     const one = run(1 / 120);
     const two = run(1 / 240);
     const four = run(1 / 480);
-    expect(
-      Math.abs(
-        (two.frames.at(-1)?.speedMps ?? 0) -
-          (four.frames.at(-1)?.speedMps ?? 0),
-      ),
-    ).toBeLessThan(0.01);
+    const speed120To240 = Math.abs(
+      (one.frames.at(-1)?.speedMps ?? 0) - (two.frames.at(-1)?.speedMps ?? 0),
+    );
+    const speed240To480 = Math.abs(
+      (two.frames.at(-1)?.speedMps ?? 0) - (four.frames.at(-1)?.speedMps ?? 0),
+    );
+    const distance120To240 = Math.abs(
+      (one.frames.at(-1)?.headDistanceM ?? 0) -
+        (two.frames.at(-1)?.headDistanceM ?? 0),
+    );
+    const distance240To480 = Math.abs(
+      (two.frames.at(-1)?.headDistanceM ?? 0) -
+        (four.frames.at(-1)?.headDistanceM ?? 0),
+    );
+    expect(speed120To240).toBeLessThan(0.01);
+    expect(speed240To480).toBeLessThan(0.01);
+    expect(distance120To240).toBeLessThan(0.01);
+    expect(distance240To480).toBeLessThan(0.01);
     expect(one.timeline.timeSeconds).toEqual(two.timeline.timeSeconds);
     expect(one.timeline.headDistanceM[one.timeline.length - 1]).toBeCloseTo(
       two.timeline.headDistanceM[two.timeline.length - 1] ?? 0,
       2,
     );
     expect(two.frames).toEqual(run(1 / 240).frames);
+  });
+
+  it("includes initial kinetic energy and wraps closed-track cars without changing unwrapped distances", () => {
+    const track = compileTrack(
+      [
+        {
+          id: "closed-graded",
+          span: {
+            position: (u: number) =>
+              vec3(
+                20 * Math.cos(2 * Math.PI * u),
+                3 * Math.sin(2 * Math.PI * u),
+                20 * Math.sin(2 * Math.PI * u),
+              ),
+            derivative: (u: number, order = 1) =>
+              order === 1
+                ? vec3(
+                    -40 * Math.PI * Math.sin(2 * Math.PI * u),
+                    6 * Math.PI * Math.cos(2 * Math.PI * u),
+                    40 * Math.PI * Math.cos(2 * Math.PI * u),
+                  )
+                : vec3(
+                    -80 * Math.PI ** 2 * Math.cos(2 * Math.PI * u),
+                    -12 * Math.PI ** 2 * Math.sin(2 * Math.PI * u),
+                    -80 * Math.PI ** 2 * Math.sin(2 * Math.PI * u),
+                  ),
+          },
+        },
+      ],
+      { samples: 257 },
+    );
+    const closedConfig = {
+      ...config(),
+      closedTrack: true,
+      train: {
+        ...config().train,
+        cars: [
+          { massKg: 1000, seatCount: 0 },
+          { massKg: 1000, seatCount: 0 },
+        ],
+        spacingM: 3,
+      },
+    } as SimulatorConfig;
+    const result = simulateRide(track, {
+      durationSeconds: 0,
+      config: closedConfig,
+      initial: { headDistanceM: 1, speedMps: 4 },
+    });
+    const frame = result.frames[0]!;
+    expect(frame.cars[0]!.distanceM).toBe(1);
+    expect(frame.telemetry.kineticEnergyJ).toBeCloseTo(16000, 8);
+    expect(frame.telemetry.energyErrorJ).toBeCloseTo(0, 8);
+
+    expect(frame.cars[1]!.distanceM).toBe(-2);
+    expect(frame.cars[1]!.frame.distance).toBeCloseTo(track.totalLength - 2, 6);
   });
 
   it("keeps RideTimeline immutable and copy-transferable", () => {
@@ -617,24 +716,168 @@ describe("pure multi-car simulator", () => {
     ]);
   });
 
-  it("validates nested overrides, seat offsets, envelope dimensions, and zones precisely", () => {
-    const negativeBrake = computePerCarForces(
-      line(10),
-      config({
+  it("deduplicates train-wide zone events while tracking a rear car outside the head", () => {
+    const zone: OperationZone = {
+      id: "rear-only",
+      kind: "block",
+      startDistanceM: 0,
+      endDistanceM: 2,
+    };
+    const result = simulateRide(line(30), {
+      durationSeconds: 1,
+      config: config({
+        fixedStepSeconds: 1,
+        timelineStepSeconds: 1,
+        train: {
+          ...config().train,
+          cars: [
+            { massKg: 1000, seatCount: 0 },
+            { massKg: 1000, seatCount: 0 },
+          ],
+          spacingM: 5,
+        },
+        zones: [zone],
+      }),
+      initial: { headDistanceM: 6, speedMps: 2 },
+    });
+    expect(
+      result.events.map(({ type, boundary, direction }) => [
+        type,
+        boundary,
+        direction,
+      ]),
+    ).toEqual([
+      ["zone-entry", "start", "forward"],
+      ["zone-exit", "end", "forward"],
+    ]);
+    expect(result.events.map((event) => event.timeSeconds)).toEqual([0, 0.5]);
+  });
+
+  it("preserves exact zone endpoint crossings in forward and reverse travel", () => {
+    const zone: OperationZone = {
+      id: "endpoint",
+      kind: "block",
+      startDistanceM: 1,
+      endDistanceM: 2,
+    };
+    const make = (headDistanceM: number, speedMps: number) =>
+      simulateRide(line(10), {
+        durationSeconds: 1,
+        config: config({
+          fixedStepSeconds: 0.5,
+          timelineStepSeconds: 0.5,
+          train: {
+            ...config().train,
+            cars: [{ massKg: 1000, seatCount: 0 }],
+          },
+          zones: [zone],
+        }),
+        initial: { headDistanceM, speedMps },
+      });
+    const forward = make(0, 2);
+    const reverse = make(3, -2);
+    expect(
+      forward.events.map((event) => [
+        event.type,
+        event.boundary,
+        event.timeSeconds,
+      ]),
+    ).toEqual([
+      ["zone-entry", "start", 0.5],
+      ["zone-exit", "end", 1],
+    ]);
+    expect(
+      reverse.events.map((event) => [
+        event.type,
+        event.boundary,
+        event.timeSeconds,
+      ]),
+    ).toEqual([
+      ["zone-entry", "end", 0.5],
+      ["zone-exit", "start", 1],
+    ]);
+  });
+
+  it("repeats train-wide zone transitions on explicit closed-track laps", () => {
+    const track = compileTrack(
+      [
+        {
+          id: "loop",
+          span: {
+            position: (u: number) =>
+              vec3(
+                20 * Math.cos(2 * Math.PI * u),
+                0,
+                20 * Math.sin(2 * Math.PI * u),
+              ),
+            derivative: (u: number, order = 1) =>
+              order === 1
+                ? vec3(
+                    -40 * Math.PI * Math.sin(2 * Math.PI * u),
+                    0,
+                    40 * Math.PI * Math.cos(2 * Math.PI * u),
+                  )
+                : vec3(
+                    -80 * Math.PI ** 2 * Math.cos(2 * Math.PI * u),
+                    0,
+                    -80 * Math.PI ** 2 * Math.sin(2 * Math.PI * u),
+                  ),
+          },
+        },
+      ],
+      { samples: 257 },
+    );
+    const result = simulateRide(track, {
+      durationSeconds: 2,
+      config: {
+        ...config(),
+        closedTrack: true,
+        fixedStepSeconds: 1,
+        timelineStepSeconds: 1,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
         zones: [
           {
-            id: "unsafe-brake",
-            kind: "brake",
-            startDistanceM: 0,
-            endDistanceM: 10,
-            brakeForcePerCarN: -100,
+            id: "lap-zone",
+            kind: "block",
+            startDistanceM: 10,
+            endDistanceM: 20,
           },
         ],
-      }),
-      5,
-      -2,
+      },
+      initial: { headDistanceM: 0, speedMps: 100 },
+    });
+    expect(result.events.map(({ type, boundary }) => [type, boundary])).toEqual(
+      [
+        ["zone-entry", "start"],
+        ["zone-exit", "end"],
+        ["zone-entry", "start"],
+        ["zone-exit", "end"],
+      ],
     );
-    expect(negativeBrake[0]!.brake).toBe(0);
+  });
+
+  it("validates nested overrides, seat offsets, envelope dimensions, and zones precisely", () => {
+    expect(() =>
+      computePerCarForces(
+        line(10),
+        config({
+          zones: [
+            {
+              id: "unsafe-brake",
+              kind: "brake",
+              startDistanceM: 0,
+              endDistanceM: 10,
+              brakeForcePerCarN: -100,
+            },
+          ],
+        }),
+        5,
+        -2,
+      ),
+    ).toThrow(/brakeForcePerCarN/);
     const invalid = simulateRide(line(10), {
       durationSeconds: 1,
       config: config({
@@ -716,6 +959,59 @@ describe("pure multi-car simulator", () => {
     });
     expect(Array.from(result.timeline.timeSeconds)).toEqual([0, 0.05, 0.1]);
     expect(Array.from(result.timeline.headDistanceM)).toEqual([0, 0.5, 1]);
+    const middle = result.timeline.frames[1]!;
+    const car = middle.cars[0]!;
+    expect(Object.isFrozen(middle)).toBe(true);
+    expect(Object.isFrozen(car)).toBe(true);
+    expect(car.frame.distance).toBeCloseTo(car.distanceM, 12);
+    expect(car.telemetry.bankRad).toBe(car.frame.bank);
+    expect(car.seats).toHaveLength(0);
+    expect(middle.selection.front).toBe(car);
+    expect(middle.telemetry.perCar[0]).toBe(car.telemetry);
+    expect(middle.telemetry.kineticEnergyJ).toBeCloseTo(
+      (result.frames[0]!.telemetry.kineticEnergyJ +
+        result.frames[1]!.telemetry.kineticEnergyJ) /
+        2,
+      12,
+    );
+  });
+
+  it("interpolates seat frames and all per-car/top-level telemetry coherently", () => {
+    const result = simulateRide(line(50, 5), {
+      durationSeconds: 0.2,
+      config: config({
+        fixedStepSeconds: 0.2,
+        timelineStepSeconds: 0.1,
+        train: {
+          ...config().train,
+          cars: [
+            {
+              massKg: 1000,
+              seatCount: 1,
+              seatPositionsM: [vec3(0, 1, 0.5)],
+            },
+          ],
+        },
+      }),
+      initial: { headDistanceM: 10, speedMps: 4 },
+    });
+    const middle = result.timeline.frames[1]!;
+    const car = middle.cars[0]!;
+    const seat = car.seats[0]!;
+    expect(car.frame.distance).toBeCloseTo(car.distanceM, 12);
+    expect(seat.frame.distance).toBeCloseTo(seat.distanceM, 12);
+    expect(seat.position).toEqual(car.seatPositions[0]);
+    expect(car.telemetry).toEqual(middle.telemetry.perCar[0]);
+    expect(middle.telemetry.bankRad).toBe(car.telemetry.bankRad);
+    expect(middle.telemetry.rollRateRadPerSec).toBe(
+      car.telemetry.rollRateRadPerSec,
+    );
+    expect(middle.telemetry.accumulatedDriveWorkJ).toBeCloseTo(
+      (result.frames[0]!.telemetry.accumulatedDriveWorkJ +
+        result.frames[1]!.telemetry.accumulatedDriveWorkJ) /
+        2,
+      12,
+    );
   });
 
   it("preserves dynamics under arbitrary rigid 3D rotation", () => {
@@ -782,7 +1078,19 @@ describe("pure multi-car simulator", () => {
         gravityDirection: vec3(0, -1, 0),
         train: {
           ...config().train,
-          cars: [{ massKg: 1000, seatCount: 0 }],
+          cars: [
+            {
+              massKg: 1000,
+              seatCount: 1,
+              seatPositionsM: [vec3(0.4, 0.8, 0.7)],
+            },
+            {
+              massKg: 1200,
+              seatCount: 1,
+              seatPositionsM: [vec3(-0.3, 0.5, -0.4)],
+            },
+          ],
+          spacingM: 2,
         },
       }),
       initial,
@@ -793,7 +1101,19 @@ describe("pure multi-car simulator", () => {
         gravityDirection: rotateVector(vec3(0, -1, 0)),
         train: {
           ...config().train,
-          cars: [{ massKg: 1000, seatCount: 0 }],
+          cars: [
+            {
+              massKg: 1000,
+              seatCount: 1,
+              seatPositionsM: [vec3(0.4, 0.8, 0.7)],
+            },
+            {
+              massKg: 1200,
+              seatCount: 1,
+              seatPositionsM: [vec3(-0.3, 0.5, -0.4)],
+            },
+          ],
+          spacingM: 2,
         },
       }),
       initial,
@@ -809,5 +1129,87 @@ describe("pure multi-car simulator", () => {
       a.frames.at(-1)!.telemetry.longitudinalG,
       5,
     );
+    const originalFrame = a.frames.at(-1)!;
+    const transformedFrame = b.frames.at(-1)!;
+    expect(transformedFrame.telemetry.lateralG).toBeCloseTo(
+      originalFrame.telemetry.lateralG,
+      5,
+    );
+    expect(transformedFrame.telemetry.verticalG).toBeCloseTo(
+      originalFrame.telemetry.verticalG,
+      5,
+    );
+    expect(transformedFrame.telemetry.bankRad).toBeCloseTo(
+      originalFrame.telemetry.bankRad,
+      8,
+    );
+    expect(transformedFrame.telemetry.rollRateRadPerSec).toBeCloseTo(
+      originalFrame.telemetry.rollRateRadPerSec,
+      8,
+    );
+    expect(transformedFrame.telemetry.kineticEnergyJ).toBeCloseTo(
+      originalFrame.telemetry.kineticEnergyJ,
+      8,
+    );
+    expect(transformedFrame.telemetry.accumulatedDriveWorkJ).toBeCloseTo(
+      originalFrame.telemetry.accumulatedDriveWorkJ,
+      8,
+    );
+    expect(transformedFrame.telemetry.accumulatedLossWorkJ).toBeCloseTo(
+      originalFrame.telemetry.accumulatedLossWorkJ,
+      8,
+    );
+    expect(transformedFrame.telemetry.energyErrorJ).toBeCloseTo(
+      originalFrame.telemetry.energyErrorJ,
+      8,
+    );
+    transformedFrame.cars.forEach((car, index) => {
+      const originalCar = originalFrame.cars[index]!;
+      expect(car.telemetry.longitudinalG).toBeCloseTo(
+        originalCar.telemetry.longitudinalG,
+        5,
+      );
+      expect(car.telemetry.lateralG).toBeCloseTo(
+        originalCar.telemetry.lateralG,
+        5,
+      );
+      expect(car.telemetry.verticalG).toBeCloseTo(
+        originalCar.telemetry.verticalG,
+        5,
+      );
+      expect(car.telemetry.bankRad).toBeCloseTo(
+        originalCar.telemetry.bankRad,
+        8,
+      );
+      expect(car.telemetry.rollRateRadPerSec).toBeCloseTo(
+        originalCar.telemetry.rollRateRadPerSec,
+        8,
+      );
+      expect(car.seats[0]!.telemetry.longitudinalG).toBeCloseTo(
+        originalCar.seats[0]!.telemetry.longitudinalG,
+        5,
+      );
+      expect(car.seats[0]!.telemetry.lateralG).toBeCloseTo(
+        originalCar.seats[0]!.telemetry.lateralG,
+        5,
+      );
+      expect(car.seats[0]!.telemetry.verticalG).toBeCloseTo(
+        originalCar.seats[0]!.telemetry.verticalG,
+        5,
+      );
+      expect(car.seats[0]!.telemetry.bankRad).toBeCloseTo(
+        originalCar.seats[0]!.telemetry.bankRad,
+        8,
+      );
+    });
+  });
+
+  it("rejects malformed force queries at the exported boundary", () => {
+    expect(() =>
+      computePerCarForces(line(10), config({ gravityMps2: Number.NaN }), 1, 0),
+    ).toThrow(/gravityMps2/);
+    expect(() =>
+      computePerCarForces(line(10), config(), Number.NaN, 0),
+    ).toThrow(/initial/);
   });
 });

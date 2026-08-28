@@ -38,6 +38,7 @@ const SPEED_EPSILON = 1e-8;
 export const createDefaultSimulatorConfig = (): SimulatorConfig => ({
   gravityMps2: DEFAULT_GRAVITY,
   gravityDirection: vec3(0, -1, 0),
+  closedTrack: false,
   fixedStepSeconds: 1 / 240,
   timelineStepSeconds: 1 / 120,
   rollingResistanceCoefficient: 0.002,
@@ -85,14 +86,32 @@ const add = (a: Vec3, b: Vec3): Vec3 =>
 const subtract = (a: Vec3, b: Vec3): Vec3 =>
   vec3(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const scale = (a: Vec3, value: number): Vec3 => vec3Scale(a, value);
+const wrappedDistance = (
+  track: CompiledTrackData,
+  distanceM: number,
+): number => {
+  if (track.totalLength <= 0) return 0;
+  const remainder = distanceM % track.totalLength;
+  return remainder < 0 ? remainder + track.totalLength : remainder;
+};
+const trackDistance = (
+  track: CompiledTrackData,
+  config: SimulatorConfig,
+  distanceM: number,
+): number =>
+  config.closedTrack ? wrappedDistance(track, distanceM) : distanceM;
 const zoneContains = (
   track: CompiledTrackData,
   zone: OperationZone,
   distanceM: number,
+  closedTrack = false,
 ): boolean => {
-  if (distanceM < Math.min(zone.startDistanceM, zone.endDistanceM))
+  const trackDistanceM = closedTrack
+    ? wrappedDistance(track, distanceM)
+    : distanceM;
+  if (trackDistanceM < Math.min(zone.startDistanceM, zone.endDistanceM))
     return false;
-  if (distanceM > Math.max(zone.startDistanceM, zone.endDistanceM))
+  if (trackDistanceM > Math.max(zone.startDistanceM, zone.endDistanceM))
     return false;
   const zoneNames = track.zoneNames;
   const nameIndex = zoneNames.indexOf(zone.id);
@@ -103,7 +122,7 @@ const zoneContains = (
     0,
     Math.min(
       masks.length - 1,
-      Math.round((distanceM / track.totalLength) * (masks.length - 1)),
+      Math.round((trackDistanceM / track.totalLength) * (masks.length - 1)),
     ),
   );
   return ((masks[sampleIndex] ?? 0) & (1 << nameIndex)) !== 0;
@@ -114,7 +133,9 @@ const activeZones = (
   config: SimulatorConfig,
   distanceM: number,
 ): readonly OperationZone[] =>
-  config.zones.filter((zone) => zoneContains(track, zone, distanceM));
+  config.zones.filter((zone) =>
+    zoneContains(track, zone, distanceM, config.closedTrack),
+  );
 
 const activeZonesForTrain = (
   track: CompiledTrackData,
@@ -123,7 +144,12 @@ const activeZonesForTrain = (
 ): readonly OperationZone[] =>
   config.zones.filter((zone) =>
     config.train.cars.some((_, index) =>
-      zoneContains(track, zone, headDistanceM - index * config.train.spacingM),
+      zoneContains(
+        track,
+        zone,
+        headDistanceM - index * config.train.spacingM,
+        config.closedTrack,
+      ),
     ),
   );
 
@@ -190,6 +216,16 @@ const validate = (
       severity: "error",
       field: "gravityDirection",
       message: "Gravity direction must be a finite non-zero vector",
+    });
+  if (
+    config.closedTrack !== undefined &&
+    typeof config.closedTrack !== "boolean"
+  )
+    diagnostics.push({
+      code: "SIM_INVALID_CONFIGURATION",
+      severity: "error",
+      field: "closedTrack",
+      message: "Closed-track mode must be boolean",
     });
   if (config.train.cars.length === 0 || config.train.cars.length > 6)
     diagnostics.push({
@@ -351,7 +387,10 @@ const forceAt = (
   car: CarConfiguration,
   carCount: number,
 ): PerCarForce => {
-  const sample = sampleTrackAtDistance(track, distanceM);
+  const sample = sampleTrackAtDistance(
+    track,
+    trackDistance(track, config, distanceM),
+  );
   const zones = activeZones(track, config, distanceM);
   const gravity = car.massKg * dot(gravityVector(config), sample.tangent);
   const rollingMagnitude =
@@ -505,7 +544,10 @@ const makeCars = (
 ): readonly CarState[] =>
   config.train.cars.map((car, index) => {
     const distanceM = headDistanceM - index * config.train.spacingM;
-    const sample = sampleTrackAtDistance(track, distanceM);
+    const sample = sampleTrackAtDistance(
+      track,
+      trackDistance(track, config, distanceM),
+    );
     const offsets = seatPositions(car);
     const telemetry = carTelemetry(
       sample,
@@ -516,7 +558,10 @@ const makeCars = (
     );
     const seats = offsets.map((offset, seatIndex) => {
       const seatDistanceM = distanceM + offset[2];
-      const seatFrame = sampleTrackAtDistance(track, seatDistanceM);
+      const seatFrame = sampleTrackAtDistance(
+        track,
+        trackDistance(track, config, seatDistanceM),
+      );
       const seatRight = scale(seatFrame.binormal, -1);
       return {
         index: seatIndex,
@@ -561,6 +606,46 @@ const worldAcceleration = (
   );
 };
 
+const telemetryAxes = (sample: TrackSample, gravity: Vec3): TrackSample => {
+  const up = scale(
+    gravity,
+    -1 / Math.max(Math.hypot(gravity[0], gravity[1], gravity[2]), 1e-30),
+  );
+  const tangentProjection = dot(up, sample.tangent);
+  const projectedUp = subtract(up, scale(sample.tangent, tangentProjection));
+  const projectedLength = Math.hypot(
+    projectedUp[0],
+    projectedUp[1],
+    projectedUp[2],
+  );
+  if (projectedLength <= 1e-12) return sample;
+  const unbankedNormal = scale(projectedUp, 1 / projectedLength);
+  const unbankedBinormal = vec3Normalize(
+    vec3(
+      sample.tangent[1] * unbankedNormal[2] -
+        sample.tangent[2] * unbankedNormal[1],
+      sample.tangent[2] * unbankedNormal[0] -
+        sample.tangent[0] * unbankedNormal[2],
+      sample.tangent[0] * unbankedNormal[1] -
+        sample.tangent[1] * unbankedNormal[0],
+    ),
+  );
+  const normal = vec3Normalize(
+    add(
+      scale(unbankedNormal, Math.cos(sample.bank)),
+      scale(unbankedBinormal, Math.sin(sample.bank)),
+    ),
+  );
+  const binormal = vec3Normalize(
+    vec3(
+      sample.tangent[1] * normal[2] - sample.tangent[2] * normal[1],
+      sample.tangent[2] * normal[0] - sample.tangent[0] * normal[2],
+      sample.tangent[0] * normal[1] - sample.tangent[1] * normal[0],
+    ),
+  );
+  return { ...sample, normal, binormal };
+};
+
 const carTelemetry = (
   sample: TrackSample,
   worldAccelerationMps2: Vec3,
@@ -569,14 +654,15 @@ const carTelemetry = (
   speedMps: number,
 ): CarTelemetry => {
   const specific = subtract(worldAccelerationMps2, gravity);
-  const right = scale(sample.binormal, -1);
+  const axes = telemetryAxes(sample, gravity);
+  const right = scale(axes.binormal, -1);
   return {
-    longitudinalG: dot(specific, sample.tangent) / gravityMps2,
+    longitudinalG: dot(specific, axes.tangent) / gravityMps2,
     lateralG: dot(specific, right) / gravityMps2,
-    verticalG: dot(specific, sample.normal) / gravityMps2,
+    verticalG: dot(specific, axes.normal) / gravityMps2,
     specificForceMps2: specific,
     jerkMps3: vec3(),
-    bankRad: sample.bank,
+    bankRad: axes.bank,
     rollRateRadPerSec: sample.bankDerivative * speedMps,
   };
 };
@@ -587,7 +673,7 @@ const makeTelemetry = (
   cars: readonly CarState[],
   speedMps: number,
   work: WorkState,
-  initialPotentialJ: number,
+  initialEnergyJ: number,
   launchActivity: boolean,
   brakeActivity: boolean,
 ): RideTelemetry => {
@@ -611,7 +697,7 @@ const makeTelemetry = (
     0,
   );
   const energyErrorJ =
-    initialPotentialJ +
+    initialEnergyJ +
     work.driveJ -
     work.lossJ -
     (kineticEnergyJ + potentialEnergyJ);
@@ -667,6 +753,8 @@ const operationStateFor = (zones: readonly OperationZone[]): OperationState => {
 };
 
 const zoneCrossings = (
+  track: CompiledTrackData,
+  config: SimulatorConfig,
   zones: readonly OperationZone[],
   previousDistanceM: number,
   nextDistanceM: number,
@@ -676,36 +764,97 @@ const zoneCrossings = (
   const delta = nextDistanceM - previousDistanceM;
   if (delta === 0) return [];
   const direction = delta > 0 ? "forward" : "reverse";
-  const lower = Math.min(previousDistanceM, nextDistanceM);
-  const upper = Math.max(previousDistanceM, nextDistanceM);
-  const events: SimulationEvent[] = [];
+  const crossingTolerance = Math.max(Math.abs(delta) * 1e-12, 1e-12);
+  const candidates: {
+    readonly zone: OperationZone;
+    readonly boundary: "start" | "end";
+    readonly timeSeconds: number;
+  }[] = [];
   for (const zone of zones) {
-    for (const [boundary, distance] of [
-      ["start", zone.startDistanceM],
-      ["end", zone.endDistanceM],
-    ] as const) {
-      if (distance <= lower || distance > upper) continue;
-      const entry =
-        (direction === "forward" && boundary === "start") ||
-        (direction === "reverse" && boundary === "end");
-      events.push({
-        timeSeconds:
-          previousTimeSeconds +
-          ((distance - previousDistanceM) / delta) * stepSeconds,
-        type: entry ? "zone-entry" : "zone-exit",
-        zoneId: zone.id,
-        operation: zone.kind,
-        boundary,
-        direction,
-      });
+    for (let carIndex = 0; carIndex < config.train.cars.length; carIndex += 1) {
+      const carOffset = carIndex * config.train.spacingM;
+      for (const [boundary, distance] of [
+        ["start", zone.startDistanceM],
+        ["end", zone.endDistanceM],
+      ] as const) {
+        const baseDistance = distance + carOffset;
+        const lower = Math.min(previousDistanceM, nextDistanceM);
+        const upper = Math.max(previousDistanceM, nextDistanceM);
+        const firstLap = config.closedTrack
+          ? Math.floor((lower - baseDistance) / track.totalLength) - 1
+          : 0;
+        const lastLap = config.closedTrack
+          ? Math.ceil((upper - baseDistance) / track.totalLength) + 1
+          : 0;
+        for (let lap = firstLap; lap <= lastLap; lap += 1) {
+          const crossingDistance =
+            baseDistance + (config.closedTrack ? lap * track.totalLength : 0);
+          const crossed =
+            direction === "forward"
+              ? previousDistanceM < crossingDistance - crossingTolerance &&
+                crossingDistance <= nextDistanceM + crossingTolerance
+              : nextDistanceM <= crossingDistance + crossingTolerance &&
+                crossingDistance < previousDistanceM - crossingTolerance;
+          if (!crossed) continue;
+          candidates.push({
+            zone,
+            boundary,
+            timeSeconds:
+              previousTimeSeconds +
+              ((crossingDistance - previousDistanceM) / delta) * stepSeconds,
+          });
+        }
+      }
     }
   }
-  return events.sort(
+  candidates.sort(
     (a, b) =>
       a.timeSeconds - b.timeSeconds ||
-      a.zoneId.localeCompare(b.zoneId) ||
+      a.zone.id.localeCompare(b.zone.id) ||
       a.boundary.localeCompare(b.boundary),
   );
+  const events: SimulationEvent[] = [];
+  const epsilon = Math.max(Math.abs(delta) * 1e-9, 1e-9);
+  for (const candidate of candidates) {
+    const beforeDistance =
+      previousDistanceM +
+      ((candidate.timeSeconds - previousTimeSeconds) / stepSeconds) * delta -
+      Math.sign(delta) * epsilon;
+    const afterDistance =
+      previousDistanceM +
+      ((candidate.timeSeconds - previousTimeSeconds) / stepSeconds) * delta +
+      Math.sign(delta) * epsilon;
+    const occupied = (headDistanceM: number): boolean =>
+      config.train.cars.some((_, index) =>
+        zoneContains(
+          track,
+          candidate.zone,
+          headDistanceM - index * config.train.spacingM,
+          config.closedTrack,
+        ),
+      );
+    const before = occupied(beforeDistance);
+    const after = occupied(afterDistance);
+    if (before === after) continue;
+    const entry = !before && after;
+    const duplicate = events.some(
+      (event) =>
+        event.zoneId === candidate.zone.id &&
+        event.type === (entry ? "zone-entry" : "zone-exit") &&
+        event.boundary === candidate.boundary &&
+        event.timeSeconds === candidate.timeSeconds,
+    );
+    if (duplicate) continue;
+    events.push({
+      timeSeconds: candidate.timeSeconds,
+      type: entry ? "zone-entry" : "zone-exit",
+      zoneId: candidate.zone.id,
+      operation: candidate.zone.kind,
+      boundary: candidate.boundary,
+      direction,
+    });
+  }
+  return events;
 };
 
 const withJerk = (
@@ -767,6 +916,7 @@ const withJerk = (
   });
 
 const makeTimeline = (
+  track: CompiledTrackData,
   frames: readonly SimulationFrame[],
   config: SimulatorConfig,
 ): RideTimeline => {
@@ -786,6 +936,27 @@ const makeTimeline = (
   )
     outputTimes.push(index * config.timelineStepSeconds);
   outputTimes.push(durationSeconds);
+  const interpolateTelemetry = (
+    left: CarTelemetry,
+    right: CarTelemetry,
+    alpha: number,
+  ): CarTelemetry => {
+    const blend = (a: number, b: number): number => a + (b - a) * alpha;
+    const blendVec = (a: Vec3, b: Vec3): Vec3 =>
+      vec3(blend(a[0], b[0]), blend(a[1], b[1]), blend(a[2], b[2]));
+    return {
+      longitudinalG: blend(left.longitudinalG, right.longitudinalG),
+      lateralG: blend(left.lateralG, right.lateralG),
+      verticalG: blend(left.verticalG, right.verticalG),
+      specificForceMps2: blendVec(
+        left.specificForceMps2,
+        right.specificForceMps2,
+      ),
+      jerkMps3: blendVec(left.jerkMps3, right.jerkMps3),
+      bankRad: blend(left.bankRad, right.bankRad),
+      rollRateRadPerSec: blend(left.rollRateRadPerSec, right.rollRateRadPerSec),
+    };
+  };
   const interpolateFrame = (time: number): SimulationFrame => {
     let upper = 0;
     while (upper < frames.length - 1 && frames[upper]!.timeSeconds < time)
@@ -796,27 +967,66 @@ const makeTimeline = (
     const span = right.timeSeconds - left.timeSeconds;
     const alpha = span > 0 ? (time - left.timeSeconds) / span : 0;
     const blend = (a: number, b: number): number => a + (b - a) * alpha;
-    const blendVec = (a: Vec3, b: Vec3): Vec3 =>
-      vec3(blend(a[0], b[0]), blend(a[1], b[1]), blend(a[2], b[2]));
     const cars = left.cars.map((car, carIndex) => {
       const other = right.cars[carIndex] ?? car;
+      const distanceM = blend(car.distanceM, other.distanceM);
+      const frame = sampleTrackAtDistance(
+        track,
+        trackDistance(track, config, distanceM),
+      );
+      const telemetry = interpolateTelemetry(
+        car.telemetry,
+        other.telemetry,
+        alpha,
+      );
+      const seats = car.seats.map((seat, seatIndex) => {
+        const otherSeat = other.seats[seatIndex] ?? seat;
+        const seatDistanceM = blend(seat.distanceM, otherSeat.distanceM);
+        const seatFrame = sampleTrackAtDistance(
+          track,
+          trackDistance(track, config, seatDistanceM),
+        );
+        const offset = car.seatOffsets[seatIndex] ?? vec3();
+        const seatRight = scale(seatFrame.binormal, -1);
+        return {
+          ...seat,
+          distanceM: seatDistanceM,
+          position: add(
+            seatFrame.position,
+            add(
+              scale(seatRight, offset[0]),
+              scale(seatFrame.normal, offset[1]),
+            ),
+          ),
+          frame: seatFrame,
+          telemetry: interpolateTelemetry(
+            seat.telemetry,
+            otherSeat.telemetry,
+            alpha,
+          ),
+        };
+      });
       return {
         ...car,
-        distanceM: blend(car.distanceM, other.distanceM),
-        position: blendVec(car.position, other.position),
-        tangent: blendVec(car.tangent, other.tangent),
-        normal: blendVec(car.normal, other.normal),
-        binormal: blendVec(car.binormal, other.binormal),
-        seatPositions: car.seatPositions.map((position, seatIndex) =>
-          blendVec(position, other.seatPositions[seatIndex] ?? position),
-        ),
+        distanceM,
+        position: frame.position,
+        tangent: frame.tangent,
+        normal: frame.normal,
+        binormal: frame.binormal,
+        frame,
+        telemetry,
+        seats,
+        seatPositions: seats.map((seat) => seat.position),
       };
     });
+    const perCar = cars.map((car) => car.telemetry);
+    const first = perCar[0] ?? left.telemetry;
     return {
       ...left,
       timeSeconds: time,
       headDistanceM: blend(left.headDistanceM, right.headDistanceM),
       speedMps: blend(left.speedMps, right.speedMps),
+      status: alpha < 0.5 ? left.status : right.status,
       cars,
       selection: {
         front: cars[0] as CarState,
@@ -825,17 +1035,42 @@ const makeTimeline = (
       },
       telemetry: {
         ...left.telemetry,
-        longitudinalG: blend(
-          left.telemetry.longitudinalG,
-          right.telemetry.longitudinalG,
+        perCar,
+        longitudinalG: first.longitudinalG,
+        lateralG: first.lateralG,
+        verticalG: first.verticalG,
+        specificForceMps2: first.specificForceMps2,
+        bankRad: first.bankRad,
+        rollRateRadPerSec: first.rollRateRadPerSec,
+        jerkMps3: first.jerkMps3,
+        launchActivity:
+          alpha < 0.5
+            ? left.telemetry.launchActivity
+            : right.telemetry.launchActivity,
+        brakeActivity:
+          alpha < 0.5
+            ? left.telemetry.brakeActivity
+            : right.telemetry.brakeActivity,
+        kineticEnergyJ: blend(
+          left.telemetry.kineticEnergyJ,
+          right.telemetry.kineticEnergyJ,
         ),
-        lateralG: blend(left.telemetry.lateralG, right.telemetry.lateralG),
-        verticalG: blend(left.telemetry.verticalG, right.telemetry.verticalG),
-        specificForceMps2: blendVec(
-          left.telemetry.specificForceMps2,
-          right.telemetry.specificForceMps2,
+        potentialEnergyJ: blend(
+          left.telemetry.potentialEnergyJ,
+          right.telemetry.potentialEnergyJ,
         ),
-        jerkMps3: blendVec(left.telemetry.jerkMps3, right.telemetry.jerkMps3),
+        accumulatedDriveWorkJ: blend(
+          left.telemetry.accumulatedDriveWorkJ,
+          right.telemetry.accumulatedDriveWorkJ,
+        ),
+        accumulatedLossWorkJ: blend(
+          left.telemetry.accumulatedLossWorkJ,
+          right.telemetry.accumulatedLossWorkJ,
+        ),
+        energyErrorJ: blend(
+          left.telemetry.energyErrorJ,
+          right.telemetry.energyErrorJ,
+        ),
       },
     };
   };
@@ -875,6 +1110,7 @@ const makeTimeline = (
     carTangentsXYZ: flatten((car) => car.tangent),
     carNormalsXYZ: flatten((car) => car.normal),
     carBinormalsXYZ: flatten((car) => car.binormal),
+    frames: selected,
   });
 };
 
@@ -930,6 +1166,7 @@ export const simulateRide = (
         dot(gravityVector(config), car.position),
     0,
   );
+  const initialEnergyJ = initialPotentialJ + 0.5 * mass * initial.speedMps ** 2;
   const work: WorkState = { driveJ: 0, lossJ: 0 };
   const frames: SimulationFrame[] = [];
   const events: SimulationEvent[] = [];
@@ -969,7 +1206,7 @@ export const simulateRide = (
       cars,
       currentSpeed,
       work,
-      initialPotentialJ,
+      initialEnergyJ,
       dynamics.forces.some((force) => force.launchActive),
       dynamics.forces.some((force) => force.brakeActive),
     );
@@ -1063,6 +1300,8 @@ export const simulateRide = (
       timeSeconds = request.durationSeconds;
     events.push(
       ...zoneCrossings(
+        track,
+        config,
         config.zones,
         previousDistance,
         distanceM,
@@ -1076,7 +1315,7 @@ export const simulateRide = (
   const finalZones = activeZonesForTrain(track, config, distanceM);
   return {
     frames: completedFrames,
-    timeline: makeTimeline(completedFrames, config),
+    timeline: makeTimeline(track, completedFrames, config),
     events,
     operationState: operationStateFor(finalZones),
     diagnostics,
@@ -1101,5 +1340,35 @@ export const computePerCarForces = (
   config: SimulatorConfig,
   headDistanceM: number,
   speedMps: number,
-): readonly PerCarForce[] =>
-  dynamicsAt(track, config, headDistanceM, speedMps).forces;
+): readonly PerCarForce[] => {
+  const diagnostics = [
+    ...validate(
+      {
+        durationSeconds: 0,
+        config,
+        initial: { headDistanceM, speedMps },
+      },
+      track,
+    ),
+  ];
+  if (!finite(track.totalLength) || track.totalLength < 0)
+    diagnostics.push({
+      code: "SIM_INVALID_CONFIGURATION",
+      severity: "error",
+      field: "track.totalLength",
+      message: "Compiled track length must be finite and non-negative",
+    });
+  const errors = diagnostics.filter(
+    (diagnostic) => diagnostic.severity === "error",
+  );
+  if (errors.length > 0)
+    throw new RangeError(
+      errors
+        .map(
+          (diagnostic) =>
+            `${diagnostic.field ?? "input"}: ${diagnostic.message}`,
+        )
+        .join("; "),
+    );
+  return dynamicsAt(track, config, headDistanceM, speedMps).forces;
+};

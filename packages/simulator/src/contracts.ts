@@ -41,6 +41,7 @@ export interface TrainConfiguration {
 export interface SimulatorConfig {
   readonly gravityMps2: number;
   readonly gravityDirection?: Vec3;
+  readonly closedTrack?: boolean;
   readonly fixedStepSeconds: number;
   readonly timelineStepSeconds: number;
   readonly rollingResistanceCoefficient: number;
