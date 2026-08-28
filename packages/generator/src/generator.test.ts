@@ -361,6 +361,89 @@ describe("semantic chain geometry", () => {
     expect(result.diagnostics[0]?.message).toContain("oriented:height");
   });
 
+  it("keeps a banked positive-G target calibrated or reports force infeasibility", () => {
+    const result = solveSemanticChain(
+      [
+        createElement("airtimeHill", "banked-hill", {
+          length: 48,
+          height: 10,
+          targetForceG: 2,
+          referenceSpeed: 24,
+          bank: 0.6,
+        }),
+      ],
+      {
+        referenceSpeed: 24,
+        startPose: { ...defaultPose(), bank: 0.6 },
+      },
+    );
+    const solved = result.solvedSpans[0]!;
+    const force = specificForceComponents(
+      solved.span,
+      solved.bank!.position(0.5),
+      0.5,
+      24,
+    );
+    if (result.feasible) {
+      expect(force.normal).toBeCloseTo(2, 2);
+      expect(Math.abs(force.binormal)).toBeLessThan(0.05);
+    } else {
+      const infeasible = result.diagnostics.find(
+        (diagnostic) =>
+          diagnostic.code === "INFEASIBLE_HARD_CONSTRAINTS" &&
+          diagnostic.message.includes("banked-hill:force"),
+      );
+      expect(infeasible).toBeDefined();
+      expect(infeasible?.suggestedRelaxation).toContain("banked-hill:force");
+    }
+  });
+
+  it("reports zero transverse force at a vertical zero-curvature seam", () => {
+    const result = solveSemanticChain(
+      [
+        createElement("station", "vertical-station", { length: 12 }),
+        createElement("launch", "vertical-launch", { length: 20 }),
+      ],
+      {
+        referenceSpeed: 24,
+        startPose: {
+          position: vec3(0, 0, 0),
+          tangent: vec3(0, 1, 0),
+          normal: vec3(1, 0, 0),
+          bank: 0,
+        },
+      },
+    );
+    expect(result.feasible).toBe(true);
+    expect(result.seamDiagnostics[0]?.specificForceJumpG).toBeCloseTo(0, 10);
+  });
+
+  it("keeps vertical zero-curvature soft-force diagnostics total", () => {
+    const result = solveSemanticChain(
+      [
+        createElement("station", "soft-vertical-station", { length: 12 }),
+        createElement("launch", "soft-vertical-launch", { length: 20 }),
+      ],
+      {
+        referenceSpeed: 24,
+        softForceTargetG: 0,
+        startPose: {
+          position: vec3(0, 0, 0),
+          tangent: vec3(0, 1, 0),
+          normal: vec3(1, 0, 0),
+          bank: 0,
+        },
+      },
+    );
+    expect(result.feasible).toBe(true);
+    expect(
+      result.seamDiagnostics[0]?.softResiduals.sustainedForceDeviationG,
+    ).toBeCloseTo(0, 10);
+    expect(
+      result.diagnostics.every((diagnostic) => diagnostic.severity !== "error"),
+    ).toBe(true);
+  });
+
   it("rejects zero-G geometry whose plane cannot cancel gravity", () => {
     const result = solveSemanticChain(
       [

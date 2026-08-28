@@ -88,33 +88,82 @@ const curvatureGradient = (span: ParametricSpan<Vec3>, u: number): number => {
     ((high - low) * vec3Length(span.derivative(u, 1)))
   );
 };
-const specificForceNormalG = (
-  span: ParametricSpan<Vec3>,
-  u: number,
-  speed: number,
-): number => {
-  const tangent = vec3Normalize(span.derivative(u, 1));
-  const curvature = curvatureVector(span, u);
+const bankValue = (span: SolvedSpan, u: number): number =>
+  span.bank?.position(u) ?? 0;
+const bankDerivative = (span: SolvedSpan, u: number): number =>
+  span.bank?.derivative(u, 1) ?? 0;
+
+interface ForceFrame {
+  readonly tangent: Vec3;
+  readonly normal: Vec3;
+  readonly binormal: Vec3;
+  readonly specificForce: Vec3;
+}
+
+const forceFrame = (span: SolvedSpan, u: number, speed: number): ForceFrame => {
+  const tangent = vec3Normalize(span.span.derivative(u, 1));
+  const curvature = curvatureVector(span.span, u);
   const curvatureMagnitude = vec3Length(curvature);
   const gravityPerpendicular = vec3Sub(
     worldGravity,
     vec3Scale(tangent, vec3Dot(worldGravity, tangent)),
   );
-  const normal =
+  const geometricNormal =
     curvatureMagnitude > 1e-12
       ? vec3Scale(
           curvature,
           (vec3Dot(curvature, vec3Scale(worldGravity, -1)) >= 0 ? 1 : -1) /
             curvatureMagnitude,
         )
-      : vec3Scale(vec3Normalize(gravityPerpendicular), -1);
-  const specificForce = vec3Sub(vec3Scale(curvature, speed ** 2), worldGravity);
-  return vec3Dot(specificForce, normal) / gravity;
+      : vec3Length(gravityPerpendicular) > 1e-12
+        ? vec3Scale(vec3Normalize(gravityPerpendicular), -1)
+        : (() => {
+            const reference =
+              Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+            return vec3Normalize(
+              vec3Sub(
+                reference,
+                vec3Scale(tangent, vec3Dot(reference, tangent)),
+              ),
+            );
+          })();
+  const geometricBinormal = vec3Normalize(vec3Cross(tangent, geometricNormal));
+  const bank = bankValue(span, u);
+  const normal = vec3Normalize(
+    vec3Add(
+      vec3Scale(geometricNormal, Math.cos(bank)),
+      vec3Scale(geometricBinormal, Math.sin(bank)),
+    ),
+  );
+  const binormal = vec3Normalize(vec3Cross(tangent, normal));
+  return {
+    tangent,
+    normal,
+    binormal,
+    specificForce: vec3Sub(vec3Scale(curvature, speed ** 2), worldGravity),
+  };
 };
-const bankValue = (span: SolvedSpan, u: number): number =>
-  span.bank?.position(u) ?? 0;
-const bankDerivative = (span: SolvedSpan, u: number): number =>
-  span.bank?.derivative(u, 1) ?? 0;
+
+const specificForceNormalG = (
+  span: SolvedSpan,
+  u: number,
+  speed: number,
+): number => {
+  const frame = forceFrame(span, u, speed);
+  return vec3Dot(frame.specificForce, frame.normal) / gravity;
+};
+const specificForceResidualG = (
+  span: SolvedSpan,
+  u: number,
+  speed: number,
+  target: number,
+): number => {
+  const frame = forceFrame(span, u, speed);
+  return Math.max(
+    Math.abs(vec3Dot(frame.specificForce, frame.normal) / gravity - target),
+    Math.abs(vec3Dot(frame.specificForce, frame.binormal) / gravity),
+  );
+};
 
 export interface LeastSquaresProblem {
   readonly initial: readonly number[];
@@ -265,8 +314,8 @@ export const diagnoseSeams = (
         bankDerivative(left, 1) - bankDerivative(right, 0),
       ),
       specificForceJumpG: Math.abs(
-        specificForceNormalG(left.span, 1, speed) -
-          specificForceNormalG(right.span, 0, speed),
+        specificForceNormalG(left, 1, speed) -
+          specificForceNormalG(right, 0, speed),
       ),
       sustainedForceDeviationG:
         options.softForceTargetG === undefined
@@ -274,7 +323,7 @@ export const diagnoseSeams = (
           : Math.max(
               ...Array.from({ length: 9 }, (_, sample) =>
                 Math.abs(
-                  specificForceNormalG(right.span, (sample + 1) / 10, speed) -
+                  specificForceNormalG(right, (sample + 1) / 10, speed) -
                     options.softForceTargetG!,
                 ),
               ),
@@ -373,7 +422,7 @@ interface ChainState {
 
 interface GeometryFailure {
   readonly elementId: string;
-  readonly kind: "height" | "orientation";
+  readonly kind: "height" | "orientation" | "force";
   readonly actual: number;
   readonly target: number;
 }
@@ -496,7 +545,8 @@ const buildChain = (
   let pose = startPose;
   for (const element of elements) {
     const built = buildElement(element, pose, referenceSpeed);
-    solvedSpans.push({ ...built.solvedSpan, id: element.id });
+    const solvedSpan = { ...built.solvedSpan, id: element.id };
+    solvedSpans.push(solvedSpan);
     if (element.type === "airtimeHill") {
       const target = element.parameters.height;
       const actual = vec3Dot(
@@ -509,6 +559,19 @@ const buildChain = (
           kind: "height",
           actual,
           target,
+        });
+      const forceTarget = element.parameters.targetForceG;
+      const forceResidual = Math.max(
+        ...[0.25, 0.5, 0.75].map((u) =>
+          specificForceResidualG(solvedSpan, u, referenceSpeed, forceTarget),
+        ),
+      );
+      if (forceResidual > 0.05)
+        hardGeometryFailures.push({
+          elementId: element.id,
+          kind: "force",
+          actual: forceResidual,
+          target: forceTarget,
         });
     }
     if (element.type === "zeroGRoll") {
@@ -625,7 +688,7 @@ const diagnosticResiduals = (
     for (const span of state.solvedSpans)
       for (const sample of [0.25, 0.5, 0.75])
         residual.push(
-          (specificForceNormalG(span.span, sample, speed) -
+          (specificForceNormalG(span, sample, speed) -
             options.softForceTargetG) /
             tolerances.sustainedForceDeviationG,
         );
@@ -762,7 +825,9 @@ export const solveSemanticChain = (
     const detail =
       failure.kind === "height"
         ? `infeasible force geometry: requested ${failure.target.toFixed(6)} m, physically force-constrained result ${failure.actual.toFixed(6)} m`
-        : `infeasible force geometry: planar zero-G path leaves ${failure.actual.toFixed(6)} G in the gravity binormal component`;
+        : failure.kind === "orientation"
+          ? `infeasible force geometry: planar zero-G path leaves ${failure.actual.toFixed(6)} G in the gravity binormal component`
+          : `infeasible force geometry: banked force target residual is ${failure.actual.toFixed(6)} G`;
     diagnostics.push(hardConflict([constraintId], detail));
     if (relaxations.length < 3)
       relaxations.push(
