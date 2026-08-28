@@ -68,10 +68,40 @@ export function createRendererController(
   let playbackSpeed = 0;
   let cameraPrevious: ReturnType<typeof getCameraState> | undefined;
 
+  function validateTimeline(timeline: {
+    distances: Float64Array;
+    speeds: Float64Array;
+  }): void {
+    if (
+      !(timeline.distances instanceof Float64Array) ||
+      !(timeline.speeds instanceof Float64Array)
+    ) {
+      throw new TypeError("timeline distances/speeds must be Float64Array");
+    }
+    if (timeline.distances.length !== timeline.speeds.length) {
+      throw new RangeError("timeline distances/speeds length mismatch");
+    }
+    for (let i = 0; i < timeline.distances.length; i++) {
+      const d = timeline.distances[i];
+      const s = timeline.speeds[i];
+      if (
+        d === undefined ||
+        s === undefined ||
+        !Number.isFinite(d) ||
+        !Number.isFinite(s)
+      ) {
+        throw new RangeError("timeline distances/speeds must be finite");
+      }
+    }
+  }
+
   const attachTrack = (
     data: CompiledTrackData,
     options: AttachOptions = {},
   ): void => {
+    if (options.timeline !== undefined) {
+      validateTimeline(options.timeline);
+    }
     clearTrack();
     trackData = data;
     currentMetric = options.metric ?? "height";
@@ -145,6 +175,13 @@ export function createRendererController(
 
     trainGroup = createTrainGroup();
     handle.scene.add(trainGroup.group);
+    // timeline owns documented initialization – apply first distance/speed directly
+    if (options.timeline && options.timeline.distances.length > 0) {
+      const d0 = options.timeline.distances[0] ?? 0;
+      const s0 = options.timeline.speeds[0] ?? 0;
+      playbackDistance = d0;
+      playbackSpeed = s0;
+    }
     // initial placement
     updatePlayback(playbackDistance, playbackSpeed);
   };
@@ -312,22 +349,30 @@ export function createRendererController(
     },
     applyCamera,
     setMetric: (metric: MetricId, metricData?: MetricData | undefined) => {
+      const hasMetricDataArg = metricData !== undefined;
+      const metricDataToUse = hasMetricDataArg ? metricData : currentMetricData;
       currentMetric = metric;
-      currentMetricData = metricData;
+      if (hasMetricDataArg) {
+        currentMetricData = metricData;
+      }
       if (trackData) {
+        const savedDistance = playbackDistance;
+        const savedSpeed = playbackSpeed;
         const data = trackData;
+        const savedSelected = selectedElementIndex;
+        const savedSeams = seamIndices;
         clearTrack();
         attachTrack(data, {
           metric: currentMetric,
-          ...(currentMetricData !== undefined
-            ? { metricData: currentMetricData }
+          ...(metricDataToUse !== undefined
+            ? { metricData: metricDataToUse }
             : {}),
-          ...(selectedElementIndex !== undefined
-            ? { selectedElementIndex }
+          ...(savedSelected !== undefined
+            ? { selectedElementIndex: savedSelected }
             : {}),
-          ...(seamIndices !== undefined ? { seamIndices } : {}),
+          ...(savedSeams !== undefined ? { seamIndices: savedSeams } : {}),
         });
-        updatePlayback(playbackDistance, playbackSpeed);
+        updatePlayback(savedDistance, savedSpeed);
       }
     },
     dispose,

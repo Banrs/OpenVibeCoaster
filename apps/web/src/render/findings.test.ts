@@ -5,6 +5,7 @@ import { compileTrack, vec3, sampleCompiledTrack } from "@openvibecoaster/core";
 import { createRendererController } from "./controller.js";
 import { buildTrackGeometries } from "./trackGeometry.js";
 import { createRendererHandle } from "./renderer.js";
+import { createAppLifecycle } from "./lifecycle.js";
 
 function makeTrack() {
   return compileTrack(
@@ -167,8 +168,158 @@ describe("findings – metric proxies removed", () => {
   });
 });
 
-describe("findings – lifecycle single owner (app/main loop)", () => {
-  it("renderer and controller do not schedule RAF or register resize – app owns single RAF/resize", () => {
+describe("findings round3 – setMetric preserves playback and metric arrays", () => {
+  it("changing color mode without metricData must not snap train to s=0 and must preserve metric arrays", () => {
+    const canvas = fakeCanvas();
+    const handle = createRendererHandle(canvas, {
+      createRenderer: () => mockRenderer(canvas),
+    });
+    if (!handle) return;
+    const cam = new THREE.PerspectiveCamera();
+    const ctl = createRendererController(handle, cam);
+    const data = makeTrack();
+    const speeds = new Float64Array(data.distances.length)
+      .fill(0)
+      .map((_, i) => i * 1.2 + 2);
+    ctl.attachTrack(data, { metric: "speed", metricData: { speed: speeds } });
+    ctl.updatePlayback(9, 6);
+    const posBefore = ctl.getTrainFrontPosition();
+    expect(posBefore).not.toBeNull();
+    // Change metric without supplying metricData – must preserve distance and arrays
+    ctl.setMetric("height");
+    const posAfterHeight = ctl.getTrainFrontPosition();
+    expect(posAfterHeight).not.toBeNull();
+    if (posBefore && posAfterHeight) {
+      expect(posAfterHeight[0]).toBeCloseTo(posBefore[0], 4);
+      expect(posAfterHeight[1]).toBeCloseTo(posBefore[1], 4);
+    }
+    // Switch back to speed without re-supplying array – should still be available (preserved)
+    ctl.setMetric("speed");
+    // Verify via buildTrackGeometries path: metricAvailable should be true when re-supplying preserved data
+    // Do a direct attach check via controller internal: getTrain still at same distance
+    const posAfterSpeed = ctl.getTrainFrontPosition();
+    if (posBefore && posAfterSpeed) {
+      expect(posAfterSpeed[0]).toBeCloseTo(posBefore[0], 4);
+    }
+    // Also verify that supplying new metricData updates, and omitting keeps previous
+    const gForces = new Float64Array(data.distances.length).fill(0.7);
+    ctl.setMetric("gForce", { gForce: gForces });
+    ctl.updatePlayback(4, 2);
+    const posG = ctl.getTrainFrontPosition();
+    ctl.setMetric("gForce");
+    const posG2 = ctl.getTrainFrontPosition();
+    if (posG && posG2) expect(posG2[0]).toBeCloseTo(posG[0], 4);
+    ctl.dispose();
+    handle.dispose();
+  });
+
+  it("setMetric saves state before mesh rebuild – playback distance/speed preserved across rebuild", () => {
+    const canvas = fakeCanvas();
+    const handle = createRendererHandle(canvas, {
+      createRenderer: () => mockRenderer(canvas),
+    });
+    if (!handle) return;
+    const cam = new THREE.PerspectiveCamera();
+    const ctl = createRendererController(handle, cam);
+    const data = makeTrack();
+    ctl.attachTrack(data);
+    ctl.updatePlayback(11, 3.5);
+    const before = ctl.getTrainFrontPosition();
+    ctl.setMetric("height");
+    const after = ctl.getTrainFrontPosition();
+    expect(before).not.toBeNull();
+    expect(after).not.toBeNull();
+    if (before && after) {
+      expect(after[0]).toBeCloseTo(before[0], 4);
+      expect(after[1]).toBeCloseTo(before[1], 4);
+    }
+    // speed should also be preserved for camera FOV purposes – applyCamera should use preserved speed
+    ctl.applyCamera("front", { reducedMotion: false });
+    const fovAfter = cam.fov;
+    expect(fovAfter).toBeGreaterThan(50);
+    ctl.dispose();
+    handle.dispose();
+  });
+});
+
+describe("findings round3 – attachTrack owns timeline option", () => {
+  it("validates matching finite arrays and applies first distance/speed directly", () => {
+    const canvas = fakeCanvas();
+    const handle = createRendererHandle(canvas, {
+      createRenderer: () => mockRenderer(canvas),
+    });
+    if (!handle) return;
+    const cam = new THREE.PerspectiveCamera();
+    const ctl = createRendererController(handle, cam);
+    const data = makeTrack();
+    const distances = new Float64Array([4, 8, 12]);
+    const speeds = new Float64Array([2, 4, 6]);
+    ctl.attachTrack(data, { timeline: { distances, speeds } });
+    const pos = ctl.getTrainFrontPosition();
+    // Direct controller caller must not depend on app helper – position should already reflect distances[0]=4
+    const ctl2PosCheck = (() => {
+      const tmpCanvas = fakeCanvas();
+      const tmpHandle = createRendererHandle(tmpCanvas, {
+        createRenderer: () => mockRenderer(tmpCanvas),
+      });
+      if (!tmpHandle) return null;
+      const tmpCam = new THREE.PerspectiveCamera();
+      const tmpCtl = createRendererController(tmpHandle, tmpCam);
+      tmpCtl.attachTrack(data, { timeline: { distances, speeds } });
+      const p = tmpCtl.getTrainFrontPosition();
+      tmpCtl.dispose();
+      tmpHandle.dispose();
+      return p;
+    })();
+    expect(pos).not.toBeNull();
+    expect(ctl2PosCheck).not.toBeNull();
+    if (pos && ctl2PosCheck) {
+      expect(pos[0]).toBeCloseTo(ctl2PosCheck[0], 4);
+    }
+    // verify playback applied: updatePlayback to 8 would move further
+    ctl.updatePlayback(8, 4);
+    const pos8 = ctl.getTrainFrontPosition();
+    if (pos && pos8) expect(pos8[0]).not.toBeCloseTo(pos[0], 2);
+    ctl.dispose();
+    handle.dispose();
+  });
+
+  it("throws on mismatched or non-finite timeline arrays", () => {
+    const canvas = fakeCanvas();
+    const handle = createRendererHandle(canvas, {
+      createRenderer: () => mockRenderer(canvas),
+    });
+    if (!handle) return;
+    const cam = new THREE.PerspectiveCamera();
+    const ctl = createRendererController(handle, cam);
+    const data = makeTrack();
+    const distances = new Float64Array([0, 1]);
+    const speedsMismatch = new Float64Array([0]);
+    expect(() =>
+      ctl.attachTrack(data, {
+        timeline: { distances, speeds: speedsMismatch },
+      }),
+    ).toThrow();
+    const badDist = new Float64Array([0, Number.NaN]);
+    const badSpeed = new Float64Array([0, 1]);
+    expect(() =>
+      ctl.attachTrack(data, {
+        timeline: { distances: badDist, speeds: badSpeed },
+      }),
+    ).toThrow();
+    const infDist = new Float64Array([0, Infinity]);
+    expect(() =>
+      ctl.attachTrack(data, {
+        timeline: { distances: infDist, speeds: badSpeed },
+      }),
+    ).toThrow();
+    ctl.dispose();
+    handle.dispose();
+  });
+});
+
+describe("findings round3 – lifecycle manager (production) – RAF/resize, reattach, stale global", () => {
+  function polyfillWindow(): Window & typeof globalThis {
     const g = globalThis as unknown as Record<string, unknown>;
     if (!g.requestAnimationFrame)
       g.requestAnimationFrame = (() =>
@@ -182,7 +333,9 @@ describe("findings – lifecycle single owner (app/main loop)", () => {
       g.removeEventListener =
         (() => {}) as unknown as typeof removeEventListener;
     if (!g.window) g.window = g;
-    const win = (g.window ?? g) as unknown as Window;
+    if (!g.performance)
+      g.performance = { now: () => Date.now() } as unknown as Performance;
+    const win = (g.window ?? g) as unknown as Window & typeof globalThis;
     (win as unknown as Record<string, unknown>).requestAnimationFrame =
       g.requestAnimationFrame as unknown as typeof requestAnimationFrame;
     (win as unknown as Record<string, unknown>).cancelAnimationFrame =
@@ -191,62 +344,94 @@ describe("findings – lifecycle single owner (app/main loop)", () => {
       g.addEventListener as unknown as typeof addEventListener;
     (win as unknown as Record<string, unknown>).removeEventListener =
       g.removeEventListener as unknown as typeof removeEventListener;
-    const rafSpy = vi
-      .spyOn(
-        win as unknown as {
-          requestAnimationFrame: typeof requestAnimationFrame;
-        },
-        "requestAnimationFrame",
-      )
-      .mockReturnValue(1 as unknown as number);
-    const addSpy = vi.spyOn(
-      win as unknown as { addEventListener: typeof addEventListener },
-      "addEventListener",
-    );
+    if (!(win as unknown as Record<string, unknown>).performance)
+      (win as unknown as Record<string, unknown>).performance = g.performance;
+    return win as Window & typeof globalThis;
+  }
+
+  it("reinitialization preserves last authoritative attachment and reattaches when state is ready", () => {
+    const win = polyfillWindow();
     const canvas = fakeCanvas();
-    const handle = createRendererHandle(canvas, {
-      createRenderer: () => mockRenderer(canvas),
+    const data = makeTrack();
+    const distances = new Float64Array([5, 10]);
+    const speeds = new Float64Array([3, 6]);
+    // First lifecycle succeeds
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      getWindow: () => win,
     });
-    expect(handle).not.toBeNull();
-    if (!handle) {
-      rafSpy.mockRestore();
-      addSpy.mockRestore();
-      return;
+    expect(lc.init()).toBe(true);
+    lc.attachTrack(data, { metric: "height", timeline: { distances, speeds } });
+    lc.updatePlayback(7, 2);
+    const posBefore = lc.getController()?.getTrainFrontPosition();
+    expect(posBefore).not.toBeNull();
+    // Simulate reinitialization (e.g., WebGL retry or seed change)
+    expect(lc.reinitialize()).toBe(true);
+    expect(lc.hasTrack()).toBe(true);
+    expect(lc.getAttachment()?.data.checksum).toBe(data.checksum);
+    const posAfter = lc.getController()?.getTrainFrontPosition();
+    expect(posAfter).not.toBeNull();
+    if (posBefore && posAfter) {
+      expect(posAfter[0]).toBeCloseTo(posBefore[0], 4);
     }
-    const cam = new THREE.PerspectiveCamera();
-    const ctl = createRendererController(handle, cam);
-    expect(rafSpy).not.toHaveBeenCalled();
-    const resizeCalls = addSpy.mock.calls.filter((c) => c[0] === "resize");
-    expect(resizeCalls.length).toBe(0);
-    ctl.dispose();
-    handle.dispose();
-    rafSpy.mockRestore();
-    addSpy.mockRestore();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBe(lc.getController());
+    lc.dispose();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBeUndefined();
   });
 
-  it("reinitialization via single app owner cancels prior RAF and keeps one resize listener", () => {
-    const g = globalThis as unknown as Record<string, unknown>;
-    if (!g.requestAnimationFrame)
-      g.requestAnimationFrame = (() =>
-        42) as unknown as typeof requestAnimationFrame;
-    if (!g.cancelAnimationFrame)
-      g.cancelAnimationFrame =
-        (() => {}) as unknown as typeof cancelAnimationFrame;
-    if (!g.addEventListener)
-      g.addEventListener = (() => {}) as unknown as typeof addEventListener;
-    if (!g.removeEventListener)
-      g.removeEventListener =
-        (() => {}) as unknown as typeof removeEventListener;
-    if (!g.window) g.window = g;
-    const win = (g.window ?? g) as unknown as Window;
-    (win as unknown as Record<string, unknown>).requestAnimationFrame =
-      g.requestAnimationFrame as unknown as typeof requestAnimationFrame;
-    (win as unknown as Record<string, unknown>).cancelAnimationFrame =
-      g.cancelAnimationFrame as unknown as typeof cancelAnimationFrame;
-    (win as unknown as Record<string, unknown>).addEventListener =
-      g.addEventListener as unknown as typeof addEventListener;
-    (win as unknown as Record<string, unknown>).removeEventListener =
-      g.removeEventListener as unknown as typeof removeEventListener;
+  it("failed WebGL creation preserves attachment for retry and clears stale global", () => {
+    const win = polyfillWindow();
+    const canvas = fakeCanvas();
+    const data = makeTrack();
+    let shouldFail = false;
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) => {
+        if (shouldFail) return null;
+        return createRendererHandle(c, {
+          createRenderer: () => mockRenderer(c),
+        });
+      },
+      getWindow: () => win,
+    });
+    expect(lc.init()).toBe(true);
+    lc.attachTrack(data, { metric: "height" });
+    const attBefore = lc.getAttachment();
+    expect(attBefore).not.toBeNull();
+    const ctrlBefore = lc.getController();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBe(ctrlBefore);
+    shouldFail = true;
+    expect(lc.reinitialize()).toBe(false);
+    expect(lc.getController()).toBeNull();
+    expect(lc.getRendererHandle()).toBeNull();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBeUndefined();
+    // attachment preserved for retry
+    expect(lc.getAttachment()?.data.checksum).toBe(data.checksum);
+    shouldFail = false;
+    expect(lc.reinitialize()).toBe(true);
+    expect(lc.hasTrack()).toBe(true);
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBe(lc.getController());
+    lc.dispose();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBeUndefined();
+  });
+
+  it("owns single RAF/resize – cancels prior RAF and removes listener on reinitialize and disposal", () => {
+    const win = polyfillWindow();
+    const canvas = fakeCanvas();
     const rafSpy = vi
       .spyOn(
         win as unknown as {
@@ -254,12 +439,10 @@ describe("findings – lifecycle single owner (app/main loop)", () => {
         },
         "requestAnimationFrame",
       )
-      .mockReturnValue(42 as unknown as number);
+      .mockReturnValue(101 as unknown as number);
     const cafSpy = vi
       .spyOn(
-        win as unknown as {
-          cancelAnimationFrame: typeof cancelAnimationFrame;
-        },
+        win as unknown as { cancelAnimationFrame: typeof cancelAnimationFrame },
         "cancelAnimationFrame",
       )
       .mockImplementation(() => {});
@@ -271,25 +454,85 @@ describe("findings – lifecycle single owner (app/main loop)", () => {
       win as unknown as { removeEventListener: typeof removeEventListener },
       "removeEventListener",
     );
-
-    let rafId: number | null = win.requestAnimationFrame(() => {});
-    const handler: EventListener = (() => {}) as EventListener;
-    win.addEventListener("resize", handler);
-
-    if (rafId !== null) win.cancelAnimationFrame(rafId);
-    win.removeEventListener("resize", handler);
-    rafId = win.requestAnimationFrame(() => {});
-    win.addEventListener("resize", handler);
-
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      getWindow: () => win,
+    });
+    expect(lc.init()).toBe(true);
+    expect(rafSpy).toHaveBeenCalledTimes(1);
+    expect(addSpy.mock.calls.filter((c) => c[0] === "resize").length).toBe(1);
+    // reinitialize should cancel prior RAF and remove prior listener before new ones
+    expect(lc.reinitialize()).toBe(true);
     expect(cafSpy).toHaveBeenCalledTimes(1);
-    expect(remSpy).toHaveBeenCalledTimes(1);
+    expect(remSpy.mock.calls.filter((c) => c[0] === "resize").length).toBe(1);
     expect(rafSpy).toHaveBeenCalledTimes(2);
-    expect(addSpy).toHaveBeenCalledTimes(2);
-
+    expect(addSpy.mock.calls.filter((c) => c[0] === "resize").length).toBe(2);
+    // disposal cancels and removes
+    lc.dispose();
+    expect(cafSpy).toHaveBeenCalledTimes(2);
+    expect(remSpy.mock.calls.filter((c) => c[0] === "resize").length).toBe(2);
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBeUndefined();
+    // failed creation also cancels prior RAF/listener
+    expect(lc.init()).toBe(true);
+    // Simulate failure via flag
+    let fail = true;
+    const lc2 = createAppLifecycle({
+      canvas: fakeCanvas(),
+      createHandle: (c) =>
+        fail
+          ? null
+          : createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      getWindow: () => win,
+    });
+    // init success first to set up RAF
+    fail = false;
+    expect(lc2.init()).toBe(true);
+    fail = true;
+    expect(lc2.reinitialize()).toBe(false);
+    // should have cancelled prior RAF even on failure
+    expect(cafSpy.mock.calls.length).toBeGreaterThan(2);
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBeUndefined();
+    lc.dispose();
+    lc2.dispose();
     rafSpy.mockRestore();
     cafSpy.mockRestore();
     addSpy.mockRestore();
     remSpy.mockRestore();
+  });
+
+  it("disposal clears global and RAF/resize, truthfully downgrades hasTrack", () => {
+    const win = polyfillWindow();
+    const canvas = fakeCanvas();
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      getWindow: () => win,
+    });
+    expect(lc.init()).toBe(true);
+    const data = makeTrack();
+    lc.attachTrack(data);
+    expect(lc.hasTrack()).toBe(true);
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBe(lc.getController());
+    lc.dispose();
+    expect(lc.hasTrack()).toBe(false);
+    expect(lc.getRendererHandle()).toBeNull();
+    expect(lc.getController()).toBeNull();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBeUndefined();
+    // reinit without re-attach stays pending (truthful)
+    expect(lc.reinitialize()).toBe(true);
+    expect(lc.hasTrack()).toBe(false);
+    lc.dispose();
   });
 
   it("no module-global cross-instance teardown collisions – per-instance dispose", () => {

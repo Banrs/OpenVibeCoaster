@@ -1,4 +1,3 @@
-import * as THREE from "three";
 import "./styles.css";
 import {
   clampPlaybackSpeed,
@@ -17,9 +16,8 @@ import {
   type CameraId,
   type MetricId,
 } from "./viewState.js";
-import { createRendererHandle } from "./render/renderer.js";
-import { createRendererController } from "./render/controller.js";
 import { RenderMetrics } from "./render/metrics.js";
+import { createAppLifecycle } from "./render/lifecycle.js";
 import type { CompiledTrackData } from "@openvibecoaster/core";
 
 function supportsWebGL(): boolean {
@@ -317,7 +315,7 @@ for (const input of cameraInputs) {
   input.addEventListener("change", () => {
     if (input.checked) {
       state.camera = selectCamera(input.value as CameraId, state.camera);
-      controller?.applyCamera(state.camera, {
+      lifecycle.getController()?.applyCamera(state.camera, {
         reducedMotion: state.reducedMotion,
         deltaMs: 16,
       });
@@ -328,7 +326,7 @@ for (const input of cameraInputs) {
 
 metricSelect.addEventListener("change", () => {
   state.metric = selectMetric(metricSelect.value as MetricId, state.metric);
-  controller?.setMetric(state.metric);
+  lifecycle.setMetric(state.metric);
   render();
 });
 
@@ -346,13 +344,13 @@ playbackSelect.addEventListener("change", () => {
 
 scrubber.addEventListener("input", () => {
   scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
-  if (controller?.hasTrack()) {
+  if (lifecycle.hasTrack()) {
     const t =
       Number.parseInt(scrubber.value, 10) / Number.parseInt(scrubber.max, 10);
-    const data = controller.getTrackData();
+    const data = lifecycle.getController()?.getTrackData() ?? null;
     if (data) {
       const dist = t * data.totalLength;
-      controller.updatePlayback(dist, 0);
+      lifecycle.updatePlayback(dist, 0);
     }
   }
 });
@@ -498,115 +496,26 @@ window
   });
 
 // Three renderer lifecycle – terrain/grid only before generation (no fixture coaster)
-// Single RAF and single resize owner (app/main loop)
-let rendererHandle: ReturnType<typeof createRendererHandle> = null;
-let threeCamera: THREE.PerspectiveCamera | null = null;
-let controller: ReturnType<typeof createRendererController> | null = null;
+// Single RAF and single resize owner via production lifecycle manager
 let metrics = new RenderMetrics();
-let lastFrameMs = performance.now();
-let appRafId: number | null = null;
-let appResizeHandler: (() => void) | null = null;
-
-function handleAppResize(): void {
-  resizeCanvases();
-  if (rendererHandle && threeCamera) {
-    const rect = viewportCanvas.getBoundingClientRect();
-    const w = Math.max(1, Math.round(rect.width));
-    const h = Math.max(1, Math.round(rect.height));
-    rendererHandle.resize(w, h);
-    threeCamera.aspect = w / Math.max(1, h);
-    threeCamera.updateProjectionMatrix();
-  }
-}
-
-function teardownAppLifecycle(): void {
-  if (appRafId !== null) {
-    cancelAnimationFrame(appRafId);
-    appRafId = null;
-  }
-  if (appResizeHandler) {
-    window.removeEventListener("resize", appResizeHandler);
-    appResizeHandler = null;
-  }
-}
-
-function initRenderer(): void {
-  teardownAppLifecycle();
-  if (controller) {
-    try {
-      controller.dispose();
-    } catch {
-      // ignore
-    }
-    controller = null;
-  }
-  if (rendererHandle) {
-    try {
-      rendererHandle.dispose();
-    } catch {
-      // ignore
-    }
-    rendererHandle = null;
-  }
-  const handle = createRendererHandle(viewportCanvas, {
-    dprCap: 2,
-    terrainSeed: state.seed || "default-terrain",
-    onWebGLFailure: () => {
-      hasWebGL = false;
-      render();
-    },
-  });
-  if (!handle) {
+const lifecycle = createAppLifecycle({
+  canvas: viewportCanvas,
+  getTerrainSeed: () => state.seed || "default-terrain",
+  getDprCap: () => 2,
+  metrics,
+  getCameraId: () => state.camera,
+  getReducedMotion: () => state.reducedMotion,
+  onResize2D: () => resizeCanvases(),
+  onWebGLFailure: () => {
     hasWebGL = false;
     render();
-    return;
-  }
-  hasWebGL = true;
-  rendererHandle = handle;
-  threeCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 1200);
-  threeCamera.position.set(0, 28, 52);
-  controller = createRendererController(handle, threeCamera);
-  (
-    window as unknown as { __vibecoasterController?: typeof controller }
-  ).__vibecoasterController = controller;
+  },
+});
+
+function initRenderer(): void {
+  const ok = lifecycle.init();
+  hasWebGL = ok;
   render();
-
-  appResizeHandler = handleAppResize;
-  window.addEventListener("resize", appResizeHandler);
-  handleAppResize();
-
-  const tick = (): void => {
-    if (!rendererHandle || !threeCamera || !controller) {
-      appRafId = null;
-      return;
-    }
-    const now = performance.now();
-    const deltaMs = now - lastFrameMs;
-    lastFrameMs = now;
-    metrics.beginFrame();
-    controller.applyCamera(state.camera, {
-      reducedMotion: state.reducedMotion,
-      deltaMs,
-    });
-    threeCamera.updateProjectionMatrix();
-    rendererHandle.renderer?.render(rendererHandle.scene, threeCamera);
-    metrics.endFrame();
-    const info = (
-      rendererHandle.renderer as unknown as {
-        info?: { render?: { calls?: number; triangles?: number } };
-      }
-    )?.info;
-    if (info?.render) {
-      metrics.recordBuild(
-        metrics.meshBuildTimeMs,
-        info.render.calls ?? 0,
-        info.render.triangles ?? 0,
-      );
-    }
-    appRafId = requestAnimationFrame(tick);
-  };
-  lastFrameMs = performance.now();
-  appRafId = requestAnimationFrame(tick);
 }
 
 initRenderer();
@@ -614,8 +523,16 @@ initRenderer();
 webglRetry.addEventListener("click", () => {
   hasWebGL = supportsWebGL();
   if (hasWebGL) {
-    initRenderer();
+    const ok = lifecycle.reinitialize();
+    hasWebGL = ok;
     render();
+    if (!ok) {
+      const p = webglFallback.querySelector("p");
+      if (p) {
+        p.textContent =
+          "Still unavailable — try restarting the browser with hardware acceleration enabled.";
+      }
+    }
   } else {
     const p = webglFallback.querySelector("p");
     if (p) {
@@ -634,26 +551,20 @@ function attachCompiledTrack(
     timeline?: { distances: Float64Array; speeds: Float64Array };
   } = {},
 ): void {
-  if (!controller || !rendererHandle) {
-    initRenderer();
-    if (!controller || !rendererHandle) return;
+  if (!lifecycle.getController() || !lifecycle.getRendererHandle()) {
+    const ok = lifecycle.reinitialize();
+    if (!ok) return;
   }
-  controller.attachTrack(data, {
+  lifecycle.attachTrack(data, {
     metric: options.metric ?? state.metric,
     metricData: options.metricData,
     timeline: options.timeline,
   });
-  // Drive initial playback from timeline if provided
-  if (options.timeline && options.timeline.distances.length > 0) {
-    const d0 = options.timeline.distances[0] ?? 0;
-    const s0 = options.timeline.speeds[0] ?? 0;
-    controller.updatePlayback(d0, s0);
-  }
   state.generationStatus = "ready";
   render();
 }
 function clearCompiledTrack(): void {
-  controller?.clearTrack();
+  lifecycle.clearTrack();
   state.generationStatus = "pending";
   render();
 }
@@ -678,13 +589,27 @@ window.__vibecoasterMetrics = metrics;
 (
   window as unknown as { __vibecoasterClearTrack?: typeof clearCompiledTrack }
 ).__vibecoasterClearTrack = clearCompiledTrack;
-(
-  window as unknown as { __vibecoasterController?: typeof controller }
-).__vibecoasterController = controller;
+// lifecycle manager already maintains window.__vibecoasterController – expose current for initial paint
+(window as unknown as Record<string, unknown>).__vibecoasterController =
+  lifecycle.getController() ?? undefined;
 
 // Initial paint
 render();
-handleAppResize();
+try {
+  const h = lifecycle.getRendererHandle();
+  const cam = lifecycle.getCamera();
+  if (h && cam) {
+    const rect = viewportCanvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width));
+    const hgt = Math.max(1, Math.round(rect.height));
+    h.resize(w, hgt);
+    cam.aspect = w / Math.max(1, hgt);
+    cam.updateProjectionMatrix();
+  }
+} catch {
+  // ignore
+}
+resizeCanvases();
 
 // Expose for manual inspection in devtools (not used in tests)
 declare global {
@@ -693,7 +618,7 @@ declare global {
     __vibecoasterMetrics?: RenderMetrics;
     __vibecoasterAttachTrack?: typeof attachCompiledTrack;
     __vibecoasterClearTrack?: typeof clearCompiledTrack;
-    __vibecoasterController?: typeof controller;
+    __vibecoasterController?: ReturnType<typeof lifecycle.getController>;
   }
 }
 window.__vibecoasterState = state;
