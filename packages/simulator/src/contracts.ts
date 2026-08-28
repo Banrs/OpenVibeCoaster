@@ -89,13 +89,16 @@ export interface CarState {
   readonly frame: TrackSample;
   readonly seatOffsets: readonly Vec3[];
   readonly seatPositions: readonly Vec3[];
+  readonly telemetry: CarTelemetry;
   readonly seats: readonly SeatState[];
 }
 
 export interface SeatState {
   readonly index: number;
+  readonly distanceM: number;
   readonly position: Vec3;
   readonly frame: TrackSample;
+  readonly telemetry: CarTelemetry;
 }
 
 export interface CarTelemetry {
@@ -103,6 +106,7 @@ export interface CarTelemetry {
   readonly lateralG: number;
   readonly verticalG: number;
   readonly specificForceMps2: Vec3;
+  readonly jerkMps3: Vec3;
   readonly bankRad: number;
   readonly rollRateRadPerSec: number;
 }
@@ -144,9 +148,11 @@ export interface SimulationFrame {
 
 export interface SimulationEvent {
   readonly timeSeconds: number;
-  readonly type: "zone-entry";
+  readonly type: "zone-entry" | "zone-exit";
   readonly zoneId: string;
   readonly operation: OperationZoneKind;
+  readonly boundary: "start" | "end";
+  readonly direction: "forward" | "reverse";
 }
 
 export interface OperationState {

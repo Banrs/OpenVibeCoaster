@@ -340,7 +340,7 @@ describe("pure multi-car simulator", () => {
     expect(held.frames.at(-1)?.status).toBe("static-hold");
     const forces = computePerCarForces(shallow, config(), 10, 5);
     expect(forces[0]?.gravity).toBeLessThan(0);
-    expect(Object.is(forces[0]?.rolling, -0)).toBe(true);
+    expect(forces[0]?.rolling).toBe(0);
   });
 
   it("preserves dynamics under a rigid yaw and translation", () => {
@@ -416,6 +416,398 @@ describe("pure multi-car simulator", () => {
     expect(invalid.frames).toHaveLength(0);
     expect(invalid.diagnostics.map((diagnostic) => diagnostic.field)).toEqual(
       expect.arrayContaining(["fixedStepSeconds", "gravityDirection"]),
+    );
+  });
+
+  it("uses the compiled world curvature vector for crest, valley, and turns", () => {
+    const makeSpan = (direction: -1 | 1) => ({
+      position: (u: number) => vec3(u, direction * (u - 0.5) ** 2, 0),
+      derivative: (u: number, order = 1) =>
+        order === 1
+          ? vec3(1, direction * 2 * (u - 0.5), 0)
+          : vec3(0, direction * 2, 0),
+    });
+    for (const direction of [-1, 1] as const) {
+      const track = compileTrack(
+        [{ id: direction < 0 ? "crest" : "valley", span: makeSpan(direction) }],
+        { samples: 65 },
+      );
+      const distance = track.totalLength / 2;
+      const sample = sampleTrackAtDistance(track, distance);
+      const speed = 8;
+      const result = simulateRide(track, {
+        durationSeconds: 0,
+        config: config({
+          train: {
+            ...config().train,
+            cars: [{ massKg: 1000, seatCount: 0 }],
+          },
+        }),
+        initial: { headDistanceM: distance, speedMps: speed },
+      });
+      const telemetry = result.frames[0]!.telemetry;
+      const expected = [
+        sample.curvatureVector[0]! * speed ** 2,
+        sample.curvatureVector[1]! * speed ** 2 + 9.80665,
+        sample.curvatureVector[2]! * speed ** 2,
+      ];
+      expect(telemetry.specificForceMps2[0]!).toBeCloseTo(expected[0]!, 3);
+      expect(telemetry.specificForceMps2[1]!).toBeCloseTo(expected[1]!, 3);
+      expect(telemetry.verticalG).toBeCloseTo(
+        (expected[0]! * sample.normal[0]! +
+          expected[1]! * sample.normal[1]! +
+          expected[2]! * sample.normal[2]!) /
+          9.80665,
+        3,
+      );
+    }
+  });
+
+  it("uses corrected radians-per-metre bank derivative for signed roll rate", () => {
+    const track = compileTrack(
+      [
+        {
+          id: "banked-line",
+          span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 0, 20)),
+          bank: (u: number) => u * Math.PI,
+        },
+      ],
+      { samples: 65 },
+    );
+    const distance = 7;
+    const speed = -3;
+    const sample = sampleTrackAtDistance(track, distance);
+    const result = simulateRide(track, {
+      durationSeconds: 0,
+      config: config({
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+      }),
+      initial: { headDistanceM: distance, speedMps: speed },
+    });
+    expect(result.frames[0]!.telemetry.rollRateRadPerSec).toBeCloseTo(
+      sample.bankDerivative * speed,
+      8,
+    );
+  });
+
+  it("samples each seat at its longitudinal track distance and exposes seat telemetry", () => {
+    const track = compileTrack(
+      [
+        {
+          id: "seat-track",
+          span: {
+            position: (u: number) => vec3(0, u * u, u * 20),
+            derivative: (u: number, order = 1) =>
+              order === 1 ? vec3(0, 2 * u, 20) : vec3(0, 2, 0),
+          },
+        },
+      ],
+      { samples: 129 },
+    );
+    const result = simulateRide(track, {
+      durationSeconds: 0,
+      config: config({
+        train: {
+          ...config().train,
+          cars: [
+            {
+              massKg: 1000,
+              seatCount: 2,
+              seatPositionsM: [vec3(0, 0, -2), vec3(0, 0, 2)],
+            },
+          ],
+        },
+      }),
+      initial: { headDistanceM: 10, speedMps: 4 },
+    });
+    const car = result.frames[0]!.cars[0]!;
+    expect(car.seats[0]!.frame.distance).toBeCloseTo(8, 2);
+    expect(car.seats[1]!.frame.distance).toBeCloseTo(12, 2);
+    expect(car.seats[0]!.telemetry.verticalG).not.toBe(
+      car.seats[1]!.telemetry.verticalG,
+    );
+    expect(car.seats[0]!.telemetry.jerkMps3).toEqual(vec3());
+    expect(car.seats[0]!.telemetry.bankRad).toBe(car.seats[0]!.frame.bank);
+  });
+
+  it("aggregates operation occupancy across the complete train", () => {
+    const result = simulateRide(line(100), {
+      durationSeconds: 0,
+      config: config({
+        zones: [
+          {
+            id: "rear-station",
+            kind: "station",
+            startDistanceM: 0,
+            endDistanceM: 5,
+          },
+          {
+            id: "rear-block",
+            kind: "block",
+            blockId: "B1",
+            startDistanceM: 0,
+            endDistanceM: 5,
+          },
+        ],
+      }),
+      initial: { headDistanceM: 8, speedMps: 0 },
+    });
+    expect(result.operationState.activeZoneIds).toEqual([
+      "rear-station",
+      "rear-block",
+    ]);
+    expect(result.operationState.occupiedBlockIds).toEqual(["B1"]);
+    expect(result.operationState.stationId).toBe("rear-station");
+  });
+
+  it("emits deterministic entry and exit crossings for short zones in both directions", () => {
+    const zone: OperationZone = {
+      id: "short",
+      kind: "block",
+      startDistanceM: 1,
+      endDistanceM: 2,
+    };
+    const forward = simulateRide(line(20), {
+      durationSeconds: 1,
+      config: config({
+        fixedStepSeconds: 1,
+        timelineStepSeconds: 0.5,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+        zones: [zone],
+      }),
+      initial: { headDistanceM: 0.5, speedMps: 5 },
+    });
+    expect(
+      forward.events.map((event) => [event.type, event.direction]),
+    ).toEqual([
+      ["zone-entry", "forward"],
+      ["zone-exit", "forward"],
+    ]);
+    expect(forward.events.map((event) => event.timeSeconds)).toEqual([
+      0.1, 0.3,
+    ]);
+
+    const reverse = simulateRide(line(20), {
+      durationSeconds: 1,
+      config: config({
+        fixedStepSeconds: 1,
+        timelineStepSeconds: 0.5,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+        zones: [zone],
+      }),
+      initial: { headDistanceM: 3, speedMps: -5 },
+    });
+    expect(
+      reverse.events.map((event) => [event.type, event.direction]),
+    ).toEqual([
+      ["zone-entry", "reverse"],
+      ["zone-exit", "reverse"],
+    ]);
+    expect(reverse.events.map((event) => event.timeSeconds)).toEqual([
+      0.2, 0.4,
+    ]);
+  });
+
+  it("validates nested overrides, seat offsets, envelope dimensions, and zones precisely", () => {
+    const negativeBrake = computePerCarForces(
+      line(10),
+      config({
+        zones: [
+          {
+            id: "unsafe-brake",
+            kind: "brake",
+            startDistanceM: 0,
+            endDistanceM: 10,
+            brakeForcePerCarN: -100,
+          },
+        ],
+      }),
+      5,
+      -2,
+    );
+    expect(negativeBrake[0]!.brake).toBe(0);
+    const invalid = simulateRide(line(10), {
+      durationSeconds: 1,
+      config: config({
+        gravityMps2: 0,
+        lsmTargetGainNPerMps: -1,
+        dragCdA: -1,
+        train: {
+          ...config().train,
+          envelope: {
+            halfWidthM: 0,
+            aboveRailM: Number.NaN,
+            belowRailM: 1,
+            noseTailMarginM: -1,
+          },
+          cars: [
+            {
+              massKg: 1000,
+              seatCount: 1,
+              seatPositionsM: [vec3(Number.NaN, 0, 0)],
+            },
+          ],
+        },
+        zones: [
+          {
+            id: "bad",
+            kind: "brake",
+            startDistanceM: 8,
+            endDistanceM: 4,
+            brakeForcePerCarN: -1,
+            targetSpeedMps: Number.POSITIVE_INFINITY,
+          },
+        ],
+      }),
+      initial: { headDistanceM: 0, speedMps: 0 },
+    });
+    expect(invalid.frames).toHaveLength(0);
+    expect(invalid.diagnostics.map((diagnostic) => diagnostic.field)).toEqual(
+      expect.arrayContaining([
+        "gravityMps2",
+        "lsmTargetGainNPerMps",
+        "dragCdA",
+        "train.envelope.halfWidthM",
+        "train.envelope.aboveRailM",
+        "train.envelope.noseTailMarginM",
+        "train.cars[0].seatPositionsM[0]",
+        "zones[0].startDistanceM",
+        "zones[0].brakeForcePerCarN",
+        "zones[0].targetSpeedMps",
+      ]),
+    );
+  });
+
+  it("emits a numerical diagnostic when an integration state overflows", () => {
+    const result = simulateRide(line(10), {
+      durationSeconds: 0.1,
+      config: config({ dragCdA: 1 }),
+      initial: { headDistanceM: 0, speedMps: Number.MAX_VALUE },
+    });
+    expect(result.diagnostics).toContainEqual({
+      code: "SIM_NUMERICAL",
+      severity: "error",
+      field: "state",
+      message: "Fixed-step integration produced a non-finite state",
+    });
+  });
+
+  it("interpolates timeline states at exact output times", () => {
+    const result = simulateRide(line(20), {
+      durationSeconds: 0.1,
+      config: config({
+        fixedStepSeconds: 0.1,
+        timelineStepSeconds: 0.05,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+      }),
+      initial: { headDistanceM: 0, speedMps: 10 },
+    });
+    expect(Array.from(result.timeline.timeSeconds)).toEqual([0, 0.05, 0.1]);
+    expect(Array.from(result.timeline.headDistanceM)).toEqual([0, 0.5, 1]);
+  });
+
+  it("preserves dynamics under arbitrary rigid 3D rotation", () => {
+    const original = compileTrack(
+      [
+        {
+          id: "3d",
+          span: {
+            position: (u: number) => vec3(u * 10, u * u * 3, u * 2),
+            derivative: (u: number, order = 1) =>
+              order === 1 ? vec3(10, 6 * u, 2) : vec3(0, 6, 0),
+          },
+        },
+      ],
+      { samples: 129 },
+    );
+    const rotateVector = (point: ReturnType<typeof vec3>) => {
+      const [x, y, z] = point;
+      const axis = vec3(
+        1 / Math.sqrt(14),
+        2 / Math.sqrt(14),
+        3 / Math.sqrt(14),
+      );
+      const angle = 0.7;
+      const cosine = Math.cos(angle);
+      const sine = Math.sin(angle);
+      const oneMinusCosine = 1 - cosine;
+      return vec3(
+        (cosine + axis[0] ** 2 * oneMinusCosine) * x +
+          (axis[0] * axis[1] * oneMinusCosine - axis[2] * sine) * y +
+          (axis[0] * axis[2] * oneMinusCosine + axis[1] * sine) * z +
+          0,
+        (axis[1] * axis[0] * oneMinusCosine + axis[2] * sine) * x +
+          (cosine + axis[1] ** 2 * oneMinusCosine) * y +
+          (axis[1] * axis[2] * oneMinusCosine - axis[0] * sine) * z -
+          0,
+        (axis[2] * axis[0] * oneMinusCosine - axis[1] * sine) * x +
+          (axis[2] * axis[1] * oneMinusCosine + axis[0] * sine) * y +
+          (cosine + axis[2] ** 2 * oneMinusCosine) * z +
+          0,
+      );
+    };
+    const rotate = (point: ReturnType<typeof vec3>) => {
+      const rotated = rotateVector(point);
+      return vec3(rotated[0] + 3, rotated[1] - 4, rotated[2] + 7);
+    };
+    const transformed = compileTrack(
+      [
+        {
+          id: "3d",
+          span: {
+            position: (u: number) => rotate(vec3(u * 10, u * u * 3, u * 2)),
+            derivative: (u: number, order = 1) =>
+              rotateVector(order === 1 ? vec3(10, 6 * u, 2) : vec3(0, 6, 0)),
+          },
+        },
+      ],
+      { samples: 129 },
+    );
+    const initial = { headDistanceM: 4, speedMps: 6 };
+    const a = simulateRide(original, {
+      durationSeconds: 0.2,
+      config: config({
+        gravityDirection: vec3(0, -1, 0),
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+      }),
+      initial,
+    });
+    const b = simulateRide(transformed, {
+      durationSeconds: 0.2,
+      config: config({
+        gravityDirection: rotateVector(vec3(0, -1, 0)),
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+      }),
+      initial,
+    });
+    expect(b.frames.at(-1)!.speedMps).toBeCloseTo(a.frames.at(-1)!.speedMps, 8);
+    const originalForce = a.frames.at(-1)!.telemetry.specificForceMps2;
+    const transformedForce = b.frames.at(-1)!.telemetry.specificForceMps2;
+    const expectedForce = rotateVector(originalForce);
+    expect(transformedForce[0]).toBeCloseTo(expectedForce[0], 5);
+    expect(transformedForce[1]).toBeCloseTo(expectedForce[1], 5);
+    expect(transformedForce[2]).toBeCloseTo(expectedForce[2], 5);
+    expect(b.frames.at(-1)!.telemetry.longitudinalG).toBeCloseTo(
+      a.frames.at(-1)!.telemetry.longitudinalG,
+      5,
     );
   });
 });
