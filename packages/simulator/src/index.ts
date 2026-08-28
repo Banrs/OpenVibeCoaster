@@ -316,7 +316,11 @@ const validate = (
       field: "initial",
       message: "Initial head distance and speed must be finite",
     });
-  if (!finite(config.fixedStepSeconds) || config.fixedStepSeconds <= 0)
+  if (
+    !finite(config.fixedStepSeconds) ||
+    config.fixedStepSeconds <= 0 ||
+    !finite(1 / config.fixedStepSeconds)
+  )
     diagnostics.push({
       code: "SIM_INVALID_CONFIGURATION",
       severity: "error",
@@ -880,6 +884,23 @@ const seatPositions = (car: CarConfiguration): readonly Vec3[] =>
     ? car.seatPositionsM.map((position) => vec3(...position))
     : Array.from({ length: car.seatCount }, () => vec3(0, 0, 0));
 
+const seatWorldPosition = (
+  seatFrame: TrackSample,
+  offset: Vec3,
+  field: string,
+): Vec3 =>
+  checkedVector(
+    add(
+      seatFrame.position,
+      add(
+        scale(seatFrame.binormal, -offset[0]),
+        scale(seatFrame.normal, offset[1]),
+      ),
+    ),
+    field,
+    "Seat world position must be finite",
+  );
+
 const makeCars = (
   track: CompiledTrackData,
   config: SimulatorConfig,
@@ -902,18 +923,22 @@ const makeCars = (
       speedMps,
     );
     const seats = offsets.map((offset, seatIndex) => {
-      const seatDistanceM = distanceM + offset[2];
+      const seatDistanceM = checkedFinite(
+        distanceM + offset[2],
+        `state.train.cars[${index}].seats[${seatIndex}].distanceM`,
+        "Seat distance must be finite",
+      );
       const seatFrame = sampleTrackAtDistance(
         track,
         trackDistance(track, config, seatDistanceM),
       );
-      const seatRight = scale(seatFrame.binormal, -1);
       return {
         index: seatIndex,
         distanceM: seatDistanceM,
-        position: add(
-          seatFrame.position,
-          add(scale(seatRight, offset[0]), scale(seatFrame.normal, offset[1])),
+        position: seatWorldPosition(
+          seatFrame,
+          offset,
+          `state.train.cars[${index}].seats[${seatIndex}].position`,
         ),
         frame: seatFrame,
         telemetry: carTelemetry(
@@ -1173,7 +1198,6 @@ const zoneCrossings = (
     readonly boundary: "start" | "end";
     readonly carIndex: number;
     readonly timeSeconds: number;
-    readonly eventTimeSeconds: number;
     readonly delta: 1 | -1;
   }[] = [];
   for (const zone of zones) {
@@ -1213,7 +1237,6 @@ const zoneCrossings = (
             boundary,
             carIndex,
             timeSeconds: crossingTime,
-            eventTimeSeconds: Number(crossingTime.toPrecision(15)),
             delta:
               direction === "forward"
                 ? boundary === "start"
@@ -1268,7 +1291,7 @@ const zoneCrossings = (
         ? "end"
         : "start";
     events.push({
-      timeSeconds: candidate.eventTimeSeconds,
+      timeSeconds: candidate.timeSeconds,
       type: entry ? "zone-entry" : "zone-exit",
       zoneId: candidate.zone.id,
       operation: candidate.zone.kind,
@@ -1414,22 +1437,23 @@ const makeTimeline = (
       );
       const seats = car.seats.map((seat, seatIndex) => {
         const otherSeat = other.seats[seatIndex] ?? seat;
-        const seatDistanceM = blend(seat.distanceM, otherSeat.distanceM);
+        const seatDistanceM = checkedFinite(
+          blend(seat.distanceM, otherSeat.distanceM),
+          `timeline.frames.cars[${carIndex}].seats[${seatIndex}].distanceM`,
+          "Seat distance must be finite",
+        );
         const seatFrame = sampleTrackAtDistance(
           track,
           trackDistance(track, config, seatDistanceM),
         );
         const offset = car.seatOffsets[seatIndex] ?? vec3();
-        const seatRight = scale(seatFrame.binormal, -1);
         return {
           ...seat,
           distanceM: seatDistanceM,
-          position: add(
-            seatFrame.position,
-            add(
-              scale(seatRight, offset[0]),
-              scale(seatFrame.normal, offset[1]),
-            ),
+          position: seatWorldPosition(
+            seatFrame,
+            offset,
+            `timeline.frames.cars[${carIndex}].seats[${seatIndex}].position`,
           ),
           frame: seatFrame,
           telemetry: interpolateTelemetry(
@@ -1606,16 +1630,6 @@ export const simulateRide = (
     );
   } catch (error) {
     diagnostics.push(diagnosticFromError(error));
-    if (
-      !(error instanceof SimulatorRangeError) ||
-      error.diagnosticCode === "SIM_NUMERICAL"
-    )
-      diagnostics.push({
-        code: "SIM_NUMERICAL",
-        severity: "error",
-        field: "state",
-        message: "Fixed-step integration produced a non-finite state",
-      });
     return {
       frames: [],
       timeline: new RideTimeline({
@@ -1825,6 +1839,16 @@ export const simulateRide = (
       config.fixedStepSeconds,
       request.durationSeconds - timeSeconds,
     );
+    const nextTime = timeSeconds + step;
+    if (!finite(nextTime) || nextTime <= timeSeconds) {
+      diagnostics.push({
+        code: "SIM_INVALID_CONFIGURATION",
+        severity: "error",
+        field: "fixedStepSeconds",
+        message: "Fixed simulation step cannot advance simulation time",
+      });
+      break;
+    }
     const previousDistance = distanceM;
     const previousSpeed = speedMps;
     let previousDynamics: DynamicsSample;
@@ -1897,26 +1921,31 @@ export const simulateRide = (
       };
     });
     const deltaDistance = distanceM - previousDistance;
-    const driveWork = sumFinite(
-      averageForces.map((force) => force.drive * deltaDistance),
-      "work.driveJ",
-      "Drive work increment must be finite",
-    );
-    work.driveJ = checkedFinite(
-      work.driveJ + driveWork,
-      "work.driveJ",
-      "Accumulated drive work must be finite",
-    );
-    const lossWork = sumFinite(
-      averageForces.map((force) => -force.loss * deltaDistance),
-      "work.lossJ",
-      "Loss work increment must be finite",
-    );
-    work.lossJ = checkedFinite(
-      work.lossJ + lossWork,
-      "work.lossJ",
-      "Accumulated loss work must be finite",
-    );
+    try {
+      const driveWork = sumFinite(
+        averageForces.map((force) => force.drive * deltaDistance),
+        "work.driveJ",
+        "Drive work increment must be finite",
+      );
+      work.driveJ = checkedFinite(
+        work.driveJ + driveWork,
+        "work.driveJ",
+        "Accumulated drive work must be finite",
+      );
+      const lossWork = sumFinite(
+        averageForces.map((force) => -force.loss * deltaDistance),
+        "work.lossJ",
+        "Loss work increment must be finite",
+      );
+      work.lossJ = checkedFinite(
+        work.lossJ + lossWork,
+        "work.lossJ",
+        "Accumulated loss work must be finite",
+      );
+    } catch (error) {
+      diagnostics.push(diagnosticFromError(error));
+      break;
+    }
     timeSeconds += elapsedStep;
     if (request.durationSeconds - timeSeconds < 1e-12)
       timeSeconds = request.durationSeconds;
@@ -1956,18 +1985,19 @@ export const simulateRide = (
     completedFrames = [];
   }
   const finalZones = activeZonesForTrain(track, config, distanceM);
-  const uniqueEvents = events.filter(
-    (event, index, all) =>
-      index ===
-      all.findIndex(
-        (other) =>
-          other.timeSeconds === event.timeSeconds &&
-          other.type === event.type &&
-          other.zoneId === event.zoneId &&
-          other.boundary === event.boundary &&
-          other.direction === event.direction,
-      ),
-  );
+  const eventKeys = new Set<string>();
+  const uniqueEvents = events.filter((event) => {
+    const key = JSON.stringify([
+      event.timeSeconds,
+      event.type,
+      event.zoneId,
+      event.boundary,
+      event.direction,
+    ]);
+    if (eventKeys.has(key)) return false;
+    eventKeys.add(key);
+    return true;
+  });
   let timeline: RideTimeline;
   try {
     timeline = makeTimeline(track, completedFrames, config);

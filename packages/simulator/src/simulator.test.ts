@@ -724,9 +724,8 @@ describe("pure multi-car simulator", () => {
       ["zone-entry", "reverse"],
       ["zone-exit", "reverse"],
     ]);
-    expect(reverse.events.map((event) => event.timeSeconds)).toEqual([
-      0.2, 0.4,
-    ]);
+    expect(reverse.events[0]!.timeSeconds).toBeCloseTo(0.2, 12);
+    expect(reverse.events[1]!.timeSeconds).toBeCloseTo(0.4, 12);
   });
 
   it("deduplicates train-wide zone events while tracking a rear car outside the head", () => {
@@ -952,8 +951,8 @@ describe("pure multi-car simulator", () => {
     expect(result.diagnostics).toContainEqual({
       code: "SIM_NUMERICAL",
       severity: "error",
-      field: "state",
-      message: "Fixed-step integration produced a non-finite state",
+      field: "train.cars[0].force.drag",
+      message: "Aerodynamic drag force must be finite",
     });
   });
 
@@ -1685,4 +1684,241 @@ describe("pure multi-car simulator", () => {
       );
     },
   );
+
+  it("returns a finite timeline and one precise diagnostic when work accumulation overflows", () => {
+    const result = simulateRide(line(100), {
+      durationSeconds: 2,
+      config: config({
+        fixedStepSeconds: 2,
+        timelineStepSeconds: 2,
+        gravityMps2: 9.80665,
+        train: {
+          ...config().train,
+          cars: [{ massKg: Number.MAX_VALUE / 9.80665, seatCount: 0 }],
+        },
+        zones: [
+          {
+            id: "max-drive",
+            kind: "launch",
+            startDistanceM: 0,
+            endDistanceM: 100,
+            lsmForcePerCarN: Number.MAX_VALUE,
+            lsmPowerPerCarW: Number.MAX_VALUE,
+          },
+        ],
+      }),
+      initial: { headDistanceM: 0, speedMps: 1 },
+    });
+
+    expect(result.frames.length).toBeGreaterThan(0);
+    expect(result.timeline.length).toBe(result.frames.length);
+    expect(result.diagnostics).toEqual([
+      {
+        code: "SIM_NUMERICAL",
+        severity: "error",
+        field: "work.driveJ",
+        message: "Drive work increment must be finite",
+      },
+    ]);
+    expect(
+      result.timeline.frames.every((frame) =>
+        [
+          frame.timeSeconds,
+          frame.headDistanceM,
+          frame.speedMps,
+          frame.telemetry.accumulatedDriveWorkJ,
+        ].every(Number.isFinite),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not append a generic diagnostic to a specific numerical failure", () => {
+    const result = simulateRide(line(10), {
+      durationSeconds: 0,
+      config: config({
+        gravityMps2: Number.MIN_VALUE,
+        train: {
+          ...config().train,
+          cars: [
+            { massKg: Number.MAX_VALUE, seatCount: 0 },
+            { massKg: Number.MAX_VALUE, seatCount: 0 },
+          ],
+        },
+      }),
+      initial: { headDistanceM: 4, speedMps: 0 },
+    });
+
+    expect(result.diagnostics).toEqual([
+      {
+        code: "SIM_NUMERICAL",
+        severity: "error",
+        field: "train.totalMassKg",
+        message: "Total train mass must be finite",
+      },
+    ]);
+  });
+
+  it("preserves distinct representable crossing timestamps near one second", () => {
+    const startDistanceM = 1 + 1e-15;
+    const endDistanceM = 1 + 2e-15;
+    const result = simulateRide(line(4), {
+      durationSeconds: 2,
+      config: config({
+        fixedStepSeconds: 2,
+        timelineStepSeconds: 2,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+        zones: [
+          {
+            id: "ultra-narrow",
+            kind: "block",
+            startDistanceM,
+            endDistanceM,
+          },
+        ],
+      }),
+      initial: { headDistanceM: 0, speedMps: 1 },
+    });
+
+    expect(result.events.map((event) => event.timeSeconds)).toEqual([
+      startDistanceM,
+      endDistanceM,
+    ]);
+    expect(result.events[0]!.timeSeconds).not.toBe(
+      result.events[1]!.timeSeconds,
+    );
+  });
+
+  it("rejects non-finite numeric content nested inside public timeline frames", () => {
+    const source = simulateRide(line(10), {
+      durationSeconds: 0,
+      config: config({
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+      }),
+      initial: { headDistanceM: 1, speedMps: 0 },
+    }).frames[0]!;
+    const invalid = {
+      ...source,
+      cars: [
+        {
+          ...source.cars[0]!,
+          position: vec3(Number.POSITIVE_INFINITY, 0, 0),
+        },
+      ],
+    };
+
+    expect(
+      () =>
+        new RideTimeline({
+          sampleRateHz: 120,
+          timeSeconds: new Float64Array([0]),
+          headDistanceM: new Float64Array([1]),
+          speedMps: new Float64Array([0]),
+          frames: [invalid],
+        }),
+    ).toThrow(/frames\[0\]\.cars\[0\]\.position/);
+  });
+
+  it("returns a diagnostic instead of publishing an overflowing seat position", () => {
+    const track = compileTrack(
+      [
+        {
+          id: "large-position",
+          span: {
+            position: (u: number) => vec3(Number.MAX_VALUE, 0, u * 10),
+            derivative: () => vec3(0, 0, 10),
+          },
+        },
+      ],
+      { samples: 65 },
+    );
+    const sample = sampleTrackAtDistance(track, 1);
+    const offsetSign = Math.sign(-sample.binormal[0]);
+    const result = simulateRide(track, {
+      durationSeconds: 0,
+      config: config({
+        train: {
+          ...config().train,
+          cars: [
+            {
+              massKg: 1000,
+              seatCount: 1,
+              seatPositionsM: [
+                vec3(Number.MAX_VALUE * (offsetSign || 1), 0, 0),
+              ],
+            },
+          ],
+        },
+      }),
+      initial: { headDistanceM: 1, speedMps: 0 },
+    });
+
+    expect(result.frames).toHaveLength(0);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "SIM_NUMERICAL",
+        field: "state.train.cars[0].seats[0].position",
+      }),
+    );
+    expect(result.timeline.length).toBe(0);
+  });
+
+  it("rejects a subnormal fixed step that cannot provide a finite reciprocal", () => {
+    const result = simulateRide(line(10), {
+      durationSeconds: 0,
+      config: config({
+        fixedStepSeconds: Number.MIN_VALUE,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+      }),
+      initial: { headDistanceM: 1, speedMps: 0 },
+    });
+
+    expect(result.frames).toHaveLength(0);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "SIM_INVALID_CONFIGURATION",
+        field: "fixedStepSeconds",
+      }),
+    );
+  });
+
+  it("processes a large deterministic event sequence without quadratic cleanup", () => {
+    const zones: OperationZone[] = Array.from({ length: 1000 }, (_, index) => ({
+      id: `zone-${index}`,
+      kind: "block",
+      startDistanceM: index * 2 + 0.25,
+      endDistanceM: index * 2 + 0.75,
+    }));
+    const result = simulateRide(line(2000), {
+      durationSeconds: 2000,
+      config: config({
+        fixedStepSeconds: 2000,
+        timelineStepSeconds: 2000,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+        zones,
+      }),
+      initial: { headDistanceM: 0, speedMps: 1 },
+    });
+
+    expect(result.events).toHaveLength(zones.length * 2);
+    expect(
+      new Set(
+        result.events.map(
+          (event) =>
+            `${event.timeSeconds}|${event.type}|${event.zoneId}|${event.boundary}|${event.direction}`,
+        ),
+      ).size,
+    ).toBe(result.events.length);
+  });
 });

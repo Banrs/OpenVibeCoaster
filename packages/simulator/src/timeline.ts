@@ -34,6 +34,98 @@ const requireFinite = (values: Float64Array, field: string): void => {
     if (!Number.isFinite(value))
       throw new RangeError(`RideTimeline ${field} must be finite`);
 };
+const requireFiniteNumber = (value: number, field: string): void => {
+  if (!Number.isFinite(value))
+    throw new RangeError(`RideTimeline ${field} must be finite`);
+};
+const requireFiniteVec = (value: Vec3, field: string): void => {
+  value.forEach((component, index) =>
+    requireFiniteNumber(component, `${field}[${index}]`),
+  );
+};
+const validateSample = (sample: TrackSample, field: string): void => {
+  requireFiniteVec(sample.position, `${field}.position`);
+  requireFiniteVec(sample.tangent, `${field}.tangent`);
+  requireFiniteVec(sample.normal, `${field}.normal`);
+  requireFiniteVec(sample.binormal, `${field}.binormal`);
+  requireFiniteNumber(sample.distance, `${field}.distance`);
+  requireFiniteNumber(sample.curvature, `${field}.curvature`);
+  requireFiniteVec(sample.curvatureVector, `${field}.curvatureVector`);
+  requireFiniteNumber(sample.bank, `${field}.bank`);
+  requireFiniteNumber(sample.bankDerivative, `${field}.bankDerivative`);
+};
+const validateTelemetry = (telemetry: CarTelemetry, field: string): void => {
+  requireFiniteNumber(telemetry.longitudinalG, `${field}.longitudinalG`);
+  requireFiniteNumber(telemetry.lateralG, `${field}.lateralG`);
+  requireFiniteNumber(telemetry.verticalG, `${field}.verticalG`);
+  requireFiniteVec(telemetry.specificForceMps2, `${field}.specificForceMps2`);
+  requireFiniteVec(telemetry.jerkMps3, `${field}.jerkMps3`);
+  requireFiniteNumber(telemetry.bankRad, `${field}.bankRad`);
+  requireFiniteNumber(
+    telemetry.rollRateRadPerSec,
+    `${field}.rollRateRadPerSec`,
+  );
+};
+const validateCar = (car: CarState, field: string): void => {
+  requireFiniteNumber(car.index, `${field}.index`);
+  requireFiniteNumber(car.distanceM, `${field}.distanceM`);
+  requireFiniteVec(car.position, `${field}.position`);
+  requireFiniteVec(car.tangent, `${field}.tangent`);
+  requireFiniteVec(car.normal, `${field}.normal`);
+  requireFiniteVec(car.binormal, `${field}.binormal`);
+  validateSample(car.frame, `${field}.frame`);
+  car.seatOffsets.forEach((offset, seatIndex) =>
+    requireFiniteVec(offset, `${field}.seatOffsets[${seatIndex}]`),
+  );
+  car.seatPositions.forEach((position, seatIndex) =>
+    requireFiniteVec(position, `${field}.seatPositions[${seatIndex}]`),
+  );
+  validateTelemetry(car.telemetry, `${field}.telemetry`);
+  car.seats.forEach((seat, seatIndex) => {
+    const seatField = `${field}.seats[${seatIndex}]`;
+    requireFiniteNumber(seat.index, `${seatField}.index`);
+    requireFiniteNumber(seat.distanceM, `${seatField}.distanceM`);
+    requireFiniteVec(seat.position, `${seatField}.position`);
+    validateSample(seat.frame, `${seatField}.frame`);
+    validateTelemetry(seat.telemetry, `${seatField}.telemetry`);
+  });
+};
+const validateFrame = (frame: SimulationFrame, frameIndex: number): void => {
+  const field = `frames[${frameIndex}]`;
+  requireFiniteNumber(frame.timeSeconds, `${field}.timeSeconds`);
+  requireFiniteNumber(frame.headDistanceM, `${field}.headDistanceM`);
+  requireFiniteNumber(frame.speedMps, `${field}.speedMps`);
+  validateTelemetry(frame.telemetry, `${field}.telemetry`);
+  requireFiniteNumber(
+    frame.telemetry.kineticEnergyJ,
+    `${field}.telemetry.kineticEnergyJ`,
+  );
+  requireFiniteNumber(
+    frame.telemetry.potentialEnergyJ,
+    `${field}.telemetry.potentialEnergyJ`,
+  );
+  requireFiniteNumber(
+    frame.telemetry.accumulatedDriveWorkJ,
+    `${field}.telemetry.accumulatedDriveWorkJ`,
+  );
+  requireFiniteNumber(
+    frame.telemetry.accumulatedLossWorkJ,
+    `${field}.telemetry.accumulatedLossWorkJ`,
+  );
+  requireFiniteNumber(
+    frame.telemetry.energyErrorJ,
+    `${field}.telemetry.energyErrorJ`,
+  );
+  frame.telemetry.perCar.forEach((telemetry, carIndex) =>
+    validateTelemetry(telemetry, `${field}.telemetry.perCar[${carIndex}]`),
+  );
+  frame.cars.forEach((car, carIndex) =>
+    validateCar(car, `${field}.cars[${carIndex}]`),
+  );
+  validateCar(frame.selection.front, `${field}.selection.front`);
+  validateCar(frame.selection.middle, `${field}.selection.middle`);
+  validateCar(frame.selection.rear, `${field}.selection.rear`);
+};
 const cloneVec = (value: Vec3): Vec3 =>
   Object.freeze([value[0], value[1], value[2]]);
 const cloneSample = (sample: TrackSample): TrackSample =>
@@ -148,7 +240,12 @@ export class RideTimeline {
     this.#carTangentsXYZ = clone(input.carTangentsXYZ);
     this.#carNormalsXYZ = clone(input.carNormalsXYZ);
     this.#carBinormalsXYZ = clone(input.carBinormalsXYZ);
-    this.#frames = Object.freeze((input.frames ?? []).map(cloneFrame));
+    this.#frames = Object.freeze(
+      (input.frames ?? []).map((frame, frameIndex) => {
+        validateFrame(frame, frameIndex);
+        return cloneFrame(frame);
+      }),
+    );
     Object.freeze(this);
   }
 
