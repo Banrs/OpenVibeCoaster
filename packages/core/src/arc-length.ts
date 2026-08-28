@@ -12,8 +12,12 @@ const weights: readonly [number, number, number, number, number] = [
 ];
 
 export type PositionSpan = ParametricSpan<Vec3>;
-const speed = (span: PositionSpan, u: number): number =>
-  vec3Length(span.derivative(u, 1));
+const speed = (span: PositionSpan, u: number): number => {
+  const value = vec3Length(span.derivative(u, 1));
+  if (!Number.isFinite(value) || !(value > 1e-12))
+    throw new RangeError("A span derivative must be finite and non-zero");
+  return value;
+};
 const gauss5 = (span: PositionSpan, a: number, b: number): number => {
   const half = (b - a) / 2;
   const mid = (a + b) / 2;
@@ -84,6 +88,8 @@ export const buildArcLengthLut = (
   const distances = new Float64Array(segments + 1);
   for (let i = 0; i <= segments; i += 1) {
     parameters[i] = i / segments;
+    speed(span, parameters[i]!);
+    if (i > 0) speed(span, (parameters[i - 1]! + parameters[i]!) / 2);
     if (i > 0)
       distances[i] =
         distances[i - 1]! +

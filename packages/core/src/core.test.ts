@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import {
   CoasterFileError,
+  CompiledTrackData,
   HeightfieldEnvironment,
   SeventhOrderHermiteSpan,
   QuinticScalarSpan,
@@ -34,7 +35,29 @@ import {
   vec3Scale,
   vec3Sub,
 } from "./index";
-import type { Aabb } from "./index";
+import type { Aabb, CompiledTrackDataInput, Vec3 } from "./index";
+
+type MutableCompiledTrackDataInput = {
+  -readonly [Key in keyof CompiledTrackDataInput]: CompiledTrackDataInput[Key];
+};
+
+const validCompiledTrackInput = (): CompiledTrackDataInput => ({
+  positions: new Float64Array([0, 0, 0, 1, 0, 0]),
+  tangents: new Float64Array([1, 0, 0, 1, 0, 0]),
+  normals: new Float64Array([0, 1, 0, 0, 1, 0]),
+  binormals: new Float64Array([0, 0, 1, 0, 0, 1]),
+  distances: new Float64Array([0, 1]),
+  curvature: new Float64Array([0, 0]),
+  curvatureVector: new Float64Array(6),
+  bank: new Float64Array([0, 0]),
+  bankDerivative: new Float64Array([0, 0]),
+  zoneMasks: new Uint32Array([0, 0]),
+  zoneNames: ["lift"],
+  elementIndices: new Uint32Array([0, 0]),
+  elementBoundaries: new Uint32Array([0, 1]),
+  parameters: new Float64Array([0, 1]),
+  totalLength: 1,
+});
 
 describe("units and vectors", () => {
   it("constructs branded SI values without changing their numeric value", () => {
@@ -278,9 +301,144 @@ describe("rotation-minimizing frames", () => {
     }
     expect(frames).toHaveLength(positions.length);
   });
+
+  it("rejects sparse or non-finite frame inputs deterministically", () => {
+    const sparseTangents: Vec3[] = [];
+    sparseTangents.length = 1;
+    expect(() => transportFrames(sparseTangents)).toThrow(
+      "Frame tangent samples must contain finite 3-vectors",
+    );
+    const sparseBanks: number[] = [];
+    sparseBanks.length = 1;
+    expect(() =>
+      transportFramesAlongPath(
+        [vec3(0, 0, 0)],
+        [vec3(1, 0, 0)],
+        [0],
+        sparseBanks,
+      ),
+    ).toThrow("Frame bank samples must be finite numbers");
+    expect(() =>
+      transportFrames(
+        [vec3(1, 0, 0)],
+        [0],
+        null as unknown as ArrayLike<number>,
+      ),
+    ).toThrow("Frame bank samples must be an array-like value");
+    expect(() =>
+      transportFrames([vec3(1, 0, 0)], [0], () => Number.NaN),
+    ).toThrow("Frame bank samples must be finite numbers");
+  });
 });
 
 describe("compiled track and heightfield", () => {
+  it("rejects malformed compiled track data at its public boundary", () => {
+    const malformed = (
+      change: (input: MutableCompiledTrackDataInput) => void,
+    ) => {
+      const input = validCompiledTrackInput() as MutableCompiledTrackDataInput;
+      change(input);
+      expect(() => new CompiledTrackData(input)).toThrow(
+        "Invalid compiled track data",
+      );
+    };
+
+    malformed((input) => {
+      input.positions = new Float64Array();
+    });
+    malformed((input) => {
+      input.bank = new Float64Array([0]);
+    });
+    malformed((input) => {
+      input.positions = new Float64Array([
+        0,
+        0,
+        0,
+        Number.POSITIVE_INFINITY,
+        0,
+        0,
+      ]);
+    });
+    malformed((input) => {
+      input.distances = new Float64Array([0, 0.5]);
+    });
+    malformed((input) => {
+      input.totalLength = 2;
+    });
+    malformed((input) => {
+      input.elementBoundaries = new Uint32Array([0, 2]);
+    });
+    malformed((input) => {
+      input.elementIndices = new Uint32Array([0, 1]);
+    });
+    malformed((input) => {
+      input.zoneMasks = new Uint32Array([2, 0]);
+    });
+    malformed((input) => {
+      input.tangents = new Float64Array([2, 0, 0, 1, 0, 0]);
+    });
+    malformed((input) => {
+      input.normals = new Float64Array([0, 1, 0, 1, 0, 0]);
+    });
+    malformed((input) => {
+      input.curvature = new Float64Array([-1, 0]);
+    });
+  });
+
+  it("rejects non-finite span derivative magnitudes before frame construction", () => {
+    expect(() =>
+      compileTrack(
+        [
+          {
+            id: "infinite-derivative",
+            span: {
+              position: (u: number) => vec3(u, 0, 0),
+              derivative: (u: number) =>
+                u === 0.5
+                  ? vec3(Number.POSITIVE_INFINITY, 0, 0)
+                  : vec3(1, 0, 0),
+            },
+          },
+        ],
+        { samples: 3 },
+      ),
+    ).toThrow("finite and non-zero");
+  });
+
+  it("rejects an interior stationary derivative during arc-length compilation", () => {
+    const span = {
+      position: (u: number) => vec3(u, 0, 0),
+      derivative: (u: number) => (u === 0.5 ? vec3(0, 0, 0) : vec3(1, 0, 0)),
+    };
+    expect(() => buildArcLengthLut(span, 4)).toThrow("finite and non-zero");
+  });
+
+  it("samples positions and metadata by physical distance brackets", () => {
+    const input = validCompiledTrackInput() as MutableCompiledTrackDataInput;
+    input.positions = new Float64Array([0, 0, 0, 10, 0, 0, 100, 0, 0]);
+    input.tangents = new Float64Array([1, 0, 0, 1, 0, 0, 1, 0, 0]);
+    input.normals = new Float64Array([0, 1, 0, 0, 1, 0, 0, 1, 0]);
+    input.binormals = new Float64Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    input.distances = new Float64Array([0, 1, 10]);
+    input.curvature = new Float64Array([0, 1, 2]);
+    input.curvatureVector = new Float64Array([0, 0, 0, 1, 0, 0, 2, 0, 0]);
+    input.bank = new Float64Array([0, 2, 18]);
+    input.bankDerivative = new Float64Array([0, 3, 27]);
+    input.zoneMasks = new Uint32Array([0, 0, 0]);
+    input.elementIndices = new Uint32Array([0, 0, 0]);
+    input.elementBoundaries = new Uint32Array([0, 2]);
+    input.parameters = new Float64Array([0, 0.5, 1]);
+    input.totalLength = 10;
+    const data = new CompiledTrackData(input);
+
+    const sample = sampleCompiledTrack(data, 0.5);
+    expect(sample.distance).toBe(5);
+    expect(sample.position[0]).toBeCloseTo(50, 12);
+    expect(sample.curvature).toBeCloseTo(1 + 4 / 9, 12);
+    expect(sample.bank).toBeCloseTo(2 + (18 - 2) * (4 / 9), 12);
+    expect(sample.bankDerivative).toBeCloseTo(3 + (27 - 3) * (4 / 9), 12);
+  });
+
   it("compiles deterministic immutable typed arrays and samples them", () => {
     const data = compileTrack(
       [
@@ -672,6 +830,23 @@ describe("coaster file v1", () => {
     expect(() => parseCoasterFile(new Uint8Array([0xc2]))).toThrow(
       "Invalid UTF-8 encoding",
     );
+  });
+
+  it("rejects every malformed UTF-8 sequence before JSON parsing", () => {
+    const malformed = [
+      [0xc0, 0x80],
+      [0xe0, 0x80, 0x80],
+      [0x80],
+      [0xf5, 0x80, 0x80, 0x80],
+      [0xed, 0xa0, 0x80],
+      [0xf4, 0x90, 0x80, 0x80],
+      [0xe2, 0x28, 0xa1],
+      [0xf0, 0x9f, 0x92],
+    ];
+    for (const bytes of malformed)
+      expect(() => parseCoasterFile(new Uint8Array(bytes))).toThrow(
+        "Invalid UTF-8 encoding",
+      );
   });
 
   it("rejects malformed nested fields with precise paths", () => {

@@ -17,6 +17,47 @@ export interface Frame {
 
 const vec3Sub = (a: Vec3, b: Vec3): Vec3 =>
   vec3(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+const readFiniteVec3 = (value: unknown, label: string): Vec3 => {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 3 ||
+    !isFiniteNumber(value[0]) ||
+    !isFiniteNumber(value[1]) ||
+    !isFiniteNumber(value[2])
+  )
+    throw new RangeError(`${label} must contain finite 3-vectors`);
+  return vec3(value[0], value[1], value[2]);
+};
+const readTangent = (value: unknown): Vec3 => {
+  const tangent = readFiniteVec3(value, "Frame tangent samples");
+  if (vec3Dot(tangent, tangent) < 1e-30)
+    throw new RangeError(
+      "Frame tangent samples must be finite non-zero vectors",
+    );
+  return vec3Normalize(tangent);
+};
+const readParameter = (value: unknown): number => {
+  if (!isFiniteNumber(value))
+    throw new RangeError("Frame parameters must be finite numbers");
+  return value;
+};
+const readBank = (value: unknown): number => {
+  if (!isFiniteNumber(value))
+    throw new RangeError("Frame bank samples must be finite numbers");
+  return value;
+};
+const validateBankArray = (bankAt: ArrayLike<number>, length: number): void => {
+  if (
+    bankAt === null ||
+    (typeof bankAt !== "object" && typeof bankAt !== "function")
+  )
+    throw new RangeError("Frame bank samples must be an array-like value");
+  if (bankAt.length !== length)
+    throw new RangeError("Frame bank samples must match tangent sample length");
+  for (let index = 0; index < length; index += 1) readBank(bankAt[index]);
+};
 const rotateMinimal = (vector: Vec3, from: Vec3, to: Vec3): Vec3 => {
   const axis = vec3Cross(from, to);
   const cosine = Math.max(-1, Math.min(1, vec3Dot(from, to)));
@@ -62,17 +103,30 @@ export const transportFrames = (
   bankAt: ((parameter: number) => number) | ArrayLike<number> = () => 0,
   initialNormal?: Vec3,
 ): readonly Frame[] => {
-  if (tangents.length === 0 || tangents.length !== parameters.length)
+  if (
+    !Array.isArray(tangents) ||
+    !Array.isArray(parameters) ||
+    tangents.length === 0 ||
+    tangents.length !== parameters.length
+  )
     throw new RangeError(
       "Frame samples and parameters must have equal non-zero lengths",
     );
-  const normalized = tangents.map(vec3Normalize);
+  const normalized = Array.from(tangents, readTangent);
+  const frameParameters = Array.from(parameters, readParameter);
+  if (typeof bankAt !== "function") validateBankArray(bankAt, tangents.length);
   const frames: Frame[] = [];
-  let transportedNormal = initialNormal
+  const initialNormalVector = initialNormal
+    ? readFiniteVec3(initialNormal, "Frame initial normal")
+    : undefined;
+  let transportedNormal = initialNormalVector
     ? vec3Normalize(
         vec3Sub(
-          initialNormal,
-          vec3Scale(normalized[0]!, vec3Dot(initialNormal, normalized[0]!)),
+          initialNormalVector,
+          vec3Scale(
+            normalized[0]!,
+            vec3Dot(initialNormalVector, normalized[0]!),
+          ),
         ),
       )
     : defaultNormal(normalized[0]!);
@@ -87,7 +141,9 @@ export const transportFrames = (
       vec3Cross(tangent, transportedNormal),
     );
     const bank =
-      typeof bankAt === "function" ? bankAt(parameters[i]!) : (bankAt[i] ?? 0);
+      typeof bankAt === "function"
+        ? readBank(bankAt(frameParameters[i]!))
+        : readBank(bankAt[i]);
     const normalBanked = vec3Normalize(
       vec3Add(
         vec3Scale(transportedNormal, Math.cos(bank)),
@@ -151,6 +207,9 @@ export const transportFramesAlongPath = (
   initialNormal?: Vec3,
 ): readonly Frame[] => {
   if (
+    !Array.isArray(positions) ||
+    !Array.isArray(tangents) ||
+    !Array.isArray(parameters) ||
     positions.length === 0 ||
     positions.length !== tangents.length ||
     positions.length !== parameters.length
@@ -158,13 +217,24 @@ export const transportFramesAlongPath = (
     throw new RangeError(
       "Path samples, tangents and parameters must have equal non-zero lengths",
     );
-  const normalized = tangents.map(vec3Normalize);
+  const pathPositions = Array.from(positions, (position) =>
+    readFiniteVec3(position, "Frame path positions"),
+  );
+  const normalized = Array.from(tangents, readTangent);
+  const frameParameters = Array.from(parameters, readParameter);
+  if (typeof bankAt !== "function") validateBankArray(bankAt, tangents.length);
   const frames: Frame[] = [];
-  let transportedNormal = initialNormal
+  const initialNormalVector = initialNormal
+    ? readFiniteVec3(initialNormal, "Frame initial normal")
+    : undefined;
+  let transportedNormal = initialNormalVector
     ? vec3Normalize(
         vec3Sub(
-          initialNormal,
-          vec3Scale(normalized[0]!, vec3Dot(initialNormal, normalized[0]!)),
+          initialNormalVector,
+          vec3Scale(
+            normalized[0]!,
+            vec3Dot(initialNormalVector, normalized[0]!),
+          ),
         ),
       )
     : defaultNormal(normalized[0]!);
@@ -175,8 +245,8 @@ export const transportFramesAlongPath = (
           transportedNormal,
           normalized[index - 1]!,
           normalized[index]!,
-          positions[index - 1]!,
-          positions[index]!,
+          pathPositions[index - 1]!,
+          pathPositions[index]!,
         ),
         normalized[index]!,
       );
@@ -184,8 +254,8 @@ export const transportFramesAlongPath = (
     const binormal = vec3Normalize(vec3Cross(tangent, transportedNormal));
     const bank =
       typeof bankAt === "function"
-        ? bankAt(parameters[index]!)
-        : (bankAt[index] ?? 0);
+        ? readBank(bankAt(frameParameters[index]!))
+        : readBank(bankAt[index]);
     const normal = vec3Normalize(
       vec3Add(
         vec3Scale(transportedNormal, Math.cos(bank)),

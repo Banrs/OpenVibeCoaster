@@ -1,6 +1,6 @@
 import { buildArcLengthLut, invertArcLength } from "./arc-length";
 import { transportFramesAlongPath } from "./frames";
-import { vec3, vec3Normalize } from "./math";
+import { vec3, vec3Cross, vec3Dot, vec3Length, vec3Normalize } from "./math";
 import type { Frame } from "./frames";
 import type { Vec3 } from "./math";
 import type { ParametricSpan } from "./spans";
@@ -79,12 +79,170 @@ const spanSpeed = (span: ParametricSpan<Vec3>, u: number): number => {
   return Math.hypot(derivative[0], derivative[1], derivative[2]);
 };
 const requireValidSpeed = (value: number): number => {
-  if (!(value > 1e-12))
-    throw new RangeError("A span derivative must be non-zero");
+  if (!Number.isFinite(value) || !(value > 1e-12))
+    throw new RangeError("A span derivative must be finite and non-zero");
   return value;
 };
 const validSpanSpeed = (span: ParametricSpan<Vec3>, u: number): number => {
   return requireValidSpeed(spanSpeed(span, u));
+};
+const invalidCompiledTrackData = (reason: string): never => {
+  throw new RangeError(`Invalid compiled track data: ${reason}`);
+};
+const requireFloat64Array = (
+  input: Record<string, unknown>,
+  name: string,
+): Float64Array => {
+  const value = input[name];
+  if (!(value instanceof Float64Array))
+    invalidCompiledTrackData(`${name} must be a Float64Array`);
+  return value as Float64Array;
+};
+const requireUint32Array = (
+  input: Record<string, unknown>,
+  name: string,
+): Uint32Array => {
+  const value = input[name];
+  if (!(value instanceof Uint32Array))
+    invalidCompiledTrackData(`${name} must be a Uint32Array`);
+  return value as Uint32Array;
+};
+const validateFiniteArray = (array: Float64Array, name: string): void => {
+  for (let index = 0; index < array.length; index += 1)
+    if (!Number.isFinite(array[index]))
+      invalidCompiledTrackData(`${name}[${index}] must be finite`);
+};
+const validateCompiledTrackDataInput: (
+  value: unknown,
+) => asserts value is CompiledTrackDataInput = (value) => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    invalidCompiledTrackData("input must be an object");
+  const input = value as Record<string, unknown>;
+  const positions = requireFloat64Array(input, "positions");
+  const tangents = requireFloat64Array(input, "tangents");
+  const normals = requireFloat64Array(input, "normals");
+  const binormals = requireFloat64Array(input, "binormals");
+  const distances = requireFloat64Array(input, "distances");
+  const curvature = requireFloat64Array(input, "curvature");
+  const curvatureVector = requireFloat64Array(input, "curvatureVector");
+  const bank = requireFloat64Array(input, "bank");
+  const bankDerivative = requireFloat64Array(input, "bankDerivative");
+  const zoneMasks = requireUint32Array(input, "zoneMasks");
+  const elementIndices = requireUint32Array(input, "elementIndices");
+  const elementBoundaries = requireUint32Array(input, "elementBoundaries");
+  const parameters = requireFloat64Array(input, "parameters");
+  const zoneNames = input.zoneNames;
+  if (!Array.isArray(zoneNames) || zoneNames.length > 32)
+    invalidCompiledTrackData(
+      "zoneNames must be an array with at most 32 names",
+    );
+  const names = zoneNames as unknown[];
+  const uniqueNames = new Set<string>();
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index];
+    if (typeof name !== "string" || uniqueNames.has(name))
+      invalidCompiledTrackData(`zoneNames[${index}] must be a unique string`);
+    uniqueNames.add(name as string);
+  }
+  if (positions.length === 0 || positions.length % 3 !== 0)
+    invalidCompiledTrackData("positions must contain at least one 3-vector");
+  const count = positions.length / 3;
+  if (count < 2) invalidCompiledTrackData("at least two samples are required");
+  const vectorArrays: readonly (readonly [string, Float64Array])[] = [
+    ["positions", positions],
+    ["tangents", tangents],
+    ["normals", normals],
+    ["binormals", binormals],
+    ["curvatureVector", curvatureVector],
+  ];
+  for (const [name, array] of vectorArrays) {
+    if (array.length !== count * 3)
+      invalidCompiledTrackData(`${name} length must be 3 * sample count`);
+    validateFiniteArray(array, name);
+  }
+  const scalarArrays: readonly (readonly [string, Float64Array])[] = [
+    ["distances", distances],
+    ["curvature", curvature],
+    ["bank", bank],
+    ["bankDerivative", bankDerivative],
+    ["parameters", parameters],
+  ];
+  for (const [name, array] of scalarArrays) {
+    if (array.length !== count)
+      invalidCompiledTrackData(`${name} length must equal sample count`);
+    validateFiniteArray(array, name);
+  }
+  for (let index = 0; index < curvature.length; index += 1)
+    if (curvature[index]! < 0)
+      invalidCompiledTrackData(`curvature[${index}] must be non-negative`);
+  if (zoneMasks.length !== count || elementIndices.length !== count)
+    invalidCompiledTrackData("per-sample index and mask lengths must match");
+  if (
+    !(typeof input.totalLength === "number") ||
+    !Number.isFinite(input.totalLength)
+  )
+    invalidCompiledTrackData("totalLength must be finite");
+  const totalLength = input.totalLength as number;
+  if (!(totalLength > 0))
+    invalidCompiledTrackData("totalLength must be positive");
+  if (distances[0] !== 0)
+    invalidCompiledTrackData("distances must start at zero");
+  for (let index = 1; index < distances.length; index += 1)
+    if (!(distances[index]! > distances[index - 1]!))
+      invalidCompiledTrackData("distances must be strictly increasing");
+  if (
+    Math.abs(distances[count - 1]! - totalLength) >
+    1e-9 * Math.max(1, Math.abs(totalLength))
+  )
+    invalidCompiledTrackData("last distance must equal totalLength");
+  for (let index = 0; index < parameters.length; index += 1)
+    if (parameters[index]! < 0 || parameters[index]! > 1)
+      invalidCompiledTrackData(`parameters[${index}] must be in [0, 1]`);
+  if (elementBoundaries.length === 0 || elementBoundaries.length % 2 !== 0)
+    invalidCompiledTrackData("elementBoundaries must contain start/end pairs");
+  const elementCount = elementBoundaries.length / 2;
+  if (elementCount === 0 || elementBoundaries[0] !== 0)
+    invalidCompiledTrackData("elementBoundaries must start at sample zero");
+  if (elementBoundaries[elementBoundaries.length - 1] !== count - 1)
+    invalidCompiledTrackData("elementBoundaries must end at the last sample");
+  for (let elementIndex = 0; elementIndex < elementCount; elementIndex += 1) {
+    const start = elementBoundaries[elementIndex * 2]!;
+    const end = elementBoundaries[elementIndex * 2 + 1]!;
+    if (start >= end || end >= count)
+      invalidCompiledTrackData(`elementBoundaries[${elementIndex}] is invalid`);
+    if (elementIndex > 0 && start !== elementBoundaries[elementIndex * 2 - 1])
+      invalidCompiledTrackData("elementBoundaries must be contiguous");
+  }
+  for (let index = 0; index < elementIndices.length; index += 1) {
+    const elementIndex = elementIndices[index]!;
+    if (elementIndex >= elementCount)
+      invalidCompiledTrackData(`elementIndices[${index}] is out of range`);
+    const start = elementBoundaries[elementIndex * 2]!;
+    const end = elementBoundaries[elementIndex * 2 + 1]!;
+    const firstOwnedSample = elementIndex === 0 ? start : start + 1;
+    if (index < firstOwnedSample || index > end)
+      invalidCompiledTrackData(
+        `elementIndices[${index}] disagrees with boundaries`,
+      );
+  }
+  for (let index = 0; index < zoneMasks.length; index += 1)
+    if (names.length < 32 && zoneMasks[index]! >>> names.length !== 0)
+      invalidCompiledTrackData(`zoneMasks[${index}] contains unknown zones`);
+  for (let index = 0; index < count; index += 1) {
+    const tangent = readVec3(tangents, index);
+    const normal = readVec3(normals, index);
+    const binormal = readVec3(binormals, index);
+    if (
+      Math.abs(vec3Length(tangent) - 1) > 1e-8 ||
+      Math.abs(vec3Length(normal) - 1) > 1e-8 ||
+      Math.abs(vec3Length(binormal) - 1) > 1e-8 ||
+      Math.abs(vec3Dot(tangent, normal)) > 1e-8 ||
+      Math.abs(vec3Dot(tangent, binormal)) > 1e-8 ||
+      Math.abs(vec3Dot(normal, binormal)) > 1e-8 ||
+      Math.abs(vec3Dot(vec3Cross(tangent, normal), binormal) - 1) > 1e-8
+    )
+      invalidCompiledTrackData(`frame at sample ${index} is not orthonormal`);
+  }
 };
 const checksum = (data: CompiledTrackDataInput): string => {
   const canonical = JSON.stringify({
@@ -131,6 +289,7 @@ export class CompiledTrackData {
   public readonly checksum: string;
 
   public constructor(input: CompiledTrackDataInput) {
+    validateCompiledTrackDataInput(input);
     this.#positions = new Float64Array(input.positions);
     this.#tangents = new Float64Array(input.tangents);
     this.#normals = new Float64Array(input.normals);
@@ -385,10 +544,21 @@ export const sampleCompiledTrack = (
   const storage = compiledTrackStorage.get(data);
   if (!storage) throw new TypeError("Unknown compiled track data");
   const t = Math.max(0, Math.min(1, normalizedDistance));
-  const floating = t * (storage.distances.length - 1);
-  const low = Math.floor(floating);
-  const high = Math.min(storage.distances.length - 1, low + 1);
-  const fraction = floating - low;
+  if (!Number.isFinite(normalizedDistance))
+    throw new RangeError("Normalized distance must be finite");
+  const targetDistance = t * data.totalLength;
+  let low = 0;
+  let high = storage.distances.length - 1;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (storage.distances[middle]! <= targetDistance) low = middle;
+    else high = middle;
+  }
+  const fraction =
+    low === high
+      ? 0
+      : (targetDistance - storage.distances[low]!) /
+        (storage.distances[high]! - storage.distances[low]!);
   const { positions, tangents, normals, binormals } = storage;
   const { curvature: curvatures, bank: banks } = storage;
   const { curvatureVector: curvatureVectors } = storage;

@@ -183,23 +183,63 @@ const decodeUtf8 = (bytes: Uint8Array): string => {
       throw new CoasterFileError("Invalid UTF-8 encoding");
     return byte & 0x3f;
   };
+  const readRestrictedContinuation = (
+    minimum: number,
+    maximum: number,
+  ): number => {
+    const value = readContinuation();
+    if (value < minimum || value > maximum)
+      throw new CoasterFileError("Invalid UTF-8 encoding");
+    return value;
+  };
   let index = 0;
   while (index < bytes.length) {
     const first = readByte();
     if (first < 0x80) text += String.fromCodePoint(first);
-    else if (first < 0xe0)
+    else if (first >= 0xc2 && first <= 0xdf)
       text += String.fromCodePoint(((first & 0x1f) << 6) | readContinuation());
-    else if (first < 0xf0)
+    else if (first === 0xe0)
+      text += String.fromCodePoint(
+        ((first & 0x0f) << 12) |
+          (readRestrictedContinuation(0x20, 0x3f) << 6) |
+          readContinuation(),
+      );
+    else if (first >= 0xe1 && first <= 0xec)
       text += String.fromCodePoint(
         ((first & 0x0f) << 12) | (readContinuation() << 6) | readContinuation(),
       );
-    else
+    else if (first === 0xed)
+      text += String.fromCodePoint(
+        ((first & 0x0f) << 12) |
+          (readRestrictedContinuation(0, 0x1f) << 6) |
+          readContinuation(),
+      );
+    else if (first >= 0xee && first <= 0xef)
+      text += String.fromCodePoint(
+        ((first & 0x0f) << 12) | (readContinuation() << 6) | readContinuation(),
+      );
+    else if (first === 0xf0)
+      text += String.fromCodePoint(
+        ((first & 0x07) << 18) |
+          (readRestrictedContinuation(0x10, 0x3f) << 12) |
+          (readContinuation() << 6) |
+          readContinuation(),
+      );
+    else if (first >= 0xf1 && first <= 0xf3)
       text += String.fromCodePoint(
         ((first & 0x07) << 18) |
           (readContinuation() << 12) |
           (readContinuation() << 6) |
           readContinuation(),
       );
+    else if (first === 0xf4)
+      text += String.fromCodePoint(
+        ((first & 0x07) << 18) |
+          (readRestrictedContinuation(0, 0x0f) << 12) |
+          (readContinuation() << 6) |
+          readContinuation(),
+      );
+    else throw new CoasterFileError("Invalid UTF-8 encoding");
   }
   return text;
 };
