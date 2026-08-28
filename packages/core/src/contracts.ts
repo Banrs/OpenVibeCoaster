@@ -13,6 +13,11 @@ export interface DesignElementV1 {
   readonly target?: string | number | Vec3;
   readonly pinned?: boolean;
 }
+export interface DesignCompatibilityV1 {
+  readonly elements: readonly DesignElementV1[];
+  readonly gates?: readonly GateV1[];
+  readonly constraints?: readonly ConstraintV1[];
+}
 export interface GateV1 {
   readonly id: string;
   readonly position?: Vec3;
@@ -25,7 +30,7 @@ export interface GateV1 {
 export interface ConstraintV1 {
   readonly id: string;
   readonly kind: string;
-  readonly value?: number | Vec3;
+  readonly value?: string | number | Vec3;
   readonly hard?: boolean;
   readonly target?: string | number | Vec3;
   readonly pinned?: boolean;

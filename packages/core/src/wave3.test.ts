@@ -6,6 +6,8 @@ import {
   createCoasterFileV1,
   deserializeCoasterFileV1,
   serializeCoasterFileV1,
+  compileTrack,
+  reconstructSolvedSpan,
   validateDesignIntentV1,
   SeventhOrderHermiteSpan,
   QuinticScalarSpan,
@@ -44,6 +46,28 @@ describe("wave 3 core contracts", () => {
     expect(() => validateDesignIntentV1({ ...intent, seed: -1 })).toThrow(
       "seed: expected uint32 integer",
     );
+    expect(() =>
+      validateDesignIntentV1({
+        ...intent,
+        elements: [
+          {
+            ...intent.elements[0],
+            id: "station-001",
+            kind: "station",
+            type: "launch",
+          },
+        ],
+      }),
+    ).toThrow("kind and type must match");
+    expect(() =>
+      validateDesignIntentV1({
+        ...intent,
+        elements: [
+          intent.elements[0],
+          { ...intent.elements[0], id: "station-000" },
+        ],
+      }),
+    ).toThrow("unique non-empty id");
   });
 
   it("round-trips strict coaster files canonically with exact span geometry", () => {
@@ -65,23 +89,25 @@ describe("wave 3 core contracts", () => {
       d11: 0,
       d21: 0,
     });
+    const serializedSpan = {
+      id: "station-000",
+      kind: "station",
+      length: 12,
+      positionCoefficients: position.coefficients,
+      rollCoefficients: roll.coefficients,
+    };
     const file = createCoasterFileV1({
       name: "unicode 🎢",
       intent,
-      solvedSpans: [
-        {
-          id: "station-000",
-          kind: "station",
-          length: 12,
-          positionCoefficients: position.coefficients,
-          rollCoefficients: roll.coefficients,
-        },
-      ],
+      solvedSpans: [serializedSpan],
       seed: intent.seed,
       generatorVersion: intent.generatorVersion,
       profileVersion: "profile-v1",
       researchSnapshotIds: ["snapshot-a"],
-      compiledDataChecksum: "pending",
+      compiledDataChecksum: compileTrack(
+        [reconstructSolvedSpan(serializedSpan)],
+        { samples: 32 },
+      ).checksum,
     });
     const encoded = serializeCoasterFileV1(file);
     expect(serializeCoasterFileV1(deserializeCoasterFileV1(encoded))).toBe(
@@ -90,6 +116,69 @@ describe("wave 3 core contracts", () => {
     const loaded = compileCoasterFile(file, { samples: 16 });
     expect(loaded.track.positions[0]).toBe(0);
     expect(loaded.track.positions[loaded.track.positions.length - 3]).toBe(10);
+    expect(file.design.elements).toEqual(intent.elements);
+  });
+
+  it("rejects a tampered compiled checksum on load", () => {
+    const position = SeventhOrderHermiteSpan.line(
+      vec3(0, 0, 0),
+      vec3(10, 0, 0),
+    );
+    const roll = QuinticScalarSpan.fromCoefficients([0, 0, 0, 0, 0, 0]);
+    const file = createCoasterFileV1({
+      name: "checksum",
+      intent,
+      solvedSpans: [
+        {
+          id: "station-000",
+          kind: "station",
+          length: 10,
+          positionCoefficients: position.coefficients,
+          rollCoefficients: roll.coefficients,
+        },
+      ],
+      seed: intent.seed,
+      generatorVersion: intent.generatorVersion,
+      profileVersion: "profile-v1",
+      researchSnapshotIds: [],
+      compiledDataChecksum: "00000000",
+    });
+    expect(() => compileCoasterFile(file)).toThrow("checksum");
+  });
+
+  it("rejects extra fields in the legacy compatibility entry path", () => {
+    expect(() =>
+      deserializeCoasterFileV1(
+        JSON.stringify({
+          schemaVersion: 1,
+          name: "legacy",
+          seed: 1,
+          design: { elements: [], extra: true },
+        }),
+      ),
+    ).toThrow("design.extra: expected no extra field");
+    expect(() =>
+      deserializeCoasterFileV1(
+        JSON.stringify({
+          schemaVersion: 1,
+          name: "legacy",
+          seed: 1,
+          design: { elements: [] },
+          extra: true,
+        }),
+      ),
+    ).toThrow("file.extra: expected no extra field");
+  });
+
+  it("rejects target values whose shape does not match the target kind", () => {
+    expect(() =>
+      validateDesignIntentV1({
+        ...intent,
+        targets: [
+          { id: "end-z", kind: "end-z", target: [0, 0, 1], hard: true },
+        ],
+      }),
+    ).toThrow("target: expected finite number");
   });
 
   it("provides signed solid samples and finite terrain bounds", () => {

@@ -262,6 +262,15 @@ const bumpCoefficients = [0, 0, 0, 0, 256, -1024, 1536, -1024, 256] as const;
 const smoothRampCoefficients = [0, 0, 0, 0, 35, -84, 70, -20] as const;
 const quinticRampCoefficients = [0, 0, 0, 10, -15, 6] as const;
 
+const plateau = (u: number, order = 0): number => {
+  const ramp = (value: number, derivativeOrder: number): number =>
+    polynomialDerivative(smoothRampCoefficients, value, derivativeOrder);
+  if (u < 0.2 || u > 0.8) return 0;
+  if (u < 0.35) return ramp((u - 0.2) / 0.15, order) / 0.15 ** order;
+  if (u <= 0.65) return order === 0 ? 1 : 0;
+  return (order === 0 ? 1 : -ramp((u - 0.65) / 0.15, order)) / 0.15 ** order;
+};
+
 const sustainedForceProfile = (u: number, order = 0): number => {
   const ramp = (value: number, derivativeOrder: number): number =>
     polynomialDerivative(smoothRampCoefficients, value, derivativeOrder);
@@ -272,16 +281,6 @@ const sustainedForceProfile = (u: number, order = 0): number => {
     ? 1 - ramp((u - 0.75) / 0.1, 0)
     : -ramp((u - 0.75) / 0.1, order) / 0.1 ** order;
 };
-
-const plateau = (u: number, order = 0): number => {
-  const ramp = (value: number, derivativeOrder: number): number =>
-    polynomialDerivative(smoothRampCoefficients, value, derivativeOrder);
-  if (u < 0.2 || u > 0.8) return 0;
-  if (u < 0.35) return ramp((u - 0.2) / 0.15, order) / 0.15 ** order;
-  if (u <= 0.65) return order === 0 ? 1 : 0;
-  return (order === 0 ? 1 : -ramp((u - 0.65) / 0.15, order)) / 0.15 ** order;
-};
-
 const profileSpan = (
   pose: Pose,
   length: number,
@@ -338,41 +337,60 @@ const forceProfileSpan = (
       (targetNormalForce(u) * gravity + normalGravity)
     );
   };
+  const integrateStep = (
+    state: readonly [number, number, number],
+    u: number,
+    step: number,
+  ): readonly [number, number, number] => {
+    const [heading, horizontal, vertical] = state;
+    const half = step / 2;
+    const k1Heading = headingRate(u, heading);
+    const k1Horizontal = length * Math.cos(heading);
+    const k1Vertical = length * Math.sin(heading);
+    const heading2 = heading + half * k1Heading;
+    const k2Heading = headingRate(u + half, heading2);
+    const k2Horizontal = length * Math.cos(heading2);
+    const k2Vertical = length * Math.sin(heading2);
+    const heading3 = heading + half * k2Heading;
+    const k3Heading = headingRate(u + half, heading3);
+    const k3Horizontal = length * Math.cos(heading3);
+    const k3Vertical = length * Math.sin(heading3);
+    const heading4 = heading + half * k3Heading;
+    const k4Heading = headingRate(u + step, heading4);
+    const k4Horizontal = length * Math.cos(heading4);
+    const k4Vertical = length * Math.sin(heading4);
+    return [
+      heading +
+        (step / 6) * (k1Heading + 2 * k2Heading + 2 * k3Heading + k4Heading),
+      horizontal +
+        (step / 6) *
+          (k1Horizontal + 2 * k2Horizontal + 2 * k3Horizontal + k4Horizontal),
+      vertical +
+        (step / 6) *
+          (k1Vertical + 2 * k2Vertical + 2 * k3Vertical + k4Vertical),
+    ];
+  };
+  const integrationResolution = 128;
+  const integrationTable: readonly (readonly [number, number, number])[] =
+    (() => {
+      const table: Array<readonly [number, number, number]> = [[0, 0, 0]];
+      const step = 1 / integrationResolution;
+      for (let index = 0; index < integrationResolution; index += 1)
+        table.push(integrateStep(table[index]!, index * step, step));
+      return table;
+    })();
   const integrateState = (upper: number): readonly [number, number, number] => {
-    if (upper <= 0) return [0, 0, 0];
-    const steps = Math.max(1, Math.ceil(upper * 256));
-    const step = upper / steps;
-    let heading = 0;
-    let horizontal = 0;
-    let vertical = 0;
-    for (let index = 0; index < steps; index += 1) {
-      const u = index * step;
-      const half = step / 2;
-      const k1Heading = headingRate(u, heading);
-      const k1Horizontal = length * Math.cos(heading);
-      const k1Vertical = length * Math.sin(heading);
-      const heading2 = heading + half * k1Heading;
-      const k2Heading = headingRate(u + half, heading2);
-      const k2Horizontal = length * Math.cos(heading2);
-      const k2Vertical = length * Math.sin(heading2);
-      const heading3 = heading + half * k2Heading;
-      const k3Heading = headingRate(u + half, heading3);
-      const k3Horizontal = length * Math.cos(heading3);
-      const k3Vertical = length * Math.sin(heading3);
-      const heading4 = heading + half * k3Heading;
-      const k4Heading = headingRate(u + step, heading4);
-      const k4Horizontal = length * Math.cos(heading4);
-      const k4Vertical = length * Math.sin(heading4);
-      heading +=
-        (step / 6) * (k1Heading + 2 * k2Heading + 2 * k3Heading + k4Heading);
-      horizontal +=
-        (step / 6) *
-        (k1Horizontal + 2 * k2Horizontal + 2 * k3Horizontal + k4Horizontal);
-      vertical +=
-        (step / 6) *
-        (k1Vertical + 2 * k2Vertical + 2 * k3Vertical + k4Vertical);
-    }
-    return [heading, horizontal, vertical];
+    const clamped = Math.max(0, Math.min(1, upper));
+    const scaled = clamped * integrationResolution;
+    const lowerIndex = Math.min(integrationResolution - 1, Math.floor(scaled));
+    const fraction = scaled - lowerIndex;
+    const lower = integrationTable[lowerIndex]!;
+    const upperState = integrationTable[lowerIndex + 1]!;
+    return [
+      lower[0] + (upperState[0] - lower[0]) * fraction,
+      lower[1] + (upperState[1] - lower[1]) * fraction,
+      lower[2] + (upperState[2] - lower[2]) * fraction,
+    ];
   };
   const localDerivative = (u: number, order: number): Vec3 => {
     const [heading] = integrateState(u);
@@ -419,10 +437,33 @@ const topHatSpan = (
   endBank: number,
 ): {
   span: ParametricSpan<Vec3>;
+  positionCoefficients: readonly (readonly number[])[];
+  rollCoefficients: readonly number[];
   endPose: Pose;
   bank: ParametricSpan<number>;
 } => {
   const basis = basisFor(pose);
+  // Keep the authored analytic view for solver diagnostics, and carry a
+  // canonical coefficient view for serialization/runtime compilation.
+  const heightCoefficients = [
+    0,
+    0,
+    0,
+    64 * 80,
+    -192 * 80,
+    192 * 80,
+    -64 * 80,
+    0,
+  ];
+  const positionCoefficients = [0, 1, 2].map((component) =>
+    Array.from(
+      { length: 8 },
+      (_, power) =>
+        (power === 0 ? pose.position[component]! : 0) +
+        basis.tangent[component]! * (power === 1 ? width : 0) +
+        basis.normal[component]! * (heightCoefficients[power] ?? 0),
+    ),
+  );
   const localDerivative = (u: number, order: number): Vec3 =>
     order === 0
       ? vec3(width * u, 80 * plateau(u), 0)
@@ -437,6 +478,18 @@ const topHatSpan = (
     position: (u) => worldPoint(pose, basis, localDerivative(u, 0)),
     derivative: (u, order = 1) => worldVector(basis, localDerivative(u, order)),
   };
+  const bump = [0, 0, 16 * Math.PI, -32 * Math.PI, 16 * Math.PI, 0];
+  const base = new QuinticScalarSpan({
+    v0: pose.bank,
+    d10: 0,
+    d20: 0,
+    v1: endBank,
+    d11: 0,
+    d21: 0,
+  }).coefficients;
+  const canonicalBank = QuinticScalarSpan.fromCoefficients(
+    base.map((value, index) => value + (bump[index] ?? 0)),
+  );
   const invertedBank = pose.bank + Math.PI;
   const bank: ParametricSpan<number> = {
     position: (u) => {
@@ -469,10 +522,12 @@ const topHatSpan = (
   };
   return {
     span,
+    positionCoefficients,
+    rollCoefficients: canonicalBank.coefficients,
     bank,
     endPose: orthonormalizePose({
       position: span.position(1),
-      tangent: span.derivative(1, 1),
+      tangent: vec3Normalize(span.derivative(1, 1)),
       normal: basis.normal,
       bank: endBank,
     }),
@@ -556,6 +611,8 @@ export const buildElement = (
   let endPose: Pose;
   let endBank = normalizedPose.bank;
   let bank: ParametricSpan<number> | undefined;
+  let positionCoefficients: readonly (readonly number[])[] | undefined;
+  let rollCoefficients: readonly number[] | undefined;
   switch (element.type) {
     case "station": {
       const p = element.parameters as ElementParameterMap["station"];
@@ -617,6 +674,8 @@ export const buildElement = (
       const p = element.parameters as ElementParameterMap["topHat"];
       const profile = topHatSpan(normalizedPose, p.width, p.bank);
       span = profile.span;
+      positionCoefficients = profile.positionCoefficients;
+      rollCoefficients = profile.rollCoefficients;
       endPose = { ...profile.endPose, bank: p.bank };
       bank = profile.bank;
       endBank = p.bank;
@@ -685,6 +744,8 @@ export const buildElement = (
       bank,
       zones: [element.type],
       bounds: aabbFromPoints(points),
+      ...(positionCoefficients ? { positionCoefficients } : {}),
+      ...(rollCoefficients ? { rollCoefficients } : {}),
     },
   };
 };

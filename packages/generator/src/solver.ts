@@ -762,7 +762,7 @@ export const solveSemanticChain = (
   ];
   const initialResidual = residualAt(initial);
   const optimized = initialResidual.every((value) => Math.abs(value) <= 1)
-    ? { variables: initial }
+    ? { variables: initial, iterations: 0 }
     : boundedLevenbergMarquardt({
         initial,
         lower: bindings.map((binding) => binding.lower),
@@ -807,8 +807,6 @@ export const solveSemanticChain = (
           `${failures.join(", ")} residual remains after bounded solve`,
         ),
       );
-      if (relaxations.length < 3)
-        relaxations.push(`Relax hard seam ${seam.seamId}`);
     }
     if (
       seam.softResiduals.sustainedForceDeviationG >
@@ -831,10 +829,6 @@ export const solveSemanticChain = (
           ? `infeasible force geometry: planar zero-G path leaves ${failure.actual.toFixed(6)} G in the gravity binormal component`
           : `infeasible force geometry: banked force target residual is ${failure.actual.toFixed(6)} G`;
     diagnostics.push(hardConflict([constraintId], detail));
-    if (relaxations.length < 3)
-      relaxations.push(
-        `Relax ${constraintId} or ${failure.elementId}:targetForceG`,
-      );
   }
 
   const targets = options.targets ?? [];
@@ -849,8 +843,6 @@ export const solveSemanticChain = (
           `${target.kind} residual is ${error.toExponential(3)}`,
         ),
       );
-      if (relaxations.length < 3)
-        relaxations.push(`Relax hard target ${target.id}`);
     } else if (
       target.hard === false &&
       error > targetTolerance(target, tolerances)
@@ -904,8 +896,6 @@ export const solveSemanticChain = (
           `position ${positionError.toExponential(3)} m, tangent ${tangentError.toExponential(3)} rad, normal ${normalError.toExponential(3)} rad, bank ${bankError.toExponential(3)} rad remain after bounded solve`,
         ),
       );
-      for (const failure of failures)
-        if (relaxations.length < 3) relaxations.push(`Relax ${failure}`);
     }
   }
 
@@ -954,12 +944,6 @@ export const solveSemanticChain = (
           `position ${positionError.toExponential(3)} m, tangent ${tangentError.toExponential(3)} rad, normal ${normalError.toExponential(3)} rad, bank ${bankError.toExponential(3)} rad`,
         ),
       );
-      for (const relaxation of [
-        "Relax endPose.position",
-        "Relax closed-loop pose/closure tangent",
-        "Relax closed-loop pose/closure bank",
-      ])
-        if (relaxations.length < 3) relaxations.push(relaxation);
     }
   }
 
@@ -982,6 +966,7 @@ export const solveSemanticChain = (
     relaxations: Object.freeze(relaxations.slice(0, 3)),
     startPose,
     endPose: state.endPose,
+    lmIterations: optimized.iterations,
   };
 };
 

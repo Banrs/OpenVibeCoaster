@@ -447,7 +447,9 @@ export const compileTrack = (
     validSpanSpeed(element.span, 1);
     return buildArcLengthLut(
       element.span,
-      Math.max(32, perElement),
+      // The LUT is an integration aid, not the published sample grid. Keep
+      // its bounded resolution independent of a caller's render sample count.
+      Math.max(32, Math.min(64, perElement)),
       options.tolerance ?? 1e-8,
     );
   });

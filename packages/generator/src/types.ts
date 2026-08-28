@@ -168,6 +168,7 @@ export interface SolveResult {
   readonly relaxations: readonly string[];
   readonly startPose: Pose;
   readonly endPose: Pose;
+  readonly lmIterations: number;
 }
 
 export interface CompileResult extends SolveResult {
@@ -182,6 +183,7 @@ export interface GenerationOptions {
   readonly profileVersion?: string;
   readonly researchSnapshotIds?: readonly string[];
   readonly trainEnvelopeRadius?: number;
+  readonly trackClearance?: number;
 }
 
 export interface GenerationResult {
@@ -197,6 +199,25 @@ export interface GenerationResult {
   readonly candidatesTested: number;
   readonly lmIterations: number;
   readonly spanHashes: Readonly<Record<string, string>>;
+  readonly spanBytes: Readonly<Record<string, string>>;
+  readonly relaxationEvidence: readonly RelaxationEvidence[];
+  readonly options: GenerationOptions;
+  readonly stageTimings: GenerationStageTimings;
+}
+
+export interface GenerationStageTimings {
+  readonly searchMs: number;
+  readonly solvingMs: number;
+  readonly compilationMs: number;
+  readonly validationMs: number;
+  readonly totalMs: number;
+}
+
+export interface RelaxationEvidence {
+  readonly change: string;
+  readonly rerun: true;
+  readonly feasible: boolean;
+  readonly margins: Readonly<Record<string, number>>;
 }
 
 export interface ClearanceOptions {
@@ -218,4 +239,5 @@ export interface LocalRegenerationResult {
   readonly generation: GenerationResult;
   readonly diagnostics: readonly Diagnostic[];
   readonly untouchedSpanHashes: Readonly<Record<string, string>>;
+  readonly untouchedSpanBytes: Readonly<Record<string, string>>;
 }

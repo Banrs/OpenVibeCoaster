@@ -4,6 +4,7 @@ import type { Aabb, Vec3 } from "./math";
 import type {
   ConstraintV1,
   DesignElementV1,
+  DesignCompatibilityV1,
   DesignIntentV1,
   GateV1,
   SerializedSolvedSpanV1,
@@ -38,6 +39,8 @@ export interface CoasterFileV1 {
   readonly schemaVersion: 1;
   readonly name: string;
   readonly intent: DesignIntentV1;
+  /** Read-only legacy view; it is intentionally not serialized in v1 strict files. */
+  readonly design: DesignCompatibilityV1;
   readonly solvedSpans: readonly SerializedSolvedSpanV1[];
   readonly seed: number;
   readonly generatorVersion: string;
@@ -122,6 +125,11 @@ const quaternion = (
 };
 const targetValue = (value: unknown, path: string): number | Vec3 =>
   Array.isArray(value) ? vector(value, path) : finite(value, path);
+const constraintValue = (
+  value: unknown,
+  path: string,
+): string | number | Vec3 =>
+  typeof value === "string" ? value : targetValue(value, path);
 const primitive = (value: unknown, path: string): void => {
   if (typeof value === "number") finite(value, path);
   else if (typeof value !== "string" && typeof value !== "boolean")
@@ -139,15 +147,65 @@ const validateElement = (value: unknown, path: string): void => {
     ["id", "kind", "type", "parameters", "target", "pinned"],
     path,
   );
-  string(element.id, `${path}.id`);
-  if (element.kind === undefined && element.type === undefined)
-    fail(`${path}.kind`, "string");
-  if (element.kind !== undefined) string(element.kind, `${path}.kind`);
-  if (element.type !== undefined) string(element.type, `${path}.type`);
+  const id = string(element.id, `${path}.id`);
+  if (id.trim().length === 0) fail(`${path}.id`, "unique non-empty id");
+  const supportedKinds = new Set([
+    "station",
+    "launch",
+    "boost",
+    "brake",
+    "transition",
+    "topHat",
+    "airtimeHill",
+    "overbankedTurn",
+    "zeroGRoll",
+    "stall",
+  ]);
+  const kind = string(element.kind, `${path}.kind`);
+  const type = string(element.type, `${path}.type`);
+  if (kind !== type) fail(`${path}.kind`, "kind and type must match");
+  if (!supportedKinds.has(kind)) fail(`${path}.kind`, "supported element kind");
   if (element.parameters !== undefined) {
     const parameters = record(element.parameters, `${path}.parameters`);
-    for (const [key, parameter] of Object.entries(parameters))
-      primitive(parameter, `${path}.parameters.${key}`);
+    const parameterNames: Record<string, readonly string[]> = {
+      station: ["length", "bank", "closed"],
+      launch: ["length", "targetSpeed", "bank"],
+      boost: ["length", "targetSpeed", "bank"],
+      brake: ["length", "targetSpeed", "bank"],
+      transition: ["length", "rise", "pitch", "bank"],
+      topHat: ["height", "width", "bank"],
+      airtimeHill: [
+        "length",
+        "height",
+        "targetForceG",
+        "referenceSpeed",
+        "bank",
+      ],
+      overbankedTurn: ["radius", "angle", "bank"],
+      zeroGRoll: ["length", "roll"],
+      stall: ["length", "height", "bank"],
+    };
+    exactKeys(parameters, parameterNames[kind]!, `${path}.parameters`);
+    const numericParameters = new Set([
+      "length",
+      "bank",
+      "targetSpeed",
+      "rise",
+      "pitch",
+      "height",
+      "width",
+      "targetForceG",
+      "referenceSpeed",
+      "radius",
+      "angle",
+      "roll",
+    ]);
+    for (const [key, parameter] of Object.entries(parameters)) {
+      if (key === "closed") boolean(parameter, `${path}.parameters.${key}`);
+      else if (numericParameters.has(key))
+        finite(parameter, `${path}.parameters.${key}`);
+      else primitive(parameter, `${path}.parameters.${key}`);
+    }
   }
   if (element.target !== undefined)
     targetValue(element.target, `${path}.target`);
@@ -156,7 +214,8 @@ const validateElement = (value: unknown, path: string): void => {
 const validateGate = (value: unknown, path: string): void => {
   const gate = record(value, path);
   exactKeys(gate, ["id", "position", "orientation"], path);
-  string(gate.id, `${path}.id`);
+  if (string(gate.id, `${path}.id`).trim().length === 0)
+    fail(`${path}.id`, "unique non-empty id");
   vector(gate.position, `${path}.position`);
   if (gate.orientation !== undefined)
     quaternion(gate.orientation, `${path}.orientation`);
@@ -164,9 +223,24 @@ const validateGate = (value: unknown, path: string): void => {
 const validateTarget = (value: unknown, path: string): void => {
   const target = record(value, path);
   exactKeys(target, ["id", "kind", "target", "hard"], path);
-  string(target.id, `${path}.id`);
-  string(target.kind, `${path}.kind`);
-  targetValue(target.target, `${path}.target`);
+  if (string(target.id, `${path}.id`).trim().length === 0)
+    fail(`${path}.id`, "unique non-empty id");
+  const kind = string(target.kind, `${path}.kind`);
+  if (
+    ![
+      "end-x",
+      "end-y",
+      "end-z",
+      "end-bank",
+      "end-position",
+      "end-tangent",
+      "total-length",
+    ].includes(kind)
+  )
+    fail(`${path}.kind`, "supported target kind");
+  if (["end-x", "end-y", "end-z", "end-bank", "total-length"].includes(kind))
+    finite(target.target, `${path}.target`);
+  else vector(target.target, `${path}.target`);
   boolean(target.hard, `${path}.hard`);
 };
 const validateConstraint = (value: unknown, path: string): void => {
@@ -176,23 +250,56 @@ const validateConstraint = (value: unknown, path: string): void => {
     ["id", "kind", "value", "hard", "target", "pinned"],
     path,
   );
-  string(constraint.id, `${path}.id`);
-  string(constraint.kind, `${path}.kind`);
+  if (string(constraint.id, `${path}.id`).trim().length === 0)
+    fail(`${path}.id`, "unique non-empty id");
+  const kind = string(constraint.kind, `${path}.kind`);
+  if (
+    ![
+      "required-element",
+      "required-stall",
+      "required-footprint",
+      "required-height-range",
+      "terrain-profile",
+      "max-height",
+      "min-height",
+      "track-clearance",
+    ].includes(kind)
+  )
+    fail(`${path}.kind`, "supported constraint kind");
   if (constraint.value !== undefined)
-    targetValue(constraint.value, `${path}.value`);
+    constraintValue(constraint.value, `${path}.value`);
   if (constraint.hard !== undefined) boolean(constraint.hard, `${path}.hard`);
-  if (constraint.target !== undefined)
-    targetValue(constraint.target, `${path}.target`);
+  if (constraint.target !== undefined) {
+    if (["max-height", "min-height", "track-clearance"].includes(kind))
+      finite(constraint.target, `${path}.target`);
+    else constraintValue(constraint.target, `${path}.target`);
+  }
+  const requested = constraint.target ?? constraint.value;
+  if (kind === "required-element" && typeof requested !== "string")
+    fail(`${path}.target`, "element kind string");
+  if (
+    kind === "terrain-profile" &&
+    requested !== undefined &&
+    typeof requested !== "string"
+  )
+    fail(`${path}.target`, "terrain profile string");
+  if (
+    kind === "track-clearance" &&
+    typeof requested === "number" &&
+    requested < 0
+  )
+    fail(`${path}.target`, "non-negative finite number");
   if (constraint.pinned !== undefined)
     boolean(constraint.pinned, `${path}.pinned`);
 };
 const validateAabb = (value: unknown, path: string): Aabb => {
   const box = record(value, path);
   exactKeys(box, ["min", "max"], path);
-  return {
-    min: vector(box.min, `${path}.min`),
-    max: vector(box.max, `${path}.max`),
-  };
+  const min = vector(box.min, `${path}.min`);
+  const max = vector(box.max, `${path}.max`);
+  if (min.some((value, index) => value > max[index]!))
+    fail(path, "ordered bounds");
+  return { min, max };
 };
 
 export function validateDesignIntentV1(
@@ -230,18 +337,55 @@ export function validateDesignIntentV1(
   if (intent.family !== "steel-sitdown-lsm-v1")
     fail("family", "steel-sitdown-lsm-v1");
   const elements = array(intent.elements, "elements");
+  const ids = new Set<string>();
   elements.forEach((element, index) =>
     validateElement(element, `elements[${index}]`),
   );
+  for (const [index, element] of elements.entries()) {
+    const id = (element as Record<string, unknown>).id as string;
+    if (ids.has(id)) fail(`elements[${index}].id`, "unique non-empty id");
+    ids.add(id);
+  }
   const gates = array(intent.gates, "gates");
   if (gates.length > 3) fail("gates", "at most 3 items");
-  gates.forEach((gate, index) => validateGate(gate, `gates[${index}]`));
-  array(intent.targets, "targets").forEach((target, index) =>
-    validateTarget(target, `targets[${index}]`),
-  );
-  array(intent.constraints, "constraints").forEach((constraint, index) =>
-    validateConstraint(constraint, `constraints[${index}]`),
-  );
+  const gateIds = new Set<string>();
+  gates.forEach((gate, index) => {
+    validateGate(gate, `gates[${index}]`);
+    const id = (gate as Record<string, unknown>).id as string;
+    if (gateIds.has(id)) fail(`gates[${index}].id`, "unique non-empty id");
+    gateIds.add(id);
+  });
+  const targetIds = new Set<string>();
+  array(intent.targets, "targets").forEach((target, index) => {
+    validateTarget(target, `targets[${index}]`);
+    const id = (target as Record<string, unknown>).id as string;
+    if (targetIds.has(id)) fail(`targets[${index}].id`, "unique non-empty id");
+    targetIds.add(id);
+  });
+  const constraintIds = new Set<string>();
+  array(intent.constraints, "constraints").forEach((constraint, index) => {
+    validateConstraint(constraint, `constraints[${index}]`);
+    const id = (constraint as Record<string, unknown>).id as string;
+    if (constraintIds.has(id))
+      fail(`constraints[${index}].id`, "unique non-empty id");
+    constraintIds.add(id);
+  });
+  const allIds = new Set<string>();
+  for (const collection of [
+    elements,
+    gates,
+    intent.targets as unknown[],
+    intent.constraints as unknown[],
+  ])
+    for (const item of collection) {
+      const id = (item as Record<string, unknown>).id as string;
+      if (allIds.has(id))
+        fail(
+          "intent",
+          "unique ids across elements, gates, targets, and constraints",
+        );
+      allIds.add(id);
+    }
   if (intent.footprint !== undefined)
     validateAabb(intent.footprint, "footprint");
   if (intent.heightRange !== undefined) {
@@ -255,6 +399,10 @@ export function validateDesignIntentV1(
     string(intent.terrainProfileId, "terrainProfileId");
   const pinned = array(intent.pinnedElementIds, "pinnedElementIds");
   pinned.forEach((id, index) => string(id, `pinnedElementIds[${index}]`));
+  if (elements.length > 0)
+    for (const [index, id] of pinned.entries())
+      if (!ids.has(id as string))
+        fail(`pinnedElementIds[${index}]`, "known element id");
 }
 
 export const createDesignIntentV1 = (
@@ -340,7 +488,9 @@ export const createCoasterFileV1 = (
   solvedSpans.forEach((span, index) =>
     validateSerializedSpan(span, `solvedSpans[${index}]`),
   );
-  const file: CoasterFileV1 = {
+  if (!/^[0-9a-f]{8}$/i.test(input.compiledDataChecksum ?? "00000000"))
+    fail("compiledDataChecksum", "eight hexadecimal characters");
+  const fileWithoutDesign = {
     schemaVersion: 1,
     name: input.name,
     intent,
@@ -349,14 +499,22 @@ export const createCoasterFileV1 = (
     generatorVersion: input.generatorVersion ?? intent.generatorVersion,
     profileVersion: input.profileVersion ?? "profile-v1",
     researchSnapshotIds: [...(input.researchSnapshotIds ?? [])],
-    compiledDataChecksum: input.compiledDataChecksum ?? "",
+    compiledDataChecksum: input.compiledDataChecksum ?? "00000000",
   };
-  string(file.generatorVersion, "generatorVersion");
-  string(file.profileVersion, "profileVersion");
-  file.researchSnapshotIds.forEach((id, index) =>
+  string(fileWithoutDesign.generatorVersion, "generatorVersion");
+  string(fileWithoutDesign.profileVersion, "profileVersion");
+  fileWithoutDesign.researchSnapshotIds.forEach((id, index) =>
     string(id, `researchSnapshotIds[${index}]`),
   );
-  string(file.compiledDataChecksum, "compiledDataChecksum");
+  const design: DesignCompatibilityV1 = {
+    elements: intent.elements,
+    gates: intent.gates,
+    constraints: intent.constraints,
+  };
+  const file = Object.defineProperty(fileWithoutDesign, "design", {
+    value: design,
+    enumerable: false,
+  }) as unknown as CoasterFileV1;
   return Object.freeze(file);
 };
 
@@ -370,7 +528,9 @@ const stableJson = (value: unknown): string => {
   return JSON.stringify(value);
 };
 export const canonicalJson = stableJson;
-const canonicalFileValue = (file: CoasterFileV1): CoasterFileV1 => ({
+const canonicalFileValue = (
+  file: CoasterFileV1,
+): Omit<CoasterFileV1, "design"> => ({
   schemaVersion: 1,
   name: file.name,
   intent: file.intent,
@@ -457,10 +617,20 @@ const decodeUtf8 = (bytes: Uint8Array): string => {
 };
 const validateLegacyDesign = (value: unknown): void => {
   const design = record(value, "design");
+  exactKeys(
+    design,
+    ["elements", "gates", "constraints", "solvedSpans"],
+    "design",
+  );
   if (!Array.isArray(design.elements)) fail("design.elements", "array");
   const elements = design.elements as unknown[];
   for (const [index, value] of elements.entries()) {
     const element = record(value, `design.elements[${index}]`);
+    exactKeys(
+      element,
+      ["id", "kind", "type", "parameters", "target", "pinned"],
+      `design.elements[${index}]`,
+    );
     string(element.id, `design.elements[${index}].id`);
     if (element.parameters !== undefined) {
       const parameters = record(
@@ -481,6 +651,11 @@ const validateLegacyDesign = (value: unknown): void => {
     if (!Array.isArray(design.gates)) fail("design.gates", "array");
     for (const [index, value] of (design.gates as unknown[]).entries()) {
       const gate = record(value, `design.gates[${index}]`);
+      exactKeys(
+        gate,
+        ["id", "at", "kind", "target", "pinned"],
+        `design.gates[${index}]`,
+      );
       string(gate.id, `design.gates[${index}].id`);
       finite(gate.at, `design.gates[${index}].at`);
       string(gate.kind, `design.gates[${index}].kind`);
@@ -498,6 +673,11 @@ const validateLegacyDesign = (value: unknown): void => {
     if (!Array.isArray(design.constraints)) fail("design.constraints", "array");
     for (const [index, value] of (design.constraints as unknown[]).entries()) {
       const constraint = record(value, `design.constraints[${index}]`);
+      exactKeys(
+        constraint,
+        ["id", "kind", "value", "hard", "target", "pinned"],
+        `design.constraints[${index}]`,
+      );
       string(constraint.id, `design.constraints[${index}].id`);
       string(constraint.kind, `design.constraints[${index}].kind`);
       finite(constraint.value, `design.constraints[${index}].value`);
@@ -509,6 +689,7 @@ const validateLegacyDesign = (value: unknown): void => {
     if (!Array.isArray(design.solvedSpans)) fail("design.solvedSpans", "array");
     for (const [index, value] of (design.solvedSpans as unknown[]).entries()) {
       const span = record(value, `design.solvedSpans[${index}]`);
+      exactKeys(span, ["id", "coefficients"], `design.solvedSpans[${index}]`);
       string(span.id, `design.solvedSpans[${index}].id`);
       const coefficients = span.coefficients;
       const validate = (item: unknown, path: string): void => {
@@ -545,16 +726,37 @@ function validateCoasterFile(value: unknown): asserts value is CoasterFileV1 {
     );
   string(file.name, "name");
   validateDesignIntentV1(file.intent);
-  array(file.solvedSpans, "solvedSpans").forEach((span, index) =>
+  const solvedSpans = array(file.solvedSpans, "solvedSpans");
+  solvedSpans.forEach((span, index) =>
     validateSerializedSpan(span, `solvedSpans[${index}]`),
   );
+  const spanIds = new Set<string>();
+  const intentKinds = new Map(
+    file.intent.elements.map((element) => [
+      element.id,
+      element.kind ?? element.type,
+    ]),
+  );
+  for (const [index, value] of solvedSpans.entries()) {
+    const span = value as Record<string, unknown>;
+    const id = span.id as string;
+    if (spanIds.has(id)) fail(`solvedSpans[${index}].id`, "unique id");
+    spanIds.add(id);
+    if (intentKinds.size > 0 && intentKinds.get(id) !== span.kind)
+      fail(`solvedSpans[${index}].kind`, "consistent with intent element");
+  }
+  if (intentKinds.size > 0 && solvedSpans.length !== intentKinds.size)
+    fail("solvedSpans", "one coefficient span per intent element");
+  if (file.seed !== file.intent.seed) fail("seed", "matching intent.seed");
   uint32(file.seed, "seed");
   string(file.generatorVersion, "generatorVersion");
   string(file.profileVersion, "profileVersion");
   array(file.researchSnapshotIds, "researchSnapshotIds").forEach((id, index) =>
     string(id, `researchSnapshotIds[${index}]`),
   );
-  string(file.compiledDataChecksum, "compiledDataChecksum");
+  const checksum = string(file.compiledDataChecksum, "compiledDataChecksum");
+  if (!/^[0-9a-f]{8}$/i.test(checksum))
+    fail("compiledDataChecksum", "eight hexadecimal characters");
 }
 
 export const deserializeCoasterFileV1 = (
@@ -564,6 +766,7 @@ export const deserializeCoasterFileV1 = (
     const text = typeof encoded === "string" ? encoded : decodeUtf8(encoded);
     const value = JSON.parse(text) as unknown;
     if (isRecord(value) && "design" in value && !("intent" in value)) {
+      exactKeys(value, ["schemaVersion", "name", "seed", "design"], "file");
       if (value.schemaVersion !== 1)
         throw new CoasterFileError(
           `Unsupported coaster schema version: ${String(value.schemaVersion)}`,
@@ -650,10 +853,21 @@ export const compileCoasterFile = (
   const solvedSpans = parsed.solvedSpans.map(reconstructSolvedSpan);
   if (solvedSpans.length === 0)
     throw new CoasterFileError("solvedSpans: expected at least one span");
+  const canonicalTrack = compileTrack(solvedSpans, { samples: 32 });
+  if (
+    canonicalTrack.checksum.toLowerCase() !==
+    parsed.compiledDataChecksum.toLowerCase()
+  )
+    throw new CoasterFileError(
+      `compiledDataChecksum: checksum mismatch (expected ${parsed.compiledDataChecksum}, reconstructed ${canonicalTrack.checksum})`,
+    );
   return {
     file: parsed,
     solvedSpans,
-    track: compileTrack(solvedSpans, options),
+    track: compileTrack(
+      solvedSpans,
+      options.samples === undefined ? { samples: 32 } : options,
+    ),
   };
 };
 export const loadCoasterFile = compileCoasterFile;
