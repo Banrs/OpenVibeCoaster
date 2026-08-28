@@ -261,169 +261,211 @@ export function buildTrackGeometries(
   const binormalF32 = new Float32Array(binormalsArr);
   const frame32 = { normal: normalF32, binormal: binormalF32 };
 
-  const leftRail = createTubeGeometry(
-    leftCenters,
-    frame32,
-    RAIL_RADIUS,
-    RAIL_SEGMENTS,
-    false,
-    baseColors,
-  );
-  const rightRail = createTubeGeometry(
-    rightCenters,
-    frame32,
-    RAIL_RADIUS,
-    RAIL_SEGMENTS,
-    false,
-    baseColors,
-  );
-  const spine = createTubeGeometry(
-    spineCenters,
-    frame32,
-    SPINE_RADIUS,
-    RAIL_SEGMENTS,
-    false,
-    baseColors,
-  );
+  let leftRail: THREE.BufferGeometry | null = null;
+  let rightRail: THREE.BufferGeometry | null = null;
+  let spine: THREE.BufferGeometry | null = null;
+  let tieGeometry: THREE.BufferGeometry | null = null;
+  try {
+    leftRail = createTubeGeometry(
+      leftCenters,
+      frame32,
+      RAIL_RADIUS,
+      RAIL_SEGMENTS,
+      false,
+      baseColors,
+    );
+    rightRail = createTubeGeometry(
+      rightCenters,
+      frame32,
+      RAIL_RADIUS,
+      RAIL_SEGMENTS,
+      false,
+      baseColors,
+    );
+    spine = createTubeGeometry(
+      spineCenters,
+      frame32,
+      SPINE_RADIUS,
+      RAIL_SEGMENTS,
+      false,
+      baseColors,
+    );
 
-  const tieCount = Math.floor(count / TIE_INTERVAL);
-  const tieGeometry = new THREE.BufferGeometry();
-  if (tieCount > 0) {
-    const tieVerts: number[] = [];
-    const tieNormals: number[] = [];
-    const tieColors: number[] = [];
-    const tieIndices: number[] = [];
-    let vertexBase = 0;
-    const tieWidth = GAUGE + 0.6;
-    const tieHeight = 0.08;
-    const tieDepth = 0.18;
-    for (let t = 0; t < tieCount; t++) {
-      const i = t * TIE_INTERVAL;
-      const px = positions[i * 3] ?? 0;
-      const py = positions[i * 3 + 1] ?? 0;
-      const pz = positions[i * 3 + 2] ?? 0;
-      const tx = data.tangents[i * 3] ?? 0;
-      const ty = data.tangents[i * 3 + 1] ?? 0;
-      const tz = data.tangents[i * 3 + 2] ?? 0;
-      const nx = normalF32[i * 3] ?? 0;
-      const ny = normalF32[i * 3 + 1] ?? 0;
-      const nz = normalF32[i * 3 + 2] ?? 0;
-      const bx = binormalF32[i * 3] ?? 0;
-      const by = binormalF32[i * 3 + 1] ?? 0;
-      const bz = binormalF32[i * 3 + 2] ?? 0;
+    const tieCount = Math.floor(count / TIE_INTERVAL);
+    tieGeometry = new THREE.BufferGeometry();
+    if (tieCount > 0) {
+      const tieVerts: number[] = [];
+      const tieNormals: number[] = [];
+      const tieColors: number[] = [];
+      const tieIndices: number[] = [];
+      let vertexBase = 0;
+      const tieWidth = GAUGE + 0.6;
+      const tieHeight = 0.08;
+      const tieDepth = 0.18;
+      for (let t = 0; t < tieCount; t++) {
+        const i = t * TIE_INTERVAL;
+        const px = positions[i * 3] ?? 0;
+        const py = positions[i * 3 + 1] ?? 0;
+        const pz = positions[i * 3 + 2] ?? 0;
+        const tx = data.tangents[i * 3] ?? 0;
+        const ty = data.tangents[i * 3 + 1] ?? 0;
+        const tz = data.tangents[i * 3 + 2] ?? 0;
+        const nx = normalF32[i * 3] ?? 0;
+        const ny = normalF32[i * 3 + 1] ?? 0;
+        const nz = normalF32[i * 3 + 2] ?? 0;
+        const bx = binormalF32[i * 3] ?? 0;
+        const by = binormalF32[i * 3 + 1] ?? 0;
+        const bz = binormalF32[i * 3 + 2] ?? 0;
 
-      const corners: [number, number, number][] = [];
-      for (const sx of [-1, 1]) {
-        for (const sy of [-1, 1]) {
-          for (const sz of [-1, 1]) {
-            const cx =
-              px +
-              bx * sx * (tieWidth / 2) +
-              tx * sy * (tieDepth / 2) +
-              nx * sz * (tieHeight / 2) +
-              nx * (SPINE_OFFSET / 2);
-            const cy =
-              py +
-              by * sx * (tieWidth / 2) +
-              ty * sy * (tieDepth / 2) +
-              ny * sz * (tieHeight / 2) +
-              ny * (SPINE_OFFSET / 2);
-            const cz =
-              pz +
-              bz * sx * (tieWidth / 2) +
-              tz * sy * (tieDepth / 2) +
-              nz * sz * (tieHeight / 2) +
-              nz * (SPINE_OFFSET / 2);
-            corners.push([cx, cy, cz]);
+        const corners: [number, number, number][] = [];
+        for (const sx of [-1, 1]) {
+          for (const sy of [-1, 1]) {
+            for (const sz of [-1, 1]) {
+              const cx =
+                px +
+                bx * sx * (tieWidth / 2) +
+                tx * sy * (tieDepth / 2) +
+                nx * sz * (tieHeight / 2) +
+                nx * (SPINE_OFFSET / 2);
+              const cy =
+                py +
+                by * sx * (tieWidth / 2) +
+                ty * sy * (tieDepth / 2) +
+                ny * sz * (tieHeight / 2) +
+                ny * (SPINE_OFFSET / 2);
+              const cz =
+                pz +
+                bz * sx * (tieWidth / 2) +
+                tz * sy * (tieDepth / 2) +
+                nz * sz * (tieHeight / 2) +
+                nz * (SPINE_OFFSET / 2);
+              corners.push([cx, cy, cz]);
+            }
           }
         }
-      }
-      const faces = [
-        [0, 1, 3, 2],
-        [4, 6, 7, 5],
-        [0, 4, 5, 1],
-        [2, 3, 7, 6],
-        [0, 2, 6, 4],
-        [1, 5, 7, 3],
-      ];
-      for (const face of faces) {
-        const idx0 = vertexBase;
-        const p0 = corners[face[0] as number] as [number, number, number];
-        const p1 = corners[face[1] as number] as [number, number, number];
-        const p2 = corners[face[2] as number] as [number, number, number];
-        const ux = p1[0] - p0[0];
-        const uy = p1[1] - p0[1];
-        const uz = p1[2] - p0[2];
-        const vx = p2[0] - p0[0];
-        const vy = p2[1] - p0[1];
-        const vz = p2[2] - p0[2];
-        let fnx = uy * vz - uz * vy;
-        let fny = uz * vx - ux * vz;
-        let fnz = ux * vy - uy * vx;
-        const fl = Math.hypot(fnx, fny, fnz) || 1;
-        fnx /= fl;
-        fny /= fl;
-        fnz /= fl;
-        for (const cornerIdx of face) {
-          const c = corners[cornerIdx as number] as [number, number, number];
-          tieVerts.push(c[0], c[1], c[2]);
-          tieNormals.push(fnx, fny, fnz);
-          const r = baseColors[i * 3] ?? NEUTRAL[0];
-          const g2 = baseColors[i * 3 + 1] ?? NEUTRAL[1];
-          const b2 = baseColors[i * 3 + 2] ?? NEUTRAL[2];
-          tieColors.push(r * 0.5, g2 * 0.45, b2 * 0.4);
+        const faces = [
+          [0, 1, 3, 2],
+          [4, 6, 7, 5],
+          [0, 4, 5, 1],
+          [2, 3, 7, 6],
+          [0, 2, 6, 4],
+          [1, 5, 7, 3],
+        ];
+        for (const face of faces) {
+          const idx0 = vertexBase;
+          const p0 = corners[face[0] as number] as [number, number, number];
+          const p1 = corners[face[1] as number] as [number, number, number];
+          const p2 = corners[face[2] as number] as [number, number, number];
+          const ux = p1[0] - p0[0];
+          const uy = p1[1] - p0[1];
+          const uz = p1[2] - p0[2];
+          const vx = p2[0] - p0[0];
+          const vy = p2[1] - p0[1];
+          const vz = p2[2] - p0[2];
+          let fnx = uy * vz - uz * vy;
+          let fny = uz * vx - ux * vz;
+          let fnz = ux * vy - uy * vx;
+          const fl = Math.hypot(fnx, fny, fnz) || 1;
+          fnx /= fl;
+          fny /= fl;
+          fnz /= fl;
+          for (const cornerIdx of face) {
+            const c = corners[cornerIdx as number] as [number, number, number];
+            tieVerts.push(c[0], c[1], c[2]);
+            tieNormals.push(fnx, fny, fnz);
+            const r = baseColors[i * 3] ?? NEUTRAL[0];
+            const g2 = baseColors[i * 3 + 1] ?? NEUTRAL[1];
+            const b2 = baseColors[i * 3 + 2] ?? NEUTRAL[2];
+            tieColors.push(r * 0.5, g2 * 0.45, b2 * 0.4);
+          }
+          tieIndices.push(idx0, idx0 + 1, idx0 + 2, idx0, idx0 + 2, idx0 + 3);
+          vertexBase += 4;
         }
-        tieIndices.push(idx0, idx0 + 1, idx0 + 2, idx0, idx0 + 2, idx0 + 3);
-        vertexBase += 4;
+      }
+      tieGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(new Float32Array(tieVerts), 3),
+      );
+      tieGeometry.setAttribute(
+        "normal",
+        new THREE.BufferAttribute(new Float32Array(tieNormals), 3),
+      );
+      tieGeometry.setAttribute(
+        "color",
+        new THREE.BufferAttribute(new Float32Array(tieColors), 3),
+      );
+      tieGeometry.setIndex(tieIndices);
+      tieGeometry.computeBoundingBox();
+      tieGeometry.computeBoundingSphere();
+    } else {
+      tieGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(new Float32Array(0), 3),
+      );
+    }
+
+    leftRail.name = "leftRail";
+    rightRail.name = "rightRail";
+    spine.name = "spine";
+    tieGeometry.name = "ties";
+    for (const g of [leftRail, rightRail, spine, tieGeometry])
+      g.userData.isTrack = true;
+
+    const end = performance.now();
+    const countIndices = (g: THREE.BufferGeometry): number =>
+      g.getIndex()?.count ?? 0;
+    const triangles =
+      countIndices(leftRail) / 3 +
+      countIndices(rightRail) / 3 +
+      countIndices(spine) / 3 +
+      countIndices(tieGeometry) / 3;
+
+    const result = {
+      leftRail,
+      rightRail,
+      spine,
+      ties: tieGeometry,
+      drawCalls: 4,
+      triangles,
+      buildTimeMs: end - start,
+      metricAvailable: available,
+      metric,
+    };
+    // prevent double dispose in catch
+    leftRail = null;
+    rightRail = null;
+    spine = null;
+    tieGeometry = null;
+    return result;
+  } catch (e) {
+    if (leftRail) {
+      try {
+        leftRail.dispose();
+      } catch {
+        // ignore
       }
     }
-    tieGeometry.setAttribute(
-      "position",
-      new THREE.BufferAttribute(new Float32Array(tieVerts), 3),
-    );
-    tieGeometry.setAttribute(
-      "normal",
-      new THREE.BufferAttribute(new Float32Array(tieNormals), 3),
-    );
-    tieGeometry.setAttribute(
-      "color",
-      new THREE.BufferAttribute(new Float32Array(tieColors), 3),
-    );
-    tieGeometry.setIndex(tieIndices);
-    tieGeometry.computeBoundingBox();
-    tieGeometry.computeBoundingSphere();
-  } else {
-    tieGeometry.setAttribute(
-      "position",
-      new THREE.BufferAttribute(new Float32Array(0), 3),
-    );
+    if (rightRail) {
+      try {
+        rightRail.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    if (spine) {
+      try {
+        spine.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    if (tieGeometry) {
+      try {
+        tieGeometry.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    throw e;
   }
-
-  leftRail.name = "leftRail";
-  rightRail.name = "rightRail";
-  spine.name = "spine";
-  tieGeometry.name = "ties";
-  for (const g of [leftRail, rightRail, spine, tieGeometry])
-    g.userData.isTrack = true;
-
-  const end = performance.now();
-  const countIndices = (g: THREE.BufferGeometry): number =>
-    g.getIndex()?.count ?? 0;
-  const triangles =
-    countIndices(leftRail) / 3 +
-    countIndices(rightRail) / 3 +
-    countIndices(spine) / 3 +
-    countIndices(tieGeometry) / 3;
-
-  return {
-    leftRail,
-    rightRail,
-    spine,
-    ties: tieGeometry,
-    drawCalls: 4,
-    triangles,
-    buildTimeMs: end - start,
-    metricAvailable: available,
-    metric,
-  };
 }

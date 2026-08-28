@@ -79,65 +79,161 @@ export interface TrainGroup {
 function createSingleCarMesh(): THREE.Group {
   const car = new THREE.Group();
   car.name = "car";
-  // Simple recognizable modern LSM car: low body, transparent? Keep restrained PBR.
-  const bodyGeom = new THREE.BoxGeometry(1.4, 0.55, 2.6);
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: 0x3a7bff,
-    roughness: 0.45,
-    metalness: 0.18,
-  });
-  const body = new THREE.Mesh(bodyGeom, bodyMat);
-  body.position.set(0, 0.45, 0);
-  body.castShadow = true;
-  body.receiveShadow = true;
-  car.add(body);
+  let bodyGeom: THREE.BufferGeometry | null = null;
+  let bodyMat: THREE.Material | null = null;
+  let roofGeom: THREE.BufferGeometry | null = null;
+  let roofMat: THREE.Material | null = null;
+  let wheelGeom: THREE.BufferGeometry | null = null;
+  let wheelMat: THREE.Material | null = null;
+  try {
+    bodyGeom = new THREE.BoxGeometry(1.4, 0.55, 2.6);
+    bodyMat = new THREE.MeshStandardMaterial({
+      color: 0x3a7bff,
+      roughness: 0.45,
+      metalness: 0.18,
+    });
+    const body = new THREE.Mesh(bodyGeom, bodyMat);
+    body.position.set(0, 0.45, 0);
+    body.castShadow = true;
+    body.receiveShadow = true;
+    car.add(body);
+    bodyGeom = null;
+    bodyMat = null;
 
-  const roofGeom = new THREE.BoxGeometry(1.35, 0.08, 2.4);
-  const roofMat = new THREE.MeshStandardMaterial({
-    color: 0x1e2d4a,
-    roughness: 0.7,
-  });
-  const roof = new THREE.Mesh(roofGeom, roofMat);
-  roof.position.set(0, 0.78, 0);
-  car.add(roof);
+    roofGeom = new THREE.BoxGeometry(1.35, 0.08, 2.4);
+    roofMat = new THREE.MeshStandardMaterial({
+      color: 0x1e2d4a,
+      roughness: 0.7,
+    });
+    const roof = new THREE.Mesh(roofGeom, roofMat);
+    roof.position.set(0, 0.78, 0);
+    car.add(roof);
+    roofGeom = null;
+    roofMat = null;
 
-  // Wheels/bogies visual hint
-  const wheelGeom = new THREE.CylinderGeometry(0.22, 0.22, 1.25, 10);
-  wheelGeom.rotateZ(Math.PI / 2);
-  const wheelMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1a1e,
-    roughness: 0.9,
-  });
-  const wheelF = new THREE.Mesh(wheelGeom, wheelMat);
-  wheelF.position.set(0, -0.02, 0.8);
-  const wheelR = wheelF.clone();
-  wheelR.position.set(0, -0.02, -0.8);
-  car.add(wheelF, wheelR);
+    wheelGeom = new THREE.CylinderGeometry(0.22, 0.22, 1.25, 10);
+    wheelGeom.rotateZ(Math.PI / 2);
+    wheelMat = new THREE.MeshStandardMaterial({
+      color: 0x1a1a1e,
+      roughness: 0.9,
+    });
+    const wheelF = new THREE.Mesh(wheelGeom, wheelMat);
+    wheelF.position.set(0, -0.02, 0.8);
+    const wheelR = wheelF.clone();
+    wheelR.position.set(0, -0.02, -0.8);
+    car.add(wheelF, wheelR);
+    wheelGeom = null;
+    wheelMat = null;
 
-  // Front nose for front car distinction is handled via overall group ordering
-  car.userData.isCar = true;
-  return car;
+    car.userData.isCar = true;
+    return car;
+  } catch (e) {
+    if (bodyGeom) {
+      try {
+        bodyGeom.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    if (bodyMat) {
+      try {
+        bodyMat.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    if (roofGeom) {
+      try {
+        roofGeom.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    if (roofMat) {
+      try {
+        roofMat.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    if (wheelGeom) {
+      try {
+        wheelGeom.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    if (wheelMat) {
+      try {
+        wheelMat.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    for (const child of car.children) {
+      const mesh = child as THREE.Mesh;
+      try {
+        mesh.geometry.dispose();
+      } catch {
+        // ignore
+      }
+      const mat = (mesh as unknown as { material?: THREE.Material }).material;
+      if (mat) {
+        try {
+          mat.dispose();
+        } catch {
+          // ignore
+        }
+        // cloned wheel shares geometry/material – dispose once already handled via clone? Clone shares, but dispose idempotent
+      }
+    }
+    throw e;
+  }
 }
 
 export function createTrainGroup(): TrainGroup {
   const group = new THREE.Group();
   group.name = "train";
   const cars: THREE.Group[] = [];
-  for (let i = 0; i < TRAIN_CAR_COUNT; i++) {
-    const car = createSingleCarMesh();
-    // Slight color variation front vs rear for recognizability
-    if (i === 0) {
-      const body = car.children[0] as THREE.Mesh;
-      (body.material as THREE.MeshStandardMaterial).color.set(0x4f8cff);
-    } else if (i === TRAIN_CAR_COUNT - 1) {
-      const body = car.children[0] as THREE.Mesh;
-      (body.material as THREE.MeshStandardMaterial).color.set(0x2f6feb);
+  try {
+    for (let i = 0; i < TRAIN_CAR_COUNT; i++) {
+      const car = createSingleCarMesh();
+      // Slight color variation front vs rear for recognizability
+      if (i === 0) {
+        const body = car.children[0] as THREE.Mesh;
+        (body.material as THREE.MeshStandardMaterial).color.set(0x4f8cff);
+      } else if (i === TRAIN_CAR_COUNT - 1) {
+        const body = car.children[0] as THREE.Mesh;
+        (body.material as THREE.MeshStandardMaterial).color.set(0x2f6feb);
+      }
+      cars.push(car);
+      group.add(car);
     }
-    cars.push(car);
-    group.add(car);
+    group.userData.isTrain = true;
+    return { group, cars };
+  } catch (e) {
+    for (const car of cars) {
+      for (const child of car.children) {
+        const mesh = child as THREE.Mesh;
+        try {
+          mesh.geometry.dispose();
+        } catch {
+          // ignore
+        }
+        const mat = (mesh as unknown as { material?: THREE.Material }).material;
+        if (mat) {
+          try {
+            mat.dispose();
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    // also dispose any partial car that threw after adding some children but not yet pushed
+    // createSingleCarMesh already cleaned its partial, so nothing extra
+    throw e;
   }
-  group.userData.isTrain = true;
-  return { group, cars };
 }
 
 export function updateTrainTransforms(

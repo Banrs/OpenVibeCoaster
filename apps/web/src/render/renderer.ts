@@ -33,52 +33,146 @@ function supportsWebGL(canvas: HTMLCanvasElement): boolean {
 
 function buildScene(terrainSeed: string): THREE.Scene {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0a0f18);
-  scene.fog = new THREE.Fog(0x0a0f18, 120, 420);
+  let terrainMesh: THREE.Mesh | null = null;
+  let terrainGrid: THREE.GridHelper | null = null;
+  let skyGeom: THREE.BufferGeometry | null = null;
+  let skyMat: THREE.Material | null = null;
+  let skyMesh: THREE.Mesh | null = null;
+  try {
+    scene.background = new THREE.Color(0x0a0f18);
+    scene.fog = new THREE.Fog(0x0a0f18, 120, 420);
 
-  const ambient = new THREE.HemisphereLight(0xcfe0ff, 0x1e2a22, 0.55);
-  ambient.name = "hemisphere";
-  scene.add(ambient);
+    const ambient = new THREE.HemisphereLight(0xcfe0ff, 0x1e2a22, 0.55);
+    ambient.name = "hemisphere";
+    scene.add(ambient);
 
-  const sun = new THREE.DirectionalLight(0xfff6e8, 1.35);
-  sun.position.set(80, 120, 45);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 420;
-  sun.shadow.camera.left = -160;
-  sun.shadow.camera.right = 160;
-  sun.shadow.camera.top = 160;
-  sun.shadow.camera.bottom = -160;
-  sun.shadow.bias = -0.0006;
-  sun.shadow.radius = 4;
-  sun.name = "sun";
-  scene.add(sun);
+    const sun = new THREE.DirectionalLight(0xfff6e8, 1.35);
+    sun.position.set(80, 120, 45);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 420;
+    sun.shadow.camera.left = -160;
+    sun.shadow.camera.right = 160;
+    sun.shadow.camera.top = 160;
+    sun.shadow.camera.bottom = -160;
+    sun.shadow.bias = -0.0006;
+    sun.shadow.radius = 4;
+    sun.name = "sun";
+    scene.add(sun);
 
-  const fill = new THREE.DirectionalLight(0x9fb7ff, 0.28);
-  fill.position.set(-60, 35, -40);
-  fill.name = "fill";
-  scene.add(fill);
+    const fill = new THREE.DirectionalLight(0x9fb7ff, 0.28);
+    fill.position.set(-60, 35, -40);
+    fill.name = "fill";
+    scene.add(fill);
 
-  const env = createDeterministicHeightfield(terrainSeed);
-  const { mesh, grid } = createTerrainGroup(env);
-  scene.add(mesh);
-  scene.add(grid);
+    const env = createDeterministicHeightfield(terrainSeed);
+    const terrain = createTerrainGroup(env);
+    terrainMesh = terrain.mesh;
+    terrainGrid = terrain.grid;
+    scene.add(terrainMesh);
+    scene.add(terrainGrid);
 
-  const skyGeom = new THREE.SphereGeometry(800, 24, 16);
-  const skyMat = new THREE.MeshBasicMaterial({
-    color: 0x161e2f,
-    side: THREE.BackSide,
-    fog: false,
-  });
-  const sky = new THREE.Mesh(skyGeom, skyMat);
-  sky.name = "sky";
-  sky.userData.isSky = true;
-  scene.add(sky);
+    skyGeom = new THREE.SphereGeometry(800, 24, 16);
+    skyMat = new THREE.MeshBasicMaterial({
+      color: 0x161e2f,
+      side: THREE.BackSide,
+      fog: false,
+    });
+    skyMesh = new THREE.Mesh(skyGeom, skyMat);
+    skyMesh.name = "sky";
+    skyMesh.userData.isSky = true;
+    scene.add(skyMesh);
 
-  scene.userData.terrainEnv = env;
+    scene.userData.terrainEnv = env;
 
-  return scene;
+    // success – ownership transferred to scene, prevent double dispose in catch
+    terrainMesh = null;
+    terrainGrid = null;
+    skyGeom = null;
+    skyMat = null;
+    skyMesh = null;
+
+    return scene;
+  } catch (e) {
+    // dispose standalone sky resources not yet owned by a mesh in scene
+    if (skyMesh) {
+      try {
+        skyMesh.geometry.dispose();
+      } catch {
+        // ignore
+      }
+      const m = (skyMesh as unknown as { material?: THREE.Material }).material;
+      if (m) {
+        try {
+          m.dispose();
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      if (skyGeom) {
+        try {
+          skyGeom.dispose();
+        } catch {
+          // ignore
+        }
+      }
+      if (skyMat) {
+        try {
+          skyMat.dispose();
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (terrainMesh && terrainMesh.parent === null) {
+      try {
+        terrainMesh.geometry.dispose();
+      } catch {
+        // ignore
+      }
+      const mat = (terrainMesh as unknown as { material?: THREE.Material })
+        .material;
+      if (mat) {
+        try {
+          mat.dispose();
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (terrainGrid && terrainGrid.parent === null) {
+      const g = terrainGrid as unknown as {
+        geometry?: THREE.BufferGeometry;
+        material?: THREE.Material | THREE.Material[];
+      };
+      if (g.geometry) {
+        try {
+          g.geometry.dispose();
+        } catch {
+          // ignore
+        }
+      }
+      const m = g.material;
+      if (m) {
+        const mats = Array.isArray(m) ? m : [m];
+        for (const mm of mats) {
+          try {
+            mm.dispose();
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    try {
+      disposeScene(scene);
+    } catch {
+      // ignore
+    }
+    throw e;
+  }
 }
 
 export function createRendererHandle(

@@ -105,8 +105,12 @@ export function createRendererController(
       validateTimeline(options.timeline);
     }
     clearTrack();
-    // transactional construction – allocate locally first, commit only on full success
+    // transactional construction – allocate locally first, commit only after every throwing operation (including updatePlayback) succeeds
     let built: ReturnType<typeof buildTrackGeometries> | null = null;
+    let leftGeom: THREE.BufferGeometry | null = null;
+    let rightGeom: THREE.BufferGeometry | null = null;
+    let spineGeom: THREE.BufferGeometry | null = null;
+    let tiesGeom: THREE.BufferGeometry | null = null;
     let leftMat: THREE.Material | null = null;
     let rightMat: THREE.Material | null = null;
     let spineMat: THREE.Material | null = null;
@@ -114,22 +118,34 @@ export function createRendererController(
     let trackMeshesLocal: THREE.Mesh[] = [];
     let supportMeshesLocal: THREE.Mesh[] = [];
     let trainGroupLocal: TrainGroup | null = null;
+    let newMetricAvailable: boolean | null = null;
+    const newMetric: MetricId = options.metric ?? "height";
+    const newMetricData = options.metricData;
+    const newSelected = options.selectedElementIndex;
+    const newSeams = options.seamIndices;
+    // compute playback targets but do not commit until success
+    let newPlaybackDistance = playbackDistance;
+    let newPlaybackSpeed = playbackSpeed;
+    if (options.timeline && options.timeline.distances.length > 0) {
+      newPlaybackDistance = options.timeline.distances[0] ?? 0;
+      newPlaybackSpeed = options.timeline.speeds[0] ?? 0;
+    }
     try {
-      trackData = data;
-      currentMetric = options.metric ?? "height";
-      currentMetricData = options.metricData;
-      selectedElementIndex = options.selectedElementIndex;
-      seamIndices = options.seamIndices;
-
       built = buildTrackGeometries(data, {
-        metric: currentMetric,
-        ...(currentMetricData !== undefined
-          ? { metricData: currentMetricData }
+        metric: newMetric,
+        ...(newMetricData !== undefined ? { metricData: newMetricData } : {}),
+        ...(newSelected !== undefined
+          ? { selectedElementIndex: newSelected }
           : {}),
-        ...(selectedElementIndex !== undefined ? { selectedElementIndex } : {}),
-        ...(seamIndices !== undefined ? { seamIndices } : {}),
+        ...(newSeams !== undefined ? { seamIndices: newSeams } : {}),
       });
-      lastMetricAvailable = built.metricAvailable;
+      newMetricAvailable = built.metricAvailable;
+      // extract geometries for exact-once ownership tracking
+      leftGeom = built.leftRail;
+      rightGeom = built.rightRail;
+      spineGeom = built.spine;
+      tiesGeom = built.ties;
+      built = null;
 
       const env = handle.scene.userData.terrainEnv as unknown as
         { raycast?: unknown } | undefined;
@@ -168,13 +184,33 @@ export function createRendererController(
         return mesh;
       };
 
-      const left = mk(built.leftRail, leftMat, "leftRail");
-      const right = mk(built.rightRail, rightMat, "rightRail");
-      const spine = mk(built.spine, spineMat, "spine");
-      const ties = mk(built.ties, tiesMat, "ties");
+      // create and add track meshes one-by-one, transferring ownership exactly once
+      if (!leftGeom || !rightGeom || !spineGeom || !tiesGeom) {
+        throw new Error("missing track geometry");
+      }
+      const left = mk(leftGeom, leftMat, "leftRail");
+      leftGeom = null;
+      leftMat = null;
+      trackMeshesLocal.push(left);
+      handle.scene.add(left);
 
-      trackMeshesLocal = [left, right, spine, ties];
-      for (const m of trackMeshesLocal) handle.scene.add(m);
+      const right = mk(rightGeom, rightMat, "rightRail");
+      rightGeom = null;
+      rightMat = null;
+      trackMeshesLocal.push(right);
+      handle.scene.add(right);
+
+      const spine = mk(spineGeom, spineMat, "spine");
+      spineGeom = null;
+      spineMat = null;
+      trackMeshesLocal.push(spine);
+      handle.scene.add(spine);
+
+      const ties = mk(tiesGeom, tiesMat, "ties");
+      tiesGeom = null;
+      tiesMat = null;
+      trackMeshesLocal.push(ties);
+      handle.scene.add(ties);
 
       if (env && typeof (env as { raycast?: unknown }).raycast === "function") {
         const supports = buildSupportColumns(
@@ -189,31 +225,39 @@ export function createRendererController(
       trainGroupLocal = createTrainGroup();
       handle.scene.add(trainGroupLocal.group);
 
-      // commit ownership
+      // post-build playback must not have nulled local ownership yet – apply via locals
+      if (trainGroupLocal) {
+        const transforms = getCarTransforms(data, newPlaybackDistance);
+        updateTrainTransforms(trainGroupLocal, transforms);
+      }
+
+      // commit only after every throwing operation succeeded
+      trackData = data;
+      currentMetric = newMetric;
+      currentMetricData = newMetricData;
+      selectedElementIndex = newSelected;
+      seamIndices = newSeams;
+      lastMetricAvailable = newMetricAvailable;
       trackMeshes = trackMeshesLocal;
       supportMeshes = supportMeshesLocal;
       trainGroup = trainGroupLocal;
+      playbackDistance = newPlaybackDistance;
+      playbackSpeed = newPlaybackSpeed;
       // prevent double-dispose in catch
-      built = null;
-      leftMat = null;
-      rightMat = null;
-      spineMat = null;
-      tiesMat = null;
       trackMeshesLocal = [];
       supportMeshesLocal = [];
       trainGroupLocal = null;
-
-      // timeline owns documented initialization – apply first distance/speed directly
-      if (options.timeline && options.timeline.distances.length > 0) {
-        const d0 = options.timeline.distances[0] ?? 0;
-        const s0 = options.timeline.speeds[0] ?? 0;
-        playbackDistance = d0;
-        playbackSpeed = s0;
-      }
-      // initial placement
-      updatePlayback(playbackDistance, playbackSpeed);
     } catch (e) {
-      // dispose partially allocated geometry/material/support/train before rethrowing
+      // dispose remaining geometries not yet transferred to meshes (exact once)
+      for (const g of [leftGeom, rightGeom, spineGeom, tiesGeom]) {
+        if (g) {
+          try {
+            g.dispose();
+          } catch {
+            // ignore
+          }
+        }
+      }
       if (built) {
         try {
           built.leftRail.dispose();
