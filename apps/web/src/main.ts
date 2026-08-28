@@ -1,0 +1,503 @@
+import "./styles.css";
+import {
+  clampPlaybackSpeed,
+  createInitialState,
+  getActionEnabled,
+  getCanvasAriaLabel,
+  getPanelVisibility,
+  getReducedMotionState,
+  getStatusText,
+  selectCamera,
+  selectMetric,
+  selectSeat,
+  type AppState,
+  type CameraId,
+  type MetricId,
+} from "./viewState.js";
+
+function supportsWebGL(): boolean {
+  try {
+    const canvas = document.createElement("canvas");
+    return Boolean(
+      canvas.getContext("webgl") ?? canvas.getContext("experimental-webgl"),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function el<T extends HTMLElement>(id: string): T {
+  const found = document.getElementById(id);
+  if (!found) {
+    throw new Error(`Missing element #${id}`);
+  }
+  return found as T;
+}
+
+const state: AppState = createInitialState();
+
+let hasWebGL = supportsWebGL();
+const prefersReducedMotion = window.matchMedia(
+  "(prefers-reduced-motion: reduce)",
+).matches;
+state.reducedMotion = getReducedMotionState(prefersReducedMotion, null);
+
+// Elements
+const body = document.body;
+const topBarStatus = el<HTMLDivElement>("status");
+const statusText = topBarStatus.querySelector(".status-text") as HTMLElement;
+const viewportCanvas = el<HTMLCanvasElement>("viewport-canvas");
+const viewportOverlay = el<HTMLDivElement>("viewport-overlay");
+const overlayStatus = viewportOverlay.querySelector(
+  ".overlay-status",
+) as HTMLElement;
+const webglFallback = el<HTMLDivElement>("webgl-fallback");
+const generateBtn = el<HTMLButtonElement>("generate-btn");
+const saveBtn = el<HTMLButtonElement>("save-btn");
+const loadBtn = el<HTMLButtonElement>("load-btn");
+const loadFile = el<HTMLInputElement>("load-file");
+const exportBtn = el<HTMLButtonElement>("export-btn");
+const muteBtn = el<HTMLButtonElement>("mute-btn");
+const seedInput = el<HTMLInputElement>("seed-input");
+const modeInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="app-mode"]'),
+);
+const cameraInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="camera"]'),
+);
+const metricSelect = el<HTMLSelectElement>("metric-select");
+const seatSelect = el<HTMLSelectElement>("seat-select");
+const playbackSelect = el<HTMLSelectElement>("playback-speed");
+const scrubber = el<HTMLInputElement>("scrubber");
+const scrubberValue = document.querySelector(".scrubber-value") as HTMLElement;
+const pauseBtn = el<HTMLButtonElement>("pause-btn");
+const resetBtn = el<HTMLButtonElement>("reset-btn");
+const seamInspectBtn = el<HTMLButtonElement>("seam-inspect-btn");
+const localRegenerateBtn = el<HTMLButtonElement>("local-regenerate-btn");
+const pinBtn = el<HTMLButtonElement>("pin-btn");
+const inspectInputs = [
+  el<HTMLInputElement>("inspect-length"),
+  el<HTMLInputElement>("inspect-radius"),
+  el<HTMLInputElement>("inspect-height"),
+  el<HTMLInputElement>("inspect-roll"),
+];
+const telemetryEmpty = el<HTMLDivElement>("telemetry-empty");
+const telemetryGraphWrap = document.querySelector(
+  ".telemetry-graph-wrap",
+) as HTMLElement;
+const telemetryGraph = el<HTMLCanvasElement>("telemetry-graph");
+const webglRetry = el<HTMLButtonElement>("webgl-retry");
+
+const generationRail = el<HTMLElement>("generation-rail");
+const inspector = el<HTMLElement>("element-inspector");
+const telemetry = el<HTMLElement>("telemetry");
+const mobileTabs = Array.from(
+  document.querySelectorAll<HTMLButtonElement>(".mobile-tab"),
+);
+
+function syncBodyClasses(): void {
+  body.classList.toggle("mode-ride", state.appMode === "ride");
+  body.classList.toggle("mode-edit", state.appMode === "edit");
+  body.classList.toggle("reduced-motion", state.reducedMotion);
+  body.dataset.status = state.generationStatus;
+}
+
+function render(): void {
+  syncBodyClasses();
+
+  // Status text and aria
+  const text = getStatusText(state.generationStatus);
+  statusText.textContent = text;
+  topBarStatus.dataset.state = state.generationStatus;
+  overlayStatus.textContent =
+    state.generationStatus === "pending"
+      ? "Generation pending"
+      : state.generationStatus === "generating"
+        ? "Generating…"
+        : state.generationStatus === "ready"
+          ? "Ready — viewport idle"
+          : "Generation failed";
+  viewportCanvas.setAttribute(
+    "aria-label",
+    getCanvasAriaLabel(state.generationStatus),
+  );
+
+  // Data-dependent enablement
+  const canSave = getActionEnabled("save", state.generationStatus);
+  const canExport = getActionEnabled("export", state.generationStatus);
+  const canScrub = getActionEnabled("scrub", state.generationStatus);
+  const canPlayback = getActionEnabled("playback", state.generationStatus);
+  const canSeam = getActionEnabled("seamInspect", state.generationStatus);
+  const canLocal = getActionEnabled("localRegenerate", state.generationStatus);
+  const canGenerate = getActionEnabled("generate", state.generationStatus);
+
+  saveBtn.disabled = !canSave;
+  exportBtn.disabled = !canExport;
+  scrubber.disabled = !canScrub;
+  pauseBtn.disabled = !canPlayback;
+  resetBtn.disabled = !canPlayback;
+  playbackSelect.disabled = !canPlayback;
+  seamInspectBtn.disabled = !canSeam;
+  localRegenerateBtn.disabled = !canLocal;
+  metricSelect.disabled = !canPlayback;
+  seatSelect.disabled = !canPlayback;
+  generateBtn.disabled = !canGenerate;
+  generateBtn.textContent =
+    state.generationStatus === "generating" ? "Generating…" : "Insta Generate";
+
+  for (const input of inspectInputs) {
+    input.disabled = !canLocal;
+  }
+
+  // Panel visibility via class — getPanelVisibility used for logic verification
+  const vis = getPanelVisibility(state);
+  generationRail.hidden = !vis.leftRailVisible;
+  inspector.hidden = !vis.rightInspectorVisible;
+  // telemetry visibility handled via CSS mode-ride, but keep aria
+  telemetry.hidden = !vis.telemetryVisible && state.appMode === "ride";
+  // On desktop, keep panels visible via CSS; hidden attribute for a11y when ride
+  if (state.appMode === "ride") {
+    generationRail.setAttribute("aria-hidden", "true");
+    inspector.setAttribute("aria-hidden", "true");
+  } else {
+    generationRail.removeAttribute("aria-hidden");
+    inspector.removeAttribute("aria-hidden");
+  }
+
+  // Playback state
+  pauseBtn.setAttribute("aria-pressed", String(!state.isPaused));
+  pauseBtn.textContent = state.isPaused ? "Play" : "Pause";
+  muteBtn.setAttribute("aria-pressed", String(state.isMuted));
+  muteBtn.textContent = state.isMuted ? "Unmute" : "Mute";
+  pinBtn.setAttribute("aria-pressed", String(pinBtn.dataset.pinned === "true"));
+
+  // Sync controls to state
+  for (const input of modeInputs) {
+    input.checked = input.value === state.appMode;
+  }
+  for (const input of cameraInputs) {
+    input.checked = input.value === state.camera;
+  }
+  metricSelect.value = state.metric;
+  seatSelect.value = String(state.seatIndex);
+  playbackSelect.value = String(state.playbackSpeed);
+  scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
+
+  // Telemetry graph placeholder
+  const hasData = state.generationStatus === "ready";
+  telemetryGraphWrap.classList.toggle("has-data", hasData);
+  telemetryEmpty.hidden = hasData;
+  telemetryGraph.setAttribute(
+    "aria-label",
+    hasData
+      ? `Telemetry graph — ${state.metric} at seat ${state.seatIndex + 1}`
+      : "Telemetry graph — no data, generate to populate",
+  );
+
+  // WebGL fallback
+  if (!hasWebGL) {
+    webglFallback.hidden = false;
+    viewportCanvas.hidden = true;
+  } else {
+    webglFallback.hidden = true;
+    viewportCanvas.hidden = false;
+  }
+
+  // Seed
+  if (document.activeElement !== seedInput) {
+    seedInput.value = state.seed;
+  }
+}
+
+function handleGenerate(): void {
+  if (!getActionEnabled("generate", state.generationStatus)) {
+    return;
+  }
+  state.generationStatus = "generating";
+  render();
+  // Simulate worker round-trip without fabricating numbers: end in ready
+  // so controls become enabled for inspection, but graph stays empty.
+  window.setTimeout(() => {
+    state.generationStatus = "ready";
+    render();
+  }, 900);
+}
+
+function handleSave(): void {
+  if (!getActionEnabled("save", state.generationStatus)) {
+    return;
+  }
+  const payload = JSON.stringify(
+    {
+      seed: state.seed,
+      status: state.generationStatus,
+      camera: state.camera,
+      metric: state.metric,
+      seatIndex: state.seatIndex,
+      playbackSpeed: state.playbackSpeed,
+    },
+    null,
+    2,
+  );
+  const blob = new Blob([payload], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `vibecoaster-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function handleLoadFile(file: File | undefined): void {
+  if (!file) {
+    return;
+  }
+  const reader = new FileReader();
+  reader.addEventListener("load", () => {
+    try {
+      const data = JSON.parse(String(reader.result)) as Partial<AppState>;
+      if (typeof data.seed === "string") {
+        state.seed = data.seed.slice(0, 64);
+      }
+      if (
+        data.camera &&
+        ["front", "middle", "rear", "chase", "orbit"].includes(data.camera)
+      ) {
+        state.camera = data.camera as CameraId;
+      }
+      state.generationStatus = "ready";
+      render();
+    } catch {
+      state.generationStatus = "error";
+      render();
+    }
+  });
+  reader.readAsText(file);
+}
+
+// Event wiring
+generateBtn.addEventListener("click", handleGenerate);
+saveBtn.addEventListener("click", handleSave);
+exportBtn.addEventListener("click", handleSave);
+loadBtn.addEventListener("click", () => {
+  loadFile.click();
+});
+loadFile.addEventListener("change", () => {
+  handleLoadFile(loadFile.files?.[0]);
+  loadFile.value = "";
+});
+muteBtn.addEventListener("click", () => {
+  state.isMuted = !state.isMuted;
+  render();
+});
+seedInput.addEventListener("input", () => {
+  state.seed = seedInput.value.slice(0, 64);
+});
+seedInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    handleGenerate();
+  }
+});
+
+for (const input of modeInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) {
+      state.appMode = input.value as AppState["appMode"];
+      render();
+    }
+  });
+}
+
+for (const input of cameraInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) {
+      state.camera = selectCamera(input.value as CameraId, state.camera);
+      render();
+    }
+  });
+}
+
+metricSelect.addEventListener("change", () => {
+  state.metric = selectMetric(metricSelect.value as MetricId, state.metric);
+  render();
+});
+
+seatSelect.addEventListener("change", () => {
+  const next = Number.parseInt(seatSelect.value, 10);
+  state.seatIndex = selectSeat(next, state.seatCount, state.seatIndex);
+  render();
+});
+
+playbackSelect.addEventListener("change", () => {
+  const next = Number.parseFloat(playbackSelect.value);
+  state.playbackSpeed = clampPlaybackSpeed(next);
+  render();
+});
+
+scrubber.addEventListener("input", () => {
+  scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
+});
+
+pauseBtn.addEventListener("click", () => {
+  if (!getActionEnabled("playback", state.generationStatus)) {
+    return;
+  }
+  state.isPaused = !state.isPaused;
+  render();
+});
+
+resetBtn.addEventListener("click", () => {
+  if (!getActionEnabled("playback", state.generationStatus)) {
+    return;
+  }
+  scrubber.value = "0";
+  state.isPaused = true;
+  render();
+});
+
+seamInspectBtn.addEventListener("click", () => {
+  if (!getActionEnabled("seamInspect", state.generationStatus)) {
+    return;
+  }
+  seamInspectBtn.setAttribute("aria-pressed", "true");
+  window.setTimeout(() => {
+    seamInspectBtn.setAttribute("aria-pressed", "false");
+  }, 1200);
+});
+
+localRegenerateBtn.addEventListener("click", () => {
+  if (!getActionEnabled("localRegenerate", state.generationStatus)) {
+    return;
+  }
+  state.generationStatus = "generating";
+  render();
+  window.setTimeout(() => {
+    state.generationStatus = "ready";
+    render();
+  }, 700);
+});
+
+pinBtn.addEventListener("click", () => {
+  const pinned = pinBtn.dataset.pinned === "true";
+  pinBtn.dataset.pinned = String(!pinned);
+  pinBtn.setAttribute("aria-pressed", String(!pinned));
+  pinBtn.textContent = pinned ? "Pin" : "Pinned";
+  inspector.classList.toggle("is-pinned", !pinned);
+});
+
+webglRetry.addEventListener("click", () => {
+  hasWebGL = supportsWebGL();
+  if (hasWebGL) {
+    render();
+  } else {
+    webglFallback.querySelector("p")!.textContent =
+      "Still unavailable — try restarting the browser with hardware acceleration enabled.";
+  }
+});
+
+// Mobile drawers
+for (const tab of mobileTabs) {
+  tab.addEventListener("click", () => {
+    const target = tab.dataset.drawer;
+    const isOpen = tab.getAttribute("aria-expanded") === "true";
+    // close all
+    for (const other of mobileTabs) {
+      other.setAttribute("aria-expanded", "false");
+    }
+    generationRail.classList.remove("is-open");
+    inspector.classList.remove("is-open");
+    telemetry.classList.remove("is-open");
+
+    if (!isOpen) {
+      tab.setAttribute("aria-expanded", "true");
+      if (target === "left") {
+        generationRail.classList.add("is-open");
+      } else if (target === "right") {
+        inspector.classList.add("is-open");
+      } else if (target === "telemetry") {
+        telemetry.classList.add("is-open");
+      }
+    }
+  });
+}
+
+// Keyboard shortcuts: M for mute, Space for pause when not typing
+document.addEventListener("keydown", (event) => {
+  const target = event.target as HTMLElement | null;
+  const isTyping =
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLSelectElement ||
+    target instanceof HTMLTextAreaElement;
+  if (isTyping) {
+    return;
+  }
+  if (event.key === "m" || event.key === "M") {
+    state.isMuted = !state.isMuted;
+    render();
+  } else if (event.key === " ") {
+    event.preventDefault();
+    if (getActionEnabled("playback", state.generationStatus)) {
+      state.isPaused = !state.isPaused;
+      render();
+    }
+  } else if (event.key === "r" || event.key === "R") {
+    const nextMode: AppState["appMode"] =
+      state.appMode === "ride" ? "edit" : "ride";
+    state.appMode = nextMode;
+    render();
+  }
+});
+
+// Resize canvas to device pixels without drawing fake coaster
+function resizeCanvases(): void {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  for (const canvas of [viewportCanvas, telemetryGraph]) {
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const ctx = canvas.getContext("2d");
+    if (ctx && canvas === telemetryGraph) {
+      ctx.clearRect(0, 0, w, h);
+      // Keep telemetry graph empty — no fake data; subtle grid only when ready
+      if (state.generationStatus === "ready") {
+        ctx.strokeStyle = "rgba(255,255,255,0.06)";
+        ctx.lineWidth = 1;
+        for (let i = 1; i < 4; i += 1) {
+          const y = (h / 4) * i;
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(w, y);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+}
+
+window.addEventListener("resize", resizeCanvases);
+
+// Change reduced motion live if system preference changes
+window
+  .matchMedia("(prefers-reduced-motion: reduce)")
+  .addEventListener("change", (event) => {
+    // Only follow system if user hasn't toggled manually via future control;
+    // for now, follow system directly.
+    state.reducedMotion = getReducedMotionState(event.matches, null);
+    render();
+  });
+
+// Initial paint
+render();
+resizeCanvases();
+
+// Expose for manual inspection in devtools (not used in tests)
+declare global {
+  interface Window {
+    __vibecoasterState?: AppState;
+  }
+}
+window.__vibecoasterState = state;

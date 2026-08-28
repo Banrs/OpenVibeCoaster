@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>OpenVibeCoaster — Viewport</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <a class="skip-link" href="#viewport-host">Skip to viewport</a>
+
+    <header id="top-bar" role="banner">
+      <div class="top-bar-left">
+        <span class="brand" aria-label="OpenVibeCoaster">OpenVibeCoaster</span>
+        <fieldset class="mode-toggle" aria-label="Mode">
+          <legend class="visually-hidden">Mode</legend>
+          <label class="mode-option">
+            <input type="radio" name="app-mode" value="edit" checked />
+            <span>Edit</span>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="app-mode" value="ride" />
+            <span>Ride</span>
+          </label>
+        </fieldset>
+      </div>
+
+      <div class="top-bar-center">
+        <label class="seed-field" for="seed-input">
+          <span>Seed</span>
+          <input
+            id="seed-input"
+            type="text"
+            placeholder="e.g. 1337"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <button id="generate-btn" type="button" class="btn btn-primary">
+          Insta Generate
+        </button>
+      </div>
+
+      <div class="top-bar-right">
+        <button id="save-btn" type="button" class="btn btn-ghost" disabled>
+          Save
+        </button>
+        <button id="load-btn" type="button" class="btn btn-ghost">Load</button>
+        <input id="load-file" type="file" accept=".json" hidden />
+        <button id="export-btn" type="button" class="btn btn-ghost" disabled>
+          Export
+        </button>
+        <div
+          id="status"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          class="status"
+        >
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="status-text"
+            >Generation pending — configure intent and generate</span
+          >
+        </div>
+        <button
+          id="mute-btn"
+          type="button"
+          class="btn btn-ghost"
+          aria-pressed="false"
+          aria-label="Mute audio"
+        >
+          Mute
+        </button>
+      </div>
+    </header>
+
+    <!-- Mobile drawer toggles -->
+    <div class="mobile-tabs" role="tablist" aria-label="Panels">
+      <button
+        type="button"
+        class="btn btn-ghost mobile-tab"
+        data-drawer="left"
+        aria-expanded="false"
+        aria-controls="generation-rail"
+      >
+        Generation
+      </button>
+      <button
+        type="button"
+        class="btn btn-ghost mobile-tab"
+        data-drawer="right"
+        aria-expanded="false"
+        aria-controls="element-inspector"
+      >
+        Inspector
+      </button>
+      <button
+        type="button"
+        class="btn btn-ghost mobile-tab"
+        data-drawer="telemetry"
+        aria-expanded="false"
+        aria-controls="telemetry"
+      >
+        Telemetry
+      </button>
+    </div>
+
+    <div id="app-layout">
+      <aside
+        id="generation-rail"
+        class="panel panel-left"
+        aria-label="Generation"
+      >
+        <h2 class="panel-title">Generation</h2>
+
+        <fieldset class="control-group">
+          <legend>Required elements</legend>
+          <label class="check"
+            ><input type="checkbox" checked disabled /> Station</label
+          >
+          <label class="check"
+            ><input type="checkbox" checked disabled /> Lift</label
+          >
+          <label class="check"><input type="checkbox" /> Drop</label>
+          <label class="check"><input type="checkbox" /> Turn</label>
+          <label class="check"><input type="checkbox" /> Brake</label>
+        </fieldset>
+
+        <fieldset class="control-group">
+          <legend>Gates</legend>
+          <label class="check"
+            ><input type="checkbox" checked /> Clearance</label
+          >
+          <label class="check"
+            ><input type="checkbox" checked /> Curvature</label
+          >
+          <label class="check"><input type="checkbox" /> Energy</label>
+        </fieldset>
+
+        <fieldset class="control-group">
+          <legend>Footprint &amp; height</legend>
+          <label class="field">
+            <span>Footprint X (m)</span>
+            <input type="number" value="220" min="50" max="1000" step="10" />
+          </label>
+          <label class="field">
+            <span>Footprint Z (m)</span>
+            <input type="number" value="160" min="50" max="1000" step="10" />
+          </label>
+          <label class="field">
+            <span>Max height (m)</span>
+            <input type="number" value="42" min="5" max="120" step="1" />
+          </label>
+        </fieldset>
+
+        <fieldset class="control-group">
+          <legend>Targets</legend>
+          <label class="field">
+            <span>Hard: speed cap (m/s)</span>
+            <input type="number" value="28" min="1" max="40" step="0.5" />
+          </label>
+          <label class="field">
+            <span>Soft: airtime target (g)</span>
+            <input type="number" value="0.2" min="-1" max="1" step="0.1" />
+          </label>
+        </fieldset>
+      </aside>
+
+      <main id="viewport-host" class="viewport-host" aria-label="Viewport">
+        <canvas
+          id="viewport-canvas"
+          aria-label="Viewport — generation pending, no track to display"
+        ></canvas>
+
+        <div id="viewport-overlay" class="viewport-overlay" aria-hidden="true">
+          <span class="overlay-status">Generation pending</span>
+          <span class="overlay-hint"
+            >Configure left rail and press Insta Generate</span
+          >
+        </div>
+
+        <div
+          id="metric-legend"
+          class="metric-legend"
+          aria-label="Metric legend"
+        >
+          <span class="legend-item" data-metric="speed"
+            ><span class="legend-swatch swatch-speed"></span>Speed</span
+          >
+          <span class="legend-item" data-metric="gForce"
+            ><span class="legend-swatch swatch-gforce"></span>G-force</span
+          >
+          <span class="legend-item" data-metric="height"
+            ><span class="legend-swatch swatch-height"></span>Height</span
+          >
+          <span class="legend-item" data-metric="energy"
+            ><span class="legend-swatch swatch-energy"></span>Energy</span
+          >
+        </div>
+
+        <fieldset
+          id="camera-controls"
+          class="camera-controls"
+          aria-label="Ride camera"
+        >
+          <legend>Ride camera</legend>
+          <label class="cam-option"
+            ><input type="radio" name="camera" value="front" /><span
+              >Front</span
+            ></label
+          >
+          <label class="cam-option"
+            ><input type="radio" name="camera" value="middle" /><span
+              >Middle</span
+            ></label
+          >
+          <label class="cam-option"
+            ><input type="radio" name="camera" value="rear" /><span
+              >Rear</span
+            ></label
+          >
+          <label class="cam-option"
+            ><input type="radio" name="camera" value="chase" checked /><span
+              >Chase</span
+            ></label
+          >
+          <label class="cam-option"
+            ><input type="radio" name="camera" value="orbit" /><span
+              >Orbit</span
+            ></label
+          >
+        </fieldset>
+
+        <div id="webgl-fallback" class="webgl-fallback" hidden>
+          <h2>WebGL unavailable</h2>
+          <p>
+            Your browser or device does not support WebGL. The viewport requires
+            WebGL to display the track.
+          </p>
+          <ul>
+            <li>
+              Try updating your browser or enabling hardware acceleration.
+            </li>
+            <li>
+              On mobile, ensure low-power mode is not blocking GPU access.
+            </li>
+          </ul>
+          <button id="webgl-retry" type="button" class="btn btn-primary">
+            Retry
+          </button>
+        </div>
+      </main>
+
+      <aside
+        id="element-inspector"
+        class="panel panel-right"
+        aria-label="Element inspector"
+      >
+        <div class="panel-header">
+          <h2 class="panel-title">Inspector</h2>
+          <button
+            id="pin-btn"
+            type="button"
+            class="btn btn-ghost"
+            aria-pressed="false"
+            aria-label="Pin inspector"
+          >
+            Pin
+          </button>
+        </div>
+        <p class="panel-hint">
+          Select an element to edit. Changes stay local until regeneration.
+        </p>
+
+        <fieldset class="control-group">
+          <legend>Selected element</legend>
+          <label class="field">
+            <span>Length (m)</span>
+            <input
+              id="inspect-length"
+              type="number"
+              value="28"
+              min="1"
+              max="500"
+              step="0.5"
+              disabled
+            />
+          </label>
+          <label class="field">
+            <span>Entry radius (m)</span>
+            <input
+              id="inspect-radius"
+              type="number"
+              value="18"
+              min="1"
+              max="100"
+              step="0.5"
+              disabled
+            />
+          </label>
+          <label class="field">
+            <span>Exit height (m)</span>
+            <input
+              id="inspect-height"
+              type="number"
+              value="12"
+              min="0"
+              max="120"
+              step="0.5"
+              disabled
+            />
+          </label>
+          <label class="field">
+            <span>Roll (deg)</span>
+            <input
+              id="inspect-roll"
+              type="number"
+              value="0"
+              min="-180"
+              max="180"
+              step="1"
+              disabled
+            />
+          </label>
+        </fieldset>
+
+        <button
+          id="local-regenerate-btn"
+          type="button"
+          class="btn btn-primary"
+          disabled
+        >
+          Local regenerate
+        </button>
+        <p class="field-note">Disabled until track data is ready.</p>
+      </aside>
+    </div>
+
+    <section id="telemetry" class="telemetry" aria-label="Telemetry">
+      <div class="telemetry-controls">
+        <label class="field inline" for="metric-select">
+          <span>Metric</span>
+          <select id="metric-select" disabled>
+            <option value="speed">Speed</option>
+            <option value="gForce">G-force</option>
+            <option value="height">Height</option>
+            <option value="energy">Energy</option>
+          </select>
+        </label>
+
+        <label class="field inline" for="seat-select">
+          <span>Seat</span>
+          <select id="seat-select" disabled>
+            <option value="0">Front car — Seat 1</option>
+            <option value="1">Seat 2</option>
+            <option value="2">Seat 3</option>
+            <option value="3">Rear car — Seat 4</option>
+          </select>
+        </label>
+
+        <div class="telemetry-actions">
+          <button
+            id="pause-btn"
+            type="button"
+            class="btn btn-ghost"
+            disabled
+            aria-pressed="true"
+          >
+            Pause
+          </button>
+          <button id="reset-btn" type="button" class="btn btn-ghost" disabled>
+            Reset
+          </button>
+          <label class="field inline" for="playback-speed">
+            <span>Speed</span>
+            <select id="playback-speed" disabled>
+              <option value="0.25">0.25×</option>
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="1.5">1.5×</option>
+              <option value="2">2×</option>
+            </select>
+          </label>
+          <button
+            id="seam-inspect-btn"
+            type="button"
+            class="btn btn-ghost"
+            disabled
+          >
+            Seam inspect
+          </button>
+        </div>
+      </div>
+
+      <div class="telemetry-graph-wrap">
+        <canvas
+          id="telemetry-graph"
+          aria-label="Telemetry graph — no data, generate to populate"
+        ></canvas>
+        <div id="telemetry-empty" class="telemetry-empty">
+          No telemetry — generate to populate
+        </div>
+      </div>
+
+      <div class="scrubber-row">
+        <label class="scrubber-label" for="scrubber">Scrub</label>
+        <input
+          id="scrubber"
+          type="range"
+          min="0"
+          max="1000"
+          value="0"
+          disabled
+        />
+        <span class="scrubber-value" aria-live="polite">0 / 1000</span>
+      </div>
+    </section>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
