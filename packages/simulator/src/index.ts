@@ -106,12 +106,15 @@ const zoneContains = (
   distanceM: number,
   closedTrack = false,
 ): boolean => {
+  // Zones own the half-open interval [startDistanceM, endDistanceM). Closed
+  // tracks canonicalize the seam through wrappedDistance before this check.
   const trackDistanceM = closedTrack
     ? wrappedDistance(track, distanceM)
     : distanceM;
-  if (trackDistanceM < Math.min(zone.startDistanceM, zone.endDistanceM))
-    return false;
-  if (trackDistanceM > Math.max(zone.startDistanceM, zone.endDistanceM))
+  if (
+    trackDistanceM < zone.startDistanceM ||
+    trackDistanceM >= zone.endDistanceM
+  )
     return false;
   const zoneNames = track.zoneNames;
   const nameIndex = zoneNames.indexOf(zone.id);
@@ -376,8 +379,94 @@ const validate = (
         message: "Block id must be non-empty",
       });
   }
+  if (
+    !config.closedTrack &&
+    finite(track.totalLength) &&
+    track.totalLength >= 0 &&
+    finite(initial.headDistanceM) &&
+    finite(config.train.spacingM)
+  ) {
+    for (const [index, car] of config.train.cars.entries()) {
+      const distanceM = initial.headDistanceM - index * config.train.spacingM;
+      if (!finite(distanceM) || distanceM < 0 || distanceM > track.totalLength)
+        diagnostics.push({
+          code: "SIM_INVALID_STATE",
+          severity: "error",
+          field: `initial.train.cars[${index}].distanceM`,
+          message: `Car distance must be within [0, ${track.totalLength}] on an open track`,
+        });
+      for (const [seatIndex, offset] of (car.seatPositionsM ?? []).entries()) {
+        const seatDistanceM = distanceM + offset[2];
+        if (
+          !finite(seatDistanceM) ||
+          seatDistanceM < 0 ||
+          seatDistanceM > track.totalLength
+        )
+          diagnostics.push({
+            code: "SIM_INVALID_STATE",
+            severity: "error",
+            field: `initial.train.cars[${index}].seatPositionsM[${seatIndex}].distanceM`,
+            message: `Seat distance must be within [0, ${track.totalLength}] on an open track`,
+          });
+      }
+    }
+  }
+  if (
+    config.train.cars.length > 0 &&
+    finite(config.airDensityKgPerM3) &&
+    finite(config.dragCdA) &&
+    !finite(
+      0.5 *
+        config.airDensityKgPerM3 *
+        (config.dragCdA / config.train.cars.length),
+    )
+  )
+    diagnostics.push({
+      code: "SIM_INVALID_CONFIGURATION",
+      severity: "error",
+      field: "airDensityKgPerM3*dragCdA",
+      message: "Aerodynamic drag coefficient product must be finite",
+    });
+  for (const [index, car] of config.train.cars.entries())
+    if (
+      finite(car.massKg) &&
+      finite(config.gravityMps2) &&
+      !finite(car.massKg * config.gravityMps2)
+    )
+      diagnostics.push({
+        code: "SIM_INVALID_CONFIGURATION",
+        severity: "error",
+        field: `train.cars[${index}].massKg*gravityMps2`,
+        message: "Per-car gravity force scale must be finite",
+      });
+  for (const [index, zone] of config.zones.entries())
+    if (
+      zone.targetSpeedMps !== undefined &&
+      finite(zone.targetSpeedMps) &&
+      finite(initial.speedMps) &&
+      finite(config.lsmTargetGainNPerMps) &&
+      !finite(
+        config.lsmTargetGainNPerMps * (zone.targetSpeedMps - initial.speedMps),
+      )
+    )
+      diagnostics.push({
+        code: "SIM_INVALID_CONFIGURATION",
+        severity: "error",
+        field: `zones[${index}].targetSpeedMps*lsmTargetGainNPerMps`,
+        message: "Target-speed LSM force product must be finite",
+      });
   return diagnostics;
 };
+
+const forceIsFinite = (force: PerCarForce): boolean =>
+  [
+    force.gravity,
+    force.rolling,
+    force.drag,
+    force.drive,
+    force.brake,
+    force.net,
+  ].every(finite);
 
 const forceAt = (
   track: CompiledTrackData,
@@ -764,7 +853,6 @@ const zoneCrossings = (
   const delta = nextDistanceM - previousDistanceM;
   if (delta === 0) return [];
   const direction = delta > 0 ? "forward" : "reverse";
-  const crossingTolerance = Math.max(Math.abs(delta) * 1e-12, 1e-12);
   const candidates: {
     readonly zone: OperationZone;
     readonly boundary: "start" | "end";
@@ -791,10 +879,10 @@ const zoneCrossings = (
             baseDistance + (config.closedTrack ? lap * track.totalLength : 0);
           const crossed =
             direction === "forward"
-              ? previousDistanceM < crossingDistance - crossingTolerance &&
-                crossingDistance <= nextDistanceM + crossingTolerance
-              : nextDistanceM <= crossingDistance + crossingTolerance &&
-                crossingDistance < previousDistanceM - crossingTolerance;
+              ? previousDistanceM < crossingDistance &&
+                crossingDistance <= nextDistanceM
+              : nextDistanceM <= crossingDistance &&
+                crossingDistance <= previousDistanceM;
           if (!crossed) continue;
           candidates.push({
             zone,
@@ -1152,6 +1240,33 @@ export const simulateRide = (
     initial.headDistanceM,
     initial.speedMps,
   );
+  const invalidInitialForce = initialDynamics.forces.findIndex(
+    (force) => !forceIsFinite(force),
+  );
+  if (invalidInitialForce >= 0) {
+    diagnostics.push({
+      code: "SIM_NUMERICAL",
+      severity: "error",
+      field: "state",
+      message: "Fixed-step integration produced a non-finite state",
+    });
+    return {
+      frames: [],
+      timeline: new RideTimeline({
+        sampleRateHz: 1 / Math.max(config.timelineStepSeconds, 1),
+        timeSeconds: new Float64Array(),
+        headDistanceM: new Float64Array(),
+        speedMps: new Float64Array(),
+      }),
+      events: [],
+      operationState: {
+        trainCount: 1,
+        activeZoneIds: [],
+        occupiedBlockIds: [],
+      },
+      diagnostics,
+    };
+  }
   const initialCars = makeCars(
     track,
     config,
@@ -1176,7 +1291,20 @@ export const simulateRide = (
   let hasStalled = false;
   const initialZones = activeZonesForTrain(track, config, distanceM);
   const initialDirection = speedMps < 0 ? "reverse" : "forward";
-  for (const zone of initialZones)
+  for (const zone of initialZones) {
+    const reverseAtStart =
+      initialDirection === "reverse" &&
+      config.train.cars.some((_, index) => {
+        const carDistanceM = distanceM - index * config.train.spacingM;
+        const canonicalDistanceM = config.closedTrack
+          ? wrappedDistance(track, carDistanceM)
+          : carDistanceM;
+        return (
+          Math.abs(canonicalDistanceM - zone.startDistanceM) <= 1e-12 &&
+          zoneContains(track, zone, carDistanceM, config.closedTrack)
+        );
+      });
+    if (reverseAtStart) continue;
     events.push({
       timeSeconds: 0,
       type: "zone-entry",
@@ -1185,6 +1313,7 @@ export const simulateRide = (
       boundary: initialDirection === "forward" ? "start" : "end",
       direction: initialDirection,
     });
+  }
 
   const addFrame = (
     time: number,
@@ -1258,6 +1387,18 @@ export const simulateRide = (
       break;
     }
     const nextDynamics = dynamicsAt(track, config, distanceM, speedMps);
+    const invalidForce = nextDynamics.forces.findIndex(
+      (force) => !forceIsFinite(force),
+    );
+    if (invalidForce >= 0) {
+      diagnostics.push({
+        code: "SIM_NUMERICAL",
+        severity: "error",
+        field: `train.cars[${invalidForce}].force`,
+        message: "Per-car force computation produced non-finite data",
+      });
+      break;
+    }
     const staticLimit =
       config.staticStictionCoefficient * mass * config.gravityMps2;
     if (
@@ -1313,10 +1454,22 @@ export const simulateRide = (
   }
   const completedFrames = withJerk(frames);
   const finalZones = activeZonesForTrain(track, config, distanceM);
+  const uniqueEvents = events.filter(
+    (event, index, all) =>
+      index ===
+      all.findIndex(
+        (other) =>
+          other.timeSeconds === event.timeSeconds &&
+          other.type === event.type &&
+          other.zoneId === event.zoneId &&
+          other.boundary === event.boundary &&
+          other.direction === event.direction,
+      ),
+  );
   return {
     frames: completedFrames,
     timeline: makeTimeline(track, completedFrames, config),
-    events,
+    events: uniqueEvents,
     operationState: operationStateFor(finalZones),
     diagnostics,
   };
@@ -1370,5 +1523,11 @@ export const computePerCarForces = (
         )
         .join("; "),
     );
-  return dynamicsAt(track, config, headDistanceM, speedMps).forces;
+  const forces = dynamicsAt(track, config, headDistanceM, speedMps).forces;
+  const invalidForce = forces.findIndex((force) => !forceIsFinite(force));
+  if (invalidForce >= 0)
+    throw new RangeError(
+      `train.cars[${invalidForce}].force: Per-car force computation produced non-finite data`,
+    );
+  return forces;
 };
