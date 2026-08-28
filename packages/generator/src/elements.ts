@@ -25,6 +25,7 @@ import {
 } from "./types";
 
 const gravity = 9.80665;
+const worldGravity = vec3(0, -gravity, 0);
 
 const defaults: ElementParameterMap = {
   station: { length: 12, bank: 0, closed: false },
@@ -267,15 +268,9 @@ const sustainedForceProfile = (u: number, order = 0): number => {
   if (u <= 0.15 || u >= 0.85) return 0;
   if (u < 0.25) return ramp((u - 0.15) / 0.1, order) / 0.1 ** order;
   if (u <= 0.75) return order === 0 ? 1 : 0;
-  return -ramp((u - 0.75) / 0.1, order) / 0.1 ** order;
-};
-
-const exitHeightRamp = (u: number, order = 0): number => {
-  if (u <= 0.85) return 0;
-  return (
-    polynomialDerivative(quinticRampCoefficients, (u - 0.85) / 0.15, order) /
-    0.15 ** order
-  );
+  return order === 0
+    ? 1 - ramp((u - 0.75) / 0.1, 0)
+    : -ramp((u - 0.75) / 0.1, order) / 0.1 ** order;
 };
 
 const plateau = (u: number, order = 0): number => {
@@ -285,30 +280,6 @@ const plateau = (u: number, order = 0): number => {
   if (u < 0.35) return ramp((u - 0.2) / 0.15, order) / 0.15 ** order;
   if (u <= 0.65) return order === 0 ? 1 : 0;
   return (order === 0 ? 1 : -ramp((u - 0.65) / 0.15, order)) / 0.15 ** order;
-};
-
-const integrate = (
-  functionValue: (u: number) => number,
-  upper: number,
-): number => {
-  if (upper <= 0) return 0;
-  const nodes = [
-    0.0950125098376374, 0.281603550779259, 0.458016777657227, 0.617876244402644,
-    0.755404408355003, 0.865631202387832, 0.944575023073233, 0.98940093499165,
-  ];
-  const weights = [
-    0.189450610455069, 0.182603415044924, 0.169156519395003, 0.149595988816577,
-    0.124628971255534, 0.095158511682493, 0.062253523938648, 0.0271524594117541,
-  ];
-  const midpoint = upper / 2;
-  let result = 0;
-  for (let index = 0; index < nodes.length; index += 1) {
-    const offset = midpoint * nodes[index]!;
-    result +=
-      weights[index]! *
-      (functionValue(midpoint - offset) + functionValue(midpoint + offset));
-  }
-  return midpoint * result;
 };
 
 const profileSpan = (
@@ -351,67 +322,83 @@ const profileSpan = (
 const forceProfileSpan = (
   pose: Pose,
   length: number,
-  height: number | undefined,
   targetForceG: number,
   referenceSpeed: number,
 ): { span: ParametricSpan<Vec3>; endPose: Pose } => {
   const basis = basisFor(pose);
-  const normalUp = Math.abs(basis.normal[1]) > 1e-6 ? basis.normal[1] : 1;
-  const targetVerticalCurvature =
-    ((targetForceG - 1) * gravity) / (referenceSpeed ** 2 * normalUp);
-  const verticalSine = (u: number): number =>
-    targetVerticalCurvature * length * integrate(sustainedForceProfile, u);
-  const cosine = (u: number): number =>
-    Math.sqrt(Math.max(1e-12, 1 - verticalSine(u) ** 2));
-  const baseHeight = length * integrate(verticalSine, 1);
-  const heightCorrection = height === undefined ? 0 : height - baseHeight;
+  const gravityTangent = vec3Dot(worldGravity, basis.tangent);
+  const gravityNormal = vec3Dot(worldGravity, basis.normal);
+  const targetNormalForce = (u: number): number =>
+    1 + (targetForceG - 1) * sustainedForceProfile(u);
+  const headingRate = (u: number, heading: number): number => {
+    const normalGravity =
+      -gravityTangent * Math.sin(heading) + gravityNormal * Math.cos(heading);
+    return (
+      (length / referenceSpeed ** 2) *
+      (targetNormalForce(u) * gravity + normalGravity)
+    );
+  };
+  const integrateState = (upper: number): readonly [number, number, number] => {
+    if (upper <= 0) return [0, 0, 0];
+    const steps = Math.max(1, Math.ceil(upper * 256));
+    const step = upper / steps;
+    let heading = 0;
+    let horizontal = 0;
+    let vertical = 0;
+    for (let index = 0; index < steps; index += 1) {
+      const u = index * step;
+      const half = step / 2;
+      const k1Heading = headingRate(u, heading);
+      const k1Horizontal = length * Math.cos(heading);
+      const k1Vertical = length * Math.sin(heading);
+      const heading2 = heading + half * k1Heading;
+      const k2Heading = headingRate(u + half, heading2);
+      const k2Horizontal = length * Math.cos(heading2);
+      const k2Vertical = length * Math.sin(heading2);
+      const heading3 = heading + half * k2Heading;
+      const k3Heading = headingRate(u + half, heading3);
+      const k3Horizontal = length * Math.cos(heading3);
+      const k3Vertical = length * Math.sin(heading3);
+      const heading4 = heading + half * k3Heading;
+      const k4Heading = headingRate(u + step, heading4);
+      const k4Horizontal = length * Math.cos(heading4);
+      const k4Vertical = length * Math.sin(heading4);
+      heading +=
+        (step / 6) * (k1Heading + 2 * k2Heading + 2 * k3Heading + k4Heading);
+      horizontal +=
+        (step / 6) *
+        (k1Horizontal + 2 * k2Horizontal + 2 * k3Horizontal + k4Horizontal);
+      vertical +=
+        (step / 6) *
+        (k1Vertical + 2 * k2Vertical + 2 * k3Vertical + k4Vertical);
+    }
+    return [heading, horizontal, vertical];
+  };
   const localDerivative = (u: number, order: number): Vec3 => {
-    const sine = verticalSine(u);
-    const cosineValue = cosine(u);
-    const sinePrime =
-      targetVerticalCurvature * length * sustainedForceProfile(u);
-    const sineSecond =
-      targetVerticalCurvature * length * sustainedForceProfile(u, 1);
-    const thetaPrime = sinePrime / cosineValue;
+    const [heading] = integrateState(u);
+    const tangent = vec3(Math.cos(heading), Math.sin(heading), 0);
+    const normal = vec3(-Math.sin(heading), Math.cos(heading), 0);
+    const thetaPrime = headingRate(u, heading);
     const thetaSecond =
-      sineSecond / cosineValue +
-      (sine * sinePrime * thetaPrime) / cosineValue ** 2;
-    if (order === 1)
-      return vec3(
-        length * cosineValue,
-        length * sine + heightCorrection * exitHeightRamp(u, 1),
-        0,
+      (length / referenceSpeed ** 2) *
+      (gravity * (targetForceG - 1) * sustainedForceProfile(u, 1) +
+        (-gravityTangent * Math.cos(heading) -
+          gravityNormal * Math.sin(heading)) *
+          thetaPrime);
+    if (order === 1) return vec3Scale(tangent, length);
+    if (order === 2) return vec3Scale(normal, length * thetaPrime);
+    if (order === 3)
+      return vec3Add(
+        vec3Scale(normal, length * thetaSecond),
+        vec3Scale(tangent, -length * thetaPrime ** 2),
       );
-    if (order === 2) {
-      return vec3(
-        -length * sine * thetaPrime,
-        length * cosineValue * thetaPrime +
-          heightCorrection * exitHeightRamp(u, 2),
-        0,
-      );
-    }
-    if (order === 3) {
-      return vec3(
-        -length * (cosineValue * thetaPrime ** 2 + sine * thetaSecond),
-        length * (-sine * thetaPrime ** 2 + cosineValue * thetaSecond) +
-          heightCorrection * exitHeightRamp(u, 3),
-        0,
-      );
-    }
     return vec3(0, 0, 0);
   };
   const span: ParametricSpan<Vec3> = {
-    position: (u) =>
-      worldPoint(
-        pose,
-        basis,
-        vec3(
-          length * integrate(cosine, u),
-          length * integrate(verticalSine, u) +
-            heightCorrection * exitHeightRamp(u),
-          0,
-        ),
-      ),
+    position: (u) => {
+      const [, horizontal, vertical] = integrateState(u);
+      return worldPoint(pose, basis, vec3(horizontal, vertical, 0));
+    },
     derivative: (u, order = 1) => worldVector(basis, localDerivative(u, order)),
   };
   const tangent = vec3Normalize(span.derivative(1, 1));
@@ -640,7 +627,6 @@ export const buildElement = (
       const profile = forceProfileSpan(
         normalizedPose,
         p.length,
-        p.height,
         p.targetForceG,
         p.referenceSpeed,
       );
@@ -667,7 +653,6 @@ export const buildElement = (
       const profile = forceProfileSpan(
         normalizedPose,
         p.length,
-        undefined,
         0,
         referenceSpeed,
       );

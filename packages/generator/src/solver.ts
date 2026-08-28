@@ -30,6 +30,7 @@ import type {
 } from "./types";
 
 const gravity = 9.80665;
+const worldGravity = vec3(0, -gravity, 0);
 const defaultTolerances: SeamTolerances = {
   positionM: 1e-4,
   tangentRad: 1e-5,
@@ -87,8 +88,29 @@ const curvatureGradient = (span: ParametricSpan<Vec3>, u: number): number => {
     ((high - low) * vec3Length(span.derivative(u, 1)))
   );
 };
-const forceG = (span: ParametricSpan<Vec3>, u: number, speed: number): number =>
-  1 + (speed ** 2 * curvatureVector(span, u)[1]) / gravity;
+const specificForceNormalG = (
+  span: ParametricSpan<Vec3>,
+  u: number,
+  speed: number,
+): number => {
+  const tangent = vec3Normalize(span.derivative(u, 1));
+  const curvature = curvatureVector(span, u);
+  const curvatureMagnitude = vec3Length(curvature);
+  const gravityPerpendicular = vec3Sub(
+    worldGravity,
+    vec3Scale(tangent, vec3Dot(worldGravity, tangent)),
+  );
+  const normal =
+    curvatureMagnitude > 1e-12
+      ? vec3Scale(
+          curvature,
+          (vec3Dot(curvature, vec3Scale(worldGravity, -1)) >= 0 ? 1 : -1) /
+            curvatureMagnitude,
+        )
+      : vec3Scale(vec3Normalize(gravityPerpendicular), -1);
+  const specificForce = vec3Sub(vec3Scale(curvature, speed ** 2), worldGravity);
+  return vec3Dot(specificForce, normal) / gravity;
+};
 const bankValue = (span: SolvedSpan, u: number): number =>
   span.bank?.position(u) ?? 0;
 const bankDerivative = (span: SolvedSpan, u: number): number =>
@@ -243,7 +265,8 @@ export const diagnoseSeams = (
         bankDerivative(left, 1) - bankDerivative(right, 0),
       ),
       specificForceJumpG: Math.abs(
-        forceG(left.span, 1, speed) - forceG(right.span, 0, speed),
+        specificForceNormalG(left.span, 1, speed) -
+          specificForceNormalG(right.span, 0, speed),
       ),
       sustainedForceDeviationG:
         options.softForceTargetG === undefined
@@ -251,7 +274,7 @@ export const diagnoseSeams = (
           : Math.max(
               ...Array.from({ length: 9 }, (_, sample) =>
                 Math.abs(
-                  forceG(right.span, (sample + 1) / 10, speed) -
+                  specificForceNormalG(right.span, (sample + 1) / 10, speed) -
                     options.softForceTargetG!,
                 ),
               ),
@@ -317,8 +340,7 @@ const hardConflict = (ids: readonly string[], detail: string): Diagnostic => ({
   code: "INFEASIBLE_HARD_CONSTRAINTS",
   severity: "error",
   message: `Conflicting hard constraints (${ids.join(", ")}): ${detail}`,
-  suggestedRelaxation:
-    "Relax endPose.position, the closed-loop pose/closure constraints, or one named hard target",
+  suggestedRelaxation: `Relax ${ids.join(", ")} or one named hard target`,
 });
 const targetTolerance = (
   target: HardTarget,
@@ -346,6 +368,14 @@ interface ChainState {
   readonly elements: readonly AnySemanticElement[];
   readonly solvedSpans: readonly SolvedSpan[];
   readonly endPose: Pose;
+  readonly hardGeometryFailures: readonly GeometryFailure[];
+}
+
+interface GeometryFailure {
+  readonly elementId: string;
+  readonly kind: "height" | "orientation";
+  readonly actual: number;
+  readonly target: number;
 }
 
 const variableBounds = (
@@ -359,6 +389,7 @@ const variableBounds = (
 
 const semanticVariables = (
   elements: readonly AnySemanticElement[],
+  adjustForceTargets: boolean,
 ): readonly SemanticVariable[] => {
   const variables: SemanticVariable[] = [];
   const add = (
@@ -410,7 +441,7 @@ const semanticVariables = (
       const pitch = parameters.pitch as number;
       add(elementIndex, "pitch", pitch, -Math.PI * 4, Math.PI * 4);
     }
-    if (element.type === "airtimeHill")
+    if (element.type === "airtimeHill" && adjustForceTargets)
       add(
         elementIndex,
         "targetForceG",
@@ -461,13 +492,39 @@ const buildChain = (
   referenceSpeed: number,
 ): ChainState => {
   const solvedSpans: SolvedSpan[] = [];
+  const hardGeometryFailures: GeometryFailure[] = [];
   let pose = startPose;
   for (const element of elements) {
     const built = buildElement(element, pose, referenceSpeed);
     solvedSpans.push({ ...built.solvedSpan, id: element.id });
+    if (element.type === "airtimeHill") {
+      const target = element.parameters.height;
+      const actual = vec3Dot(
+        vec3Sub(built.endPose.position, pose.position),
+        pose.normal,
+      );
+      if (Math.abs(actual - target) > 1e-4)
+        hardGeometryFailures.push({
+          elementId: element.id,
+          kind: "height",
+          actual,
+          target,
+        });
+    }
+    if (element.type === "zeroGRoll") {
+      const binormal = vec3Normalize(vec3Cross(pose.tangent, pose.normal));
+      const gravityBinormal = Math.abs(vec3Dot(worldGravity, binormal));
+      if (gravityBinormal > gravity * 1e-10)
+        hardGeometryFailures.push({
+          elementId: element.id,
+          kind: "orientation",
+          actual: gravityBinormal / gravity,
+          target: 0,
+        });
+    }
     pose = built.endPose;
   }
-  return { elements, solvedSpans, endPose: pose };
+  return { elements, solvedSpans, endPose: pose, hardGeometryFailures };
 };
 
 const applyAuthoredStartFrame = (
@@ -568,7 +625,8 @@ const diagnosticResiduals = (
     for (const span of state.solvedSpans)
       for (const sample of [0.25, 0.5, 0.75])
         residual.push(
-          (forceG(span.span, sample, speed) - options.softForceTargetG) /
+          (specificForceNormalG(span.span, sample, speed) -
+            options.softForceTargetG) /
             tolerances.sustainedForceDeviationG,
         );
   }
@@ -609,7 +667,10 @@ export const solveSemanticChain = (
   const closureEnabled = options.closed === true || firstIsClosedStation;
   const solveOptions = closureEnabled ? { ...options, closed: true } : options;
   const tolerances = { ...defaultTolerances, ...options.seamTolerances };
-  const bindings = semanticVariables(elements);
+  const bindings = semanticVariables(
+    elements,
+    options.softForceTargetG !== undefined,
+  );
   const initial = bindings.map((binding) => binding.initial);
   const referenceSpeed = options.referenceSpeed ?? 25;
   const stateFor = (values: readonly number[]): ChainState =>
@@ -694,6 +755,19 @@ export const solveSemanticChain = (
         severity: "warning",
         message: `Soft sustained-force deviation at ${seam.seamId}: ${seam.softResiduals.sustainedForceDeviationG.toFixed(3)} G`,
       });
+  }
+
+  for (const failure of state.hardGeometryFailures) {
+    const constraintId = `${failure.elementId}:${failure.kind}`;
+    const detail =
+      failure.kind === "height"
+        ? `infeasible force geometry: requested ${failure.target.toFixed(6)} m, physically force-constrained result ${failure.actual.toFixed(6)} m`
+        : `infeasible force geometry: planar zero-G path leaves ${failure.actual.toFixed(6)} G in the gravity binormal component`;
+    diagnostics.push(hardConflict([constraintId], detail));
+    if (relaxations.length < 3)
+      relaxations.push(
+        `Relax ${constraintId} or ${failure.elementId}:targetForceG`,
+      );
   }
 
   const targets = options.targets ?? [];

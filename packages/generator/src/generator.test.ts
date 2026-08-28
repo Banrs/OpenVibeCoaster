@@ -12,15 +12,18 @@ import {
 import type { ElementKind, Pose } from "./index";
 import {
   vec3,
+  vec3Add,
   vec3Cross,
   vec3Dot,
   vec3Length,
   vec3Normalize,
+  vec3Scale,
   vec3Sub,
 } from "@openvibecoaster/core";
 
 const gravity = 9.80665;
-const supportForceG = (
+const worldGravity = vec3(0, -gravity, 0);
+const curvatureVectorAt = (
   span: {
     derivative: (
       u: number,
@@ -28,20 +31,56 @@ const supportForceG = (
     ) => readonly [number, number, number];
   },
   u: number,
-  speed: number,
-): number => {
+) => {
   const d1 = span.derivative(u, 1);
   const d2 = span.derivative(u, 2);
   const speedSquared = vec3Dot(d1, d1);
-  const tangentAcceleration = vec3Cross(d1, vec3Cross(d2, d1));
-  const curvatureVector = vec3(
-    tangentAcceleration[0] / speedSquared ** 2,
-    tangentAcceleration[1] / speedSquared ** 2,
-    tangentAcceleration[2] / speedSquared ** 2,
+  const projection = vec3Dot(d1, d2);
+  return vec3(
+    (d2[0] * speedSquared - d1[0] * projection) / speedSquared ** 2,
+    (d2[1] * speedSquared - d1[1] * projection) / speedSquared ** 2,
+    (d2[2] * speedSquared - d1[2] * projection) / speedSquared ** 2,
   );
-  return 1 + (speed ** 2 * curvatureVector[1]) / gravity;
 };
-
+const specificForceComponents = (
+  span: {
+    derivative: (
+      u: number,
+      order?: number,
+    ) => readonly [number, number, number];
+  },
+  bank: number,
+  u: number,
+  speed: number,
+) => {
+  const tangent = vec3Normalize(span.derivative(u, 1));
+  const startTangent = vec3Normalize(span.derivative(0, 1));
+  const midTangent = vec3Normalize(span.derivative(0.5, 1));
+  let unbankedBinormal = vec3Normalize(vec3Cross(startTangent, midTangent));
+  if (
+    vec3Dot(
+      vec3Normalize(vec3Cross(unbankedBinormal, startTangent)),
+      vec3(0, 1, 0),
+    ) < 0
+  )
+    unbankedBinormal = vec3Scale(unbankedBinormal, -1);
+  const unbankedNormal = vec3Normalize(vec3Cross(unbankedBinormal, tangent));
+  const normal = vec3Add(
+    vec3Scale(unbankedNormal, Math.cos(bank)),
+    vec3Scale(unbankedBinormal, Math.sin(bank)),
+  );
+  const binormal = vec3Normalize(vec3Cross(tangent, normal));
+  const specificForce = vec3Sub(
+    vec3Scale(curvatureVectorAt(span, u), speed ** 2),
+    worldGravity,
+  );
+  return {
+    tangent: vec3Dot(specificForce, tangent) / gravity,
+    normal: vec3Dot(specificForce, normal) / gravity,
+    binormal: vec3Dot(specificForce, binormal) / gravity,
+    magnitude: vec3Length(specificForce) / gravity,
+  };
+};
 const allKinds: readonly ElementKind[] = [
   "station",
   "launch",
@@ -169,6 +208,14 @@ describe("semantic chain geometry", () => {
     ]);
     const left = result.solvedSpans[0]!;
     const right = result.solvedSpans[1]!;
+    expect(
+      vec3Length(vec3Sub(left.span.position(1), right.span.position(0))),
+    ).toBeLessThan(1e-8);
+    expect(
+      vec3Length(
+        vec3Sub(left.span.derivative(1, 1), right.span.derivative(0, 1)),
+      ),
+    ).toBeLessThan(1e-8);
     for (const order of [2, 3])
       expect(
         vec3Length(
@@ -182,6 +229,7 @@ describe("semantic chain geometry", () => {
       right.bank!.derivative(0, 1),
       10,
     );
+    expect(left.bank!.position(1)).toBeCloseTo(right.bank!.position(0), 10);
     expect(left.bank!.derivative(1, 2)).toBeCloseTo(
       right.bank!.derivative(0, 2),
       10,
@@ -201,13 +249,143 @@ describe("semantic chain geometry", () => {
       ],
       { referenceSpeed: 24 },
     );
-    expect(result.feasible).toBe(true);
+    expect(result.feasible).toBe(false);
+    expect(
+      result.diagnostics.some((diagnostic) =>
+        diagnostic.message.includes("hill:height"),
+      ),
+    ).toBe(true);
     const hill = result.solvedSpans[0]?.span;
     const roll = result.solvedSpans[1]?.bank;
     expect(hill).toBeDefined();
     expect(Math.abs(hill!.derivative(0.5, 2)[1])).toBeGreaterThan(0.01);
     expect(roll?.position(1)).toBeCloseTo(Math.PI * 2, 10);
     expect(roll?.derivative(0.5, 1)).toBeGreaterThan(0);
+  });
+
+  it("keeps a dense force profile continuous and physically calibrated", () => {
+    const result = solveSemanticChain(
+      [
+        createElement("airtimeHill", "dense-hill", {
+          length: 48,
+          height: 10,
+          targetForceG: 2,
+          referenceSpeed: 24,
+        }),
+      ],
+      { referenceSpeed: 24 },
+    );
+    const solved = result.solvedSpans[0]!;
+    const samples = Array.from({ length: 2001 }, (_, index) => index / 2000);
+    const forces = samples.map(
+      (u) =>
+        specificForceComponents(solved.span, solved.bank!.position(u), u, 24)
+          .normal,
+    );
+    expect(Math.max(...forces)).toBeLessThan(2.05);
+    expect(Math.min(...forces)).toBeGreaterThan(-0.05);
+    for (const u of Array.from(
+      { length: 1001 },
+      (_, index) => 0.25 + index / 2000,
+    ))
+      expect(
+        specificForceComponents(solved.span, solved.bank!.position(u), u, 24)
+          .normal,
+      ).toBeCloseTo(2, 2);
+    for (const boundary of [0.15, 0.25, 0.75, 0.85]) {
+      const before = specificForceComponents(
+        solved.span,
+        solved.bank!.position(boundary - 1e-5),
+        boundary - 1e-5,
+        24,
+      ).normal;
+      const after = specificForceComponents(
+        solved.span,
+        solved.bank!.position(boundary + 1e-5),
+        boundary + 1e-5,
+        24,
+      ).normal;
+      expect(Math.abs(after - before)).toBeLessThan(0.01);
+    }
+    expect(result.feasible).toBe(false);
+    expect(result.diagnostics[0]?.message).toContain("dense-hill:height");
+  });
+
+  it("reports impossible force geometry instead of clamping it", () => {
+    const result = solveSemanticChain([
+      createElement("airtimeHill", "impossible", {
+        length: 500,
+        height: 18,
+        targetForceG: 5,
+        referenceSpeed: 10,
+      }),
+    ]);
+    expect(result.feasible).toBe(false);
+    expect(
+      result.solvedSpans.every((solved) =>
+        Array.from({ length: 101 }, (_, index) => index / 100).every((u) =>
+          solved.span.position(u).every(Number.isFinite),
+        ),
+      ),
+    ).toBe(true);
+    const infeasible = result.diagnostics.find(
+      (diagnostic) => diagnostic.code === "INFEASIBLE_HARD_CONSTRAINTS",
+    );
+    expect(infeasible?.message).toContain("impossible:height");
+    expect(infeasible?.message).toContain("infeasible force geometry");
+    expect(infeasible?.suggestedRelaxation).toContain("impossible:height");
+  });
+
+  it("uses local-frame specific force for an oriented force profile", () => {
+    const result = solveSemanticChain(
+      [
+        createElement("airtimeHill", "oriented", {
+          length: 24,
+          height: 2,
+          targetForceG: 2,
+          referenceSpeed: 24,
+          bank: 0.6,
+        }),
+      ],
+      {
+        referenceSpeed: 24,
+        startPose: {
+          position: vec3(10, 4, -3),
+          tangent: vec3(0, 0, 1),
+          normal: vec3(1, 0, 0),
+          bank: 0.6,
+        },
+      },
+    );
+    expect(result.feasible).toBe(false);
+    expect(result.diagnostics[0]?.message).toContain("oriented:height");
+  });
+
+  it("rejects zero-G geometry whose plane cannot cancel gravity", () => {
+    const result = solveSemanticChain(
+      [
+        createElement("zeroGRoll", "oriented-roll", {
+          length: 28,
+          roll: Math.PI,
+        }),
+      ],
+      {
+        referenceSpeed: 24,
+        startPose: {
+          position: vec3(0, 0, 0),
+          tangent: vec3(0, 0, 1),
+          normal: vec3(1, 0, 0),
+          bank: 0,
+        },
+      },
+    );
+    expect(result.feasible).toBe(false);
+    expect(result.diagnostics[0]?.message).toContain(
+      "oriented-roll:orientation",
+    );
+    expect(result.diagnostics[0]?.suggestedRelaxation).toContain(
+      "oriented-roll:orientation",
+    );
   });
 
   it.each([[2], [0], [-0.5]] as const)(
@@ -224,13 +402,15 @@ describe("semantic chain geometry", () => {
         ],
         { referenceSpeed: 24 },
       );
-      const span = result.solvedSpans[0]!.span;
-      const sustainedForces = [0.25, 0.35, 0.5, 0.65, 0.75].map((u) =>
-        supportForceG(span, u, 24),
+      const solved = result.solvedSpans[0]!;
+      const sustainedForces = [0.25, 0.35, 0.5, 0.65, 0.75].map(
+        (u) =>
+          specificForceComponents(solved.span, solved.bank!.position(u), u, 24)
+            .normal,
       );
       expect(Math.max(...sustainedForces)).toBeLessThan(targetForceG + 0.05);
       expect(Math.min(...sustainedForces)).toBeGreaterThan(targetForceG - 0.05);
-      expect(vec3Length(span.derivative(0.5, 2))).toBeGreaterThan(0.001);
+      expect(vec3Length(solved.span.derivative(0.5, 2))).toBeGreaterThan(0.001);
     },
   );
 
@@ -240,11 +420,17 @@ describe("semantic chain geometry", () => {
       { referenceSpeed: 24 },
     );
     const solved = result.solvedSpans[0]!;
-    const forces = [0.25, 0.35, 0.5, 0.65, 0.75].map((u) =>
-      supportForceG(solved.span, u, 24),
-    );
-    expect(Math.max(...forces)).toBeLessThan(0.05);
-    expect(Math.min(...forces)).toBeGreaterThan(-0.05);
+    const forces = Array.from({ length: 201 }, (_, index) => index / 200)
+      .filter((u) => u >= 0.25 && u <= 0.75)
+      .map((u) =>
+        specificForceComponents(solved.span, solved.bank!.position(u), u, 24),
+      );
+    expect(
+      Math.max(...forces.map((force) => Math.abs(force.normal))),
+    ).toBeLessThan(0.05);
+    expect(
+      Math.max(...forces.map((force) => Math.abs(force.binormal))),
+    ).toBeLessThan(0.05);
     expect(vec3Length(solved.span.derivative(0.5, 2))).toBeGreaterThan(0.001);
     expect(solved.bank!.position(0.25)).not.toBeCloseTo(
       solved.bank!.position(0.75),
@@ -269,10 +455,33 @@ describe("semantic chain geometry", () => {
     expect(result.seamDiagnostics[0]?.curvaturePerM).toBeLessThan(1e-4);
   });
 
+  it("does not trade an authored force target for seam residuals", () => {
+    const result = solveSemanticChain(
+      [
+        createElement("airtimeHill", "hard-force", {
+          length: 48,
+          height: 10,
+          targetForceG: 2,
+          referenceSpeed: 24,
+        }),
+        createElement("launch", "exit", { length: 20 }),
+      ],
+      { referenceSpeed: 24, maxIterations: 32 },
+    );
+    const hill = result.solvedSpans[0]!;
+    const force = specificForceComponents(
+      hill.span,
+      hill.bank!.position(0.5),
+      0.5,
+      24,
+    ).normal;
+    expect(force).toBeCloseTo(2, 2);
+  });
+
   it("is rigid-transform invariant and transports one continuous global frame", () => {
     const base = solveSemanticChain([
       createElement("station", "s"),
-      createElement("airtimeHill", "hill", { length: 28, height: 10 }),
+      createElement("transition", "hill", { length: 28, rise: 10 }),
       createElement("stall", "stall", { length: 24, height: 10 }),
     ]);
     const transformedStart: Pose = {
@@ -284,7 +493,7 @@ describe("semantic chain geometry", () => {
     const transformed = solveSemanticChain(
       [
         createElement("station", "s"),
-        createElement("airtimeHill", "hill", { length: 28, height: 10 }),
+        createElement("transition", "hill", { length: 28, rise: 10 }),
         createElement("stall", "stall", { length: 24, height: 10 }),
       ],
       { startPose: transformedStart },
@@ -445,8 +654,18 @@ describe("bounded seam solve", () => {
       referenceSpeed: 24,
       softForceTargetG: 0,
     });
-    const baselineForce = supportForceG(baseline.solvedSpans[0]!.span, 0.5, 24);
-    const softenedForce = supportForceG(softened.solvedSpans[0]!.span, 0.5, 24);
+    const baselineForce = specificForceComponents(
+      baseline.solvedSpans[0]!.span,
+      baseline.solvedSpans[0]!.bank!.position(0.5),
+      0.5,
+      24,
+    ).normal;
+    const softenedForce = specificForceComponents(
+      softened.solvedSpans[0]!.span,
+      softened.solvedSpans[0]!.bank!.position(0.5),
+      0.5,
+      24,
+    ).normal;
     expect(Math.abs(softenedForce)).toBeLessThan(Math.abs(baselineForce));
   });
 
@@ -511,6 +730,12 @@ describe("bounded seam solve", () => {
         maxIterations: Number.POSITIVE_INFINITY,
       }).iterations,
     ).toBeLessThanOrEqual(32);
+    expect(
+      boundedLevenbergMarquardt({
+        ...problem,
+        maxIterations: Number.MAX_SAFE_INTEGER,
+      }).iterations,
+    ).toBeLessThanOrEqual(32);
   });
 
   it("keeps a reachable closed station final seam continuous", () => {
@@ -524,6 +749,10 @@ describe("bounded seam solve", () => {
     expect(closure.positionM).toBeLessThan(1e-8);
     expect(closure.tangentRad).toBeLessThan(1e-8);
     expect(closure.curvatureVectorJumpPerM).toBeLessThan(1e-8);
+    expect(closure.bankRad).toBeLessThan(1e-8);
+    expect(closure.bankDerivativeRadPerM).toBeLessThan(1e-8);
+    expect(closure.curvatureGradientPerM2).toBeLessThan(1e-8);
+    expect(closure.specificForceJumpG).toBeLessThan(1e-8);
   });
 
   it("returns the same bank geometry that compilation samples", () => {
@@ -569,6 +798,45 @@ describe("bounded seam solve", () => {
         expect(first.solvedSpans[index]!.span.position(u)).toEqual(
           second.solvedSpans[index]!.span.position(u),
         );
+    const compiledElements = [
+      createElement("station", "compiled-station"),
+      createElement("topHat", "compiled-hat", { width: 40 }),
+      createElement("launch", "compiled-launch", { length: 20 }),
+    ];
+    const firstCompiled = compileSemanticChain(compiledElements, {
+      referenceSpeed: 24,
+      samples: 48,
+    });
+    const secondCompiled = compileSemanticChain(compiledElements, {
+      referenceSpeed: 24,
+      samples: 48,
+    });
+    expect(firstCompiled.track!.positions).toEqual(
+      secondCompiled.track!.positions,
+    );
+    expect(firstCompiled.track!.tangents).toEqual(
+      secondCompiled.track!.tangents,
+    );
+    expect(firstCompiled.track!.normals).toEqual(secondCompiled.track!.normals);
+    expect(firstCompiled.track!.binormals).toEqual(
+      secondCompiled.track!.binormals,
+    );
+    expect(firstCompiled.track!.curvature).toEqual(
+      secondCompiled.track!.curvature,
+    );
+    expect(firstCompiled.track!.bank).toEqual(secondCompiled.track!.bank);
+    expect(firstCompiled.track!.bankDerivative).toEqual(
+      secondCompiled.track!.bankDerivative,
+    );
+    expect(firstCompiled.track!.parameters).toEqual(
+      secondCompiled.track!.parameters,
+    );
+    expect(firstCompiled.track!.elementIndices).toEqual(
+      secondCompiled.track!.elementIndices,
+    );
+    expect(firstCompiled.track!.elementBoundaries).toEqual(
+      secondCompiled.track!.elementBoundaries,
+    );
   });
 
   it("includes and diagnoses the final-to-first closure seam", () => {
