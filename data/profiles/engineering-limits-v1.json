@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "profileId": "project-engineering-limits-v1",
+  "provenance": "PROJECT_ENGINEERING_LIMIT",
+  "verticalG": { "minimum": -1.2, "maximum": 5.0 },
+  "maximumAbsoluteLateralG": 1.5,
+  "maximumAbsoluteLongitudinalG": 1.5,
+  "maximumJerkMps3": 15,
+  "maximumRollRateRadPerSecond": 1.5,
+  "clearanceMarginM": 0.5,
+  "seams": {
+    "positionM": 0.0001,
+    "tangentRad": 0.00001,
+    "curvaturePerM": 0.0001,
+    "curvatureGradientPerM2": 0.0001,
+    "bankRad": 0.0001,
+    "bankDerivativeRadPerM": 0.0001,
+    "specificForceJumpG": 0.05,
+    "sustainedForceDeviationG": 0.05
+  }
+}

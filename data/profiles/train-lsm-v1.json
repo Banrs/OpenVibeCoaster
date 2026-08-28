@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "profileId": "steel-sitdown-lsm-v1",
+  "provenance": "DESIGN_ASSUMPTION",
+  "cars": 6,
+  "loadedMassPerCarKg": 1500,
+  "carPitchM": 3.4,
+  "rollingResistance": 0.002,
+  "dragCdA": 4.0,
+  "airDensityKgPerM3": 1.225,
+  "maxLsmForcePerCarN": 14000,
+  "maxLsmPowerPerCarW": 1200000,
+  "maxBrakeForcePerCarN": 18000,
+  "envelope": {
+    "halfWidthM": 1.25,
+    "aboveRailM": 2.1,
+    "belowRailM": 0.8,
+    "noseTailMarginM": 0.75
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-29",
+  "records": [
+    {
+      "id": "spitfire-tallest-inversion",
+      "name": "Spitfire",
+      "facts": { "inversionHeightM": 73, "speedKmh": 127 },
+      "claim": "world tallest inversion",
+      "sources": [
+        "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
+        "https://rcdb.com/21313.htm"
+      ]
+    },
+    {
+      "id": "falcons-flight-overall-records",
+      "name": "Falcons Flight",
+      "facts": { "heightM": 195, "speedKmh": 250, "trackLengthM": 4325 },
+      "claim": "world tallest, fastest, and longest roller coaster",
+      "sources": [
+        "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+        "https://rcdb.com/21315.htm"
+      ]
+    }
+  ],
+  "defaultTarget": {
+    "metric": "inversionHeightM",
+    "minimum": 80,
+    "baselineRecordId": "spitfire-tallest-inversion"
+  }
+}
