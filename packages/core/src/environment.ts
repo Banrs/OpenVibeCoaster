@@ -70,7 +70,9 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       closest[2] - point[2],
     );
     const distance = Math.hypot(delta[0], delta[1], delta[2]);
-    return point[1] >= closest[1] ? distance : -distance;
+    return point[1] - this.heightAt(point[0], point[2]) >= 0
+      ? distance
+      : -distance;
   }
 
   private gradientAt(x: number, z: number): readonly [number, number] {
@@ -138,6 +140,31 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return vec3(x, this.heightAt(x, z), z);
   }
 
+  private slopeBound(): readonly [number, number] {
+    let maximumX = 0;
+    let maximumZ = 0;
+    for (let row = 0; row < this.depth - 1; row += 1)
+      for (let column = 0; column < this.width - 1; column += 1) {
+        const at = (sampleColumn: number, sampleRow: number): number =>
+          this.heights[sampleRow * this.width + sampleColumn];
+        const h00 = at(column, row);
+        const h10 = at(column + 1, row);
+        const h01 = at(column, row + 1);
+        const h11 = at(column + 1, row + 1);
+        maximumX = Math.max(
+          maximumX,
+          Math.abs(h10 - h00) / this.cellSize,
+          Math.abs(h11 - h01) / this.cellSize,
+        );
+        maximumZ = Math.max(
+          maximumZ,
+          Math.abs(h01 - h00) / this.cellSize,
+          Math.abs(h11 - h10) / this.cellSize,
+        );
+      }
+    return [maximumX, maximumZ];
+  }
+
   public normalAt(x: number, z: number): Vec3 {
     const [dx, dz] = this.gradientAt(x, z);
     return vec3Normalize(vec3(-dx, 1, -dz));
@@ -159,43 +186,115 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
         origin[1] + dir[1] * distance,
         origin[2] + dir[2] * distance,
       );
-    let previous = this.signedDistance(origin);
-    if (Math.abs(previous) <= 1e-10)
+    const columnValue = (distance: number): number =>
+      origin[1] +
+      dir[1] * distance -
+      this.heightAt(
+        origin[0] + dir[0] * distance,
+        origin[2] + dir[2] * distance,
+      );
+    const initialValue = columnValue(0);
+    if (Math.abs(initialValue) <= 1e-10)
       return {
         distance: 0,
         point: origin,
         normal: this.normalAt(origin[0], origin[2]),
       };
-    const step = Math.max(this.cellSize / 64, maxDistance / 8192);
-    const steps = Math.ceil(maxDistance / step);
-    for (let index = 1; index <= steps; index += 1) {
-      const distance = Math.min(maxDistance, index * step);
-      const point = pointAt(distance);
-      const current = this.signedDistance(point);
-      if (previous === 0 || previous * current <= 0) {
-        let low = distance - Math.min(step, distance);
-        let high = distance;
-        for (let iteration = 0; iteration < 60; iteration += 1) {
-          const middle = (low + high) / 2;
-          const middleValue = this.signedDistance(pointAt(middle));
-          if (Math.abs(middleValue) <= 1e-10 || high - low <= 1e-10) {
-            low = middle;
-            high = middle;
-            break;
-          }
-          if (previous * middleValue <= 0) high = middle;
-          else low = middle;
-        }
-        const hitDistance = (low + high) / 2;
-        const hitPoint = pointAt(hitDistance);
+    const [maximumX, maximumZ] = this.slopeBound();
+    const lipschitz =
+      Math.abs(dir[1]) +
+      Math.abs(dir[0]) * maximumX +
+      Math.abs(dir[2]) * maximumZ;
+    const valueTolerance = 1e-10;
+    const distanceTolerance = 1e-10;
+    type RootBracket = {
+      readonly low: number;
+      readonly high: number;
+      readonly lowValue: number;
+      readonly highValue: number;
+    };
+    const findEarliestBracket = (
+      low: number,
+      high: number,
+      lowValue: number,
+      highValue: number,
+      depth: number,
+    ): RootBracket | undefined => {
+      if (Math.abs(lowValue) <= valueTolerance)
+        return { low, high: low, lowValue, highValue: lowValue };
+      if (Math.abs(highValue) <= valueTolerance)
+        return { low: high, high, lowValue: highValue, highValue };
+      if (lowValue * highValue <= 0 && high - low <= distanceTolerance)
+        return { low, high, lowValue, highValue };
+      if (high - low <= distanceTolerance || depth >= 64) return undefined;
+
+      const middle = (low + high) / 2;
+      const middleValue = columnValue(middle);
+      if (Math.abs(middleValue) <= valueTolerance)
         return {
-          distance: hitDistance,
-          point: hitPoint,
-          normal: this.normalAt(hitPoint[0], hitPoint[2]),
+          low: middle,
+          high: middle,
+          lowValue: middleValue,
+          highValue: middleValue,
         };
+      const halfWidth = (high - low) / 2;
+      if (Math.abs(middleValue) > lipschitz * halfWidth + valueTolerance)
+        return undefined;
+
+      const leftMayContainRoot =
+        lowValue * middleValue <= 0 ||
+        Math.abs(middleValue) <= lipschitz * (middle - low) + valueTolerance;
+      if (leftMayContainRoot) {
+        const left = findEarliestBracket(
+          low,
+          middle,
+          lowValue,
+          middleValue,
+          depth + 1,
+        );
+        if (left) return left;
       }
-      previous = current;
+      const rightMayContainRoot =
+        middleValue * highValue <= 0 ||
+        Math.abs(middleValue) <= lipschitz * (high - middle) + valueTolerance;
+      return rightMayContainRoot
+        ? findEarliestBracket(middle, high, middleValue, highValue, depth + 1)
+        : undefined;
+    };
+    const bracket = findEarliestBracket(
+      0,
+      maxDistance,
+      initialValue,
+      columnValue(maxDistance),
+      0,
+    );
+    if (!bracket) return undefined;
+    let low = bracket.low;
+    let high = bracket.high;
+    let lowValue = bracket.lowValue;
+    if (low !== high) {
+      for (let iteration = 0; iteration < 60; iteration += 1) {
+        const middle = (low + high) / 2;
+        const middleValue = columnValue(middle);
+        if (Math.abs(middleValue) <= valueTolerance) {
+          low = middle;
+          high = middle;
+          break;
+        }
+        if (lowValue * middleValue <= 0) high = middle;
+        else {
+          low = middle;
+          lowValue = middleValue;
+        }
+        if (high - low <= distanceTolerance) break;
+      }
     }
-    return undefined;
+    const hitDistance = (low + high) / 2;
+    const hitPoint = pointAt(hitDistance);
+    return {
+      distance: hitDistance,
+      point: hitPoint,
+      normal: this.normalAt(hitPoint[0], hitPoint[2]),
+    };
   }
 }

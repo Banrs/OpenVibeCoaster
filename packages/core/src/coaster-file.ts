@@ -50,7 +50,7 @@ export const createCoasterFileV1 = (
   });
 };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
+  typeof value === "object" && value !== null && !Array.isArray(value);
 const fail = (path: string, reason: string): never => {
   throw new CoasterFileError(`${path}: expected ${reason}`);
 };

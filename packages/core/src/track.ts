@@ -31,6 +31,10 @@ interface CompiledTrackDataInput {
   readonly parameters: Float64Array;
   readonly totalLength: number;
 }
+type CompiledTrackStorage = Omit<
+  CompiledTrackDataInput,
+  "zoneNames" | "totalLength"
+>;
 
 const readVec3 = (array: Float64Array, index: number): Vec3 =>
   vec3(array[index * 3], array[index * 3 + 1], array[index * 3 + 2]);
@@ -89,6 +93,11 @@ const checksum = (data: CompiledTrackDataInput): string => {
   return hashText(canonical);
 };
 
+const compiledTrackStorage = new WeakMap<
+  CompiledTrackData,
+  CompiledTrackStorage
+>();
+
 export class CompiledTrackData {
   readonly #positions: Float64Array;
   readonly #tangents: Float64Array;
@@ -136,6 +145,20 @@ export class CompiledTrackData {
       elementBoundaries: this.#elementBoundaries,
       parameters: this.#parameters,
       totalLength: this.totalLength,
+    });
+    compiledTrackStorage.set(this, {
+      positions: this.#positions,
+      tangents: this.#tangents,
+      normals: this.#normals,
+      binormals: this.#binormals,
+      distances: this.#distances,
+      curvature: this.#curvature,
+      bank: this.#bank,
+      bankDerivative: this.#bankDerivative,
+      zoneMasks: this.#zoneMasks,
+      elementIndices: this.#elementIndices,
+      elementBoundaries: this.#elementBoundaries,
+      parameters: this.#parameters,
     });
     Object.freeze(this);
   }
@@ -325,18 +348,16 @@ export const sampleCompiledTrack = (
   data: CompiledTrackData,
   normalizedDistance: number,
 ): TrackSample => {
+  const storage = compiledTrackStorage.get(data);
+  if (!storage) throw new TypeError("Unknown compiled track data");
   const t = Math.max(0, Math.min(1, normalizedDistance));
-  const floating = t * (data.distances.length - 1);
+  const floating = t * (storage.distances.length - 1);
   const low = Math.floor(floating);
-  const high = Math.min(data.distances.length - 1, low + 1);
+  const high = Math.min(storage.distances.length - 1, low + 1);
   const fraction = floating - low;
-  const positions = data.positions;
-  const tangents = data.tangents;
-  const normals = data.normals;
-  const binormals = data.binormals;
-  const curvatures = data.curvature;
-  const banks = data.bank;
-  const bankDerivatives = data.bankDerivative;
+  const { positions, tangents, normals, binormals } = storage;
+  const { curvature: curvatures, bank: banks } = storage;
+  const { bankDerivative: bankDerivatives } = storage;
   const interpolate = (array: Float64Array): number =>
     array[low] * (1 - fraction) + array[high] * fraction;
   const tangent = vec3Normalize(

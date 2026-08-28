@@ -368,6 +368,58 @@ describe("compiled track and heightfield", () => {
     expect(make("brake").checksum).not.toBe(checksum);
   });
 
+  it("samples from owned arrays without invoking clone-producing getters", () => {
+    const data = compileTrack(
+      [
+        {
+          id: "line",
+          span: {
+            position: (u: number) => vec3(u * 10, 0, 0),
+            derivative: () => vec3(10, 0, 0),
+          },
+        },
+      ],
+      { samples: 9 },
+    );
+    const prototype = Object.getPrototypeOf(data) as object;
+    const keys = [
+      "distances",
+      "positions",
+      "tangents",
+      "normals",
+      "binormals",
+      "curvature",
+      "bank",
+      "bankDerivative",
+    ];
+    const descriptors = new Map<string, PropertyDescriptor>();
+    let getterCalls = 0;
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, key);
+      if (!descriptor) throw new Error(`Missing ${key} getter`);
+      descriptors.set(key, descriptor);
+      Object.defineProperty(prototype, key, {
+        configurable: true,
+        get: () => {
+          getterCalls += 1;
+          throw new Error(`Unexpected ${key} getter call`);
+        },
+      });
+    }
+    try {
+      for (let iteration = 0; iteration < 100; iteration += 1)
+        sampleCompiledTrack(data, iteration / 99);
+    } finally {
+      for (const [key, descriptor] of descriptors)
+        Object.defineProperty(prototype, key, descriptor);
+    }
+    expect(getterCalls).toBe(0);
+
+    const exposedDistances = data.distances;
+    exposedDistances[0] = 999;
+    expect(data.distances[0]).toBe(0);
+  });
+
   it("answers heightfield distance and raycast queries", () => {
     const env = new HeightfieldEnvironment({
       width: 2,
@@ -381,6 +433,39 @@ describe("compiled track and heightfield", () => {
     expect(
       env.raycast(vec3(0.5, 10, 0.5), vec3(0, -1, 0), 20)?.distance,
     ).toBeCloseTo(8.5);
+  });
+
+  it("uses the original heightfield column to determine signed-distance sign", () => {
+    const steep = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: new Float64Array([0, 10, 0, 10]),
+    });
+    expect(steep.signedDistance(vec3(0.1, 1.5, 0.5))).toBeGreaterThan(0);
+    expect(steep.signedDistance(vec3(0.1, 0.5, 0.5))).toBeLessThan(0);
+
+    const curvedRidge = new HeightfieldEnvironment({
+      width: 3,
+      depth: 3,
+      cellSize: 1,
+      heights: new Float64Array([0, 5, 0, 5, 20, 5, 0, 5, 0]),
+    });
+    expect(curvedRidge.signedDistance(vec3(1.84, 11, 0.86))).toBeGreaterThan(0);
+    expect(curvedRidge.signedDistance(vec3(1.84, 3, 0.86))).toBeLessThan(0);
+  });
+
+  it("finds the earliest crossing of a narrow double-crossing ridge", () => {
+    const env = new HeightfieldEnvironment({
+      width: 3,
+      depth: 2,
+      cellSize: 1,
+      heights: new Float64Array([0, 10, 0, 0, 10, 0]),
+    });
+    const hit = env.raycast(vec3(0.0078125, 9.999, 0.5), vec3(1, 0, 0), 2);
+    expect(hit).toBeDefined();
+    expect(hit?.distance).toBeCloseTo(0.9920875, 8);
+    expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
   });
 
   it("measures geometric distance and refines arbitrary ray intersections", () => {
@@ -436,6 +521,22 @@ describe("coaster file v1", () => {
       );
     expect(() => malformed({ elements: [{ id: null }] })).toThrow(
       "design.elements[0].id: expected string",
+    );
+    expect(() => malformed([])).toThrow("design: expected object");
+    expect(() => malformed({ elements: [[]] })).toThrow(
+      "design.elements[0]: expected object",
+    );
+    expect(() =>
+      malformed({ elements: [{ id: "e", parameters: [] }] }),
+    ).toThrow("design.elements[0].parameters: expected object");
+    expect(() => malformed({ elements: [], gates: [[]] })).toThrow(
+      "design.gates[0]: expected object",
+    );
+    expect(() => malformed({ elements: [], constraints: [[]] })).toThrow(
+      "design.constraints[0]: expected object",
+    );
+    expect(() => malformed({ elements: [], solvedSpans: [[]] })).toThrow(
+      "design.solvedSpans[0]: expected object",
     );
     expect(() =>
       malformed({ elements: [], gates: [{ id: "g", at: "x", kind: "s" }] }),
