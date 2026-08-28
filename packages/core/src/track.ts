@@ -15,7 +15,7 @@ export interface CompileTrackOptions {
   readonly samples?: number;
   readonly tolerance?: number;
 }
-export interface CompiledTrackData {
+interface CompiledTrackDataInput {
   readonly positions: Float64Array;
   readonly tangents: Float64Array;
   readonly normals: Float64Array;
@@ -28,8 +28,8 @@ export interface CompiledTrackData {
   readonly zoneNames: readonly string[];
   readonly elementIndices: Uint32Array;
   readonly elementBoundaries: Uint32Array;
+  readonly parameters: Float64Array;
   readonly totalLength: number;
-  readonly checksum: string;
 }
 
 const readVec3 = (array: Float64Array, index: number): Vec3 =>
@@ -39,45 +39,158 @@ const writeVec3 = (array: Float64Array, index: number, value: Vec3): void => {
   array[index * 3 + 1] = value[1];
   array[index * 3 + 2] = value[2];
 };
-const hashBytes = (bytes: Uint8Array): string => {
-  let hash = 0x811c9dc5;
-  for (const byte of bytes) hash = Math.imul(hash ^ byte, 0x01000193);
+const encodeUtf8 = (text: string): Uint8Array => {
+  const bytes: number[] = [];
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x80) bytes.push(code);
+    else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    else if (code < 0x10000)
+      bytes.push(
+        0xe0 | (code >> 12),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f),
+      );
+    else
+      bytes.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 0x3f),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f),
+      );
+  }
+  return new Uint8Array(bytes);
+};
+const hashText = (text: string): string => {
+  const bytes = encodeUtf8(text);
+  const hash = bytes.reduce(
+    (value, byte) => Math.imul(value ^ byte, 0x01000193),
+    0x811c9dc5,
+  );
   return (hash >>> 0).toString(16).padStart(8, "0");
 };
-const checksum = (data: Omit<CompiledTrackData, "checksum">): string => {
-  const chunks = [
-    data.positions,
-    data.tangents,
-    data.normals,
-    data.binormals,
-    data.distances,
-    data.curvature,
-    data.bank,
-    data.bankDerivative,
-    data.zoneMasks,
-    data.elementIndices,
-    data.elementBoundaries,
-  ];
-  const bytes = new Uint8Array(
-    chunks.reduce((total, chunk) => total + chunk.byteLength, 0),
-  );
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(
-      new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength),
-      offset,
-    );
-    offset += chunk.byteLength;
-  }
-  return hashBytes(bytes);
+const checksum = (data: CompiledTrackDataInput): string => {
+  const canonical = JSON.stringify({
+    positions: Array.from(data.positions),
+    tangents: Array.from(data.tangents),
+    normals: Array.from(data.normals),
+    binormals: Array.from(data.binormals),
+    distances: Array.from(data.distances),
+    curvature: Array.from(data.curvature),
+    bank: Array.from(data.bank),
+    bankDerivative: Array.from(data.bankDerivative),
+    zoneMasks: Array.from(data.zoneMasks),
+    zoneNames: [...data.zoneNames],
+    elementIndices: Array.from(data.elementIndices),
+    elementBoundaries: Array.from(data.elementBoundaries),
+    parameters: Array.from(data.parameters),
+    totalLength: data.totalLength,
+  });
+  return hashText(canonical);
 };
+
+export class CompiledTrackData {
+  readonly #positions: Float64Array;
+  readonly #tangents: Float64Array;
+  readonly #normals: Float64Array;
+  readonly #binormals: Float64Array;
+  readonly #distances: Float64Array;
+  readonly #curvature: Float64Array;
+  readonly #bank: Float64Array;
+  readonly #bankDerivative: Float64Array;
+  readonly #zoneMasks: Uint32Array;
+  readonly #zoneNames: readonly string[];
+  readonly #elementIndices: Uint32Array;
+  readonly #elementBoundaries: Uint32Array;
+  readonly #parameters: Float64Array;
+  public readonly totalLength: number;
+  public readonly checksum: string;
+
+  public constructor(input: CompiledTrackDataInput) {
+    this.#positions = new Float64Array(input.positions);
+    this.#tangents = new Float64Array(input.tangents);
+    this.#normals = new Float64Array(input.normals);
+    this.#binormals = new Float64Array(input.binormals);
+    this.#distances = new Float64Array(input.distances);
+    this.#curvature = new Float64Array(input.curvature);
+    this.#bank = new Float64Array(input.bank);
+    this.#bankDerivative = new Float64Array(input.bankDerivative);
+    this.#zoneMasks = new Uint32Array(input.zoneMasks);
+    this.#zoneNames = Object.freeze([...input.zoneNames]);
+    this.#elementIndices = new Uint32Array(input.elementIndices);
+    this.#elementBoundaries = new Uint32Array(input.elementBoundaries);
+    this.#parameters = new Float64Array(input.parameters);
+    this.totalLength = input.totalLength;
+    this.checksum = checksum({
+      positions: this.#positions,
+      tangents: this.#tangents,
+      normals: this.#normals,
+      binormals: this.#binormals,
+      distances: this.#distances,
+      curvature: this.#curvature,
+      bank: this.#bank,
+      bankDerivative: this.#bankDerivative,
+      zoneMasks: this.#zoneMasks,
+      zoneNames: this.#zoneNames,
+      elementIndices: this.#elementIndices,
+      elementBoundaries: this.#elementBoundaries,
+      parameters: this.#parameters,
+      totalLength: this.totalLength,
+    });
+    Object.freeze(this);
+  }
+
+  public get positions(): Float64Array {
+    return new Float64Array(this.#positions);
+  }
+  public get tangents(): Float64Array {
+    return new Float64Array(this.#tangents);
+  }
+  public get normals(): Float64Array {
+    return new Float64Array(this.#normals);
+  }
+  public get binormals(): Float64Array {
+    return new Float64Array(this.#binormals);
+  }
+  public get distances(): Float64Array {
+    return new Float64Array(this.#distances);
+  }
+  public get curvature(): Float64Array {
+    return new Float64Array(this.#curvature);
+  }
+  public get bank(): Float64Array {
+    return new Float64Array(this.#bank);
+  }
+  public get bankDerivative(): Float64Array {
+    return new Float64Array(this.#bankDerivative);
+  }
+  public get zoneMasks(): Uint32Array {
+    return new Uint32Array(this.#zoneMasks);
+  }
+  public get zoneNames(): readonly string[] {
+    return [...this.#zoneNames];
+  }
+  public get elementIndices(): Uint32Array {
+    return new Uint32Array(this.#elementIndices);
+  }
+  public get elementBoundaries(): Uint32Array {
+    return new Uint32Array(this.#elementBoundaries);
+  }
+  public get parameters(): Float64Array {
+    return new Float64Array(this.#parameters);
+  }
+}
 const bankValue = (element: TrackElement, u: number): number =>
   typeof element.bank === "function"
     ? element.bank(u)
     : (element.bank?.position(u) ?? 0);
 const bankDerivative = (element: TrackElement, u: number): number =>
   typeof element.bank === "function"
-    ? (element.bank(u + 1e-5) - element.bank(u - 1e-5)) / 2e-5
+    ? (() => {
+        const low = Math.max(0, u - 1e-5);
+        const high = Math.min(1, u + 1e-5);
+        return (element.bank(high) - element.bank(low)) / (high - low);
+      })()
     : (element.bank?.derivative(u, 1) ?? 0);
 
 export const compileTrack = (
@@ -92,6 +205,8 @@ export const compileTrack = (
   const tangents = new Float64Array(count * 3);
   const elementIndices = new Uint32Array(count);
   const elementBoundaries = new Uint32Array(elements.length * 2);
+  const parameters = new Float64Array(count);
+  const localDistances = new Float64Array(count);
   const banks = new Float64Array(count);
   const bankDerivatives = new Float64Array(count);
   const zoneSets = new Set<string>();
@@ -128,8 +243,11 @@ export const compileTrack = (
               luts[elementIndex],
               (luts[elementIndex].totalLength * sample) / (perElement - 1),
             );
+      localDistances[index] =
+        (luts[elementIndex].totalLength * sample) / (perElement - 1);
       writeVec3(positions, index, element.span.position(u));
       writeVec3(tangents, index, vec3Normalize(element.span.derivative(u, 1)));
+      parameters[index] = u;
       elementIndices[index] = elementIndex;
       banks[index] = bankValue(element, u);
       bankDerivatives[index] = bankDerivative(element, u);
@@ -138,7 +256,7 @@ export const compileTrack = (
   const frameInputs = Array.from({ length: count }, (_, index) =>
     readVec3(tangents, index),
   );
-  const parameters = Array.from(
+  const frameParameters = Array.from(
     { length: count },
     (_, index) => index / (count - 1),
   );
@@ -148,11 +266,8 @@ export const compileTrack = (
   const frames: readonly Frame[] = transportFramesAlongPath(
     pathPositions,
     frameInputs,
-    parameters,
-    (parameter) =>
-      banks[
-        Math.min(count - 1, Math.max(0, Math.round(parameter * (count - 1))))
-      ],
+    frameParameters,
+    banks,
   );
   const normals = new Float64Array(count * 3);
   const binormals = new Float64Array(count * 3);
@@ -162,14 +277,9 @@ export const compileTrack = (
   for (let index = 0; index < count; index += 1) {
     writeVec3(normals, index, frames[index].normal);
     writeVec3(binormals, index, frames[index].binormal);
-    const elementStart = elementIndices[index] * (perElement - 1);
-    const sampleFraction = (index - elementStart) / (perElement - 1);
-    distances[index] =
-      offsets[elementIndices[index]] +
-      luts[elementIndices[index]].totalLength * sampleFraction;
+    distances[index] = offsets[elementIndices[index]] + localDistances[index];
     const element = elements[elementIndices[index]];
-    const u =
-      (index - elementIndices[index] * (perElement - 1)) / (perElement - 1);
+    const u = parameters[index];
     const d1 = element.span.derivative(u, 1);
     const d2 = element.span.derivative(u, 2);
     const cross = vec3(
@@ -183,7 +293,7 @@ export const compileTrack = (
     for (const zone of element.zones ?? [])
       zoneMasks[index] |= 1 << zoneNames.indexOf(zone);
   }
-  const partial: Omit<CompiledTrackData, "checksum"> = {
+  return new CompiledTrackData({
     positions,
     tangents,
     normals,
@@ -196,9 +306,9 @@ export const compileTrack = (
     zoneNames: Object.freeze(zoneNames),
     elementIndices,
     elementBoundaries,
+    parameters,
     totalLength: offsets[elements.length],
-  };
-  return Object.freeze({ ...partial, checksum: checksum(partial) });
+  });
 };
 
 export interface TrackSample {
@@ -220,33 +330,88 @@ export const sampleCompiledTrack = (
   const low = Math.floor(floating);
   const high = Math.min(data.distances.length - 1, low + 1);
   const fraction = floating - low;
+  const positions = data.positions;
+  const tangents = data.tangents;
+  const normals = data.normals;
+  const binormals = data.binormals;
+  const curvatures = data.curvature;
+  const banks = data.bank;
+  const bankDerivatives = data.bankDerivative;
   const interpolate = (array: Float64Array): number =>
     array[low] * (1 - fraction) + array[high] * fraction;
+  const tangent = vec3Normalize(
+    vec3(
+      tangents[low * 3] * (1 - fraction) + tangents[high * 3] * fraction,
+      tangents[low * 3 + 1] * (1 - fraction) +
+        tangents[high * 3 + 1] * fraction,
+      tangents[low * 3 + 2] * (1 - fraction) +
+        tangents[high * 3 + 2] * fraction,
+    ),
+  );
+  const rawNormal = vec3(
+    normals[low * 3] * (1 - fraction) + normals[high * 3] * fraction,
+    normals[low * 3 + 1] * (1 - fraction) + normals[high * 3 + 1] * fraction,
+    normals[low * 3 + 2] * (1 - fraction) + normals[high * 3 + 2] * fraction,
+  );
+  const projectedNormal = vec3(
+    rawNormal[0] -
+      tangent[0] *
+        (tangent[0] * rawNormal[0] +
+          tangent[1] * rawNormal[1] +
+          tangent[2] * rawNormal[2]),
+    rawNormal[1] -
+      tangent[1] *
+        (tangent[0] * rawNormal[0] +
+          tangent[1] * rawNormal[1] +
+          tangent[2] * rawNormal[2]),
+    rawNormal[2] -
+      tangent[2] *
+        (tangent[0] * rawNormal[0] +
+          tangent[1] * rawNormal[1] +
+          tangent[2] * rawNormal[2]),
+  );
+  const rawBinormal = vec3(
+    binormals[low * 3] * (1 - fraction) + binormals[high * 3] * fraction,
+    binormals[low * 3 + 1] * (1 - fraction) +
+      binormals[high * 3 + 1] * fraction,
+    binormals[low * 3 + 2] * (1 - fraction) +
+      binormals[high * 3 + 2] * fraction,
+  );
+  const normal =
+    projectedNormal[0] ** 2 +
+      projectedNormal[1] ** 2 +
+      projectedNormal[2] ** 2 >
+    1e-24
+      ? vec3Normalize(projectedNormal)
+      : vec3Normalize(
+          vec3(
+            rawBinormal[1] * tangent[2] - rawBinormal[2] * tangent[1],
+            rawBinormal[2] * tangent[0] - rawBinormal[0] * tangent[2],
+            rawBinormal[0] * tangent[1] - rawBinormal[1] * tangent[0],
+          ),
+        );
+  const binormal = vec3Normalize(
+    vec3(
+      tangent[1] * normal[2] - tangent[2] * normal[1],
+      tangent[2] * normal[0] - tangent[0] * normal[2],
+      tangent[0] * normal[1] - tangent[1] * normal[0],
+    ),
+  );
   return {
     position: vec3(
-      data.positions[low * 3] * (1 - fraction) +
-        data.positions[high * 3] * fraction,
-      data.positions[low * 3 + 1] * (1 - fraction) +
-        data.positions[high * 3 + 1] * fraction,
-      data.positions[low * 3 + 2] * (1 - fraction) +
-        data.positions[high * 3 + 2] * fraction,
+      positions[low * 3] * (1 - fraction) + positions[high * 3] * fraction,
+      positions[low * 3 + 1] * (1 - fraction) +
+        positions[high * 3 + 1] * fraction,
+      positions[low * 3 + 2] * (1 - fraction) +
+        positions[high * 3 + 2] * fraction,
     ),
-    tangent: vec3Normalize(
-      vec3(
-        data.tangents[low * 3] * (1 - fraction) +
-          data.tangents[high * 3] * fraction,
-        data.tangents[low * 3 + 1] * (1 - fraction) +
-          data.tangents[high * 3 + 1] * fraction,
-        data.tangents[low * 3 + 2] * (1 - fraction) +
-          data.tangents[high * 3 + 2] * fraction,
-      ),
-    ),
-    normal: readVec3(data.normals, low),
-    binormal: readVec3(data.binormals, low),
+    tangent,
+    normal,
+    binormal,
     distance: data.totalLength * t,
-    curvature: interpolate(data.curvature),
-    bank: interpolate(data.bank),
-    bankDerivative: interpolate(data.bankDerivative),
+    curvature: interpolate(curvatures),
+    bank: interpolate(banks),
+    bankDerivative: interpolate(bankDerivatives),
   };
 };
 export const sampleTrackAtDistance = (

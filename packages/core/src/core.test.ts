@@ -20,6 +20,7 @@ import {
   seconds,
   serializeCoasterFileV1,
   transportFrames,
+  transportFramesAlongPath,
   buildArcLengthLut,
   invertArcLength,
   quatFromAxisAngle,
@@ -106,6 +107,14 @@ describe("deterministic random streams", () => {
     expect(new Xoshiro128ss(1).nextFloat()).toBeGreaterThanOrEqual(0);
     expect(new Xoshiro128ss(1).nextFloat()).toBeLessThan(1);
   });
+
+  it("keeps named streams independent", () => {
+    const geometry = new Xoshiro128ss(123).fork("geometry");
+    const bank = new Xoshiro128ss(123).fork("bank");
+    expect(Array.from({ length: 8 }, () => geometry.nextUint32())).not.toEqual(
+      Array.from({ length: 8 }, () => bank.nextUint32()),
+    );
+  });
 });
 
 describe("analytic spans and arc length", () => {
@@ -189,6 +198,26 @@ describe("analytic spans and arc length", () => {
       invertArcLength(helix, helixLut, helixLut.totalLength / 2),
     ).toBeCloseTo(0.5, 7);
   });
+
+  it("handles a high-curvature arc without losing inverse accuracy", () => {
+    const radius = 0.01;
+    const span = {
+      position: (u: number) =>
+        vec3(radius * Math.cos(20 * u), radius * Math.sin(20 * u), 0),
+      derivative: (u: number) =>
+        vec3(
+          -20 * radius * Math.sin(20 * u),
+          20 * radius * Math.cos(20 * u),
+          0,
+        ),
+    };
+    const lut = buildArcLengthLut(span, 8, 1e-10);
+    expect(lut.totalLength).toBeCloseTo(radius * 20, 9);
+    expect(invertArcLength(span, lut, lut.totalLength * 0.37)).toBeCloseTo(
+      0.37,
+      8,
+    );
+  });
 });
 
 describe("rotation-minimizing frames", () => {
@@ -208,6 +237,47 @@ describe("rotation-minimizing frames", () => {
     }
     expect(frames[0].bank).toBeCloseTo(0);
     expect(frames[3].bank).toBeCloseTo((Math.PI * 3) / 10);
+  });
+
+  it("uses double reflection across a changing path without frame flips", () => {
+    const positions = [
+      vec3(0, 0, 0),
+      vec3(1, 0, 0),
+      vec3(1.5, 0.5, 0),
+      vec3(1.5, 1, 1),
+      vec3(1, 1.5, 1),
+    ];
+    const tangents = [
+      vec3(1, 0, 0),
+      vec3(1, 0.2, 0),
+      vec3(0.7, 0.7, 0),
+      vec3(0, 0.7, 0.7),
+      vec3(-0.2, 0.7, 0.7),
+    ];
+    const frames = transportFramesAlongPath(
+      positions,
+      tangents,
+      [0, 1, 2, 3, 4],
+      () => 0,
+    );
+    for (let index = 0; index < frames.length; index += 1) {
+      expect(vec3Length(frames[index].normal)).toBeCloseTo(1, 10);
+      expect(vec3Dot(frames[index].tangent, frames[index].normal)).toBeCloseTo(
+        0,
+        10,
+      );
+      expect(
+        vec3Dot(
+          vec3Cross(frames[index].tangent, frames[index].normal),
+          frames[index].binormal,
+        ),
+      ).toBeCloseTo(1, 10);
+      if (index > 0)
+        expect(
+          vec3Dot(frames[index - 1].normal, frames[index].normal),
+        ).toBeGreaterThan(0);
+    }
+    expect(frames).toHaveLength(positions.length);
   });
 });
 
@@ -233,6 +303,13 @@ describe("compiled track and heightfield", () => {
     expect(data.distances[8]).toBeCloseTo(data.totalLength);
     expect(Object.isFrozen(data)).toBe(true);
     expect(sampleCompiledTrack(data, 0.5).position[0]).toBeCloseTo(5);
+    const midpoint = sampleCompiledTrack(data, 0.5);
+    expect(vec3Length(midpoint.tangent)).toBeCloseTo(1, 10);
+    expect(vec3Length(midpoint.normal)).toBeCloseTo(1, 10);
+    expect(vec3Dot(midpoint.tangent, midpoint.normal)).toBeCloseTo(0, 10);
+    expect(
+      vec3Dot(vec3Cross(midpoint.tangent, midpoint.normal), midpoint.binormal),
+    ).toBeCloseTo(1, 10);
     expect(data.checksum).toBe(
       compileTrack(
         [
@@ -250,6 +327,47 @@ describe("compiled track and heightfield", () => {
     );
   });
 
+  it("uses inverted parameters for non-uniform metadata", () => {
+    const span = {
+      position: (u: number) => vec3(u, u * u, 0),
+      derivative: (u: number, order = 1) =>
+        order === 1 ? vec3(1, 2 * u, 0) : vec3(0, 2, 0),
+    };
+    const data = compileTrack(
+      [{ id: "curve", span, bank: (u: number) => u * u }],
+      { samples: 5 },
+    );
+    const u = data.parameters[2];
+    const expectedCurvature = 2 / (1 + 4 * u * u) ** 1.5;
+    expect(u).not.toBeCloseTo(0.5, 3);
+    expect(data.curvature[2]).toBeCloseTo(expectedCurvature, 9);
+    expect(data.bank[2]).toBeCloseTo(u * u, 12);
+  });
+
+  it("does not expose authoritative arrays and includes metadata in checksums", () => {
+    const make = (zone: string) =>
+      compileTrack(
+        [
+          {
+            id: "line",
+            span: {
+              position: (u: number) => vec3(u * 10, 0, 0),
+              derivative: () => vec3(10, 0, 0),
+            },
+            zones: [zone],
+          },
+        ],
+        { samples: 3 },
+      );
+    const data = make("lift");
+    const checksum = data.checksum;
+    const exposed = data.positions;
+    exposed[0] = 999;
+    expect(data.positions[0]).toBe(0);
+    expect(data.checksum).toBe(checksum);
+    expect(make("brake").checksum).not.toBe(checksum);
+  });
+
   it("answers heightfield distance and raycast queries", () => {
     const env = new HeightfieldEnvironment({
       width: 2,
@@ -257,10 +375,40 @@ describe("compiled track and heightfield", () => {
       cellSize: 1,
       heights: new Float64Array([0, 1, 2, 3]),
     });
-    expect(env.signedDistance(vec3(0.5, 2, 0.5))).toBeCloseTo(0.5);
+    expect(env.signedDistance(vec3(0.5, 2, 0.5))).toBeCloseTo(
+      0.5 / Math.sqrt(6),
+    );
     expect(
       env.raycast(vec3(0.5, 10, 0.5), vec3(0, -1, 0), 20)?.distance,
     ).toBeCloseTo(8.5);
+  });
+
+  it("measures geometric distance and refines arbitrary ray intersections", () => {
+    const plane = new HeightfieldEnvironment({
+      width: 3,
+      depth: 3,
+      cellSize: 1,
+      heights: new Float64Array([0, 1, 2, 0, 1, 2, 0, 1, 2]),
+    });
+    expect(plane.signedDistance(vec3(0.5, 1.5, 0.5))).toBeCloseTo(
+      1 / Math.sqrt(2),
+      7,
+    );
+    const heights = new Float64Array(9);
+    for (let z = 0; z < 3; z += 1)
+      for (let x = 0; x < 3; x += 1) heights[z * 3 + x] = x + z * z * 0.1;
+    const env = new HeightfieldEnvironment({
+      width: 3,
+      depth: 3,
+      cellSize: 1,
+      heights,
+    });
+    expect(env.signedDistance(vec3(0.5, 1.5, 0.5))).toBeLessThan(0.8);
+    const direction = vec3Normalize(vec3(1, -1, 0));
+    const hit = plane.raycast(vec3(0.2, 2, 0.5), direction, 10);
+    expect(hit).toBeDefined();
+    expect(hit?.distance).toBeCloseTo(1.8 / Math.sqrt(2), 6);
+    expect(hit ? plane.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
   });
 });
 
@@ -278,6 +426,55 @@ describe("coaster file v1", () => {
     ).toThrow(CoasterFileError);
     expect(() =>
       parseCoasterFile(JSON.stringify({ schemaVersion: 1, name: "bad" })),
-    ).toThrow(/Invalid coaster file v1 structure/);
+    ).toThrow("seed: expected uint32 integer");
+  });
+
+  it("rejects malformed nested fields with precise paths", () => {
+    const malformed = (design: unknown) =>
+      parseCoasterFile(
+        JSON.stringify({ schemaVersion: 1, name: "demo", seed: 42, design }),
+      );
+    expect(() => malformed({ elements: [{ id: null }] })).toThrow(
+      "design.elements[0].id: expected string",
+    );
+    expect(() =>
+      malformed({ elements: [], gates: [{ id: "g", at: "x", kind: "s" }] }),
+    ).toThrow("design.gates[0].at: expected finite number");
+    expect(() =>
+      malformed({
+        elements: [],
+        constraints: [{ id: "c", kind: "g", value: 1, hard: null }],
+      }),
+    ).toThrow("design.constraints[0].hard: expected boolean");
+    expect(() =>
+      malformed({ elements: [{ id: "e", parameters: { width: null } }] }),
+    ).toThrow("design.elements[0].parameters.width: expected primitive value");
+    expect(() => malformed({ elements: [{ id: "e", target: null }] })).toThrow(
+      "design.elements[0].target: expected string or finite number",
+    );
+    expect(() =>
+      malformed({
+        elements: [],
+        gates: [{ id: "g", at: 0, kind: "s", pinned: null }],
+      }),
+    ).toThrow("design.gates[0].pinned: expected boolean");
+    expect(() =>
+      malformed({
+        elements: [],
+        solvedSpans: [{ id: "s", coefficients: [[1, null]] }],
+      }),
+    ).toThrow(
+      "design.solvedSpans[0].coefficients[0][1]: expected finite number",
+    );
+    expect(() =>
+      parseCoasterFile(
+        JSON.stringify({
+          schemaVersion: 1,
+          name: "demo",
+          seed: 4294967296,
+          design: { elements: [] },
+        }),
+      ),
+    ).toThrow("seed: expected uint32 integer");
   });
 });

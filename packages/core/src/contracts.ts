@@ -5,17 +5,23 @@ export interface DesignElementV1 {
   readonly id: string;
   readonly type?: string;
   readonly parameters?: Readonly<Record<string, number | string | boolean>>;
+  readonly target?: string | number;
+  readonly pinned?: boolean;
 }
 export interface GateV1 {
   readonly id: string;
   readonly at: number;
   readonly kind: string;
+  readonly target?: string | number;
+  readonly pinned?: boolean;
 }
 export interface ConstraintV1 {
   readonly id: string;
   readonly kind: string;
   readonly value: number;
   readonly hard?: boolean;
+  readonly target?: string | number;
+  readonly pinned?: boolean;
 }
 export interface DesignIntentV1 {
   readonly elements: readonly DesignElementV1[];

@@ -46,11 +46,20 @@ const defaultNormal = (tangent: Vec3): Vec3 => {
     vec3Sub(reference, vec3Scale(tangent, vec3Dot(reference, tangent))),
   );
 };
+const orthogonalize = (normal: Vec3, tangent: Vec3): Vec3 => {
+  const projected = vec3Sub(
+    normal,
+    vec3Scale(tangent, vec3Dot(normal, tangent)),
+  );
+  return vec3Dot(projected, projected) < 1e-24
+    ? defaultNormal(tangent)
+    : vec3Normalize(projected);
+};
 
 export const transportFrames = (
   tangents: readonly Vec3[],
   parameters: readonly number[] = tangents.map((_, index) => index),
-  bankAt: ((parameter: number) => number) | readonly number[] = () => 0,
+  bankAt: ((parameter: number) => number) | ArrayLike<number> = () => 0,
   initialNormal?: Vec3,
 ): readonly Frame[] => {
   if (tangents.length === 0 || tangents.length !== parameters.length)
@@ -69,9 +78,8 @@ export const transportFrames = (
     : defaultNormal(normalized[0]);
   for (let i = 0; i < normalized.length; i += 1) {
     if (i > 0)
-      transportedNormal = rotateMinimal(
-        transportedNormal,
-        normalized[i - 1],
+      transportedNormal = orthogonalize(
+        rotateMinimal(transportedNormal, normalized[i - 1], normalized[i]),
         normalized[i],
       );
     const tangent = normalized[i];
@@ -139,7 +147,7 @@ export const transportFramesAlongPath = (
   positions: readonly Vec3[],
   tangents: readonly Vec3[],
   parameters: readonly number[] = positions.map((_, index) => index),
-  bankAt: ((parameter: number) => number) | readonly number[] = () => 0,
+  bankAt: ((parameter: number) => number) | ArrayLike<number> = () => 0,
   initialNormal?: Vec3,
 ): readonly Frame[] => {
   if (
@@ -162,12 +170,15 @@ export const transportFramesAlongPath = (
     : defaultNormal(normalized[0]);
   for (let index = 0; index < normalized.length; index += 1) {
     if (index > 0)
-      transportedNormal = doubleReflect(
-        transportedNormal,
-        normalized[index - 1],
+      transportedNormal = orthogonalize(
+        doubleReflect(
+          transportedNormal,
+          normalized[index - 1],
+          normalized[index],
+          positions[index - 1],
+          positions[index],
+        ),
         normalized[index],
-        positions[index - 1],
-        positions[index],
       );
     const tangent = normalized[index];
     const binormal = vec3Normalize(vec3Cross(tangent, transportedNormal));
