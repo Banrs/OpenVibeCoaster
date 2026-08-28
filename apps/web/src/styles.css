@@ -760,3 +760,26 @@ body.reduced-motion * {
     display: none !important;
   }
 }
+
+/* Renderer – ensures Three canvas fully covers viewport-host without inventing layout */
+.viewport-host canvas {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.render-metrics {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 4px 6px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--muted);
+  background: rgba(12, 15, 19, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}

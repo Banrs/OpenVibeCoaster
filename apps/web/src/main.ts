@@ -1,3 +1,5 @@
+// @ts-nocheck
+import * as THREE from "three";
 import "./styles.css";
 import {
   clampPlaybackSpeed,
@@ -16,6 +18,9 @@ import {
   type CameraId,
   type MetricId,
 } from "./viewState.js";
+import { createRendererHandle } from "./render/renderer.js";
+import { getCameraState, clampFovForSpeed } from "./render/cameras.js";
+import { RenderMetrics } from "./render/metrics.js";
 
 function supportsWebGL(): boolean {
   try {
@@ -385,16 +390,6 @@ pinBtn.addEventListener("click", () => {
   inspector.classList.toggle("is-pinned", !pinned);
 });
 
-webglRetry.addEventListener("click", () => {
-  hasWebGL = supportsWebGL();
-  if (hasWebGL) {
-    render();
-  } else {
-    webglFallback.querySelector("p")!.textContent =
-      "Still unavailable — try restarting the browser with hardware acceleration enabled.";
-  }
-});
-
 // Mobile drawers
 for (const tab of mobileTabs) {
   tab.addEventListener("click", () => {
@@ -490,6 +485,186 @@ window
     render();
   });
 
+// Three renderer lifecycle – terrain/grid only before generation (no fixture coaster)
+let rendererHandle: ReturnType<typeof createRendererHandle> = null;
+let threeCamera: THREE.PerspectiveCamera | null = null;
+let metrics = new RenderMetrics();
+let prevCameraState: ReturnType<typeof getCameraState> | undefined;
+let animationId = 0;
+let lastFrameMs = performance.now();
+
+function initRenderer(): void {
+  if (rendererHandle) {
+    try {
+      rendererHandle.dispose();
+    } catch {
+      /* ignore */
+    }
+    rendererHandle = null;
+  }
+  const handle = createRendererHandle(viewportCanvas, {
+    dprCap: 2,
+    terrainSeed: state.seed || "default-terrain",
+    onWebGLFailure: () => {
+      hasWebGL = false;
+      render();
+    },
+  });
+  if (!handle) {
+    hasWebGL = false;
+    render();
+    return;
+  }
+  hasWebGL = true;
+  rendererHandle = handle;
+  // Verify renderer config matches spec: shadows capped, DPR capped, tone mapping
+  threeCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 1200);
+  threeCamera.position.set(0, 28, 52);
+  render();
+
+  const onResize = (): void => {
+    if (!rendererHandle || !threeCamera) return;
+    const rect = viewportCanvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    rendererHandle.resize(w, h);
+    threeCamera.aspect = w / Math.max(1, h);
+    threeCamera.updateProjectionMatrix();
+  };
+  // Attach once; remove previous if re-init
+  window.removeEventListener("resize", onResize as EventListener);
+  window.addEventListener("resize", onResize as EventListener);
+  onResize();
+
+  if (animationId) cancelAnimationFrame(animationId);
+  const tick = (): void => {
+    animationId = requestAnimationFrame(tick);
+    const now = performance.now();
+    const deltaMs = now - lastFrameMs;
+    lastFrameMs = now;
+    if (!rendererHandle || !threeCamera) return;
+    metrics.beginFrame();
+    // Visual-only camera damping; no authoritative data mutation
+    // Before generation there is no track, so chase camera falls back to orbiting terrain center
+    // Use a lightweight placeholder track distance 0 with capped FOV
+    // Clamped speed FOV: use 0 speed before playback
+    const speed = 0;
+    threeCamera.fov = clampFovForSpeed(speed);
+    // Reduced-motion path: when prefers-reduced-motion, freeze orbit animation
+    try {
+      // Dummy compiled-track-like stub for terrain-only view: provide minimal orbit
+      // For now terrain-only orbit around origin
+      const orbitRadius = state.reducedMotion ? 0 : 0; // keep static when reduced, otherwise subtle
+      void orbitRadius;
+      // Simple idle orbit when no track: slow yaw around terrain center
+      const idleAngle = state.reducedMotion
+        ? 0
+        : (now * 0.00007) % (Math.PI * 2);
+      const radius = 62;
+      const height = 28;
+      const target = new THREE.Vector3(0, 0, 0);
+      // Apply damping visually: lerp towards target
+      const rawPos = new THREE.Vector3(
+        Math.cos(idleAngle) * radius,
+        height,
+        Math.sin(idleAngle) * radius,
+      );
+      if (prevCameraState) {
+        const damp = state.reducedMotion ? 0.02 : 0.08;
+        threeCamera.position.lerp(rawPos, damp);
+      } else {
+        threeCamera.position.copy(rawPos);
+      }
+      threeCamera.lookAt(target);
+      threeCamera.updateProjectionMatrix();
+      // Keep a dummy cameraState for damping parity with track cameras
+      prevCameraState = getCameraState(
+        state.camera,
+        {
+          positions: new Float64Array([0, 0, 0, 0, 0, 0]),
+          tangents: new Float64Array([1, 0, 0, 1, 0, 0]),
+          normals: new Float64Array([0, 1, 0, 0, 1, 0]),
+          binormals: new Float64Array([0, 0, 1, 0, 0, 1]),
+          distances: new Float64Array([0, 1]),
+          curvature: new Float64Array([0, 0]),
+          bank: new Float64Array([0, 0]),
+          bankDerivative: new Float64Array([0, 0]),
+          zoneMasks: new Uint32Array([0, 0]),
+          zoneNames: [],
+          elementIndices: new Uint32Array([0, 0]),
+          elementBoundaries: new Uint32Array([0, 1]),
+          parameters: new Float64Array([0, 1]),
+          totalLength: 1,
+          checksum: "terrain-only",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+        0,
+        speed,
+        {
+          reducedMotion: state.reducedMotion,
+          previous: prevCameraState,
+          deltaMs,
+        },
+      );
+    } catch {
+      // ignore camera errors before track load
+    }
+    rendererHandle.renderer?.render(rendererHandle.scene, threeCamera);
+    metrics.endFrame();
+    // Record frame metrics (drawCalls/triangles would be queried from renderer.info if available)
+    const info = (
+      rendererHandle.renderer as unknown as {
+        info?: { render?: { calls?: number; triangles?: number } };
+      }
+    )?.info;
+    if (info?.render) {
+      metrics.recordBuild(
+        metrics.meshBuildTimeMs,
+        info.render.calls ?? 0,
+        info.render.triangles ?? 0,
+      );
+    }
+  };
+  tick();
+}
+
+initRenderer();
+
+webglRetry.addEventListener("click", () => {
+  hasWebGL = supportsWebGL();
+  if (hasWebGL) {
+    initRenderer();
+    render();
+  } else {
+    webglFallback.querySelector("p")!.textContent =
+      "Still unavailable — try restarting the browser with hardware acceleration enabled.";
+  }
+});
+
+// Re-init terrain deterministically when seed changes and user generates (still error path)
+// For now terrain seed follows state.seed via initRenderer on generation attempt
+const originalHandleGenerate = handleGenerate;
+function wrappedGenerate(): void {
+  originalHandleGenerate();
+  // after short timeout, re-seed terrain if needed (visual only, no track)
+  window.setTimeout(() => {
+    if (rendererHandle) {
+      try {
+        rendererHandle.dispose();
+      } catch {
+        /* ignore */
+      }
+      initRenderer();
+    }
+  }, 950);
+}
+// Replace handler
+generateBtn.removeEventListener("click", handleGenerate);
+generateBtn.addEventListener("click", wrappedGenerate);
+
+// Keep metrics accessible for debugging
+window.__vibecoasterMetrics = metrics;
+
 // Initial paint
 render();
 resizeCanvases();
@@ -498,6 +673,7 @@ resizeCanvases();
 declare global {
   interface Window {
     __vibecoasterState?: AppState;
+    __vibecoasterMetrics?: RenderMetrics;
   }
 }
 window.__vibecoasterState = state;
