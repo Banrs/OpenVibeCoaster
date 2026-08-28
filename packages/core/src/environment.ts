@@ -140,31 +140,6 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return vec3(x, this.heightAt(x, z), z);
   }
 
-  private slopeBound(): readonly [number, number] {
-    let maximumX = 0;
-    let maximumZ = 0;
-    for (let row = 0; row < this.depth - 1; row += 1)
-      for (let column = 0; column < this.width - 1; column += 1) {
-        const at = (sampleColumn: number, sampleRow: number): number =>
-          this.heights[sampleRow * this.width + sampleColumn];
-        const h00 = at(column, row);
-        const h10 = at(column + 1, row);
-        const h01 = at(column, row + 1);
-        const h11 = at(column + 1, row + 1);
-        maximumX = Math.max(
-          maximumX,
-          Math.abs(h10 - h00) / this.cellSize,
-          Math.abs(h11 - h01) / this.cellSize,
-        );
-        maximumZ = Math.max(
-          maximumZ,
-          Math.abs(h01 - h00) / this.cellSize,
-          Math.abs(h11 - h10) / this.cellSize,
-        );
-      }
-    return [maximumX, maximumZ];
-  }
-
   public normalAt(x: number, z: number): Vec3 {
     const [dx, dz] = this.gradientAt(x, z);
     return vec3Normalize(vec3(-dx, 1, -dz));
@@ -193,103 +168,140 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
         origin[0] + dir[0] * distance,
         origin[2] + dir[2] * distance,
       );
-    const initialValue = columnValue(0);
-    if (Math.abs(initialValue) <= 1e-10)
+    const valueTolerance = 1e-10;
+    if (Math.abs(columnValue(0)) <= valueTolerance)
       return {
         distance: 0,
         point: origin,
         normal: this.normalAt(origin[0], origin[2]),
       };
-    const [maximumX, maximumZ] = this.slopeBound();
-    const lipschitz =
-      Math.abs(dir[1]) +
-      Math.abs(dir[0]) * maximumX +
-      Math.abs(dir[2]) * maximumZ;
-    const valueTolerance = 1e-10;
-    const distanceTolerance = 1e-10;
-    type RootBracket = {
-      readonly low: number;
-      readonly high: number;
-      readonly lowValue: number;
-      readonly highValue: number;
+    const breakpoints = [0, maxDistance];
+    const addGridCrossings = (
+      axisOrigin: number,
+      axisDirection: number,
+      sampleCount: number,
+      gridOrigin: number,
+    ): void => {
+      if (axisDirection === 0) return;
+      for (let index = 0; index < sampleCount; index += 1) {
+        const distance =
+          (gridOrigin + index * this.cellSize - axisOrigin) / axisDirection;
+        if (distance > 0 && distance < maxDistance) breakpoints.push(distance);
+      }
     };
-    const findEarliestBracket = (
+    addGridCrossings(origin[0], dir[0], this.width, this.origin[0]);
+    addGridCrossings(origin[2], dir[2], this.depth, this.origin[1]);
+    breakpoints.sort((a, b) => a - b);
+    const sortedBreakpoints: number[] = [];
+    for (const breakpoint of breakpoints)
+      if (
+        sortedBreakpoints.length === 0 ||
+        breakpoint > sortedBreakpoints[sortedBreakpoints.length - 1]
+      )
+        sortedBreakpoints.push(breakpoint);
+
+    const at = (column: number, row: number): number =>
+      this.heights[row * this.width + column];
+    const findRoot = (
       low: number,
       high: number,
-      lowValue: number,
-      highValue: number,
-      depth: number,
-    ): RootBracket | undefined => {
-      if (Math.abs(lowValue) <= valueTolerance)
-        return { low, high: low, lowValue, highValue: lowValue };
-      if (Math.abs(highValue) <= valueTolerance)
-        return { low: high, high, lowValue: highValue, highValue };
-      if (lowValue * highValue <= 0 && high - low <= distanceTolerance)
-        return { low, high, lowValue, highValue };
-      if (high - low <= distanceTolerance || depth >= 64) return undefined;
-
-      const middle = (low + high) / 2;
-      const middleValue = columnValue(middle);
-      if (Math.abs(middleValue) <= valueTolerance)
-        return {
-          low: middle,
-          high: middle,
-          lowValue: middleValue,
-          highValue: middleValue,
-        };
-      const halfWidth = (high - low) / 2;
-      if (Math.abs(middleValue) > lipschitz * halfWidth + valueTolerance)
-        return undefined;
-
-      const leftMayContainRoot =
-        lowValue * middleValue <= 0 ||
-        Math.abs(middleValue) <= lipschitz * (middle - low) + valueTolerance;
-      if (leftMayContainRoot) {
-        const left = findEarliestBracket(
-          low,
-          middle,
-          lowValue,
-          middleValue,
-          depth + 1,
-        );
-        if (left) return left;
-      }
-      const rightMayContainRoot =
-        middleValue * highValue <= 0 ||
-        Math.abs(middleValue) <= lipschitz * (high - middle) + valueTolerance;
-      return rightMayContainRoot
-        ? findEarliestBracket(middle, high, middleValue, highValue, depth + 1)
-        : undefined;
-    };
-    const bracket = findEarliestBracket(
-      0,
-      maxDistance,
-      initialValue,
-      columnValue(maxDistance),
-      0,
-    );
-    if (!bracket) return undefined;
-    let low = bracket.low;
-    let high = bracket.high;
-    let lowValue = bracket.lowValue;
-    if (low !== high) {
-      for (let iteration = 0; iteration < 60; iteration += 1) {
-        const middle = (low + high) / 2;
-        const middleValue = columnValue(middle);
-        if (Math.abs(middleValue) <= valueTolerance) {
-          low = middle;
-          high = middle;
-          break;
-        }
-        if (lowValue * middleValue <= 0) high = middle;
+      coefficients: readonly [number, number, number],
+    ): number | undefined => {
+      const [quadratic, linear, constant] = coefficients;
+      const scale = Math.max(
+        Math.abs(quadratic),
+        Math.abs(linear),
+        Math.abs(constant),
+      );
+      if (scale === 0) return low;
+      const a = quadratic / scale;
+      const b = linear / scale;
+      const c = constant / scale;
+      const roots: number[] = [];
+      if (a === 0) {
+        if (b === 0) return undefined;
+        roots.push(-c / b);
+      } else {
+        let discriminant = b * b - 4 * a * c;
+        const discriminantTolerance =
+          64 * Number.EPSILON * (b * b + Math.abs(4 * a * c) + 1);
+        if (discriminant < -discriminantTolerance) return undefined;
+        if (Math.abs(discriminant) <= discriminantTolerance) discriminant = 0;
+        const squareRoot = Math.sqrt(discriminant);
+        if (squareRoot === 0) roots.push(-b / (2 * a));
         else {
-          low = middle;
-          lowValue = middleValue;
+          const q = -0.5 * (b + Math.sign(b || 1) * squareRoot);
+          roots.push(q / a);
+          if (q !== 0) roots.push(c / q);
         }
-        if (high - low <= distanceTolerance) break;
+      }
+      const intervalTolerance = 1e-10;
+      let earliest: number | undefined;
+      for (const root of roots)
+        if (
+          root >= low - intervalTolerance &&
+          root <= high + intervalTolerance
+        ) {
+          const candidate = Math.max(low, Math.min(high, root));
+          if (earliest === undefined || candidate < earliest)
+            earliest = candidate;
+        }
+      return earliest;
+    };
+
+    let hitDistance: number | undefined;
+    for (
+      let interval = 0;
+      interval + 1 < sortedBreakpoints.length;
+      interval += 1
+    ) {
+      const low = sortedBreakpoints[interval];
+      const high = sortedBreakpoints[interval + 1];
+      const middle = (low + high) / 2;
+      const rawX =
+        (origin[0] + dir[0] * middle - this.origin[0]) / this.cellSize;
+      const rawZ =
+        (origin[2] + dir[2] * middle - this.origin[1]) / this.cellSize;
+      const clampedX = Math.max(0, Math.min(this.width - 1, rawX));
+      const clampedZ = Math.max(0, Math.min(this.depth - 1, rawZ));
+      const cellX = Math.min(this.width - 2, Math.floor(clampedX));
+      const cellZ = Math.min(this.depth - 2, Math.floor(clampedZ));
+      const xSlope =
+        rawX > 0 && rawX < this.width - 1 ? dir[0] / this.cellSize : 0;
+      const zSlope =
+        rawZ > 0 && rawZ < this.depth - 1 ? dir[2] / this.cellSize : 0;
+      const xIntercept =
+        (xSlope === 0 ? clampedX - cellX : rawX - cellX) - xSlope * middle;
+      const zIntercept =
+        (zSlope === 0 ? clampedZ - cellZ : rawZ - cellZ) - zSlope * middle;
+      const h00 = at(cellX, cellZ);
+      const h10 = at(cellX + 1, cellZ);
+      const h01 = at(cellX, cellZ + 1);
+      const h11 = at(cellX + 1, cellZ + 1);
+      const xHeight = h10 - h00;
+      const zHeight = h01 - h00;
+      const crossHeight = h11 - h10 - h01 + h00;
+      const heightConstant =
+        h00 +
+        xHeight * xIntercept +
+        zHeight * zIntercept +
+        crossHeight * xIntercept * zIntercept;
+      const heightLinear =
+        xHeight * xSlope +
+        zHeight * zSlope +
+        crossHeight * (xIntercept * zSlope + zIntercept * xSlope);
+      const heightQuadratic = crossHeight * xSlope * zSlope;
+      const root = findRoot(low, high, [
+        -heightQuadratic,
+        dir[1] - heightLinear,
+        origin[1] - heightConstant,
+      ]);
+      if (root !== undefined && Math.abs(columnValue(root)) <= valueTolerance) {
+        hitDistance = root;
+        break;
       }
     }
-    const hitDistance = (low + high) / 2;
+    if (hitDistance === undefined) return undefined;
     const hitPoint = pointAt(hitDistance);
     return {
       distance: hitDistance,

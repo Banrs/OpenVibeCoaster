@@ -468,6 +468,57 @@ describe("compiled track and heightfield", () => {
     expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
   });
 
+  it("returns the first of two symmetric crossings inside one bilinear cell", () => {
+    const env = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: new Float64Array([0, 0, 0, -2 / 3]),
+    });
+    const direction = vec3(Math.sqrt(3 / 8), -0.5, Math.sqrt(3 / 8));
+    const hit = env.raycast(vec3(0, 0.25 - 0.25 * 1e-8, 0), direction, 2);
+    expect(hit).toBeDefined();
+    expect(hit?.distance).toBeCloseTo(0.9999, 8);
+    expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
+  });
+
+  it("finds a tangential root without an endpoint sign change", () => {
+    const env = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: new Float64Array([0, 0, 0, -2 / 3]),
+    });
+    const direction = vec3(Math.sqrt(3 / 8), -0.5, Math.sqrt(3 / 8));
+    const hit = env.raycast(vec3(0, 0.25, 0), direction, 2);
+    expect(hit).toBeDefined();
+    expect(hit?.distance).toBeCloseTo(1, 8);
+    expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
+  });
+
+  it("bounds no-hit work for an extreme terrain slope", () => {
+    const env = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: new Float64Array([0, 1e12, 0, 1e12]),
+    });
+    expect(env.raycast(vec3(0.25, 0, 0), vec3(0, 0, 1), 1e6)).toBeUndefined();
+  });
+
+  it("returns a root exactly on a shared grid edge", () => {
+    const env = new HeightfieldEnvironment({
+      width: 3,
+      depth: 2,
+      cellSize: 1,
+      heights: new Float64Array([0, 1, 0, 0, 1, 0]),
+    });
+    const hit = env.raycast(vec3(0, 1, 0.5), vec3(1, 0, 0), 2);
+    expect(hit).toBeDefined();
+    expect(hit?.distance).toBeCloseTo(1, 10);
+    expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
+  });
+
   it("measures geometric distance and refines arbitrary ray intersections", () => {
     const plane = new HeightfieldEnvironment({
       width: 3,
