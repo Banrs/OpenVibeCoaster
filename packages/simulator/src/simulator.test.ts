@@ -338,6 +338,18 @@ describe("pure multi-car simulator", () => {
     expect(Object.isFrozen(timeline)).toBe(true);
   });
 
+  it("rejects non-finite timeline data at the exported boundary", () => {
+    expect(
+      () =>
+        new RideTimeline({
+          sampleRateHz: 120,
+          timeSeconds: new Float64Array([0]),
+          headDistanceM: new Float64Array([Number.NaN]),
+          speedMps: new Float64Array([0]),
+        }),
+    ).toThrow(/headDistanceM/);
+  });
+
   it("uses compiled zone masks and exposes operation state", () => {
     const track = compileTrack(
       [
@@ -1470,4 +1482,207 @@ describe("pure multi-car simulator", () => {
       );
     }
   });
+
+  it("terminates at the open-track car boundary before geometry leaves the track", () => {
+    const track = line(10);
+    const result = simulateRide(track, {
+      durationSeconds: 0.1,
+      config: config({
+        fixedStepSeconds: 0.1,
+        timelineStepSeconds: 0.1,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+      }),
+      initial: { headDistanceM: 9, speedMps: 20 },
+    });
+
+    expect(result.frames).toHaveLength(2);
+    expect(result.frames.at(-1)?.timeSeconds).toBeCloseTo(0.05, 12);
+    expect(result.frames.at(-1)?.headDistanceM).toBe(track.totalLength);
+    expect(result.frames.at(-1)?.cars[0]?.distanceM).toBe(track.totalLength);
+    expect(result.diagnostics).toContainEqual({
+      code: "SIM_INVALID_STATE",
+      severity: "error",
+      field: "state.train.cars[0].distanceM",
+      message: `Open-track car distance left [0, ${track.totalLength}] during integration`,
+    });
+  });
+
+  it("sweeps arbitrarily narrow zone boundaries exactly without epsilon probes", () => {
+    const startDistanceM = 5;
+    const endDistanceM = startDistanceM + 1e-12;
+    const result = simulateRide(line(20), {
+      durationSeconds: 2,
+      config: config({
+        fixedStepSeconds: 2,
+        timelineStepSeconds: 2,
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+        zones: [
+          {
+            id: "narrow",
+            kind: "block",
+            startDistanceM,
+            endDistanceM,
+          },
+        ],
+      }),
+      initial: { headDistanceM: 4, speedMps: 1 },
+    });
+
+    expect(
+      result.events.map(({ type, boundary, timeSeconds }) => [
+        type,
+        boundary,
+        timeSeconds,
+      ]),
+    ).toEqual([
+      ["zone-entry", "start", 1],
+      ["zone-exit", "end", 1 + 1e-12],
+    ]);
+  });
+
+  it("terminates at the open-track longitudinal seat boundary", () => {
+    const track = line(10);
+    const result = simulateRide(track, {
+      durationSeconds: 0.1,
+      config: config({
+        fixedStepSeconds: 0.1,
+        timelineStepSeconds: 0.1,
+        train: {
+          ...config().train,
+          cars: [
+            {
+              massKg: 1000,
+              seatCount: 1,
+              seatPositionsM: [vec3(0, 0, 1)],
+            },
+          ],
+        },
+      }),
+      initial: { headDistanceM: 8, speedMps: 20 },
+    });
+
+    expect(result.frames.at(-1)?.timeSeconds).toBeCloseTo(0.05, 12);
+    expect(result.frames.at(-1)?.cars[0]?.distanceM).toBe(
+      track.totalLength - 1,
+    );
+    expect(result.frames.at(-1)?.cars[0]?.seats[0]?.distanceM).toBe(
+      track.totalLength,
+    );
+    expect(result.diagnostics).toContainEqual({
+      code: "SIM_INVALID_STATE",
+      severity: "error",
+      field: "state.train.cars[0].seats[0].distanceM",
+      message: `Open-track seat distance left [0, ${track.totalLength}] during integration`,
+    });
+  });
+
+  it("rejects non-finite aggregate force and mass results", () => {
+    const overflowingMass = config({
+      gravityMps2: Number.MIN_VALUE,
+      train: {
+        ...config().train,
+        cars: [
+          { massKg: Number.MAX_VALUE, seatCount: 0 },
+          { massKg: Number.MAX_VALUE, seatCount: 0 },
+        ],
+      },
+    });
+    const massResult = simulateRide(line(10), {
+      durationSeconds: 0,
+      config: overflowingMass,
+      initial: { headDistanceM: 4, speedMps: 0 },
+    });
+    expect(massResult.frames).toHaveLength(0);
+    expect(massResult.diagnostics).toContainEqual({
+      code: "SIM_NUMERICAL",
+      severity: "error",
+      field: "train.totalMassKg",
+      message: "Total train mass must be finite",
+    });
+
+    const overflowingForce = config({
+      zones: [
+        {
+          id: "force-overflow",
+          kind: "launch",
+          startDistanceM: 0,
+          endDistanceM: 10,
+          lsmForcePerCarN: Number.MAX_VALUE,
+        },
+      ],
+      train: {
+        ...config().train,
+        cars: [
+          { massKg: 1000, seatCount: 0 },
+          { massKg: 1000, seatCount: 0 },
+        ],
+      },
+    });
+    expect(() => computePerCarForces(line(10), overflowingForce, 4, 0)).toThrow(
+      /totalForce/,
+    );
+    const forceResult = simulateRide(line(10), {
+      durationSeconds: 0,
+      config: overflowingForce,
+      initial: { headDistanceM: 4, speedMps: 0 },
+    });
+    expect(forceResult.frames).toHaveLength(0);
+    expect(forceResult.diagnostics).toContainEqual({
+      code: "SIM_NUMERICAL",
+      severity: "error",
+      field: "totalForce",
+      message: "Summed train force must be finite",
+    });
+  });
+
+  it("rejects non-finite derived telemetry instead of exposing it", () => {
+    const result = simulateRide(line(10), {
+      durationSeconds: 0,
+      config: config({
+        train: {
+          ...config().train,
+          cars: [{ massKg: 1000, seatCount: 0 }],
+        },
+      }),
+      initial: { headDistanceM: 1, speedMps: Number.MAX_VALUE },
+    });
+
+    expect(result.frames).toHaveLength(0);
+    expect(result.diagnostics).toContainEqual({
+      code: "SIM_NUMERICAL",
+      severity: "error",
+      field: "telemetry.worldAccelerationMps2",
+      message: "World acceleration must be finite",
+    });
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "returns an empty constructible timeline for invalid timeline step %s",
+    (timelineStepSeconds) => {
+      expect(() =>
+        simulateRide(line(10), {
+          durationSeconds: 0.1,
+          config: config({ timelineStepSeconds }),
+          initial: { headDistanceM: 1, speedMps: 0 },
+        }),
+      ).not.toThrow();
+      const result = simulateRide(line(10), {
+        durationSeconds: 0.1,
+        config: config({ timelineStepSeconds }),
+        initial: { headDistanceM: 1, speedMps: 0 },
+      });
+      expect(result.frames).toHaveLength(0);
+      expect(result.timeline.length).toBe(0);
+      expect(result.timeline.sampleRateHz).toBe(120);
+      expect(result.diagnostics).toContainEqual(
+        expect.objectContaining({ field: "timelineStepSeconds" }),
+      );
+    },
+  );
 });

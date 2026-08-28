@@ -29,6 +29,11 @@ export interface RideTimelineTransfer {
 
 const clone = (values: Float64Array | undefined): Float64Array =>
   values ? new Float64Array(values) : new Float64Array();
+const requireFinite = (values: Float64Array, field: string): void => {
+  for (const value of values)
+    if (!Number.isFinite(value))
+      throw new RangeError(`RideTimeline ${field} must be finite`);
+};
 const cloneVec = (value: Vec3): Vec3 =>
   Object.freeze([value[0], value[1], value[2]]);
 const cloneSample = (sample: TrackSample): TrackSample =>
@@ -106,6 +111,9 @@ export class RideTimeline {
     if (!Number.isFinite(input.sampleRateHz) || input.sampleRateHz <= 0)
       throw new RangeError("RideTimeline sample rate must be positive");
     const length = input.timeSeconds.length;
+    requireFinite(input.timeSeconds, "timeSeconds");
+    requireFinite(input.headDistanceM, "headDistanceM");
+    requireFinite(input.speedMps, "speedMps");
     for (const values of [input.headDistanceM, input.speedMps])
       if (values.length !== length)
         throw new RangeError(
@@ -116,6 +124,17 @@ export class RideTimeline {
         throw new RangeError(
           "RideTimeline metric arrays must match time length",
         );
+    for (const [field, values] of [
+      ["longitudinalG", input.longitudinalG],
+      ["lateralG", input.lateralG],
+      ["verticalG", input.verticalG],
+      ["jerkMps3", input.jerkMps3],
+      ["carPositionsXYZ", input.carPositionsXYZ],
+      ["carTangentsXYZ", input.carTangentsXYZ],
+      ["carNormalsXYZ", input.carNormalsXYZ],
+      ["carBinormalsXYZ", input.carBinormalsXYZ],
+    ] as const)
+      if (values) requireFinite(values, field);
     this.#sampleRateHz = input.sampleRateHz;
     this.#carCount = input.carCount ?? 0;
     this.#timeSeconds = new Float64Array(input.timeSeconds);

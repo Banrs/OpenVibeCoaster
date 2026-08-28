@@ -34,6 +34,7 @@ export * from "./timeline";
 
 const DEFAULT_GRAVITY = 9.80665;
 const SPEED_EPSILON = 1e-8;
+const SAFE_TIMELINE_SAMPLE_RATE_HZ = 120;
 
 export const createDefaultSimulatorConfig = (): SimulatorConfig => ({
   gravityMps2: DEFAULT_GRAVITY,
@@ -80,6 +81,55 @@ interface WorkState {
 }
 
 const finite = (value: number): boolean => Number.isFinite(value);
+
+class SimulatorRangeError extends RangeError {
+  public constructor(
+    public readonly diagnosticCode: "SIM_INVALID_STATE" | "SIM_NUMERICAL",
+    public readonly field: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+class OpenTrackBoundaryError extends SimulatorRangeError {
+  public constructor(
+    field: string,
+    message: string,
+    public readonly boundaryM: number,
+  ) {
+    super("SIM_INVALID_STATE", field, message);
+  }
+}
+
+const checkedFinite = (
+  value: number,
+  field: string,
+  message: string,
+): number => {
+  if (!finite(value))
+    throw new SimulatorRangeError("SIM_NUMERICAL", field, message);
+  return value;
+};
+
+const checkedVector = (value: Vec3, field: string, message: string): Vec3 => {
+  if (!value.every(finite))
+    throw new SimulatorRangeError("SIM_NUMERICAL", field, message);
+  return value;
+};
+
+const sumFinite = (
+  values: readonly number[],
+  field: string,
+  message: string,
+): number => {
+  let sum = 0;
+  for (const value of values) {
+    sum = checkedFinite(sum + value, field, message);
+  }
+  return sum;
+};
+
 const dot = (a: Vec3, b: Vec3): number => vec3Dot(a, b);
 const add = (a: Vec3, b: Vec3): Vec3 =>
   vec3(a[0] + b[0], a[1] + b[1], a[2] + b[2]);
@@ -156,13 +206,83 @@ const activeZonesForTrain = (
     ),
   );
 
+const occupiedCarCount = (
+  track: CompiledTrackData,
+  config: SimulatorConfig,
+  zone: OperationZone,
+  headDistanceM: number,
+): number =>
+  config.train.cars.reduce(
+    (count, _, index) =>
+      count +
+      (zoneContains(
+        track,
+        zone,
+        headDistanceM - index * config.train.spacingM,
+        config.closedTrack,
+      )
+        ? 1
+        : 0),
+    0,
+  );
+
 const totalMass = (train: TrainConfiguration): number =>
-  train.cars.reduce((sum, car) => sum + car.massKg, 0);
+  sumFinite(
+    train.cars.map((car) => car.massKg),
+    "train.totalMassKg",
+    "Total train mass must be finite",
+  );
+
+interface OpenTrackViolation {
+  readonly field: string;
+  readonly kind: "car" | "seat";
+  readonly distanceM: number;
+  readonly boundaryM: number;
+}
+
+const openTrackViolation = (
+  track: CompiledTrackData,
+  config: SimulatorConfig,
+  headDistanceM: number,
+): OpenTrackViolation | undefined => {
+  if (config.closedTrack) return undefined;
+  for (const [index, car] of config.train.cars.entries()) {
+    const distanceM = headDistanceM - index * config.train.spacingM;
+    if (distanceM < 0 || distanceM > track.totalLength)
+      return {
+        field: `state.train.cars[${index}].distanceM`,
+        kind: "car",
+        distanceM,
+        boundaryM:
+          distanceM < 0
+            ? index * config.train.spacingM
+            : track.totalLength + index * config.train.spacingM,
+      };
+    for (const [seatIndex, offset] of (car.seatPositionsM ?? []).entries()) {
+      const seatDistanceM = distanceM + offset[2];
+      if (seatDistanceM < 0 || seatDistanceM > track.totalLength)
+        return {
+          field: `state.train.cars[${index}].seats[${seatIndex}].distanceM`,
+          kind: "seat",
+          distanceM: seatDistanceM,
+          boundaryM:
+            seatDistanceM < 0
+              ? index * config.train.spacingM - offset[2]
+              : track.totalLength + index * config.train.spacingM - offset[2],
+        };
+    }
+  }
+  return undefined;
+};
 
 const gravityVector = (config: SimulatorConfig): Vec3 =>
-  scale(
-    vec3Normalize(config.gravityDirection ?? vec3(0, -1, 0)),
-    config.gravityMps2,
+  checkedVector(
+    scale(
+      vec3Normalize(config.gravityDirection ?? vec3(0, -1, 0)),
+      config.gravityMps2,
+    ),
+    "gravityVector",
+    "Gravity vector must be finite",
   );
 
 const vectorIsFiniteAndNonzero = (value: Vec3): boolean =>
@@ -203,7 +323,11 @@ const validate = (
       field: "fixedStepSeconds",
       message: "Fixed simulation step must be positive",
     });
-  if (!finite(config.timelineStepSeconds) || config.timelineStepSeconds <= 0)
+  if (
+    !finite(config.timelineStepSeconds) ||
+    config.timelineStepSeconds <= 0 ||
+    !finite(1 / config.timelineStepSeconds)
+  )
     diagnostics.push({
       code: "SIM_INVALID_CONFIGURATION",
       severity: "error",
@@ -287,6 +411,21 @@ const validate = (
           field: `train.cars[${index}].seatPositionsM[${seatIndex}]`,
           message: "Seat offset must contain only finite values",
         });
+  }
+  if (config.train.cars.every((car) => finite(car.massKg) && car.massKg > 0)) {
+    let massKg = 0;
+    for (const car of config.train.cars) {
+      massKg += car.massKg;
+      if (!finite(massKg)) {
+        diagnostics.push({
+          code: "SIM_NUMERICAL",
+          severity: "error",
+          field: "train.totalMassKg",
+          message: "Total train mass must be finite",
+        });
+        break;
+      }
+    }
   }
   for (const [field, value] of [
     ["gravityMps2", config.gravityMps2],
@@ -475,25 +614,37 @@ const forceAt = (
   speedMps: number,
   car: CarConfiguration,
   carCount: number,
+  carIndex: number,
 ): PerCarForce => {
+  const forceField = `train.cars[${carIndex}].force`;
   const sample = sampleTrackAtDistance(
     track,
     trackDistance(track, config, distanceM),
   );
   const zones = activeZones(track, config, distanceM);
-  const gravity = car.massKg * dot(gravityVector(config), sample.tangent);
-  const rollingMagnitude =
-    config.rollingResistanceCoefficient * car.massKg * config.gravityMps2;
+  const gravity = checkedFinite(
+    car.massKg * dot(gravityVector(config), sample.tangent),
+    `${forceField}.gravity`,
+    "Per-car gravity force must be finite",
+  );
+  const rollingMagnitude = checkedFinite(
+    config.rollingResistanceCoefficient * car.massKg * config.gravityMps2,
+    `${forceField}.rollingMagnitude`,
+    "Rolling resistance force must be finite",
+  );
   const rolling =
     Math.abs(speedMps) > SPEED_EPSILON && rollingMagnitude > 0
       ? -Math.sign(speedMps) * rollingMagnitude
       : 0;
-  const drag =
+  const drag = checkedFinite(
     -0.5 *
-    config.airDensityKgPerM3 *
-    (config.dragCdA / carCount) *
-    speedMps *
-    Math.abs(speedMps);
+      config.airDensityKgPerM3 *
+      (config.dragCdA / carCount) *
+      speedMps *
+      Math.abs(speedMps),
+    `${forceField}.drag`,
+    "Aerodynamic drag force must be finite",
+  );
   let drive = 0;
   let brake = 0;
   let launchActive = false;
@@ -506,6 +657,11 @@ const forceAt = (
         zone.targetSpeedMps === undefined
           ? (zone.lsmForcePerCarN ?? config.lsmForcePerCarN)
           : config.lsmTargetGainNPerMps * (target - speedMps);
+      const checkedRequested = checkedFinite(
+        requested,
+        `${forceField}.requestedDrive`,
+        "Requested drive force must be finite",
+      );
       const forceLimit = Math.max(
         0,
         zone.lsmForcePerCarN ?? config.lsmForcePerCarN,
@@ -514,29 +670,48 @@ const forceAt = (
         0,
         zone.lsmPowerPerCarW ?? config.lsmPowerPerCarW,
       );
-      const capped = Math.max(-forceLimit, Math.min(forceLimit, requested));
+      const capped = Math.max(
+        -forceLimit,
+        Math.min(forceLimit, checkedRequested),
+      );
       const powerCapped =
         Math.abs(speedMps) > SPEED_EPSILON
           ? Math.sign(capped) *
             Math.min(Math.abs(capped), powerLimit / Math.abs(speedMps))
           : capped;
-      drive += powerCapped;
+      drive = checkedFinite(
+        drive + powerCapped,
+        `${forceField}.drive`,
+        "Drive force must be finite",
+      );
     } else if (zone.kind === "brake") {
       brakeActive = true;
       const limit = Math.max(
         0,
         zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
       );
-      brake += -Math.sign(speedMps) * limit;
+      brake = checkedFinite(
+        brake - Math.sign(speedMps) * limit,
+        `${forceField}.brake`,
+        "Brake force must be finite",
+      );
     }
   }
   return {
     gravity,
-    rolling,
+    rolling: checkedFinite(
+      rolling,
+      `${forceField}.rolling`,
+      "Rolling resistance force must be finite",
+    ),
     drag,
     drive,
     brake,
-    net: gravity + rolling + drag + drive + brake,
+    net: sumFinite(
+      [gravity, rolling, drag, drive, brake],
+      `${forceField}.net`,
+      "Per-car net force must be finite",
+    ),
     launchActive,
     brakeActive,
   };
@@ -548,6 +723,13 @@ const dynamicsAt = (
   headDistanceM: number,
   speedMps: number,
 ): DynamicsSample => {
+  const violation = openTrackViolation(track, config, headDistanceM);
+  if (violation)
+    throw new OpenTrackBoundaryError(
+      violation.field,
+      `Open-track ${violation.kind} distance left [0, ${track.totalLength}] during integration`,
+      violation.boundaryM,
+    );
   const forces = config.train.cars.map((car, index) =>
     forceAt(
       track,
@@ -556,14 +738,24 @@ const dynamicsAt = (
       speedMps,
       car,
       config.train.cars.length,
+      index,
     ),
   );
-  const totalForce = forces.reduce((sum, force) => sum + force.net, 0);
+  const totalForce = sumFinite(
+    forces.map((force) => force.net),
+    "totalForce",
+    "Summed train force must be finite",
+  );
   const active = activeZones(track, config, headDistanceM);
+  const accelerationMps2 = checkedFinite(
+    totalForce / totalMass(config.train),
+    "accelerationMps2",
+    "Train acceleration must be finite",
+  );
   return {
     forces,
     totalForce,
-    accelerationMps2: totalForce / totalMass(config.train),
+    accelerationMps2,
     activeZones: active,
   };
 };
@@ -575,10 +767,13 @@ const derivative = (
   speedMps: number,
 ): readonly [number, number] => {
   const sample = dynamicsAt(track, config, distanceM, speedMps);
-  const staticLimit =
+  const staticLimit = checkedFinite(
     config.staticStictionCoefficient *
-    totalMass(config.train) *
-    config.gravityMps2;
+      totalMass(config.train) *
+      config.gravityMps2,
+    "staticStictionLimitN",
+    "Static stiction limit must be finite",
+  );
   if (
     Math.abs(speedMps) <= SPEED_EPSILON &&
     Math.abs(sample.totalForce) <= staticLimit
@@ -613,10 +808,71 @@ const rk4 = (
     distanceM + stepSeconds * k3[0],
     speedMps + stepSeconds * k3[1],
   );
-  return [
-    distanceM + (stepSeconds / 6) * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]),
-    speedMps + (stepSeconds / 6) * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]),
-  ];
+  const distanceIncrement =
+    (stepSeconds * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0])) / 6;
+  const speedIncrement =
+    (stepSeconds * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1])) / 6;
+  return [distanceM + distanceIncrement, speedMps + speedIncrement];
+};
+
+const boundedRk4 = (
+  track: CompiledTrackData,
+  config: SimulatorConfig,
+  distanceM: number,
+  speedMps: number,
+  stepSeconds: number,
+): {
+  readonly distanceM: number;
+  readonly speedMps: number;
+  readonly elapsedSeconds: number;
+  readonly boundaryError?: OpenTrackBoundaryError;
+} => {
+  const checkedStep = (elapsedSeconds: number): readonly [number, number] => {
+    const state = rk4(track, config, distanceM, speedMps, elapsedSeconds);
+    if (!finite(state[0]) || !finite(state[1]))
+      throw new SimulatorRangeError(
+        "SIM_NUMERICAL",
+        "state",
+        "Fixed-step integration produced a non-finite state",
+      );
+    const violation = openTrackViolation(track, config, state[0]);
+    if (violation)
+      throw new OpenTrackBoundaryError(
+        violation.field,
+        `Open-track ${violation.kind} distance left [0, ${track.totalLength}] during integration`,
+        violation.boundaryM,
+      );
+    return state;
+  };
+  try {
+    const state = checkedStep(stepSeconds);
+    return {
+      distanceM: state[0],
+      speedMps: state[1],
+      elapsedSeconds: stepSeconds,
+    };
+  } catch (error) {
+    if (!(error instanceof OpenTrackBoundaryError)) throw error;
+    let low = 0;
+    let high = stepSeconds;
+    for (let iteration = 0; iteration < 64; iteration += 1) {
+      const middle = (low + high) / 2;
+      try {
+        checkedStep(middle);
+        low = middle;
+      } catch (middleError) {
+        if (!(middleError instanceof OpenTrackBoundaryError)) throw middleError;
+        high = middle;
+      }
+    }
+    const state = low > 0 ? checkedStep(low) : ([distanceM, speedMps] as const);
+    return {
+      distanceM: error.boundaryM,
+      speedMps: state[1],
+      elapsedSeconds: low,
+      boundaryError: error,
+    };
+  }
 };
 
 const seatPositions = (car: CarConfiguration): readonly Vec3[] =>
@@ -689,9 +945,18 @@ const worldAcceleration = (
   speedMps: number,
   accelerationMps2: number,
 ): Vec3 => {
-  return add(
-    scale(sample.tangent, accelerationMps2),
-    scale(sample.curvatureVector, speedMps * speedMps),
+  const centripetalScale = checkedFinite(
+    speedMps * speedMps,
+    "telemetry.worldAccelerationMps2",
+    "World acceleration must be finite",
+  );
+  return checkedVector(
+    add(
+      scale(sample.tangent, accelerationMps2),
+      scale(sample.curvatureVector, centripetalScale),
+    ),
+    "telemetry.worldAccelerationMps2",
+    "World acceleration must be finite",
   );
 };
 
@@ -742,18 +1007,45 @@ const carTelemetry = (
   gravityMps2: number,
   speedMps: number,
 ): CarTelemetry => {
-  const specific = subtract(worldAccelerationMps2, gravity);
+  const specific = checkedVector(
+    subtract(worldAccelerationMps2, gravity),
+    "telemetry.specificForceMps2",
+    "Specific force must be finite",
+  );
   const axes = telemetryAxes(sample, gravity);
   const right = scale(axes.binormal, -1);
-  return {
-    longitudinalG: dot(specific, axes.tangent) / gravityMps2,
-    lateralG: dot(specific, right) / gravityMps2,
-    verticalG: dot(specific, axes.normal) / gravityMps2,
+  const telemetry = {
+    longitudinalG: checkedFinite(
+      dot(specific, axes.tangent) / gravityMps2,
+      "telemetry.longitudinalG",
+      "Longitudinal G must be finite",
+    ),
+    lateralG: checkedFinite(
+      dot(specific, right) / gravityMps2,
+      "telemetry.lateralG",
+      "Lateral G must be finite",
+    ),
+    verticalG: checkedFinite(
+      dot(specific, axes.normal) / gravityMps2,
+      "telemetry.verticalG",
+      "Vertical G must be finite",
+    ),
     specificForceMps2: specific,
     jerkMps3: vec3(),
     bankRad: axes.bank,
     rollRateRadPerSec: sample.bankDerivative * speedMps,
   };
+  checkedFinite(
+    telemetry.bankRad,
+    "telemetry.bankRad",
+    "Bank telemetry must be finite",
+  );
+  checkedFinite(
+    telemetry.rollRateRadPerSec,
+    "telemetry.rollRateRadPerSec",
+    "Roll-rate telemetry must be finite",
+  );
+  return telemetry;
 };
 
 const makeTelemetry = (
@@ -778,18 +1070,40 @@ const makeTelemetry = (
       speedMps,
     );
   const totalMassKg = totalMass(config.train);
-  const kineticEnergyJ = 0.5 * totalMassKg * speedMps * speedMps;
-  const potentialEnergyJ = cars.reduce(
-    (sum, car, index) =>
-      sum -
-      (config.train.cars[index]?.massKg ?? 0) * dot(gravity, car.position),
-    0,
+  const kineticEnergyJ = checkedFinite(
+    0.5 * totalMassKg * speedMps * speedMps,
+    "telemetry.kineticEnergyJ",
+    "Kinetic energy must be finite",
   );
-  const energyErrorJ =
-    initialEnergyJ +
-    work.driveJ -
-    work.lossJ -
-    (kineticEnergyJ + potentialEnergyJ);
+  const potentialEnergyJ = sumFinite(
+    cars.map(
+      (car, index) =>
+        -(config.train.cars[index]?.massKg ?? 0) * dot(gravity, car.position),
+    ),
+    "telemetry.potentialEnergyJ",
+    "Potential energy must be finite",
+  );
+  const accumulatedDriveWorkJ = checkedFinite(
+    work.driveJ,
+    "telemetry.accumulatedDriveWorkJ",
+    "Accumulated drive work must be finite",
+  );
+  const accumulatedLossWorkJ = checkedFinite(
+    work.lossJ,
+    "telemetry.accumulatedLossWorkJ",
+    "Accumulated loss work must be finite",
+  );
+  const energyErrorJ = sumFinite(
+    [
+      initialEnergyJ,
+      accumulatedDriveWorkJ,
+      -accumulatedLossWorkJ,
+      -kineticEnergyJ,
+      -potentialEnergyJ,
+    ],
+    "telemetry.energyErrorJ",
+    "Energy residual must be finite",
+  );
   return {
     perCar,
     longitudinalG: first.longitudinalG,
@@ -803,8 +1117,8 @@ const makeTelemetry = (
     brakeActivity,
     kineticEnergyJ,
     potentialEnergyJ,
-    accumulatedDriveWorkJ: work.driveJ,
-    accumulatedLossWorkJ: work.lossJ,
+    accumulatedDriveWorkJ,
+    accumulatedLossWorkJ,
     energyErrorJ,
   };
 };
@@ -845,6 +1159,7 @@ const zoneCrossings = (
   track: CompiledTrackData,
   config: SimulatorConfig,
   zones: readonly OperationZone[],
+  occupancyCounts: Map<string, number>,
   previousDistanceM: number,
   nextDistanceM: number,
   previousTimeSeconds: number,
@@ -856,7 +1171,10 @@ const zoneCrossings = (
   const candidates: {
     readonly zone: OperationZone;
     readonly boundary: "start" | "end";
+    readonly carIndex: number;
     readonly timeSeconds: number;
+    readonly eventTimeSeconds: number;
+    readonly delta: 1 | -1;
   }[] = [];
   for (const zone of zones) {
     for (let carIndex = 0; carIndex < config.train.cars.length; carIndex += 1) {
@@ -869,10 +1187,10 @@ const zoneCrossings = (
         const lower = Math.min(previousDistanceM, nextDistanceM);
         const upper = Math.max(previousDistanceM, nextDistanceM);
         const firstLap = config.closedTrack
-          ? Math.floor((lower - baseDistance) / track.totalLength) - 1
+          ? Math.floor((lower - baseDistance) / track.totalLength)
           : 0;
         const lastLap = config.closedTrack
-          ? Math.ceil((upper - baseDistance) / track.totalLength) + 1
+          ? Math.ceil((upper - baseDistance) / track.totalLength)
           : 0;
         for (let lap = firstLap; lap <= lastLap; lap += 1) {
           const crossingDistance =
@@ -881,15 +1199,29 @@ const zoneCrossings = (
             direction === "forward"
               ? previousDistanceM < crossingDistance &&
                 crossingDistance <= nextDistanceM
-              : nextDistanceM <= crossingDistance &&
-                crossingDistance <= previousDistanceM;
+              : (previousDistanceM > crossingDistance &&
+                  crossingDistance >= nextDistanceM) ||
+                (previousTimeSeconds === 0 &&
+                  previousDistanceM === crossingDistance &&
+                  nextDistanceM < crossingDistance);
           if (!crossed) continue;
+          const crossingTime =
+            previousTimeSeconds +
+            ((crossingDistance - previousDistanceM) / delta) * stepSeconds;
           candidates.push({
             zone,
             boundary,
-            timeSeconds:
-              previousTimeSeconds +
-              ((crossingDistance - previousDistanceM) / delta) * stepSeconds,
+            carIndex,
+            timeSeconds: crossingTime,
+            eventTimeSeconds: Number(crossingTime.toPrecision(15)),
+            delta:
+              direction === "forward"
+                ? boundary === "start"
+                  ? 1
+                  : -1
+                : boundary === "end"
+                  ? 1
+                  : -1,
           });
         }
       }
@@ -899,46 +1231,48 @@ const zoneCrossings = (
     (a, b) =>
       a.timeSeconds - b.timeSeconds ||
       a.zone.id.localeCompare(b.zone.id) ||
-      a.boundary.localeCompare(b.boundary),
+      a.boundary.localeCompare(b.boundary) ||
+      a.carIndex - b.carIndex,
   );
   const events: SimulationEvent[] = [];
-  const epsilon = Math.max(Math.abs(delta) * 1e-9, 1e-9);
-  for (const candidate of candidates) {
-    const beforeDistance =
-      previousDistanceM +
-      ((candidate.timeSeconds - previousTimeSeconds) / stepSeconds) * delta -
-      Math.sign(delta) * epsilon;
-    const afterDistance =
-      previousDistanceM +
-      ((candidate.timeSeconds - previousTimeSeconds) / stepSeconds) * delta +
-      Math.sign(delta) * epsilon;
-    const occupied = (headDistanceM: number): boolean =>
-      config.train.cars.some((_, index) =>
-        zoneContains(
-          track,
-          candidate.zone,
-          headDistanceM - index * config.train.spacingM,
-          config.closedTrack,
-        ),
+  for (const zone of zones)
+    if (!occupancyCounts.has(zone.id))
+      occupancyCounts.set(
+        zone.id,
+        occupiedCarCount(track, config, zone, previousDistanceM),
       );
-    const before = occupied(beforeDistance);
-    const after = occupied(afterDistance);
-    if (before === after) continue;
-    const entry = !before && after;
-    const duplicate = events.some(
-      (event) =>
-        event.zoneId === candidate.zone.id &&
-        event.type === (entry ? "zone-entry" : "zone-exit") &&
-        event.boundary === candidate.boundary &&
-        event.timeSeconds === candidate.timeSeconds,
-    );
-    if (duplicate) continue;
+  let index = 0;
+  while (index < candidates.length) {
+    const candidate = candidates[index]!;
+    const group = [candidate];
+    index += 1;
+    while (
+      index < candidates.length &&
+      candidates[index]!.zone.id === candidate.zone.id &&
+      candidates[index]!.timeSeconds === candidate.timeSeconds
+    ) {
+      group.push(candidates[index]!);
+      index += 1;
+    }
+    const before = occupancyCounts.get(candidate.zone.id) ?? 0;
+    const change = group.reduce((sum, crossing) => sum + crossing.delta, 0);
+    const after = before + change;
+    occupancyCounts.set(candidate.zone.id, after);
+    if (!((before === 0 && after > 0) || (before > 0 && after === 0))) continue;
+    const entry = before === 0;
+    const eventBoundary = entry
+      ? direction === "forward"
+        ? "start"
+        : "end"
+      : direction === "forward"
+        ? "end"
+        : "start";
     events.push({
-      timeSeconds: candidate.timeSeconds,
+      timeSeconds: candidate.eventTimeSeconds,
       type: entry ? "zone-entry" : "zone-exit",
       zoneId: candidate.zone.id,
       operation: candidate.zone.kind,
-      boundary: candidate.boundary,
+      boundary: eventBoundary,
       direction,
     });
   }
@@ -954,7 +1288,11 @@ const withJerk = (
     const denominator = nextFrame.timeSeconds - previousFrame.timeSeconds;
     const jerk = (previous: Vec3, next: Vec3): Vec3 =>
       denominator > 0
-        ? scale(subtract(next, previous), 1 / denominator)
+        ? checkedVector(
+            scale(subtract(next, previous), 1 / denominator),
+            "telemetry.jerkMps3",
+            "Jerk telemetry must be finite",
+          )
         : vec3();
     const cars = frame.cars.map((car, carIndex) => {
       const previousCar = previousFrame.cars[carIndex] ?? car;
@@ -1003,6 +1341,13 @@ const withJerk = (
     };
   });
 
+const timelineSampleRate = (timelineStepSeconds: number): number =>
+  finite(timelineStepSeconds) &&
+  timelineStepSeconds > 0 &&
+  finite(1 / timelineStepSeconds)
+    ? 1 / timelineStepSeconds
+    : SAFE_TIMELINE_SAMPLE_RATE_HZ;
+
 const makeTimeline = (
   track: CompiledTrackData,
   frames: readonly SimulationFrame[],
@@ -1010,7 +1355,7 @@ const makeTimeline = (
 ): RideTimeline => {
   if (frames.length === 0)
     return new RideTimeline({
-      sampleRateHz: 1 / config.timelineStepSeconds,
+      sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
       timeSeconds: new Float64Array(),
       headDistanceM: new Float64Array(),
       speedMps: new Float64Array(),
@@ -1029,7 +1374,7 @@ const makeTimeline = (
     right: CarTelemetry,
     alpha: number,
   ): CarTelemetry => {
-    const blend = (a: number, b: number): number => a + (b - a) * alpha;
+    const blend = (a: number, b: number): number => a * (1 - alpha) + b * alpha;
     const blendVec = (a: Vec3, b: Vec3): Vec3 =>
       vec3(blend(a[0], b[0]), blend(a[1], b[1]), blend(a[2], b[2]));
     return {
@@ -1054,7 +1399,7 @@ const makeTimeline = (
     const right = frames[upper]!;
     const span = right.timeSeconds - left.timeSeconds;
     const alpha = span > 0 ? (time - left.timeSeconds) / span : 0;
-    const blend = (a: number, b: number): number => a + (b - a) * alpha;
+    const blend = (a: number, b: number): number => a * (1 - alpha) + b * alpha;
     const cars = left.cars.map((car, carIndex) => {
       const other = right.cars[carIndex] ?? car;
       const distanceM = blend(car.distanceM, other.distanceM);
@@ -1175,7 +1520,7 @@ const makeTimeline = (
     return output;
   };
   return new RideTimeline({
-    sampleRateHz: 1 / config.timelineStepSeconds,
+    sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
     timeSeconds: new Float64Array(outputTimes),
     headDistanceM: new Float64Array(
       selected.map((frame) => frame.headDistanceM),
@@ -1202,6 +1547,22 @@ const makeTimeline = (
   });
 };
 
+const diagnosticFromError = (error: unknown): SimulationDiagnostic => {
+  if (error instanceof SimulatorRangeError)
+    return {
+      code: error.diagnosticCode,
+      severity: "error",
+      field: error.field,
+      message: error.message,
+    };
+  return {
+    code: "SIM_NUMERICAL",
+    severity: "error",
+    field: "state",
+    message: "Fixed-step integration produced a non-finite state",
+  };
+};
+
 export const simulateRide = (
   track: CompiledTrackData,
   request: SimulationRequest,
@@ -1218,7 +1579,7 @@ export const simulateRide = (
     return {
       frames: [],
       timeline: new RideTimeline({
-        sampleRateHz: 1 / Math.max(request.config.timelineStepSeconds, 1),
+        sampleRateHz: timelineSampleRate(request.config.timelineStepSeconds),
         timeSeconds: new Float64Array(),
         headDistanceM: new Float64Array(),
         speedMps: new Float64Array(),
@@ -1233,27 +1594,32 @@ export const simulateRide = (
     };
 
   const { config, initial } = request;
-  const mass = totalMass(config.train);
-  const initialDynamics = dynamicsAt(
-    track,
-    config,
-    initial.headDistanceM,
-    initial.speedMps,
-  );
-  const invalidInitialForce = initialDynamics.forces.findIndex(
-    (force) => !forceIsFinite(force),
-  );
-  if (invalidInitialForce >= 0) {
-    diagnostics.push({
-      code: "SIM_NUMERICAL",
-      severity: "error",
-      field: "state",
-      message: "Fixed-step integration produced a non-finite state",
-    });
+  let mass: number;
+  let initialDynamics: DynamicsSample;
+  try {
+    mass = totalMass(config.train);
+    initialDynamics = dynamicsAt(
+      track,
+      config,
+      initial.headDistanceM,
+      initial.speedMps,
+    );
+  } catch (error) {
+    diagnostics.push(diagnosticFromError(error));
+    if (
+      !(error instanceof SimulatorRangeError) ||
+      error.diagnosticCode === "SIM_NUMERICAL"
+    )
+      diagnostics.push({
+        code: "SIM_NUMERICAL",
+        severity: "error",
+        field: "state",
+        message: "Fixed-step integration produced a non-finite state",
+      });
     return {
       frames: [],
       timeline: new RideTimeline({
-        sampleRateHz: 1 / Math.max(config.timelineStepSeconds, 1),
+        sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
         timeSeconds: new Float64Array(),
         headDistanceM: new Float64Array(),
         speedMps: new Float64Array(),
@@ -1267,21 +1633,81 @@ export const simulateRide = (
       diagnostics,
     };
   }
-  const initialCars = makeCars(
-    track,
-    config,
-    initial.headDistanceM,
-    initial.speedMps,
-    initialDynamics.accelerationMps2,
+  const invalidInitialForce = initialDynamics.forces.findIndex(
+    (force) => !forceIsFinite(force),
   );
-  const initialPotentialJ = initialCars.reduce(
-    (sum, car, index) =>
-      sum -
-      (config.train.cars[index]?.massKg ?? 0) *
-        dot(gravityVector(config), car.position),
-    0,
-  );
-  const initialEnergyJ = initialPotentialJ + 0.5 * mass * initial.speedMps ** 2;
+  if (invalidInitialForce >= 0) {
+    diagnostics.push({
+      code: "SIM_NUMERICAL",
+      severity: "error",
+      field: "state",
+      message: "Fixed-step integration produced a non-finite state",
+    });
+    return {
+      frames: [],
+      timeline: new RideTimeline({
+        sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
+        timeSeconds: new Float64Array(),
+        headDistanceM: new Float64Array(),
+        speedMps: new Float64Array(),
+      }),
+      events: [],
+      operationState: {
+        trainCount: 1,
+        activeZoneIds: [],
+        occupiedBlockIds: [],
+      },
+      diagnostics,
+    };
+  }
+  let initialCars: readonly CarState[];
+  let initialEnergyJ: number;
+  try {
+    initialCars = makeCars(
+      track,
+      config,
+      initial.headDistanceM,
+      initial.speedMps,
+      initialDynamics.accelerationMps2,
+    );
+    const gravity = gravityVector(config);
+    const initialPotentialJ = sumFinite(
+      initialCars.map(
+        (car, index) =>
+          -(config.train.cars[index]?.massKg ?? 0) * dot(gravity, car.position),
+      ),
+      "telemetry.potentialEnergyJ",
+      "Potential energy must be finite",
+    );
+    const initialKineticJ = checkedFinite(
+      0.5 * mass * initial.speedMps * initial.speedMps,
+      "telemetry.kineticEnergyJ",
+      "Kinetic energy must be finite",
+    );
+    initialEnergyJ = sumFinite(
+      [initialPotentialJ, initialKineticJ],
+      "telemetry.initialEnergyJ",
+      "Initial energy must be finite",
+    );
+  } catch (error) {
+    diagnostics.push(diagnosticFromError(error));
+    return {
+      frames: [],
+      timeline: new RideTimeline({
+        sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
+        timeSeconds: new Float64Array(),
+        headDistanceM: new Float64Array(),
+        speedMps: new Float64Array(),
+      }),
+      events: [],
+      operationState: {
+        trainCount: 1,
+        activeZoneIds: [],
+        occupiedBlockIds: [],
+      },
+      diagnostics,
+    };
+  }
   const work: WorkState = { driveJ: 0, lossJ: 0 };
   const frames: SimulationFrame[] = [];
   const events: SimulationEvent[] = [];
@@ -1289,9 +1715,15 @@ export const simulateRide = (
   let distanceM = initial.headDistanceM;
   let speedMps = initial.speedMps;
   let hasStalled = false;
-  const initialZones = activeZonesForTrain(track, config, distanceM);
   const initialDirection = speedMps < 0 ? "reverse" : "forward";
-  for (const zone of initialZones) {
+  const zoneOccupancy = new Map(
+    config.zones.map((zone) => [
+      zone.id,
+      occupiedCarCount(track, config, zone, distanceM),
+    ]),
+  );
+  for (const zone of config.zones) {
+    if ((zoneOccupancy.get(zone.id) ?? 0) === 0) continue;
     const reverseAtStart =
       initialDirection === "reverse" &&
       config.train.cars.some((_, index) => {
@@ -1300,7 +1732,7 @@ export const simulateRide = (
           ? wrappedDistance(track, carDistanceM)
           : carDistanceM;
         return (
-          Math.abs(canonicalDistanceM - zone.startDistanceM) <= 1e-12 &&
+          canonicalDistanceM === zone.startDistanceM &&
           zoneContains(track, zone, carDistanceM, config.closedTrack)
         );
       });
@@ -1367,7 +1799,27 @@ export const simulateRide = (
       telemetry,
     });
   };
-  addFrame(0, distanceM, speedMps, speedMps);
+  try {
+    addFrame(0, distanceM, speedMps, speedMps);
+  } catch (error) {
+    diagnostics.push(diagnosticFromError(error));
+    return {
+      frames: [],
+      timeline: new RideTimeline({
+        sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
+        timeSeconds: new Float64Array(),
+        headDistanceM: new Float64Array(),
+        speedMps: new Float64Array(),
+      }),
+      events: [],
+      operationState: {
+        trainCount: 1,
+        activeZoneIds: [],
+        occupiedBlockIds: [],
+      },
+      diagnostics,
+    };
+  }
   while (timeSeconds < request.durationSeconds - 1e-12) {
     const step = Math.min(
       config.fixedStepSeconds,
@@ -1375,18 +1827,32 @@ export const simulateRide = (
     );
     const previousDistance = distanceM;
     const previousSpeed = speedMps;
-    const previousDynamics = dynamicsAt(track, config, distanceM, speedMps);
-    [distanceM, speedMps] = rk4(track, config, distanceM, speedMps, step);
-    if (!finite(distanceM) || !finite(speedMps)) {
-      diagnostics.push({
-        code: "SIM_NUMERICAL",
-        severity: "error",
-        field: "state",
-        message: "Fixed-step integration produced a non-finite state",
-      });
+    let previousDynamics: DynamicsSample;
+    try {
+      previousDynamics = dynamicsAt(track, config, distanceM, speedMps);
+    } catch (error) {
+      diagnostics.push(diagnosticFromError(error));
       break;
     }
-    const nextDynamics = dynamicsAt(track, config, distanceM, speedMps);
+    let elapsedStep = step;
+    let boundaryError: OpenTrackBoundaryError | undefined;
+    try {
+      const advanced = boundedRk4(track, config, distanceM, speedMps, step);
+      distanceM = advanced.distanceM;
+      speedMps = advanced.speedMps;
+      elapsedStep = advanced.elapsedSeconds;
+      boundaryError = advanced.boundaryError;
+    } catch (error) {
+      diagnostics.push(diagnosticFromError(error));
+      break;
+    }
+    let nextDynamics: DynamicsSample;
+    try {
+      nextDynamics = dynamicsAt(track, config, distanceM, speedMps);
+    } catch (error) {
+      diagnostics.push(diagnosticFromError(error));
+      break;
+    }
     const invalidForce = nextDynamics.forces.findIndex(
       (force) => !forceIsFinite(force),
     );
@@ -1399,8 +1865,11 @@ export const simulateRide = (
       });
       break;
     }
-    const staticLimit =
-      config.staticStictionCoefficient * mass * config.gravityMps2;
+    const staticLimit = checkedFinite(
+      config.staticStictionCoefficient * mass * config.gravityMps2,
+      "staticStictionLimitN",
+      "Static stiction limit must be finite",
+    );
     if (
       previousSpeed !== 0 &&
       (previousSpeed * speedMps < 0 ||
@@ -1428,15 +1897,27 @@ export const simulateRide = (
       };
     });
     const deltaDistance = distanceM - previousDistance;
-    work.driveJ += averageForces.reduce(
-      (sum, force) => sum + force.drive * deltaDistance,
-      0,
+    const driveWork = sumFinite(
+      averageForces.map((force) => force.drive * deltaDistance),
+      "work.driveJ",
+      "Drive work increment must be finite",
     );
-    work.lossJ += averageForces.reduce(
-      (sum, force) => sum - force.loss * deltaDistance,
-      0,
+    work.driveJ = checkedFinite(
+      work.driveJ + driveWork,
+      "work.driveJ",
+      "Accumulated drive work must be finite",
     );
-    timeSeconds += step;
+    const lossWork = sumFinite(
+      averageForces.map((force) => -force.loss * deltaDistance),
+      "work.lossJ",
+      "Loss work increment must be finite",
+    );
+    work.lossJ = checkedFinite(
+      work.lossJ + lossWork,
+      "work.lossJ",
+      "Accumulated loss work must be finite",
+    );
+    timeSeconds += elapsedStep;
     if (request.durationSeconds - timeSeconds < 1e-12)
       timeSeconds = request.durationSeconds;
     events.push(
@@ -1444,15 +1925,36 @@ export const simulateRide = (
         track,
         config,
         config.zones,
+        zoneOccupancy,
         previousDistance,
         distanceM,
-        timeSeconds - step,
-        step,
+        timeSeconds - elapsedStep,
+        elapsedStep,
       ),
     );
-    addFrame(timeSeconds, distanceM, speedMps, previousSpeed);
+    try {
+      addFrame(timeSeconds, distanceM, speedMps, previousSpeed);
+    } catch (error) {
+      diagnostics.push(diagnosticFromError(error));
+      break;
+    }
+    if (boundaryError) {
+      diagnostics.push({
+        code: boundaryError.diagnosticCode,
+        severity: "error",
+        field: boundaryError.field,
+        message: boundaryError.message,
+      });
+      break;
+    }
   }
-  const completedFrames = withJerk(frames);
+  let completedFrames: readonly SimulationFrame[];
+  try {
+    completedFrames = withJerk(frames);
+  } catch (error) {
+    diagnostics.push(diagnosticFromError(error));
+    completedFrames = [];
+  }
   const finalZones = activeZonesForTrain(track, config, distanceM);
   const uniqueEvents = events.filter(
     (event, index, all) =>
@@ -1466,9 +1968,21 @@ export const simulateRide = (
           other.direction === event.direction,
       ),
   );
+  let timeline: RideTimeline;
+  try {
+    timeline = makeTimeline(track, completedFrames, config);
+  } catch (error) {
+    diagnostics.push(diagnosticFromError(error));
+    timeline = new RideTimeline({
+      sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
+      timeSeconds: new Float64Array(),
+      headDistanceM: new Float64Array(),
+      speedMps: new Float64Array(),
+    });
+  }
   return {
     frames: completedFrames,
-    timeline: makeTimeline(track, completedFrames, config),
+    timeline,
     events: uniqueEvents,
     operationState: operationStateFor(finalZones),
     diagnostics,
@@ -1523,7 +2037,14 @@ export const computePerCarForces = (
         )
         .join("; "),
     );
-  const forces = dynamicsAt(track, config, headDistanceM, speedMps).forces;
+  let forces: readonly PerCarForce[];
+  try {
+    forces = dynamicsAt(track, config, headDistanceM, speedMps).forces;
+  } catch (error) {
+    if (error instanceof SimulatorRangeError)
+      throw new RangeError(`${error.field}: ${error.message}`);
+    throw error;
+  }
   const invalidForce = forces.findIndex((force) => !forceIsFinite(force));
   if (invalidForce >= 0)
     throw new RangeError(
