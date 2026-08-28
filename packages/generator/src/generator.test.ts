@@ -120,6 +120,27 @@ describe("semantic chain geometry", () => {
     expect(result.solvedSpans[0]?.bank?.position(0.5)).toBeCloseTo(Math.PI, 6);
   });
 
+  it("keeps the top-hat descent tangent and inverted frame continuous", () => {
+    const result = compileSemanticChain(
+      [createElement("topHat", "hat", { height: 80, width: 40 })],
+      { samples: 64 },
+    );
+    const span = result.solvedSpans[0]!.span;
+    const startTangent = vec3Normalize(span.derivative(0, 1));
+    const endTangent = vec3Normalize(span.derivative(1, 1));
+    expect(vec3Dot(startTangent, endTangent)).toBeCloseTo(1, 10);
+    expect(span.position(1)[1]).toBeCloseTo(span.position(0)[1], 8);
+    const parameters = result.track!.parameters;
+    let apexIndex = 0;
+    for (let index = 1; index < parameters.length; index += 1)
+      if (
+        Math.abs(parameters[index]! - 0.5) <
+        Math.abs(parameters[apexIndex]! - 0.5)
+      )
+        apexIndex = index;
+    expect(result.track!.bank[apexIndex]).toBeCloseTo(Math.PI, 2);
+  });
+
   it("uses seventh-order geometry and quintic bank laws at element boundaries", () => {
     const result = solveSemanticChain([
       createElement("transition", "t", { length: 20, rise: 8, bank: 0.4 }),
@@ -131,6 +152,40 @@ describe("semantic chain geometry", () => {
     expect(roll?.bank?.derivative(0, 2)).toBeCloseTo(0, 10);
     expect(roll?.bank?.derivative(1, 2)).toBeCloseTo(0, 10);
     expect(roll?.bank?.position(1)).toBeCloseTo(0.4 + Math.PI, 10);
+  });
+
+  it("matches adjacent C3 geometry and C2 bank derivatives at a seam", () => {
+    const result = solveSemanticChain([
+      createElement("transition", "first", {
+        length: 20,
+        rise: 8,
+        pitch: 0.4,
+      }),
+      createElement("transition", "second", {
+        length: 20,
+        rise: -3,
+        pitch: -0.2,
+      }),
+    ]);
+    const left = result.solvedSpans[0]!;
+    const right = result.solvedSpans[1]!;
+    for (const order of [2, 3])
+      expect(
+        vec3Length(
+          vec3Sub(
+            left.span.derivative(1, order),
+            right.span.derivative(0, order),
+          ),
+        ),
+      ).toBeLessThan(1e-8);
+    expect(left.bank!.derivative(1, 1)).toBeCloseTo(
+      right.bank!.derivative(0, 1),
+      10,
+    );
+    expect(left.bank!.derivative(1, 2)).toBeCloseTo(
+      right.bank!.derivative(0, 2),
+      10,
+    );
   });
 
   it("retains positive-G curvature into a roll without flattening it", () => {
@@ -170,10 +225,32 @@ describe("semantic chain geometry", () => {
         { referenceSpeed: 24 },
       );
       const span = result.solvedSpans[0]!.span;
-      expect(supportForceG(span, 0.5, 24)).toBeCloseTo(targetForceG, 2);
+      const sustainedForces = [0.25, 0.35, 0.5, 0.65, 0.75].map((u) =>
+        supportForceG(span, u, 24),
+      );
+      expect(Math.max(...sustainedForces)).toBeLessThan(targetForceG + 0.05);
+      expect(Math.min(...sustainedForces)).toBeGreaterThan(targetForceG - 0.05);
       expect(vec3Length(span.derivative(0.5, 2))).toBeGreaterThan(0.001);
     },
   );
+
+  it("builds zero-G roll geometry with zero specific force while the frame rolls", () => {
+    const result = solveSemanticChain(
+      [createElement("zeroGRoll", "roll", { length: 28, roll: Math.PI })],
+      { referenceSpeed: 24 },
+    );
+    const solved = result.solvedSpans[0]!;
+    const forces = [0.25, 0.35, 0.5, 0.65, 0.75].map((u) =>
+      supportForceG(solved.span, u, 24),
+    );
+    expect(Math.max(...forces)).toBeLessThan(0.05);
+    expect(Math.min(...forces)).toBeGreaterThan(-0.05);
+    expect(vec3Length(solved.span.derivative(0.5, 2))).toBeGreaterThan(0.001);
+    expect(solved.bank!.position(0.25)).not.toBeCloseTo(
+      solved.bank!.position(0.75),
+      2,
+    );
+  });
 
   it("keeps the force transition into a roll continuous and non-flat", () => {
     const result = solveSemanticChain(
@@ -341,6 +418,19 @@ describe("bounded seam solve", () => {
     expect(result.endPose.position[2]).toBeCloseTo(30, 6);
   });
 
+  it("rejects an unreachable hard endPose even when the chain is not closed", () => {
+    const result = solveSemanticChain([createElement("launch", "launch")], {
+      endPose: { ...defaultPose(), position: vec3(0, 0, 0) },
+      maxIterations: 0,
+    });
+    const infeasible = result.diagnostics.find(
+      (diagnostic) => diagnostic.code === "INFEASIBLE_HARD_CONSTRAINTS",
+    );
+    expect(result.feasible).toBe(false);
+    expect(infeasible?.message).toContain("endPose.position");
+    expect(infeasible?.suggestedRelaxation).toContain("endPose.position");
+  });
+
   it("lets a soft force target change the solved force geometry", () => {
     const elements = [
       createElement("airtimeHill", "hill", {
@@ -375,9 +465,110 @@ describe("bounded seam solve", () => {
       (diagnostic) => diagnostic.code === "INFEASIBLE_HARD_CONSTRAINTS",
     );
     expect(result.feasible).toBe(false);
-    expect(infeasible?.message).toContain("closed station pose");
+    expect(infeasible?.message).toContain(
+      "closed-loop pose/closure constraints",
+    );
+    expect(infeasible?.message).toContain("endPose.position");
     expect(infeasible?.suggestedRelaxation).toContain("endPose.position");
     expect(result.relaxations.length).toBeLessThanOrEqual(3);
+  });
+
+  it("names non-station closure failures as closed-loop pose constraints", () => {
+    const result = solveSemanticChain(
+      [createElement("launch", "launch", { length: 20 })],
+      { closed: true, maxIterations: 0 },
+    );
+    const infeasible = result.diagnostics.find(
+      (diagnostic) => diagnostic.code === "INFEASIBLE_HARD_CONSTRAINTS",
+    );
+    expect(result.feasible).toBe(false);
+    expect(infeasible?.message).toContain(
+      "closed-loop pose/closure constraints",
+    );
+    expect(infeasible?.message).not.toContain("closed station pose");
+  });
+
+  it("bounds every LM solve to 32 iterations", () => {
+    const problem = {
+      initial: [0],
+      lower: [-1],
+      upper: [1],
+      residual: () => [1],
+    };
+    expect(
+      boundedLevenbergMarquardt({ ...problem, maxIterations: 33 }).iterations,
+    ).toBeLessThanOrEqual(32);
+    expect(
+      boundedLevenbergMarquardt({ ...problem, maxIterations: Number.NaN })
+        .iterations,
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      boundedLevenbergMarquardt({ ...problem, maxIterations: -10 }).iterations,
+    ).toBe(0);
+    expect(
+      boundedLevenbergMarquardt({
+        ...problem,
+        maxIterations: Number.POSITIVE_INFINITY,
+      }).iterations,
+    ).toBeLessThanOrEqual(32);
+  });
+
+  it("keeps a reachable closed station final seam continuous", () => {
+    const result = solveSemanticChain(
+      [createElement("station", "station", { closed: true })],
+      { closed: true },
+    );
+    const closure = result.seamDiagnostics[0]!;
+    expect(result.feasible).toBe(true);
+    expect(closure.seamId).toBe("station->station");
+    expect(closure.positionM).toBeLessThan(1e-8);
+    expect(closure.tangentRad).toBeLessThan(1e-8);
+    expect(closure.curvatureVectorJumpPerM).toBeLessThan(1e-8);
+  });
+
+  it("returns the same bank geometry that compilation samples", () => {
+    const startPose: Pose = {
+      position: vec3(0, 0, 0),
+      tangent: vec3(1, 1, 0),
+      normal: vec3(0, 0, 1),
+      bank: 0,
+    };
+    const result = compileSemanticChain(
+      [createElement("station", "station", { bank: 0.2 })],
+      { startPose, samples: 8 },
+    );
+    const span = result.solvedSpans[0]!;
+    const parameters = result.track!.parameters;
+    const banks = result.track!.bank;
+    for (let index = 0; index < parameters.length; index += 1)
+      expect(banks[index]).toBeCloseTo(
+        span.bank!.position(parameters[index]!),
+        10,
+      );
+  });
+
+  it("is deterministic across the full solved chain", () => {
+    const elements = [
+      createElement("station", "station"),
+      createElement("topHat", "hat", { width: 40 }),
+      createElement("airtimeHill", "hill", {
+        length: 48,
+        height: 10,
+        targetForceG: 2,
+        referenceSpeed: 24,
+      }),
+      createElement("zeroGRoll", "roll", { length: 28, roll: Math.PI }),
+    ];
+    const first = solveSemanticChain(elements, { referenceSpeed: 24 });
+    const second = solveSemanticChain(elements, { referenceSpeed: 24 });
+    expect(first.seamDiagnostics).toEqual(second.seamDiagnostics);
+    expect(first.diagnostics).toEqual(second.diagnostics);
+    expect(first.endPose).toEqual(second.endPose);
+    for (let index = 0; index < first.solvedSpans.length; index += 1)
+      for (const u of [0, 0.25, 0.5, 0.75, 1])
+        expect(first.solvedSpans[index]!.span.position(u)).toEqual(
+          second.solvedSpans[index]!.span.position(u),
+        );
   });
 
   it("includes and diagnoses the final-to-first closure seam", () => {

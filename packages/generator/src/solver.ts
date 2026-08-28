@@ -141,6 +141,14 @@ export const boundedLevenbergMarquardt = (
     throw new RangeError("Least-squares bounds must match variables");
   const bounded = (value: number, index: number): number =>
     clamp(value, problem.lower[index]!, problem.upper[index]!);
+  const requestedIterations = problem.maxIterations ?? 24;
+  const maxIterations = Number.isNaN(requestedIterations)
+    ? 0
+    : requestedIterations === Number.POSITIVE_INFINITY
+      ? 32
+      : requestedIterations === Number.NEGATIVE_INFINITY
+        ? 0
+        : clamp(Math.floor(requestedIterations), 0, 32);
   let variables = problem.initial.map(bounded);
   let residual = [...problem.residual(variables)];
   const costOf = (values: readonly number[]): number =>
@@ -148,11 +156,7 @@ export const boundedLevenbergMarquardt = (
   let cost = costOf(residual);
   let damping = 1e-2;
   let iterations = 0;
-  for (
-    ;
-    iterations < Math.max(0, Math.floor(problem.maxIterations ?? 24));
-    iterations += 1
-  ) {
+  for (; iterations < maxIterations; iterations += 1) {
     const variableCount = variables.length;
     const jacobian = residual.map(() => Array<number>(variableCount).fill(0));
     for (let column = 0; column < variableCount; column += 1) {
@@ -314,7 +318,7 @@ const hardConflict = (ids: readonly string[], detail: string): Diagnostic => ({
   severity: "error",
   message: `Conflicting hard constraints (${ids.join(", ")}): ${detail}`,
   suggestedRelaxation:
-    "Relax endPose.position, the closed station pose, or one named hard target",
+    "Relax endPose.position, the closed-loop pose/closure constraints, or one named hard target",
 });
 const targetTolerance = (
   target: HardTarget,
@@ -454,15 +458,66 @@ const elementsAt = (
 const buildChain = (
   elements: readonly AnySemanticElement[],
   startPose: Pose,
+  referenceSpeed: number,
 ): ChainState => {
   const solvedSpans: SolvedSpan[] = [];
   let pose = startPose;
   for (const element of elements) {
-    const built = buildElement(element, pose);
+    const built = buildElement(element, pose, referenceSpeed);
     solvedSpans.push({ ...built.solvedSpan, id: element.id });
     pose = built.endPose;
   }
   return { elements, solvedSpans, endPose: pose };
+};
+
+const applyAuthoredStartFrame = (
+  state: ChainState,
+  startPose: Pose,
+): ChainState => {
+  const first = state.solvedSpans[0];
+  if (!first?.bank) return state;
+  const tangent = vec3Normalize(first.span.derivative(0, 1));
+  const reference = Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+  const projected = vec3Sub(
+    reference,
+    vec3Scale(tangent, vec3Dot(reference, tangent)),
+  );
+  const defaultNormal = vec3Normalize(projected);
+  const bankAtStart = first.bank.position(0);
+  const currentNormal = vec3Normalize(
+    vec3Add(
+      vec3Scale(defaultNormal, Math.cos(bankAtStart)),
+      vec3Scale(vec3Cross(tangent, defaultNormal), Math.sin(bankAtStart)),
+    ),
+  );
+  const correction = Math.atan2(
+    vec3Dot(tangent, vec3Cross(currentNormal, startPose.normal)),
+    vec3Dot(currentNormal, startPose.normal),
+  );
+  if (Math.abs(correction) < 1e-12) return state;
+  const correctionSpan = new QuinticScalarSpan({
+    v0: correction,
+    d10: 0,
+    d20: 0,
+    v1: 0,
+    d11: 0,
+    d21: 0,
+  });
+  const solvedSpans = state.solvedSpans.map((span, index) =>
+    index === 0
+      ? {
+          ...span,
+          bank: {
+            position: (u: number) =>
+              span.bank!.position(u) + correctionSpan.position(u),
+            derivative: (u: number, order = 1) =>
+              span.bank!.derivative(u, order) +
+              correctionSpan.derivative(u, order),
+          },
+        }
+      : span,
+  );
+  return { ...state, solvedSpans };
 };
 
 const appendEndpointResiduals = (
@@ -556,8 +611,16 @@ export const solveSemanticChain = (
   const tolerances = { ...defaultTolerances, ...options.seamTolerances };
   const bindings = semanticVariables(elements);
   const initial = bindings.map((binding) => binding.initial);
+  const referenceSpeed = options.referenceSpeed ?? 25;
   const stateFor = (values: readonly number[]): ChainState =>
-    buildChain(elementsAt(elements, bindings, values), startPose);
+    applyAuthoredStartFrame(
+      buildChain(
+        elementsAt(elements, bindings, values),
+        startPose,
+        referenceSpeed,
+      ),
+      startPose,
+    );
   const initialState = stateFor(initial);
   const residualAt = (values: readonly number[]): readonly number[] => [
     ...diagnosticResiduals(
@@ -609,9 +672,13 @@ export const solveSemanticChain = (
           ? "specific-force jump"
           : undefined,
       ].filter((failure): failure is string => failure !== undefined);
+      const isClosureSeam =
+        closureEnabled && seam.seamId.endsWith(`->${firstElement?.id}`);
       diagnostics.push(
         hardConflict(
-          [seam.seamId],
+          isClosureSeam
+            ? ["closed-loop pose/closure constraints", seam.seamId]
+            : [seam.seamId],
           `${failures.join(", ")} residual remains after bounded solve`,
         ),
       );
@@ -655,6 +722,51 @@ export const solveSemanticChain = (
     }
   }
 
+  if (options.endPose && !closureEnabled) {
+    const desired = options.endPose;
+    const positionError = vec3Distance(
+      state.endPose.position,
+      desired.position,
+    );
+    const tangentError = Math.acos(
+      clamp(
+        vec3Dot(
+          vec3Normalize(state.endPose.tangent),
+          vec3Normalize(desired.tangent),
+        ),
+        -1,
+        1,
+      ),
+    );
+    const normalError = Math.acos(
+      clamp(
+        vec3Dot(
+          vec3Normalize(state.endPose.normal),
+          vec3Normalize(desired.normal),
+        ),
+        -1,
+        1,
+      ),
+    );
+    const bankError = Math.abs(state.endPose.bank - desired.bank);
+    const failures = [
+      positionError > tolerances.positionM ? "endPose.position" : undefined,
+      tangentError > tolerances.tangentRad ? "endPose.tangent" : undefined,
+      normalError > tolerances.tangentRad ? "endPose.normal" : undefined,
+      bankError > tolerances.bankRad ? "endPose.bank" : undefined,
+    ].filter((failure): failure is string => failure !== undefined);
+    if (failures.length > 0) {
+      diagnostics.push(
+        hardConflict(
+          failures,
+          `position ${positionError.toExponential(3)} m, tangent ${tangentError.toExponential(3)} rad, normal ${normalError.toExponential(3)} rad, bank ${bankError.toExponential(3)} rad remain after bounded solve`,
+        ),
+      );
+      for (const failure of failures)
+        if (relaxations.length < 3) relaxations.push(`Relax ${failure}`);
+    }
+  }
+
   if (closureEnabled) {
     const desired = options.endPose ?? startPose;
     const positionError = vec3Distance(
@@ -682,14 +794,15 @@ export const solveSemanticChain = (
       ),
     );
     const bankError = Math.abs(state.endPose.bank - desired.bank);
-    if (
-      positionError > tolerances.positionM ||
-      tangentError > tolerances.tangentRad ||
-      normalError > tolerances.tangentRad ||
-      bankError > tolerances.bankRad
-    ) {
-      const ids = ["closed station pose"];
-      if (options.endPose) ids.push("endPose");
+    const poseFailures = [
+      positionError > tolerances.positionM ? "endPose.position" : undefined,
+      tangentError > tolerances.tangentRad ? "endPose.tangent" : undefined,
+      normalError > tolerances.tangentRad ? "endPose.normal" : undefined,
+      bankError > tolerances.bankRad ? "endPose.bank" : undefined,
+    ].filter((failure): failure is string => failure !== undefined);
+    if (poseFailures.length > 0) {
+      const ids = ["closed-loop pose/closure constraints"];
+      if (options.endPose) ids.push(...poseFailures);
       const closure = seamDiagnostics[seamDiagnostics.length - 1];
       if (closure?.seamId.endsWith(`->${firstElement?.id}`))
         ids.push(closure.seamId);
@@ -701,8 +814,8 @@ export const solveSemanticChain = (
       );
       for (const relaxation of [
         "Relax endPose.position",
-        "Relax closed station pose tangent",
-        "Relax closed station bank",
+        "Relax closed-loop pose/closure tangent",
+        "Relax closed-loop pose/closure bank",
       ])
         if (relaxations.length < 3) relaxations.push(relaxation);
     }
@@ -745,50 +858,9 @@ export const compileSemanticChain = (
       ? {}
       : { tolerance: options.tolerance }),
   };
-  const first = result.solvedSpans[0];
-  const compilationSpans = result.solvedSpans.map((span, index) => {
-    if (index !== 0 || !first?.bank) return span;
-    const tangent = vec3Normalize(first.span.derivative(0, 1));
-    const reference =
-      Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
-    const projected = vec3Sub(
-      reference,
-      vec3Scale(tangent, vec3Dot(reference, tangent)),
-    );
-    const defaultNormal = vec3Normalize(projected);
-    const bankAtStart = first.bank.position(0);
-    const currentNormal = vec3Normalize(
-      vec3Add(
-        vec3Scale(defaultNormal, Math.cos(bankAtStart)),
-        vec3Scale(vec3Cross(tangent, defaultNormal), Math.sin(bankAtStart)),
-      ),
-    );
-    const authoredNormal = result.startPose.normal;
-    const correction = Math.atan2(
-      vec3Dot(tangent, vec3Cross(currentNormal, authoredNormal)),
-      vec3Dot(currentNormal, authoredNormal),
-    );
-    const correctionSpan = new QuinticScalarSpan({
-      v0: correction,
-      d10: 0,
-      d20: 0,
-      v1: 0,
-      d11: 0,
-      d21: 0,
-    });
-    return {
-      ...span,
-      bank: {
-        position: (u: number) =>
-          span.bank!.position(u) + correctionSpan.position(u),
-        derivative: (u: number, order = 1) =>
-          span.bank!.derivative(u, order) + correctionSpan.derivative(u, order),
-      },
-    };
-  });
   return {
     ...result,
-    track: compileTrack(compilationSpans, compileOptions),
+    track: compileTrack(result.solvedSpans, compileOptions),
   };
 };
 
