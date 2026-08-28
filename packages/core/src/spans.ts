@@ -32,16 +32,16 @@ export interface SeventhOrderHermiteSpec<T extends SpanValue> {
 export class SeventhOrderHermiteSpan<
   T extends SpanValue = number,
 > implements ParametricSpan<T> {
-  private readonly coefficients: readonly number[][];
-  private readonly template: T;
-  private readonly endpointConditions: readonly (readonly (readonly number[])[])[];
+  private coefficientRows: readonly number[][];
+  private template: T;
+  private endpointConditions: readonly (readonly (readonly number[])[])[];
 
   public constructor(spec: SeventhOrderHermiteSpec<T>) {
     this.template = spec.p0;
     const start = [spec.p0, spec.d10, spec.d20, spec.d30].map(components);
     const end = [spec.p1, spec.d11, spec.d21, spec.d31].map(components);
     this.endpointConditions = [start, end];
-    this.coefficients = start[0]!.map((_, component) => {
+    this.coefficientRows = start[0]!.map((_, component) => {
       const result = [
         start[0]![component]!,
         start[1]![component]!,
@@ -129,6 +129,51 @@ export class SeventhOrderHermiteSpan<
     } as SeventhOrderHermiteSpec<T>);
   }
 
+  public static fromCoefficients<T extends SpanValue = number>(
+    coefficients: readonly (readonly number[])[],
+  ): SeventhOrderHermiteSpan<T> {
+    if (
+      coefficients.length === 0 ||
+      coefficients.some((row) => row.length !== 8)
+    )
+      throw new RangeError(
+        "Seventh-order coefficients must contain eight values per component",
+      );
+    const template = (coefficients.length === 1 ? 0 : vec3(0, 0, 0)) as T;
+    const evaluate = (
+      row: readonly number[],
+      order: number,
+      u: number,
+    ): number => {
+      let value = 0;
+      for (let power = order; power < row.length; power += 1) {
+        let factor = 1;
+        for (let index = 0; index < order; index += 1) factor *= power - index;
+        value += row[power]! * factor * u ** (power - order);
+      }
+      return value;
+    };
+    const value = (u: number, order: number): T =>
+      fromComponents(
+        coefficients.map((row) => evaluate(row, order, u)),
+        template,
+      );
+    const result = Object.create(
+      SeventhOrderHermiteSpan.prototype,
+    ) as SeventhOrderHermiteSpan<T>;
+    result.template = template;
+    result.coefficientRows = coefficients.map((row) => [...row]);
+    result.endpointConditions = [
+      [0, 1, 2, 3].map((order) => components(value(0, order))),
+      [0, 1, 2, 3].map((order) => components(value(1, order))),
+    ];
+    return result;
+  }
+
+  public get coefficients(): readonly (readonly number[])[] {
+    return this.coefficientRows.map((row) => [...row]);
+  }
+
   public position(u: number): T {
     return this.evaluate(u, 0);
   }
@@ -143,7 +188,7 @@ export class SeventhOrderHermiteSpan<
       const values = this.endpointConditions[endpoint]![order]!;
       return fromComponents(values, this.template);
     }
-    const values = this.coefficients.map((coefficient) => {
+    const values = this.coefficientRows.map((coefficient) => {
       let result = 0;
       for (let power = order; power < coefficient.length; power += 1)
         result +=
@@ -165,8 +210,8 @@ export interface QuinticScalarSpec {
   readonly d21: number;
 }
 export class QuinticScalarSpan implements ParametricSpan<number> {
-  private readonly coefficients: readonly number[];
-  private readonly endpoints: readonly number[];
+  private coefficientValues: readonly number[];
+  private endpoints: readonly number[];
   public constructor(spec: QuinticScalarSpec) {
     const a0 = spec.v0;
     const a1 = spec.d10;
@@ -177,8 +222,34 @@ export class QuinticScalarSpan implements ParametricSpan<number> {
     const a5 = (b2 - 6 * b1 + 12 * b0) / 2;
     const a4 = b1 - 3 * b0 - 2 * a5;
     const a3 = b0 - a4 - a5;
-    this.coefficients = [a0, a1, a2, a3, a4, a5];
+    this.coefficientValues = [a0, a1, a2, a3, a4, a5];
     this.endpoints = [spec.v0, spec.d10, spec.d20, spec.v1, spec.d11, spec.d21];
+  }
+  public static fromCoefficients(
+    coefficients: readonly number[],
+  ): QuinticScalarSpan {
+    if (coefficients.length !== 6)
+      throw new RangeError("Quintic coefficients must contain six values");
+    const result = Object.create(
+      QuinticScalarSpan.prototype,
+    ) as QuinticScalarSpan;
+    result.coefficientValues = [...coefficients];
+    const evaluate = (u: number, order: number): number => {
+      let value = 0;
+      for (let power = order; power < coefficients.length; power += 1) {
+        let factor = 1;
+        for (let index = 0; index < order; index += 1) factor *= power - index;
+        value += coefficients[power]! * factor * u ** (power - order);
+      }
+      return value;
+    };
+    result.endpoints = [0, 1, 2]
+      .map((order) => evaluate(0, order))
+      .concat([0, 1, 2].map((order) => evaluate(1, order)));
+    return result;
+  }
+  public get coefficients(): readonly number[] {
+    return [...this.coefficientValues];
   }
   public value(u: number): number {
     return this.derivative(u, 0);
@@ -192,9 +263,9 @@ export class QuinticScalarSpan implements ParametricSpan<number> {
     if ((u === 0 || u === 1) && order <= 2)
       return this.endpoints[(u === 0 ? 0 : 3) + order]!;
     let result = 0;
-    for (let power = order; power < this.coefficients.length; power += 1)
+    for (let power = order; power < this.coefficientValues.length; power += 1)
       result +=
-        ((this.coefficients[power]! * factorial(power)) /
+        ((this.coefficientValues[power]! * factorial(power)) /
           factorial(power - order)) *
         u ** (power - order);
     return result;

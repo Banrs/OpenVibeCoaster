@@ -14,3 +14,11 @@ export {
   solveSemanticChain,
   solveTrack,
 } from "./solver";
+export {
+  compileCoasterFile,
+  generate,
+  generateCoaster,
+  localRegenerate,
+  regenerateLocal,
+} from "./pipeline";
+export { validateClearance } from "./clearance";

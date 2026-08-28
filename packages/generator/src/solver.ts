@@ -388,6 +388,7 @@ const targetResidual = (target: HardTarget, pose: Pose): number => {
 const hardConflict = (ids: readonly string[], detail: string): Diagnostic => ({
   code: "INFEASIBLE_HARD_CONSTRAINTS",
   severity: "error",
+  provenance: "PROJECT_ENGINEERING_LIMIT",
   message: `Conflicting hard constraints (${ids.join(", ")}): ${detail}`,
   suggestedRelaxation: `Relax ${ids.join(", ")} or one named hard target`,
 });
@@ -816,6 +817,7 @@ export const solveSemanticChain = (
       diagnostics.push({
         code: "SOFT_FORCE_RESIDUAL",
         severity: "warning",
+        provenance: "DESIGN_ASSUMPTION",
         message: `Soft sustained-force deviation at ${seam.seamId}: ${seam.softResiduals.sustainedForceDeviationG.toFixed(3)} G`,
       });
   }
@@ -856,6 +858,7 @@ export const solveSemanticChain = (
       diagnostics.push({
         code: "SOFT_TARGET_RESIDUAL",
         severity: "warning",
+        provenance: "DESIGN_ASSUMPTION",
         message: `Soft target ${target.id} differs by ${error.toExponential(3)}`,
       });
     }

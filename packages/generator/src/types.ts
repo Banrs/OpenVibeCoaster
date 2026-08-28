@@ -1,6 +1,9 @@
 import type {
+  CoasterFileV1,
   CompiledTrackData,
   Diagnostic,
+  EnvironmentQuery,
+  DesignIntentV1,
   ParametricSpan,
   SolvedSpan,
   Vec3,
@@ -169,4 +172,50 @@ export interface SolveResult {
 
 export interface CompileResult extends SolveResult {
   readonly track?: CompiledTrackData;
+}
+
+export interface GenerationOptions {
+  readonly environment?: EnvironmentQuery;
+  readonly samples?: number;
+  readonly name?: string;
+  readonly generatorVersion?: string;
+  readonly profileVersion?: string;
+  readonly researchSnapshotIds?: readonly string[];
+  readonly trainEnvelopeRadius?: number;
+}
+
+export interface GenerationResult {
+  readonly feasible: boolean;
+  readonly intent: DesignIntentV1;
+  readonly elements: readonly AnySemanticElement[];
+  readonly solvedSpans: readonly SolvedSpan[];
+  readonly track: CompiledTrackData;
+  readonly file: CoasterFileV1;
+  readonly serializedFile: string;
+  readonly diagnostics: readonly Diagnostic[];
+  readonly relaxations: readonly string[];
+  readonly candidatesTested: number;
+  readonly lmIterations: number;
+  readonly spanHashes: Readonly<Record<string, string>>;
+}
+
+export interface ClearanceOptions {
+  readonly trainEnvelopeRadius?: number;
+  readonly samplesPerSpan?: number;
+  readonly trackClearance?: number;
+}
+
+export interface LocalRegenerationOptions {
+  readonly pinnedElementIds?: readonly string[];
+  readonly intent?: DesignIntentV1;
+  readonly changes?: Readonly<
+    Record<string, Partial<Record<string, number | string | boolean>>>
+  >;
+}
+
+export interface LocalRegenerationResult {
+  readonly feasible: boolean;
+  readonly generation: GenerationResult;
+  readonly diagnostics: readonly Diagnostic[];
+  readonly untouchedSpanHashes: Readonly<Record<string, string>>;
 }

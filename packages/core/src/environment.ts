@@ -1,6 +1,6 @@
 import type { EnvironmentQuery, EnvironmentRaycast } from "./contracts";
-import { vec3, vec3Normalize } from "./math";
-import type { Vec3 } from "./math";
+import { aabbFromPoints, vec3, vec3Normalize } from "./math";
+import type { Aabb, Vec3 } from "./math";
 
 export interface HeightfieldOptions {
   readonly width: number;
@@ -73,6 +73,27 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return point[1] - this.heightAt(point[0], point[2]) >= 0
       ? distance
       : -distance;
+  }
+
+  public sampleSolid(point: Vec3): number {
+    return this.signedDistance(point);
+  }
+
+  public bounds(): Aabb {
+    let minimum = this.heights[0]!;
+    let maximum = minimum;
+    for (const height of this.heights) {
+      minimum = Math.min(minimum, height);
+      maximum = Math.max(maximum, height);
+    }
+    return aabbFromPoints([
+      vec3(this.origin[0], minimum, this.origin[1]),
+      vec3(
+        this.origin[0] + (this.width - 1) * this.cellSize,
+        maximum,
+        this.origin[1] + (this.depth - 1) * this.cellSize,
+      ),
+    ]);
   }
 
   private gradientAt(x: number, z: number): readonly [number, number] {
