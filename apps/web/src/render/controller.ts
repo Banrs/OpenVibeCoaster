@@ -337,23 +337,34 @@ export function createRendererController(
         } catch {
           // ignore
         }
+        const geoms = new Set<THREE.BufferGeometry>();
+        const mats = new Set<THREE.Material>();
         for (const car of trainGroupLocal.cars) {
           for (const child of car.children) {
             const mesh = child as THREE.Mesh;
-            try {
-              mesh.geometry.dispose();
-            } catch {
-              // ignore
-            }
+            const geom = mesh.geometry as unknown as
+              THREE.BufferGeometry | undefined;
+            if (geom) geoms.add(geom);
             const mat = (mesh as unknown as { material?: THREE.Material })
               .material;
             if (mat) {
-              try {
-                mat.dispose();
-              } catch {
-                // ignore
-              }
+              const arr = Array.isArray(mat) ? mat : [mat];
+              for (const mm of arr) mats.add(mm);
             }
+          }
+        }
+        for (const g of geoms) {
+          try {
+            g.dispose();
+          } catch {
+            // ignore
+          }
+        }
+        for (const m of mats) {
+          try {
+            m.dispose();
+          } catch {
+            // ignore
           }
         }
       }
@@ -408,23 +419,34 @@ export function createRendererController(
     supportMeshes = [];
     if (trainGroup) {
       handle.scene.remove(trainGroup.group);
+      const geoms = new Set<THREE.BufferGeometry>();
+      const mats = new Set<THREE.Material>();
       for (const car of trainGroup.cars) {
         for (const child of car.children) {
           const mesh = child as THREE.Mesh;
-          try {
-            mesh.geometry.dispose();
-          } catch {
-            // ignore
-          }
+          const geom = mesh.geometry as unknown as
+            THREE.BufferGeometry | undefined;
+          if (geom) geoms.add(geom);
           const mat = (mesh as unknown as { material?: THREE.Material })
             .material;
           if (mat) {
-            try {
-              mat.dispose();
-            } catch {
-              // ignore
-            }
+            const arr = Array.isArray(mat) ? mat : [mat];
+            for (const mm of arr) mats.add(mm);
           }
+        }
+      }
+      for (const g of geoms) {
+        try {
+          g.dispose();
+        } catch {
+          // ignore
+        }
+      }
+      for (const m of mats) {
+        try {
+          m.dispose();
+        } catch {
+          // ignore
         }
       }
       trainGroup = null;

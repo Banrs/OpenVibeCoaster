@@ -128,63 +128,38 @@ function createSingleCarMesh(): THREE.Group {
     car.userData.isCar = true;
     return car;
   } catch (e) {
-    if (bodyGeom) {
-      try {
-        bodyGeom.dispose();
-      } catch {
-        // ignore
-      }
-    }
-    if (bodyMat) {
-      try {
-        bodyMat.dispose();
-      } catch {
-        // ignore
-      }
-    }
-    if (roofGeom) {
-      try {
-        roofGeom.dispose();
-      } catch {
-        // ignore
-      }
-    }
-    if (roofMat) {
-      try {
-        roofMat.dispose();
-      } catch {
-        // ignore
-      }
-    }
-    if (wheelGeom) {
-      try {
-        wheelGeom.dispose();
-      } catch {
-        // ignore
-      }
-    }
-    if (wheelMat) {
-      try {
-        wheelMat.dispose();
-      } catch {
-        // ignore
-      }
-    }
+    const geoms = new Set<THREE.BufferGeometry>();
+    const mats = new Set<THREE.Material>();
+    if (bodyGeom) geoms.add(bodyGeom);
+    if (roofGeom) geoms.add(roofGeom);
+    if (wheelGeom) geoms.add(wheelGeom);
+    if (bodyMat) mats.add(bodyMat);
+    if (roofMat) mats.add(roofMat);
+    if (wheelMat) mats.add(wheelMat);
     for (const child of car.children) {
       const mesh = child as THREE.Mesh;
+      const geom = mesh.geometry as THREE.BufferGeometry | undefined;
+      if (geom) geoms.add(geom);
+      const mat = (
+        mesh as unknown as { material?: THREE.Material | THREE.Material[] }
+      ).material;
+      if (mat) {
+        const arr = Array.isArray(mat) ? mat : [mat];
+        for (const mm of arr) mats.add(mm);
+      }
+    }
+    for (const g of geoms) {
       try {
-        mesh.geometry.dispose();
+        g.dispose();
       } catch {
         // ignore
       }
-      const mat = (mesh as unknown as { material?: THREE.Material }).material;
-      if (mat) {
-        try {
-          mat.dispose();
-        } catch {
-          // ignore
-        }
-        // cloned wheel shares geometry/material – dispose once already handled via clone? Clone shares, but dispose idempotent
+    }
+    for (const m of mats) {
+      try {
+        m.dispose();
+      } catch {
+        // ignore
       }
     }
     throw e;
@@ -195,9 +170,11 @@ export function createTrainGroup(): TrainGroup {
   const group = new THREE.Group();
   group.name = "train";
   const cars: THREE.Group[] = [];
+  let currentCar: THREE.Group | null = null;
   try {
     for (let i = 0; i < TRAIN_CAR_COUNT; i++) {
       const car = createSingleCarMesh();
+      currentCar = car;
       // Slight color variation front vs rear for recognizability
       if (i === 0) {
         const body = car.children[0] as THREE.Mesh;
@@ -208,30 +185,43 @@ export function createTrainGroup(): TrainGroup {
       }
       cars.push(car);
       group.add(car);
+      currentCar = null;
     }
     group.userData.isTrain = true;
     return { group, cars };
   } catch (e) {
-    for (const car of cars) {
+    const toDispose: THREE.Group[] = [...cars];
+    if (currentCar && !cars.includes(currentCar)) toDispose.push(currentCar);
+    const geoms = new Set<THREE.BufferGeometry>();
+    const mats = new Set<THREE.Material>();
+    for (const car of toDispose) {
       for (const child of car.children) {
         const mesh = child as THREE.Mesh;
-        try {
-          mesh.geometry.dispose();
-        } catch {
-          // ignore
-        }
-        const mat = (mesh as unknown as { material?: THREE.Material }).material;
+        const geom = mesh.geometry as THREE.BufferGeometry | undefined;
+        if (geom) geoms.add(geom);
+        const mat = (
+          mesh as unknown as { material?: THREE.Material | THREE.Material[] }
+        ).material;
         if (mat) {
-          try {
-            mat.dispose();
-          } catch {
-            // ignore
-          }
+          const arr = Array.isArray(mat) ? mat : [mat];
+          for (const mm of arr) mats.add(mm);
         }
       }
     }
-    // also dispose any partial car that threw after adding some children but not yet pushed
-    // createSingleCarMesh already cleaned its partial, so nothing extra
+    for (const g of geoms) {
+      try {
+        g.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    for (const m of mats) {
+      try {
+        m.dispose();
+      } catch {
+        // ignore
+      }
+    }
     throw e;
   }
 }

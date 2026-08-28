@@ -157,13 +157,22 @@ function createTubeGeometry(
   }
 
   const geometry = new THREE.BufferGeometry();
-  geometry.setIndex(indices);
-  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
-  geometry.setAttribute("color", new THREE.BufferAttribute(colorArray, 3));
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
-  return geometry;
+  try {
+    geometry.setIndex(indices);
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colorArray, 3));
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
+  } catch (e) {
+    try {
+      geometry.dispose();
+    } catch {
+      // ignore
+    }
+    throw e;
+  }
 }
 
 export function buildTrackGeometries(

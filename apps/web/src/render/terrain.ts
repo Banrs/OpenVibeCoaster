@@ -154,6 +154,7 @@ export interface TerrainGroup {
 export function createTerrainGroup(env: HeightfieldEnvironment): TerrainGroup {
   let geometry: THREE.BufferGeometry | null = null;
   let material: THREE.Material | null = null;
+  let grid: THREE.GridHelper | null = null;
   try {
     geometry = buildTerrainMesh(env);
     material = new THREE.MeshStandardMaterial({
@@ -169,17 +170,19 @@ export function createTerrainGroup(env: HeightfieldEnvironment): TerrainGroup {
 
     const size = Math.max(env.width, env.depth) * env.cellSize;
     const divisions = 20;
-    const grid = new THREE.GridHelper(size, divisions, 0x3a4f5a, 0x2a3a44);
+    grid = new THREE.GridHelper(size, divisions, 0x3a4f5a, 0x2a3a44);
     // Place grid slightly above terrain center height
     const centerH = env.heightAt(0, 0);
     grid.position.set(0, centerH + 0.08, 0);
     grid.userData.isTerrainGrid = true;
 
-    // success – prevent double dispose
+    // success – prevent double dispose (grid ownership transferred)
+    const retGrid = grid;
     geometry = null;
     material = null;
+    grid = null;
 
-    return { mesh, grid, env };
+    return { mesh, grid: retGrid, env };
   } catch (e) {
     if (geometry) {
       try {
@@ -193,6 +196,30 @@ export function createTerrainGroup(env: HeightfieldEnvironment): TerrainGroup {
         material.dispose();
       } catch {
         // ignore
+      }
+    }
+    if (grid) {
+      const g = grid as unknown as {
+        geometry?: THREE.BufferGeometry;
+        material?: THREE.Material | THREE.Material[];
+      };
+      if (g.geometry) {
+        try {
+          g.geometry.dispose();
+        } catch {
+          // ignore
+        }
+      }
+      const mat = g.material;
+      if (mat) {
+        const mats = Array.isArray(mat) ? mat : [mat];
+        for (const mm of mats) {
+          try {
+            mm.dispose();
+          } catch {
+            // ignore
+          }
+        }
       }
     }
     throw e;

@@ -95,51 +95,35 @@ function buildScene(terrainSeed: string): THREE.Scene {
 
     return scene;
   } catch (e) {
-    // dispose standalone sky resources not yet owned by a mesh in scene
+    // Collect unique not-yet-attached resources to dispose exactly once;
+    // attached resources will be disposed via disposeScene without double disposal.
+    const geoms = new Set<THREE.BufferGeometry>();
+    const mats = new Set<THREE.Material>();
     if (skyMesh) {
-      try {
-        skyMesh.geometry.dispose();
-      } catch {
-        // ignore
-      }
-      const m = (skyMesh as unknown as { material?: THREE.Material }).material;
-      if (m) {
-        try {
-          m.dispose();
-        } catch {
-          // ignore
+      if (skyMesh.parent === null) {
+        const g = skyMesh.geometry as unknown as
+          THREE.BufferGeometry | undefined;
+        if (g) geoms.add(g);
+        const mat = (skyMesh as unknown as { material?: THREE.Material })
+          .material;
+        if (mat) {
+          const arr = Array.isArray(mat) ? mat : [mat];
+          for (const mm of arr) mats.add(mm);
         }
       }
     } else {
-      if (skyGeom) {
-        try {
-          skyGeom.dispose();
-        } catch {
-          // ignore
-        }
-      }
-      if (skyMat) {
-        try {
-          skyMat.dispose();
-        } catch {
-          // ignore
-        }
-      }
+      if (skyGeom) geoms.add(skyGeom);
+      if (skyMat) mats.add(skyMat);
     }
     if (terrainMesh && terrainMesh.parent === null) {
-      try {
-        terrainMesh.geometry.dispose();
-      } catch {
-        // ignore
-      }
+      const g = terrainMesh.geometry as unknown as
+        THREE.BufferGeometry | undefined;
+      if (g) geoms.add(g);
       const mat = (terrainMesh as unknown as { material?: THREE.Material })
         .material;
       if (mat) {
-        try {
-          mat.dispose();
-        } catch {
-          // ignore
-        }
+        const arr = Array.isArray(mat) ? mat : [mat];
+        for (const mm of arr) mats.add(mm);
       }
     }
     if (terrainGrid && terrainGrid.parent === null) {
@@ -147,23 +131,25 @@ function buildScene(terrainSeed: string): THREE.Scene {
         geometry?: THREE.BufferGeometry;
         material?: THREE.Material | THREE.Material[];
       };
-      if (g.geometry) {
-        try {
-          g.geometry.dispose();
-        } catch {
-          // ignore
-        }
-      }
+      if (g.geometry) geoms.add(g.geometry);
       const m = g.material;
       if (m) {
-        const mats = Array.isArray(m) ? m : [m];
-        for (const mm of mats) {
-          try {
-            mm.dispose();
-          } catch {
-            // ignore
-          }
-        }
+        const arr = Array.isArray(m) ? m : [m];
+        for (const mm of arr) mats.add(mm);
+      }
+    }
+    for (const g of geoms) {
+      try {
+        g.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    for (const m of mats) {
+      try {
+        m.dispose();
+      } catch {
+        // ignore
       }
     }
     try {
@@ -283,15 +269,19 @@ export function disposeScene(scene: THREE.Scene): void {
   const toRemove = [...scene.children];
   for (const obj of toRemove) scene.remove(obj);
 
+  const seenGeoms = new Set<THREE.BufferGeometry>();
+  const seenMats = new Set<THREE.Material>();
   const disposeObject = (root: THREE.Object3D): void => {
     for (const child of root.children) disposeObject(child);
     const mesh = root as unknown as {
       geometry?: THREE.BufferGeometry;
       material?: THREE.Material | THREE.Material[];
     };
-    if (mesh.geometry) {
+    const geom = mesh.geometry as unknown as THREE.BufferGeometry | undefined;
+    if (geom && !seenGeoms.has(geom)) {
+      seenGeoms.add(geom);
       try {
-        mesh.geometry.dispose();
+        geom.dispose();
       } catch {
         // ignore
       }
@@ -300,6 +290,8 @@ export function disposeScene(scene: THREE.Scene): void {
     if (mat) {
       const mats = Array.isArray(mat) ? mat : [mat];
       for (const m of mats) {
+        if (seenMats.has(m)) continue;
+        seenMats.add(m);
         try {
           m.dispose();
         } catch {

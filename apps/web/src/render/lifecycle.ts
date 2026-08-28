@@ -526,6 +526,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     const prevAttachment = attachment
       ? { data: attachment.data, options: { ...attachment.options } }
       : null;
+    const prevPlayback = lastPlayback ? { ...lastPlayback } : null;
     if (attachment) {
       const prevMetricData = attachment.options.metricData;
       const nextMetricData = hasData ? metricData : prevMetricData;
@@ -548,9 +549,36 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       try {
         controller?.setMetric(metric, metricData);
       } catch (e) {
-        // restore previous attachment snapshot if controller failed
+        // restore both metadata and controller last-known-good track/playback
         if (prevAttachment) {
-          attachment = prevAttachment;
+          if (controller) {
+            try {
+              controller.attachTrack(
+                prevAttachment.data,
+                prevAttachment.options,
+              );
+              if (prevPlayback) {
+                controller.updatePlayback(
+                  prevPlayback.distance,
+                  prevPlayback.speed,
+                );
+              }
+              attachment = prevAttachment;
+              lastPlayback = prevPlayback;
+            } catch {
+              // restoration itself failed – clear both truthfully and propagate original failure
+              attachment = null;
+              lastPlayback = null;
+              try {
+                controller.clearTrack();
+              } catch {
+                // ignore
+              }
+            }
+          } else {
+            attachment = prevAttachment;
+            lastPlayback = prevPlayback;
+          }
         }
         throw e;
       }
