@@ -622,6 +622,19 @@ describe("wave 3 core contracts", () => {
     ).toThrow("Signed distance must be finite");
   });
 
+  it("keeps a finite curtain minimum when farther feature distances overflow", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 0],
+    });
+
+    expect(environment.signedDistance(vec3(1.3e308, -1.3e308, 0))).toBe(
+      1.3e308,
+    );
+  });
+
   it("returns bounded edge and corner distances outside the sampled footprint", () => {
     const environment = new HeightfieldEnvironment({
       width: 2,
@@ -669,7 +682,7 @@ describe("wave 3 core contracts", () => {
     }
   });
 
-  it("returns the earliest bounded entry of a numerically coplanar sloped ray", () => {
+  it("preserves the earliest bounded entry of a truly coplanar sloped ray", () => {
     const environment = new HeightfieldEnvironment({
       width: 2,
       depth: 2,
@@ -684,8 +697,43 @@ describe("wave 3 core contracts", () => {
     );
 
     expect(hit).toBeDefined();
-    expect(hit?.distance).toBeCloseTo(0.39528470752104744, 15);
+    expect(hit?.distance).toBeCloseTo(0.125 * Math.sqrt(10), 15);
     expect(hit?.point).toEqual(vec3(0, -4, 0.125));
+  });
+
+  it("does not classify a near-parallel offset ray as coplanar", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 1, 0, 1],
+    });
+
+    const hit = environment.raycast(
+      vec3(0.3232233047033636, 0.3232233047033627, 0.25),
+      vec3(1, 1.000000000000005, 0),
+      1,
+    );
+
+    expect(hit?.distance).toBe(0.24242424242424243);
+  });
+
+  it("returns a subnormal world-space entry for a flat coplanar ray", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1e-309,
+      heights: [0, 0, 0, 0],
+    });
+
+    const hit = environment.raycast(
+      vec3(-1e-309, 0, 5e-310),
+      vec3(1, 0, 0),
+      2e-309,
+    );
+
+    expect(hit?.distance).toBe(1e-309);
+    expect(hit?.point).toEqual(vec3(0, 0, 5e-310));
   });
 
   it("uses the same face normal for normal queries and ray ties on a sloped crease", () => {
@@ -704,6 +752,124 @@ describe("wave 3 core contracts", () => {
     expect(normal[2]).toBe(0);
     expect(hit?.distance).toBe(1);
     expect(hit?.normal).toEqual(normal);
+  });
+
+  it("canonicalizes a shared grid-edge hit before choosing its face", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 3,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 1, 0, 0, 1],
+    });
+    const target = vec3(1, 0, 0.25);
+    for (const direction of [vec3(-2, -3, 0), vec3(2, 3, 0)]) {
+      const directionLength = Math.hypot(...direction);
+      const origin = vec3(
+        target[0] - (0.1 * direction[0]) / directionLength,
+        target[1] - (0.1 * direction[1]) / directionLength,
+        target[2] - (0.1 * direction[2]) / directionLength,
+      );
+
+      const hit = environment.raycast(origin, direction, 0.2);
+
+      expect(hit?.distance).toBeCloseTo(0.1, 15);
+      expect(hit?.point[0]).toBeCloseTo(target[0], 15);
+      expect(hit?.point[1]).toBeCloseTo(target[1], 15);
+      expect(hit?.point[2]).toBe(target[2]);
+      expect(hit?.normal).toEqual(environment.normalAt(target[0], target[2]));
+    }
+  });
+
+  it("canonicalizes shared diagonal and corner roots in both directions", () => {
+    const cases = [
+      {
+        environment: new HeightfieldEnvironment({
+          width: 2,
+          depth: 2,
+          cellSize: 1,
+          heights: [0, 0, 0, 1],
+        }),
+        target: vec3(0.25, 0.25, 0.25),
+      },
+      {
+        environment: new HeightfieldEnvironment({
+          width: 3,
+          depth: 3,
+          cellSize: 1,
+          heights: [0, 0, 0, 0, 0, 1, 0, 1, 1],
+        }),
+        target: vec3(1, 0, 1),
+      },
+    ];
+
+    for (const { environment, target } of cases)
+      for (const directionY of [-1, 1]) {
+        const direction = vec3(0, directionY, 0);
+        const origin = vec3(
+          target[0],
+          target[1] - 0.25 * directionY,
+          target[2],
+        );
+        const hit = environment.raycast(origin, direction, 0.25);
+
+        expect(hit?.distance).toBe(0.25);
+        expect(hit?.normal).toEqual(environment.normalAt(target[0], target[2]));
+        expect(
+          environment.raycast(origin, direction, 0.25 - 1e-12),
+        ).toBeUndefined();
+      }
+  });
+
+  it("keeps nearby roots on opposite sides of a shared diagonal distinct", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [1, 0, 0, 1],
+    });
+    const rayHeight = 1 - 1.5e-15;
+
+    const hit = environment.raycast(vec3(0, rayHeight, 1), vec3(1, 0, -1), 1);
+
+    expect(hit).toBeDefined();
+    expect(hit!.distance).toBeLessThan(Math.SQRT1_2);
+    expect(hit!.normal[0]).toBeCloseTo(-1 / Math.sqrt(3), 15);
+    expect(hit!.normal[1]).toBeCloseTo(1 / Math.sqrt(3), 15);
+    expect(hit!.normal[2]).toBeCloseTo(1 / Math.sqrt(3), 15);
+  });
+
+  it("keeps shared-diagonal max-distance ties stable at tiny and huge scales", () => {
+    for (const scale of [1e-200, 1e200]) {
+      const environment = new HeightfieldEnvironment({
+        width: 2,
+        depth: 2,
+        cellSize: scale,
+        heights: [0, 0, 0, scale],
+      });
+      const target = vec3(0.5 * scale, 0.5 * scale, 0.5 * scale);
+      const expectedDistance = 0.125 * scale;
+
+      for (const directionY of [-1, 1]) {
+        const direction = vec3(0, directionY, 0);
+        const origin = vec3(
+          target[0],
+          target[1] - expectedDistance * directionY,
+          target[2],
+        );
+        const hit = environment.raycast(origin, direction, expectedDistance);
+
+        expect(hit).toBeDefined();
+        expect(hit!.distance / scale).toBeCloseTo(0.125, 14);
+        expect(hit?.normal).toEqual(environment.normalAt(target[0], target[2]));
+        expect(
+          environment.raycast(
+            origin,
+            direction,
+            expectedDistance * (1 - 1e-12),
+          ),
+        ).toBeUndefined();
+      }
+    }
   });
 
   it("publishes robust unit normals for huge slopes and ray hits", () => {

@@ -25,15 +25,170 @@ const requireFiniteVector = (value: Vec3, label: string): Vec3 => {
   return value;
 };
 
+const requireDistanceCandidate = (value: number): number => {
+  if (Number.isNaN(value))
+    throw new RangeError("Heightfield distance candidate must not be NaN");
+  if (value < 0)
+    throw new RangeError("Heightfield distance candidate must be non-negative");
+  return value;
+};
+
+const minimumDistance = (...values: readonly number[]): number => {
+  let minimum = Number.POSITIVE_INFINITY;
+  for (const value of values) {
+    requireDistanceCandidate(value);
+    if (value < minimum) minimum = value;
+  }
+  return minimum;
+};
+
 interface HeightfieldTriangle {
   readonly a: Vec3;
   readonly b: Vec3;
   readonly c: Vec3;
+  readonly plane: Vec3;
   readonly normal: Vec3;
   readonly column: number;
   readonly row: number;
   readonly first: boolean;
 }
+
+interface RayTriangleCandidate {
+  readonly distance: number;
+  readonly point: Vec3;
+  readonly triangle: HeightfieldTriangle;
+}
+
+interface GridVertex {
+  readonly column: number;
+  readonly row: number;
+}
+
+type ProductTerm = readonly [left: number, right: number];
+
+interface DyadicFloat {
+  readonly coefficient: bigint;
+  readonly exponent: number;
+}
+
+const floatBuffer = new ArrayBuffer(8);
+const floatView = new DataView(floatBuffer);
+const minimumNormal = 2 ** -1022;
+
+const numberUlp = (value: number): number => {
+  const magnitude = Math.abs(value);
+  if (magnitude === 0) return Number.MIN_VALUE;
+  floatView.setFloat64(0, magnitude, false);
+  const bits = floatView.getBigUint64(0, false);
+  if (magnitude === Number.MAX_VALUE) {
+    floatView.setBigUint64(0, bits - 1n, false);
+    return magnitude - floatView.getFloat64(0, false);
+  }
+  floatView.setBigUint64(0, bits + 1n, false);
+  return floatView.getFloat64(0, false) - magnitude;
+};
+
+const ulpTolerance = (factor: number, ...values: readonly number[]): number => {
+  let tolerance = Number.MIN_VALUE;
+  for (const value of values) tolerance = Math.max(tolerance, numberUlp(value));
+  return factor * tolerance;
+};
+
+const decomposeFiniteFloat = (value: number): DyadicFloat => {
+  floatView.setFloat64(0, value, false);
+  const high = floatView.getUint32(0, false);
+  const low = floatView.getUint32(4, false);
+  const exponentBits = (high >>> 20) & 0x7ff;
+  let coefficient = (BigInt(high & 0xfffff) << 32n) | BigInt(low);
+  const exponent = exponentBits === 0 ? -1074 : exponentBits - 1023 - 52;
+  if (exponentBits !== 0) coefficient |= 1n << 52n;
+  if ((high & 0x80000000) !== 0) coefficient = -coefficient;
+  return { coefficient, exponent };
+};
+
+const exactProductSumSign = (terms: readonly ProductTerm[]): number => {
+  const products: DyadicFloat[] = [];
+  let minimumExponent = Number.POSITIVE_INFINITY;
+  for (const [left, right] of terms) {
+    const leftValue = decomposeFiniteFloat(left);
+    const rightValue = decomposeFiniteFloat(right);
+    const coefficient = leftValue.coefficient * rightValue.coefficient;
+    if (coefficient === 0n) continue;
+    const exponent = leftValue.exponent + rightValue.exponent;
+    products.push({ coefficient, exponent });
+    minimumExponent = Math.min(minimumExponent, exponent);
+  }
+  if (products.length === 0) return 0;
+
+  let total = 0n;
+  for (const product of products)
+    total += product.coefficient << BigInt(product.exponent - minimumExponent);
+  return total < 0n ? -1 : total > 0n ? 1 : 0;
+};
+
+const compensatedProductSum = (
+  terms: readonly ProductTerm[],
+): number | undefined => {
+  let sum = 0;
+  let correction = 0;
+  for (const [left, right] of terms) {
+    const product = left * right;
+    if (!Number.isFinite(product)) return undefined;
+    const next = sum + product;
+    if (!Number.isFinite(next)) return undefined;
+    correction +=
+      Math.abs(sum) >= Math.abs(product)
+        ? sum - next + product
+        : product - next + sum;
+    if (!Number.isFinite(correction)) return undefined;
+    sum = next;
+  }
+  const result = sum + correction;
+  return Number.isFinite(result) ? result : undefined;
+};
+
+const adaptiveProductSumSign = (terms: readonly ProductTerm[]): number => {
+  let magnitude = 0;
+  for (const [left, right] of terms) {
+    const product = left * right;
+    if (!Number.isFinite(product)) return exactProductSumSign(terms);
+    if (
+      (product === 0 && left !== 0 && right !== 0) ||
+      (product !== 0 && Math.abs(product) < minimumNormal)
+    )
+      return exactProductSumSign(terms);
+    magnitude += Math.abs(product);
+    if (!Number.isFinite(magnitude)) return exactProductSumSign(terms);
+  }
+  const estimate = compensatedProductSum(terms);
+  if (
+    estimate !== undefined &&
+    Math.abs(estimate) > 16 * Number.EPSILON * magnitude
+  )
+    return Math.sign(estimate);
+  return exactProductSumSign(terms);
+};
+
+const adaptiveDotSign = (left: Vec3, right: Vec3): number =>
+  adaptiveProductSumSign([
+    [left[0], right[0]],
+    [left[1], right[1]],
+    [left[2], right[2]],
+  ]);
+
+const adaptivePlaneOffsetSign = (
+  plane: Vec3,
+  point: Vec3,
+  anchor: Vec3,
+): number =>
+  adaptiveProductSumSign([
+    [plane[0], point[0]],
+    [-plane[0], anchor[0]],
+    [plane[1], point[1]],
+    [-plane[1], anchor[1]],
+    [plane[2], point[2]],
+    [-plane[2], anchor[2]],
+  ]);
 
 const subtractFinite = (left: Vec3, right: Vec3, label: string): Vec3 =>
   vec3(
@@ -64,45 +219,44 @@ const robustNormalize = (value: Vec3, label: string): Vec3 => {
   );
 };
 
-const scaledDot = (left: Vec3, right: Vec3, label: string): number => {
-  const scale = Math.max(
-    Math.abs(right[0]),
-    Math.abs(right[1]),
-    Math.abs(right[2]),
-  );
+const scaledProductSumCandidate = (
+  terms: readonly ProductTerm[],
+  label: string,
+): number => {
+  const direct = compensatedProductSum(terms);
+  if (direct !== undefined) return direct;
+  let scale = 0;
+  for (const [, right] of terms) scale = Math.max(scale, Math.abs(right));
   if (scale === 0) return 0;
-  return requireFinite(
-    (left[0] * (right[0] / scale) +
-      left[1] * (right[1] / scale) +
-      left[2] * (right[2] / scale)) *
-      scale,
+  const scaled = compensatedProductSum(
+    terms.map(([left, right]): ProductTerm => [left, right / scale]),
+  );
+  const result = scaled === undefined ? Number.NaN : scaled * scale;
+  if (Number.isNaN(result)) throw new RangeError(`${label} must not be NaN`);
+  return result;
+};
+
+const scaledDotCandidate = (left: Vec3, right: Vec3, label: string): number =>
+  scaledProductSumCandidate(
+    [
+      [left[0], right[0]],
+      [left[1], right[1]],
+      [left[2], right[2]],
+    ],
     label,
   );
-};
 
-const scaledDotRoundoff = (left: Vec3, right: Vec3): number => {
-  const scale = Math.max(
-    Math.abs(right[0]),
-    Math.abs(right[1]),
-    Math.abs(right[2]),
-  );
-  if (scale === 0) return 0;
-  const magnitude =
-    Math.abs(left[0] * (right[0] / scale)) +
-    Math.abs(left[1] * (right[1] / scale)) +
-    Math.abs(left[2] * (right[2] / scale));
-  return scale * (16 * Number.EPSILON * magnitude);
-};
+const scaledDot = (left: Vec3, right: Vec3, label: string): number =>
+  requireFinite(scaledDotCandidate(left, right, label), label);
 
 const pointDistance = (point: Vec3, target: Vec3): number => {
-  const difference = subtractFinite(
-    point,
-    target,
-    "Heightfield distance difference",
+  const difference = vec3(
+    point[0] - target[0],
+    point[1] - target[1],
+    point[2] - target[2],
   );
-  return requireFinite(
+  return requireDistanceCandidate(
     Math.hypot(difference[0], difference[1], difference[2]),
-    "Signed distance",
   );
 };
 
@@ -111,18 +265,34 @@ const pointSegmentDistance = (point: Vec3, a: Vec3, b: Vec3): number => {
   if (edge[0] === 0 && edge[1] === 0 && edge[2] === 0)
     return pointDistance(point, a);
   const direction = robustNormalize(edge, "Heightfield edge direction");
-  const alongFromA = scaledDot(
+  const differenceFromA = vec3(
+    point[0] - a[0],
+    point[1] - a[1],
+    point[2] - a[2],
+  );
+  if (differenceFromA.some((value) => !Number.isFinite(value)))
+    return Number.POSITIVE_INFINITY;
+  const alongFromA = scaledDotCandidate(
     direction,
-    subtractFinite(point, a, "Heightfield distance difference"),
+    differenceFromA,
     "Heightfield edge projection",
   );
   if (alongFromA <= 0) return pointDistance(point, a);
-  const alongFromB = scaledDot(
+  const differenceFromB = vec3(
+    point[0] - b[0],
+    point[1] - b[1],
+    point[2] - b[2],
+  );
+  if (differenceFromB.some((value) => !Number.isFinite(value)))
+    return Number.POSITIVE_INFINITY;
+  const alongFromB = scaledDotCandidate(
     direction,
-    subtractFinite(point, b, "Heightfield distance difference"),
+    differenceFromB,
     "Heightfield edge projection",
   );
   if (alongFromB >= 0) return pointDistance(point, b);
+  if (!Number.isFinite(alongFromA) || !Number.isFinite(alongFromB))
+    return Number.POSITIVE_INFINITY;
   const remaining = -alongFromB;
   const ratioScale = Math.max(alongFromA, remaining);
   const along =
@@ -263,19 +433,21 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     const p10 = this.surfacePoint(column + 1, row);
     const p01 = this.surfacePoint(column, row + 1);
     const p11 = this.surfacePoint(column + 1, row + 1);
-    const xSlope = requireFinite(
-      ((first ? p10[1] : p11[1]) - (first ? p00[1] : p01[1])) / this.cellSize,
-      "Heightfield x gradient",
+    const xDifference = requireFinite(
+      (first ? p10[1] : p11[1]) - (first ? p00[1] : p01[1]),
+      "Heightfield x difference",
     );
-    const zSlope = requireFinite(
-      ((first ? p11[1] : p01[1]) - (first ? p10[1] : p00[1])) / this.cellSize,
-      "Heightfield z gradient",
+    const zDifference = requireFinite(
+      (first ? p11[1] : p01[1]) - (first ? p10[1] : p00[1]),
+      "Heightfield z difference",
     );
+    const plane = vec3(-xDifference, this.cellSize, -zDifference);
     return {
       a: p00,
       b: first ? p10 : p11,
       c: first ? p11 : p01,
-      normal: robustNormalize(vec3(-xSlope, 1, -zSlope), "Heightfield normal"),
+      plane,
+      normal: robustNormalize(plane, "Heightfield normal"),
       column,
       row,
       first,
@@ -286,19 +458,27 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     triangle: HeightfieldTriangle,
     x: number,
     z: number,
+    xTolerance = 0,
+    zTolerance = 0,
   ): boolean {
     const cellX = this.origin[0] + triangle.column * this.cellSize;
     const cellZ = this.origin[1] + triangle.row * this.cellSize;
-    const localX = (x - cellX) / this.cellSize;
-    const localZ = (z - cellZ) / this.cellSize;
+    const maximumCellX = cellX + this.cellSize;
+    const maximumCellZ = cellZ + this.cellSize;
+    if (
+      (x < cellX && cellX - x > xTolerance) ||
+      (x > maximumCellX && x - maximumCellX > xTolerance) ||
+      (z < cellZ && cellZ - z > zTolerance) ||
+      (z > maximumCellZ && z - maximumCellZ > zTolerance)
+    )
+      return false;
+    const localX = x - cellX;
+    const localZ = z - cellZ;
     if (!Number.isFinite(localX) || !Number.isFinite(localZ)) return false;
-    return (
-      localX >= 0 &&
-      localX <= 1 &&
-      localZ >= 0 &&
-      localZ <= 1 &&
-      (triangle.first ? localZ <= localX : localX <= localZ)
-    );
+    const diagonal = localX - localZ;
+    return triangle.first
+      ? diagonal >= -(xTolerance + zTolerance)
+      : diagonal <= xTolerance + zTolerance;
   }
 
   private localCoordinate(
@@ -368,16 +548,19 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
   }
 
   private triangleDistance(point: Vec3, triangle: HeightfieldTriangle): number {
-    const relative = subtractFinite(
-      point,
-      triangle.a,
-      "Heightfield triangle difference",
+    const relative = vec3(
+      point[0] - triangle.a[0],
+      point[1] - triangle.a[1],
+      point[2] - triangle.a[2],
     );
-    const planeDistance = scaledDot(
+    if (relative.some((value) => !Number.isFinite(value)))
+      return Number.POSITIVE_INFINITY;
+    const planeDistance = scaledDotCandidate(
       triangle.normal,
       relative,
       "Heightfield triangle distance",
     );
+    if (!Number.isFinite(planeDistance)) return Number.POSITIVE_INFINITY;
     const projectedX = point[0] - planeDistance * triangle.normal[0];
     const projectedZ = point[2] - planeDistance * triangle.normal[2];
     if (
@@ -386,7 +569,7 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       this.triangleContainsProjection(triangle, projectedX, projectedZ)
     )
       return Math.abs(planeDistance);
-    return Math.min(
+    return minimumDistance(
       pointSegmentDistance(point, triangle.a, triangle.b),
       pointSegmentDistance(point, triangle.b, triangle.c),
       pointSegmentDistance(point, triangle.c, triangle.a),
@@ -402,22 +585,23 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     );
     const directionX = edgeX / edgeLength;
     const directionZ = edgeZ / edgeLength;
-    const relativeX = requireFinite(
-      point[0] - a[0],
-      "Heightfield curtain difference",
-    );
-    const relativeZ = requireFinite(
-      point[2] - a[2],
-      "Heightfield curtain difference",
-    );
-    const along = requireFinite(
-      relativeX * directionX + relativeZ * directionZ,
+    const relativeX = point[0] - a[0];
+    const relativeZ = point[2] - a[2];
+    if (!Number.isFinite(relativeX) || !Number.isFinite(relativeZ))
+      return Number.POSITIVE_INFINITY;
+    const relative = vec3(relativeX, 0, relativeZ);
+    const along = scaledDotCandidate(
+      vec3(directionX, 0, directionZ),
+      relative,
       "Heightfield curtain projection",
     );
-    const perpendicular = requireFinite(
-      relativeX * -directionZ + relativeZ * directionX,
+    const perpendicular = scaledDotCandidate(
+      vec3(-directionZ, 0, directionX),
+      relative,
       "Heightfield curtain projection",
     );
+    if (!Number.isFinite(along) || !Number.isFinite(perpendicular))
+      return Number.POSITIVE_INFINITY;
     if (along >= 0 && along <= edgeLength) {
       const top = requireFinite(
         a[1] + (b[1] - a[1]) * (along / edgeLength),
@@ -426,22 +610,18 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       if (point[1] <= top) return Math.abs(perpendicular);
     }
 
-    const upwardA =
-      point[1] <= a[1]
-        ? 0
-        : requireFinite(point[1] - a[1], "Heightfield curtain height");
-    const upwardB =
-      point[1] <= b[1]
-        ? 0
-        : requireFinite(point[1] - b[1], "Heightfield curtain height");
-    const verticalRayDistance = Math.min(
+    const upwardA = point[1] <= a[1] ? 0 : point[1] - a[1];
+    const upwardB = point[1] <= b[1] ? 0 : point[1] - b[1];
+    if (!Number.isFinite(upwardA) || !Number.isFinite(upwardB))
+      return Number.POSITIVE_INFINITY;
+    const verticalRayDistance = minimumDistance(
       Math.hypot(along, upwardA),
       Math.hypot(along - edgeLength, upwardB),
     );
     const planarDistance =
       point[1] <= Math.min(a[1], b[1])
         ? verticalRayDistance
-        : Math.min(
+        : minimumDistance(
             verticalRayDistance,
             pointSegmentDistance(
               vec3(along, point[1], 0),
@@ -449,10 +629,7 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
               vec3(edgeLength, b[1], 0),
             ),
           );
-    return requireFinite(
-      Math.hypot(perpendicular, planarDistance),
-      "Signed distance",
-    );
+    return requireDistanceCandidate(Math.hypot(perpendicular, planarDistance));
   }
 
   private closestSurfaceDistance(point: Vec3): number {
@@ -460,13 +637,13 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     for (let row = 0; row < this.depth - 1; row += 1)
       for (let column = 0; column < this.width - 1; column += 1)
         for (const first of [true, false])
-          closest = Math.min(
+          closest = minimumDistance(
             closest,
             this.triangleDistance(point, this.triangle(column, row, first)),
           );
 
     for (let column = 0; column < this.width - 1; column += 1) {
-      closest = Math.min(
+      closest = minimumDistance(
         closest,
         this.curtainDistance(
           point,
@@ -481,7 +658,7 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       );
     }
     for (let row = 0; row < this.depth - 1; row += 1) {
-      closest = Math.min(
+      closest = minimumDistance(
         closest,
         this.curtainDistance(
           point,
@@ -542,17 +719,179 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return this.triangle(x0, z0, tx >= tz);
   }
 
-  private isSelectedTriangleAt(
+  private projectionTolerances(
     triangle: HeightfieldTriangle,
     x: number,
     z: number,
-  ): boolean {
-    const selected = this.triangleAt(x, z);
-    return (
-      selected.column === triangle.column &&
-      selected.row === triangle.row &&
-      selected.first === triangle.first
+  ): readonly [x: number, z: number] {
+    const cellX = this.origin[0] + triangle.column * this.cellSize;
+    const cellZ = this.origin[1] + triangle.row * this.cellSize;
+    return [
+      ulpTolerance(32, x, cellX, cellX + this.cellSize, this.cellSize),
+      ulpTolerance(32, z, cellZ, cellZ + this.cellSize, this.cellSize),
+    ];
+  }
+
+  private triangleVertices(
+    triangle: HeightfieldTriangle,
+  ): readonly GridVertex[] {
+    const p00 = { column: triangle.column, row: triangle.row };
+    const p11 = { column: triangle.column + 1, row: triangle.row + 1 };
+    return triangle.first
+      ? [p00, { column: triangle.column + 1, row: triangle.row }, p11]
+      : [p00, p11, { column: triangle.column, row: triangle.row + 1 }];
+  }
+
+  private sharedVertices(
+    left: HeightfieldTriangle,
+    right: HeightfieldTriangle,
+  ): readonly GridVertex[] {
+    const rightVertices = this.triangleVertices(right);
+    return this.triangleVertices(left).filter((leftVertex) =>
+      rightVertices.some(
+        (rightVertex) =>
+          leftVertex.column === rightVertex.column &&
+          leftVertex.row === rightVertex.row,
+      ),
     );
+  }
+
+  private pointOnSharedFeature(
+    point: Vec3,
+    vertices: readonly GridVertex[],
+    xTolerance: number,
+    yTolerance: number,
+    zTolerance: number,
+  ): boolean {
+    if (vertices.length === 0) return false;
+    const firstX = this.origin[0] + vertices[0]!.column * this.cellSize;
+    const firstY = this.sample(vertices[0]!.column, vertices[0]!.row);
+    const firstZ = this.origin[1] + vertices[0]!.row * this.cellSize;
+    if (vertices.length === 1)
+      return (
+        Math.abs(point[0] - firstX) <= xTolerance &&
+        Math.abs(point[1] - firstY) <= yTolerance &&
+        Math.abs(point[2] - firstZ) <= zTolerance
+      );
+    if (vertices.length === 3) return true;
+
+    const secondX = this.origin[0] + vertices[1]!.column * this.cellSize;
+    const secondY = this.sample(vertices[1]!.column, vertices[1]!.row);
+    const secondZ = this.origin[1] + vertices[1]!.row * this.cellSize;
+    if (
+      (point[0] < Math.min(firstX, secondX) &&
+        Math.min(firstX, secondX) - point[0] > xTolerance) ||
+      (point[0] > Math.max(firstX, secondX) &&
+        point[0] - Math.max(firstX, secondX) > xTolerance) ||
+      (point[2] < Math.min(firstZ, secondZ) &&
+        Math.min(firstZ, secondZ) - point[2] > zTolerance) ||
+      (point[2] > Math.max(firstZ, secondZ) &&
+        point[2] - Math.max(firstZ, secondZ) > zTolerance)
+    )
+      return false;
+    if (firstX === secondX && Math.abs(point[0] - firstX) > xTolerance)
+      return false;
+    if (firstZ === secondZ && Math.abs(point[2] - firstZ) > zTolerance)
+      return false;
+    if (
+      firstX !== secondX &&
+      firstZ !== secondZ &&
+      Math.abs(point[0] - firstX - (point[2] - firstZ)) >
+        xTolerance + zTolerance
+    )
+      return false;
+
+    const interpolation =
+      firstX === secondX
+        ? (point[2] - firstZ) / (secondZ - firstZ)
+        : (point[0] - firstX) / (secondX - firstX);
+    const clampedInterpolation = Math.min(1, Math.max(0, interpolation));
+    const featureHeight = firstY + (secondY - firstY) * clampedInterpolation;
+    return Math.abs(point[1] - featureHeight) <= yTolerance;
+  }
+
+  private candidatesShareFeature(
+    left: RayTriangleCandidate,
+    right: RayTriangleCandidate,
+  ): boolean {
+    if (
+      Math.abs(left.distance - right.distance) >
+      ulpTolerance(32, left.distance, right.distance)
+    )
+      return false;
+    const vertices = this.sharedVertices(left.triangle, right.triangle);
+    if (vertices.length === 0) return false;
+    const vertexXs = vertices.map(
+      (vertex) => this.origin[0] + vertex.column * this.cellSize,
+    );
+    const vertexZs = vertices.map(
+      (vertex) => this.origin[1] + vertex.row * this.cellSize,
+    );
+    const xTolerance = ulpTolerance(
+      4,
+      left.point[0],
+      right.point[0],
+      this.cellSize,
+      ...vertexXs,
+    );
+    const zTolerance = ulpTolerance(
+      4,
+      left.point[2],
+      right.point[2],
+      this.cellSize,
+      ...vertexZs,
+    );
+    const yTolerance = ulpTolerance(
+      4,
+      left.point[1],
+      right.point[1],
+      this.cellSize,
+      left.triangle.a[1],
+      left.triangle.b[1],
+      left.triangle.c[1],
+      right.triangle.a[1],
+      right.triangle.b[1],
+      right.triangle.c[1],
+    );
+    if (
+      !this.pointOnSharedFeature(
+        left.point,
+        vertices,
+        xTolerance,
+        yTolerance,
+        zTolerance,
+      ) ||
+      !this.pointOnSharedFeature(
+        right.point,
+        vertices,
+        xTolerance,
+        yTolerance,
+        zTolerance,
+      )
+    )
+      return false;
+    return Math.abs(left.point[1] - right.point[1]) <= yTolerance;
+  }
+
+  private canonicalCandidate(
+    candidates: readonly RayTriangleCandidate[],
+  ): RayTriangleCandidate {
+    let selected = candidates[0]!;
+    for (const candidate of candidates.slice(1)) {
+      const selectedTriangle = selected.triangle;
+      const candidateTriangle = candidate.triangle;
+      if (
+        candidateTriangle.column > selectedTriangle.column ||
+        (candidateTriangle.column === selectedTriangle.column &&
+          candidateTriangle.row > selectedTriangle.row) ||
+        (candidateTriangle.column === selectedTriangle.column &&
+          candidateTriangle.row === selectedTriangle.row &&
+          candidateTriangle.first &&
+          !selectedTriangle.first)
+      )
+        selected = candidate;
+    }
+    return selected;
   }
 
   public normalAt(x: number, z: number): Vec3 {
@@ -598,33 +937,87 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     ): number | undefined => {
       const cellX = this.origin[0] + triangle.column * this.cellSize;
       const cellZ = this.origin[1] + triangle.row * this.cellSize;
-      const localX = requireFinite(
-        (origin[0] - cellX) / this.cellSize,
-        "Raycast local x coordinate",
+      const maximumCellX = cellX + this.cellSize;
+      const maximumCellZ = cellZ + this.cellSize;
+      const localX = scaledProductSumCandidate(
+        [
+          [1, origin[0]],
+          [-1, cellX],
+        ],
+        "Raycast half-space value",
       );
-      const localZ = requireFinite(
-        (origin[2] - cellZ) / this.cellSize,
-        "Raycast local z coordinate",
+      const localZ = scaledProductSumCandidate(
+        [
+          [1, origin[2]],
+          [-1, cellZ],
+        ],
+        "Raycast half-space value",
       );
-      const xSlope = dir[0] / this.cellSize;
-      const zSlope = dir[2] / this.cellSize;
-      const halfspaces = [
-        [localX, xSlope],
-        [localZ, zSlope],
-        [1 - localX, -xSlope],
-        [1 - localZ, -zSlope],
+      const remainingX = scaledProductSumCandidate(
+        [
+          [1, maximumCellX],
+          [-1, origin[0]],
+        ],
+        "Raycast half-space value",
+      );
+      const remainingZ = scaledProductSumCandidate(
+        [
+          [1, maximumCellZ],
+          [-1, origin[2]],
+        ],
+        "Raycast half-space value",
+      );
+      const diagonalValue = scaledProductSumCandidate(
         triangle.first
-          ? [localX - localZ, xSlope - zSlope]
-          : [localZ - localX, zSlope - xSlope],
+          ? [
+              [1, origin[0]],
+              [-1, cellX],
+              [-1, origin[2]],
+              [1, cellZ],
+            ]
+          : [
+              [1, origin[2]],
+              [-1, cellZ],
+              [-1, origin[0]],
+              [1, cellX],
+            ],
+        "Raycast half-space value",
+      );
+      const diagonalSlope = scaledProductSumCandidate(
+        triangle.first
+          ? [
+              [1, dir[0]],
+              [-1, dir[2]],
+            ]
+          : [
+              [1, dir[2]],
+              [-1, dir[0]],
+            ],
+        "Raycast half-space slope",
+      );
+      const halfspaces = [
+        [localX, dir[0]],
+        [localZ, dir[2]],
+        [remainingX, -dir[0]],
+        [remainingZ, -dir[2]],
+        [diagonalValue, diagonalSlope],
       ] as const;
       let low = 0;
       let high = maxDistance;
       for (const [value, slope] of halfspaces) {
+        if (Number.isNaN(value) || Number.isNaN(slope))
+          throw new RangeError(
+            "Raycast half-space calculation must not be NaN",
+          );
         if (slope === 0) {
           if (value < 0) return undefined;
           continue;
         }
         const crossing = -value / slope;
+        if (Number.isNaN(crossing))
+          throw new RangeError(
+            "Raycast half-space calculation must not be NaN",
+          );
         if (slope > 0) low = Math.max(low, crossing);
         else high = Math.min(high, crossing);
         if (low > high) return undefined;
@@ -632,60 +1025,82 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       return low === 0 ? 0 : low;
     };
 
-    let hitDistance: number | undefined;
-    let hitNormal: Vec3 | undefined;
+    const candidates: RayTriangleCandidate[] = [];
     for (let row = 0; row < this.depth - 1; row += 1)
       for (let column = 0; column < this.width - 1; column += 1)
         for (const first of [true, false]) {
           const triangle = this.triangle(column, row, first);
-          const originDifference = subtractFinite(
+          const directionSign = adaptiveDotSign(triangle.plane, direction);
+          const originSign = adaptivePlaneOffsetSign(
+            triangle.plane,
             origin,
             triangle.a,
-            "Raycast triangle difference",
           );
-          const originOffset = scaledDot(
-            triangle.normal,
-            originDifference,
-            "Raycast plane offset",
-          );
-          const denominator = requireFinite(
-            triangle.normal[0] * dir[0] +
-              triangle.normal[1] * dir[1] +
-              triangle.normal[2] * dir[2],
-            "Raycast plane direction",
-          );
-          const parallel =
-            Math.abs(denominator) <= scaledDotRoundoff(triangle.normal, dir);
-          const root = parallel
-            ? Math.abs(originOffset) <=
-              scaledDotRoundoff(triangle.normal, originDifference)
-              ? coplanarEntry(triangle)
-              : undefined
-            : -originOffset / denominator;
+          let root: number | undefined;
+          if (directionSign === 0)
+            root = originSign === 0 ? coplanarEntry(triangle) : undefined;
+          else if (originSign === 0) root = 0;
+          else {
+            const normalizedDirectionSign = adaptiveDotSign(
+              triangle.plane,
+              dir,
+            );
+            const planeScale = Math.max(
+              Math.abs(triangle.plane[0]),
+              Math.abs(triangle.plane[1]),
+              Math.abs(triangle.plane[2]),
+            );
+            const scaledPlane = vec3(
+              triangle.plane[0] / planeScale,
+              triangle.plane[1] / planeScale,
+              triangle.plane[2] / planeScale,
+            );
+            const originOffset = scaledProductSumCandidate(
+              [
+                [scaledPlane[0], origin[0]],
+                [-scaledPlane[0], triangle.a[0]],
+                [scaledPlane[1], origin[1]],
+                [-scaledPlane[1], triangle.a[1]],
+                [scaledPlane[2], origin[2]],
+                [-scaledPlane[2], triangle.a[2]],
+              ],
+              "Raycast plane offset",
+            );
+            const denominator = scaledDotCandidate(
+              scaledPlane,
+              dir,
+              "Raycast plane direction",
+            );
+            root =
+              normalizedDirectionSign === 0 ||
+              originOffset === 0 ||
+              Math.sign(originOffset) !== originSign ||
+              denominator === 0 ||
+              Math.sign(denominator) !== normalizedDirectionSign
+                ? undefined
+                : -originOffset / denominator;
+          }
           if (
             root === undefined ||
             !Number.isFinite(root) ||
             root < 0 ||
-            root > maxDistance ||
-            (hitDistance !== undefined && root >= hitDistance)
+            root > maxDistance
           )
             continue;
           const candidateDistance = root === 0 ? 0 : root;
           const candidatePoint = pointAt(candidateDistance);
+          const [xTolerance, zTolerance] = this.projectionTolerances(
+            triangle,
+            candidatePoint[0],
+            candidatePoint[2],
+          );
           if (
-            candidatePoint[0] < this.origin[0] ||
-            candidatePoint[0] > this.maximumX ||
-            candidatePoint[2] < this.origin[1] ||
-            candidatePoint[2] > this.maximumZ ||
-            !this.isSelectedTriangleAt(
-              triangle,
-              candidatePoint[0],
-              candidatePoint[2],
-            ) ||
             !this.triangleContainsProjection(
               triangle,
               candidatePoint[0],
               candidatePoint[2],
+              xTolerance,
+              zTolerance,
             )
           )
             continue;
@@ -709,15 +1124,29 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
               Math.abs(triangle.c[1]),
             );
           if (Math.abs(residual) > residualTolerance) continue;
-          hitDistance = candidateDistance;
-          hitNormal = triangle.normal;
+          candidates.push({
+            distance: candidateDistance,
+            point: candidatePoint,
+            triangle,
+          });
         }
-    if (hitDistance === undefined || hitNormal === undefined) return undefined;
-    const hitPoint = pointAt(hitDistance);
+    if (candidates.length === 0) return undefined;
+    candidates.sort((left, right) =>
+      left.distance < right.distance
+        ? -1
+        : left.distance > right.distance
+          ? 1
+          : 0,
+    );
+    const earliest = candidates[0]!;
+    const tiedCandidates = candidates.filter((candidate) =>
+      this.candidatesShareFeature(earliest, candidate),
+    );
+    const canonical = this.canonicalCandidate(tiedCandidates);
     const result = {
-      distance: requireFinite(hitDistance, "Raycast hit distance"),
-      point: hitPoint,
-      normal: hitNormal,
+      distance: requireFinite(earliest.distance, "Raycast hit distance"),
+      point: earliest.point,
+      normal: canonical.triangle.normal,
     };
     requireFiniteVector(result.point, "Raycast hit point");
     requireFiniteVector(result.normal, "Raycast hit normal");
