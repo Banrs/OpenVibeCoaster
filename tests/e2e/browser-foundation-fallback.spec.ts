@@ -46,13 +46,22 @@ test("WebGL fallback visible, camera/metric disabled/hidden, retry operable, no 
 });
 
 test("reduced motion fallback still operable", async ({ page }) => {
+  const pageErrors: string[] = [];
+  const consoleErrors: string[] = [];
+  page.on("pageerror", (e) => pageErrors.push(e.message));
+  page.on("console", (m) => {
+    if (m.type() === "error") {
+      const text = m.text();
+      if (text.includes("THREE.WebGLRenderer")) return;
+      consoleErrors.push(text);
+    }
+  });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
   await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(500);
-  const pageErrors: string[] = [];
-  page.on("pageerror", (e) => pageErrors.push(e.message));
   await expect(page.locator("#webgl-fallback")).toBeVisible();
   expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
   await page.screenshot({ fullPage: false });
 });

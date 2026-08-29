@@ -16,5 +16,22 @@ export default defineConfig({
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        launchOptions: {
+          args: [
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-webgl",
+            "--enable-unsafe-swiftshader",
+            "--ignore-gpu-blocklist",
+            "--disable-dev-shm-usage",
+          ],
+        },
+      },
+    },
+  ],
 });

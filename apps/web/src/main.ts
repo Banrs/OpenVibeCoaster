@@ -607,6 +607,12 @@ window.__vibecoasterMetrics = metrics;
 // lifecycle manager already maintains window.__vibecoasterController – expose current for initial paint
 (window as unknown as Record<string, unknown>).__vibecoasterController =
   lifecycle.getController() ?? undefined;
+(window as unknown as Record<string, unknown>).__vibecoasterRendererHandle =
+  lifecycle.getRendererHandle() ?? undefined;
+(window as unknown as Record<string, unknown>).__vibecoasterGetHandle = () =>
+  lifecycle.getRendererHandle();
+(window as unknown as Record<string, unknown>).__vibecoasterGetController =
+  () => lifecycle.getController();
 
 // Initial paint – lifecycle manager is sole resize owner (no duplicate direct resize)
 render();

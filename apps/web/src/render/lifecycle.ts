@@ -22,6 +22,8 @@ export interface AppLifecycleConfig {
   getDprCap?: () => number;
   createRenderer?: (canvas: HTMLCanvasElement) => THREE.WebGLRenderer;
   onWebGLFailure?: () => void;
+  onSetupError?: (error: unknown) => void;
+  onRuntimeError?: (error: unknown) => void;
   createHandle?: typeof createRendererHandle;
   createController?: typeof createRendererController;
   getCameraId?: () => CameraId;
@@ -184,12 +186,14 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
           ? { createRenderer: config.createRenderer }
           : {}),
       });
-    } catch {
-      // factory threw – ensure no partial resources
-      handle = null;
+    } catch (e) {
+      config.onSetupError?.(e);
+      disposeHandles();
+      clearGlobal();
+      return false;
     }
     if (!handle) {
-      // transactionally clean up any partial allocation (none yet) and clear globals
+      // expected WebGL unavailability – transactionally clean and clear globals
       disposeHandles();
       clearGlobal();
       return false;
@@ -202,8 +206,8 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       localCamera.position.set(0, 28, 52);
       localController = ctrlFactory(handle, localCamera);
       if (!localController) throw new Error("controller factory returned null");
-    } catch {
-      // any throw or null – dispose handle and clear references transactionally
+    } catch (e) {
+      config.onSetupError?.(e);
       try {
         handle.dispose();
       } catch {
@@ -230,8 +234,8 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
             targetPlayback.speed,
           );
         }
-      } catch {
-        // reattachment failed – clean up new controller/handle/camera transactionally, keep pending/attachment for retry
+      } catch (e) {
+        config.onSetupError?.(e);
         disposeHandles();
         clearGlobal();
         return false;
@@ -293,16 +297,25 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       metrics?.beginFrame();
       const camId = config.getCameraId?.() ?? ("orbit" as CameraId);
       const reduced = config.getReducedMotion?.() ?? false;
+      let runtimeError: unknown = null;
       try {
         controller.applyCamera(camId, { reducedMotion: reduced, deltaMs });
-      } catch {
-        // ignore
+      } catch (e) {
+        runtimeError = e;
       }
-      try {
-        camera.updateProjectionMatrix();
-        rendererHandle.renderer?.render(rendererHandle.scene, camera);
-      } catch {
-        // ignore
+      if (runtimeError === null) {
+        try {
+          camera.updateProjectionMatrix();
+          rendererHandle.renderer?.render(rendererHandle.scene, camera);
+        } catch (e) {
+          runtimeError = e;
+        }
+      }
+      if (runtimeError !== null) {
+        config.onRuntimeError?.(runtimeError);
+        metrics?.endFrame();
+        teardownRafAndResize();
+        return;
       }
       metrics?.endFrame();
       try {

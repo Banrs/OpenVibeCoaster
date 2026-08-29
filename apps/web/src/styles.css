@@ -39,14 +39,12 @@ body {
     "Segoe UI",
     sans-serif;
   max-width: 100%;
-  overflow-x: clip;
 }
 
 body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  overflow-x: clip;
 }
 
 a,
@@ -90,12 +88,13 @@ select {
   border: 0;
 }
 
-/* Top bar */
+/* Top bar – wrap without horizontal scroll, at most two rows via flex-wrap */
 #top-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px 12px;
   min-height: var(--topbar-h);
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
@@ -103,6 +102,9 @@ select {
   position: sticky;
   top: 0;
   z-index: 20;
+  align-content: flex-start;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .top-bar-left,
@@ -110,8 +112,24 @@ select {
 .top-bar-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.top-bar-left {
+  flex: 0 1 auto;
+}
+
+.top-bar-center {
+  flex: 0 1 auto;
+}
+
+.top-bar-right {
+  flex: 1 1 auto;
+  justify-content: flex-end;
 }
 
 .brand {
@@ -321,7 +339,6 @@ select:focus-visible {
   min-height: 0;
   min-width: 0;
   max-width: 100%;
-  overflow-x: clip;
 }
 
 .panel {
@@ -794,34 +811,47 @@ body.reduced-motion * {
 }
 
 /* Focus visible – clearly visible for primary/secondary/camera/tabs/inputs/retry */
-:focus-visible {
+:focus-visible,
+:focus {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
 .btn:focus-visible,
+.btn:focus,
 .btn-primary:focus-visible,
+.btn-primary:focus,
 .btn-ghost:focus-visible,
+.btn-ghost:focus,
 .mobile-tab:focus-visible,
+.mobile-tab:focus,
 .cam-option:focus-visible,
+.cam-option:focus,
 .field input:focus-visible,
+.field input:focus,
 .field select:focus-visible,
+.field select:focus,
 #seed-input:focus-visible,
+#seed-input:focus,
 #webgl-retry:focus-visible,
-.mode-option:focus-visible {
+#webgl-retry:focus,
+.mode-option:focus-visible,
+.mode-option:focus {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px rgba(138, 180, 255, 0.28);
 }
 
-.cam-option:has(input:focus-visible) {
+.cam-option:has(input:focus-visible),
+.cam-option:has(input:focus) {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px rgba(138, 180, 255, 0.28);
   border-color: var(--focus);
 }
 
-.mode-option:has(input:focus-visible) {
+.mode-option:has(input:focus-visible),
+.mode-option:has(input:focus) {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px rgba(138, 180, 255, 0.28);
@@ -840,18 +870,20 @@ body.reduced-motion * {
 
   #top-bar {
     gap: 10px;
-    min-width: 0;
   }
 
   .top-bar-left,
   .top-bar-center,
   .top-bar-right {
     gap: 8px;
-    min-width: 0;
+  }
+
+  .status {
+    max-width: 180px;
   }
 
   .status-text {
-    max-width: 180px;
+    max-width: 160px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -860,17 +892,8 @@ body.reduced-motion * {
 
 @media (max-width: 900px) {
   #top-bar {
-    flex-wrap: wrap;
     gap: 8px;
     padding: 8px 10px;
-    align-content: flex-start;
-    min-width: 0;
-  }
-
-  .top-bar-center,
-  .top-bar-right {
-    flex-wrap: wrap;
-    min-width: 0;
   }
 
   .mobile-tabs {
@@ -879,35 +902,9 @@ body.reduced-motion * {
     gap: 6px;
   }
 
-  .mobile-tab {
-    min-height: 44px;
-    padding: 10px 12px;
-  }
-
-  .btn,
-  .cam-option {
-    min-height: 44px;
-  }
-
-  .btn {
-    padding: 10px 14px;
-  }
-
-  .cam-option {
-    padding: 8px 12px;
-  }
-
-  .field input,
-  .field select,
-  #seed-input {
-    min-height: 44px;
-    padding: 10px 8px;
-  }
-
   #app-layout {
     grid-template-columns: 1fr;
-    max-width: 100vw;
-    overflow-x: clip;
+    max-width: 100%;
   }
 
   .panel {
@@ -965,10 +962,6 @@ body.reduced-motion * {
   #top-bar {
     padding: 6px 8px;
     gap: 6px;
-    min-height: 48px;
-    max-height: 96px;
-    overflow: hidden;
-    align-items: center;
   }
 
   .top-bar-left {
@@ -986,66 +979,16 @@ body.reduced-motion * {
   .status {
     padding: 4px 8px;
     font-size: 11px;
-    max-width: 140px;
+    max-width: 120px;
   }
 
   .status-text {
-    max-width: 100px;
-  }
-
-  #top-bar .btn {
-    padding: 10px 12px;
-    font-size: 12px;
-    min-height: 44px;
+    max-width: 84px;
   }
 }
 
-@media (max-width: 390px) {
-  #top-bar {
-    gap: 6px;
-    padding: 6px 8px;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    max-height: 96px;
-    align-items: center;
-  }
-
-  #top-bar::-webkit-scrollbar {
-    display: none;
-  }
-
-  .top-bar-left,
-  .top-bar-center,
-  .top-bar-right {
-    flex-wrap: nowrap;
-    flex-shrink: 0;
-  }
-
-  .seed-field {
-    gap: 6px;
-    font-size: 11px;
-  }
-
-  .seed-field input {
-    width: 72px;
-    padding: 6px 6px;
-  }
-
-  .status {
-    display: inline-flex;
-    min-width: 0;
-  }
-
-  .mobile-tabs {
-    gap: 4px;
-    padding: 6px 8px;
-  }
-}
-
-@media (pointer: coarse) {
+/* Touch/coarse and narrow mobile need >=44px, desktop remains compact */
+@media (pointer: coarse), (max-width: 900px) {
   .btn,
   .mobile-tab,
   .cam-option {
@@ -1058,7 +1001,6 @@ body.reduced-motion * {
 
   .cam-option {
     padding: 8px 12px;
-    min-height: 44px;
   }
 
   .field input,
@@ -1067,9 +1009,82 @@ body.reduced-motion * {
     min-height: 44px;
     padding: 10px 8px;
   }
+}
 
-  .mobile-tab {
-    min-height: 44px;
+@media (max-width: 390px) {
+  #top-bar {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto;
+    gap: 4px;
+    padding: 2px 6px;
+    max-height: 96px;
+    align-items: center;
+    align-content: start;
+  }
+
+  .top-bar-left {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+  }
+
+  .top-bar-center {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .top-bar-right {
+    grid-column: 1 / span 2;
+    grid-row: 2;
+    justify-self: stretch;
+    justify-content: space-between;
+  }
+
+  .seed-field {
+    gap: 4px;
+    font-size: 11px;
+  }
+
+  .seed-field input {
+    width: 48px;
+    padding: 4px 4px;
+    font-size: 11px;
+  }
+
+  #top-bar .brand {
+    font-size: 11px;
+  }
+
+  .mode-toggle {
+    gap: 1px;
+    padding: 1px;
+  }
+
+  .mode-option {
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+
+  #top-bar .btn {
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+
+  .status {
+    max-width: 80px;
+    font-size: 10px;
+    padding: 2px 6px;
+  }
+
+  .status-text {
+    max-width: 56px;
+  }
+
+  .mobile-tabs {
+    gap: 4px;
+    padding: 4px 6px;
   }
 }
 

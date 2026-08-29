@@ -21,6 +21,13 @@ export interface CreateRendererOptions {
     ((canvas: HTMLCanvasElement) => THREE.WebGLRenderer) | undefined;
 }
 
+let _WebGLRendererForTest: typeof THREE.WebGLRenderer | null = null;
+export function _setWebGLRendererForTest(
+  ctor: typeof THREE.WebGLRenderer | null,
+): void {
+  _WebGLRendererForTest = ctor;
+}
+
 function buildScene(terrainSeed: string): THREE.Scene {
   const scene = new THREE.Scene();
   let terrainMesh: THREE.Mesh | null = null;
@@ -158,45 +165,50 @@ export function createRendererHandle(
   const dprCap = options.dprCap ?? 2;
   const onFailure = options.onWebGLFailure;
 
-  // No preflight context request – let transactional THREE.WebGLRenderer creation determine support.
-  // Any early binding before Three would lock the canvas to WebGL1 and conflict with Three.
   let renderer: THREE.WebGLRenderer | null = null;
-  const originalConsoleError = console.error;
-  let suppressActive = false;
-  const suppressWebGLError = (...args: unknown[]): void => {
-    const first = String(args[0] ?? "");
-    if (
-      first.includes("WebGL context could not be created") ||
-      first.includes("Error creating WebGL context")
-    ) {
-      return;
-    }
-    originalConsoleError.apply(console, args as never);
-  };
-  try {
-    // Suppress Three's synchronous console.error spam when WebGL is unavailable;
-    // the transactional catch/report path still handles the failure exactly once.
-    console.error = suppressWebGLError as typeof console.error;
-    suppressActive = true;
-    renderer =
-      options.createRenderer !== undefined
-        ? options.createRenderer(canvas)
-        : new THREE.WebGLRenderer({
-            canvas,
-            antialias: true,
-            alpha: false,
-            powerPreference: "high-performance",
-          });
-  } catch {
-    onFailure?.();
-    return null;
-  } finally {
-    if (suppressActive) console.error = originalConsoleError;
-  }
 
-  if (!renderer) {
-    onFailure?.();
-    return null;
+  if (options.createRenderer !== undefined) {
+    try {
+      renderer = options.createRenderer(canvas);
+    } catch {
+      onFailure?.();
+      return null;
+    }
+    if (!renderer) {
+      onFailure?.();
+      return null;
+    }
+  } else {
+    let gl: WebGL2RenderingContext | null = null;
+    try {
+      gl = canvas.getContext("webgl2", {
+        antialias: true,
+        alpha: false,
+      }) as unknown as WebGL2RenderingContext | null;
+    } catch {
+      gl = null;
+    }
+    if (!gl) {
+      onFailure?.();
+      return null;
+    }
+    try {
+      const Ctor = _WebGLRendererForTest ?? THREE.WebGLRenderer;
+      renderer = new Ctor({
+        canvas,
+        context: gl as unknown as WebGLRenderingContext,
+        antialias: true,
+        alpha: false,
+        powerPreference: "high-performance",
+      });
+    } catch {
+      onFailure?.();
+      return null;
+    }
+    if (!renderer) {
+      onFailure?.();
+      return null;
+    }
   }
 
   // transactional setup after renderer allocation – any throw disposes renderer + scene
