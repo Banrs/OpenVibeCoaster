@@ -180,10 +180,8 @@ describe("lifecycle onFrame seam", () => {
       caf as unknown as typeof cancelAnimationFrame;
     (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
       raf as unknown as typeof requestAnimationFrame;
-    vi.spyOn(performance, "now")
-      .mockReturnValueOnce(1000)
-      .mockReturnValueOnce(2000)
-      .mockReturnValueOnce(2016);
+    let nowMs = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => nowMs);
     const onFrame = vi.fn();
     const lc = createAppLifecycle({
       canvas,
@@ -205,6 +203,7 @@ describe("lifecycle onFrame seam", () => {
     });
     lc.init();
     expect(lc.getRafId()).not.toBeNull();
+    nowMs = 1000;
     cb!(0);
     expect(onFrame).toHaveBeenCalledTimes(1);
     expect(onFrame.mock.calls[0]![0]).toBe(0);
@@ -216,10 +215,12 @@ describe("lifecycle onFrame seam", () => {
     lc.reinitialize();
     expect(lc.getRafId()).not.toBeNull();
     // first tick after reinit should be 0 again
+    nowMs = 2000;
     cb!(0);
     expect(onFrame).toHaveBeenCalledTimes(1);
     expect(onFrame.mock.calls[0]![0]).toBe(0);
     // second tick after reinit should be 0.016
+    nowMs = 2016;
     cb!(0);
     expect(onFrame).toHaveBeenCalledTimes(2);
     expect(onFrame.mock.calls[1]![0]).toBeCloseTo(0.016, 3);
@@ -323,10 +324,8 @@ describe("lifecycle onFrame seam", () => {
       raf as unknown as typeof requestAnimationFrame;
     (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
       raf as unknown as typeof requestAnimationFrame;
-    vi.spyOn(performance, "now")
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(16)
-      .mockReturnValueOnce(32);
+    let nowMs2 = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => nowMs2);
     const deltas: number[] = [];
     const lc = createAppLifecycle({
       canvas,
@@ -347,8 +346,10 @@ describe("lifecycle onFrame seam", () => {
       onFrame: (d) => deltas.push(d),
     });
     lc.init();
+    nowMs2 = 0;
     cb!(0);
     expect(deltas[0]).toBe(0);
+    nowMs2 = 16;
     cb!(0);
     expect(deltas[1]).toBeCloseTo(0.016, 6);
     expect(deltas[1]).toBeGreaterThan(0);

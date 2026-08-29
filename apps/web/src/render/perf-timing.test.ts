@@ -252,6 +252,70 @@ describe("perf – ovc:mesh-create User Timing", () => {
     ctl.dispose();
     handle.dispose();
   });
+
+  it("honest numeric boundary: start/end are real work interval, not near-zero fallback", () => {
+    const canvas = fakeCanvas();
+    const handle = createRendererHandle(canvas, {
+      createRenderer: () => mockRenderer(canvas),
+    })!;
+    const cam = new THREE.PerspectiveCamera();
+    const ctl = createRendererController(handle, cam);
+    const data = makeTrack();
+    performance.clearMeasures();
+    const nowSpy = vi.spyOn(performance, "now");
+    let seq = 1000;
+    nowSpy.mockImplementation(() => {
+      const v = seq;
+      seq += 15;
+      return v;
+    });
+    const spy = vi.spyOn(performance, "measure");
+    ctl.attachTrack(data, { metric: "height" });
+    const call = spy.mock.calls.find((c) => c[0] === "ovc:mesh-create");
+    expect(call).toBeDefined();
+    const opts = call![1] as { start: number; end: number };
+    expect(Number.isFinite(opts.start)).toBe(true);
+    expect(Number.isFinite(opts.end)).toBe(true);
+    expect(opts.end).toBeGreaterThan(opts.start);
+    const entry = performance.getEntriesByName(
+      "ovc:mesh-create",
+    )[0] as PerformanceMeasure;
+    expect(entry.duration).toBeGreaterThan(0);
+    expect(entry.duration).toBeCloseTo(opts.end - opts.start, 5);
+    expect(
+      performance
+        .getEntriesByType("mark")
+        .filter((m) => m.name.includes("ovc:mesh-create")).length,
+    ).toBe(0);
+    ctl.dispose();
+    handle.dispose();
+  });
+
+  it("when measure throws, no fake near-zero fallback is emitted", () => {
+    const canvas = fakeCanvas();
+    const handle = createRendererHandle(canvas, {
+      createRenderer: () => mockRenderer(canvas),
+    })!;
+    const cam = new THREE.PerspectiveCamera();
+    const ctl = createRendererController(handle, cam);
+    const data = makeTrack();
+    performance.clearMeasures();
+    vi.spyOn(performance, "now")
+      .mockReturnValueOnce(2000)
+      .mockReturnValueOnce(2005)
+      .mockReturnValueOnce(2050);
+    vi.spyOn(performance, "measure").mockImplementation(() => {
+      throw new Error("measure boom");
+    });
+    expect(() => ctl.attachTrack(data, { metric: "height" })).not.toThrow();
+    expect(performance.getEntriesByName("ovc:mesh-create").length).toBe(0);
+    const marks = performance.getEntriesByType("mark") as PerformanceMark[];
+    expect(marks.filter((m) => m.name.includes("ovc:mesh-create")).length).toBe(
+      0,
+    );
+    ctl.dispose();
+    handle.dispose();
+  });
 });
 
 describe("perf – ovc:frame User Timing", () => {
@@ -343,10 +407,8 @@ describe("perf – ovc:frame User Timing", () => {
       raf as unknown as typeof requestAnimationFrame;
     (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
       raf as unknown as typeof requestAnimationFrame;
-    vi.spyOn(performance, "now")
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(16)
-      .mockReturnValueOnce(32);
+    let now2 = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now2);
     const deltas: number[] = [];
     const lc = createAppLifecycle({
       canvas,
@@ -368,6 +430,7 @@ describe("perf – ovc:frame User Timing", () => {
     });
     lc.init();
     performance.clearMeasures();
+    now2 = 0;
     cb!(0);
     expect(deltas[0]).toBe(0);
     const e1 = performance.getEntriesByName(
@@ -376,6 +439,7 @@ describe("perf – ovc:frame User Timing", () => {
     expect(e1.length).toBe(1);
     expect(Number.isFinite(e1[0]!.duration)).toBe(true);
     expect(e1[0]!.duration).toBeGreaterThanOrEqual(0);
+    now2 = 16;
     cb!(0);
     expect(deltas[1]).toBeCloseTo(0.016, 3);
     const e2 = performance.getEntriesByName(
@@ -570,6 +634,112 @@ describe("perf – ovc:frame User Timing", () => {
     expect(performance.getEntriesByName("ovc:frame").length).toBe(0);
     expect(caf).toHaveBeenCalled();
     expect(lc.getRafId()).toBeNull();
+    lc.dispose();
+  });
+
+  it("honest frame numeric boundary: start/end from real tick work", () => {
+    const win = polyfillWindow();
+    const canvas = fakeCanvas();
+    let cb: FrameRequestCallback | null = null;
+    const raf = vi.fn((c: FrameRequestCallback) => {
+      cb = c;
+      return 7;
+    });
+    (win as unknown as Record<string, unknown>).requestAnimationFrame =
+      raf as unknown as typeof requestAnimationFrame;
+    (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
+      raf as unknown as typeof requestAnimationFrame;
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      createController: (() => ({
+        attachTrack: vi.fn(),
+        clearTrack: vi.fn(),
+        updatePlayback: vi.fn(),
+        setMetric: vi.fn(),
+        hasTrack: () => false,
+        getMetricState: () => null,
+        getTrackData: () => null,
+        applyCamera: vi.fn(),
+        dispose: vi.fn(),
+      })) as unknown as typeof import("./controller.js").createRendererController,
+      getWindow: () => win,
+      onFrame: vi.fn(),
+    });
+    lc.init();
+    performance.clearMeasures();
+    const nowSpy2 = vi.spyOn(performance, "now");
+    let seq2 = 8000;
+    nowSpy2.mockImplementation(() => {
+      const v = seq2;
+      seq2 += 17;
+      return v;
+    });
+    const spy = vi.spyOn(performance, "measure");
+    cb!(0);
+    const call = spy.mock.calls.find((c) => c[0] === "ovc:frame");
+    expect(call).toBeDefined();
+    const opts = call![1] as { start: number; end: number };
+    expect(Number.isFinite(opts.start)).toBe(true);
+    expect(Number.isFinite(opts.end)).toBe(true);
+    expect(opts.end).toBeGreaterThan(opts.start);
+    const entry = performance.getEntriesByName(
+      "ovc:frame",
+    )[0] as PerformanceMeasure;
+    expect(entry.duration).toBeGreaterThan(0);
+    expect(entry.duration).toBeCloseTo(opts.end - opts.start, 5);
+    expect(
+      performance
+        .getEntriesByType("mark")
+        .filter((m) => m.name.includes("ovc:frame")).length,
+    ).toBe(0);
+    lc.dispose();
+  });
+
+  it("when frame measure throws, no fake fallback is emitted", () => {
+    const win = polyfillWindow();
+    const canvas = fakeCanvas();
+    let cb: FrameRequestCallback | null = null;
+    const raf = vi.fn((c: FrameRequestCallback) => {
+      cb = c;
+      return 8;
+    });
+    (win as unknown as Record<string, unknown>).requestAnimationFrame =
+      raf as unknown as typeof requestAnimationFrame;
+    (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
+      raf as unknown as typeof requestAnimationFrame;
+    vi.spyOn(performance, "now").mockReturnValue(9000);
+    vi.spyOn(performance, "measure").mockImplementation(() => {
+      throw new Error("measure fail");
+    });
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      createController: (() => ({
+        attachTrack: vi.fn(),
+        clearTrack: vi.fn(),
+        updatePlayback: vi.fn(),
+        setMetric: vi.fn(),
+        hasTrack: () => false,
+        getMetricState: () => null,
+        getTrackData: () => null,
+        applyCamera: vi.fn(),
+        dispose: vi.fn(),
+      })) as unknown as typeof import("./controller.js").createRendererController,
+      getWindow: () => win,
+      onFrame: vi.fn(),
+    });
+    lc.init();
+    performance.clearMeasures();
+    cb!(0);
+    expect(performance.getEntriesByName("ovc:frame").length).toBe(0);
+    expect(
+      performance
+        .getEntriesByType("mark")
+        .filter((m) => m.name.includes("ovc:frame")).length,
+    ).toBe(0);
     lc.dispose();
   });
 });
