@@ -27,10 +27,12 @@ jobs:
       - name: Install npm 11.17.0
         run: npm install -g npm@11.17.0
       - name: Verify Node 24 and npm 11.17.0
+        shell: bash
         run: |
           node --version
           npm --version
-          node -e "const m=parseInt(process.versions.node.split('.')[0],10);const v=require('child_process').execFileSync(process.platform==='win32'?'npm.cmd':'npm',['--version'],{encoding:'utf8'}).trim();if(m!==24||v!=='11.17.0'){console.error('Expected Node 24 and npm 11.17.0, got Node '+process.versions.node+' npm '+v);process.exit(1)}else console.log('Verified Node '+process.versions.node+' npm '+v)"
+          test "$(node -p "process.versions.node.split('.')[0]")" = "24"
+          test "$(npm --version)" = "11.17.0"
       - name: Install dependencies (exact lockfile)
         run: npm ci
       - name: Typecheck
@@ -82,11 +84,26 @@ jobs:
           cache: npm
       - name: Install npm 11.17.0
         run: npm install -g npm@11.17.0
-      - name: Verify Node 24 and npm 11.17.0
+      - name: Verify Node 24 and npm 11.17.0 (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
         run: |
           node --version
           npm --version
-          node -e "const m=parseInt(process.versions.node.split('.')[0],10);const v=require('child_process').execFileSync(process.platform==='win32'?'npm.cmd':'npm',['--version'],{encoding:'utf8'}).trim();if(m!==24||v!=='11.17.0'){console.error('Expected Node 24 and npm 11.17.0, got Node '+process.versions.node+' npm '+v);process.exit(1)}else console.log('Verified Node '+process.versions.node+' npm '+v)"
+          test "$(node -p "process.versions.node.split('.')[0]")" = "24"
+          test "$(npm --version)" = "11.17.0"
+      - name: Verify Node 24 and npm 11.17.0 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $nodeVersion = node --version
+          $nodeMajor = node -p "process.versions.node.split('.')[0]"
+          $npmVersion = npm --version
+          Write-Host "Node version: $nodeVersion"
+          Write-Host "Node major: $nodeMajor"
+          Write-Host "npm version: $npmVersion"
+          if ($nodeMajor.Trim() -ne "24") { throw "Expected Node major 24, got $nodeMajor (full $nodeVersion)" }
+          if ($npmVersion.Trim() -ne "11.17.0") { throw "Expected npm 11.17.0, got $npmVersion" }
       - name: Install dependencies (exact lockfile)
         run: npm ci
       - name: Build portable artifact
