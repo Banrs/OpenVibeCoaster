@@ -12,10 +12,18 @@ import { clampFovForSpeed, getCameraState, type CameraId } from "./cameras.js";
 import type { RendererHandle } from "./renderer.js";
 import type { EnvironmentQuery } from "@openvibecoaster/core";
 import { collectFromGroups, disposeSets } from "./dispose.js";
+import {
+  createHighlightMarker,
+  disposeHighlightMarker,
+  updateHighlightMarker,
+  type HighlightMarker,
+} from "./highlight.js";
 
 export interface MetricData {
   speed?: Float64Array;
   gForce?: Float64Array;
+  rollRate?: Float64Array;
+  clearance?: Float64Array;
   energy?: Float64Array;
 }
 
@@ -24,6 +32,7 @@ export interface AttachOptions {
   metricData?: MetricData | undefined;
   selectedElementIndex?: number | undefined;
   seamIndices?: number[] | undefined;
+  seamInspectionEnabled?: boolean | undefined;
   timeline?:
     | {
         distances: Float64Array;
@@ -49,6 +58,18 @@ export interface RendererController {
       | undefined,
   ): void;
   setMetric(metric: MetricId, metricData?: MetricData | undefined): void;
+  setSelectedElement(index: number | null): void;
+  setSeamInspection(enabled: boolean, seamIndices?: number[] | undefined): void;
+  updateSelection(options: {
+    selectedElementIndex?: number | null | undefined;
+    seamInspectionEnabled?: boolean | undefined;
+    seamIndices?: number[] | undefined;
+  }): void;
+  setHighlight(distance: number | null): void;
+  getHighlightDistance(): number | null;
+  getHighlightMarker(): HighlightMarker | null;
+  getSelectedElement(): number | null;
+  isSeamInspectionEnabled(): boolean;
   dispose(): void;
   getScene(): THREE.Scene;
   getMetricState(): { metric: MetricId; metricAvailable: boolean } | null;
@@ -63,6 +84,7 @@ export function createRendererController(
   let currentMetricData: MetricData | undefined;
   let selectedElementIndex: number | undefined;
   let seamIndices: number[] | undefined;
+  let seamInspectionEnabled: boolean | undefined;
   let trainGroup: TrainGroup | null = null;
   let supportMeshes: THREE.Mesh[] = [];
   let trackMeshes: THREE.Mesh[] = [];
@@ -70,6 +92,9 @@ export function createRendererController(
   let playbackSpeed = 0;
   let cameraPrevious: ReturnType<typeof getCameraState> | undefined;
   let lastMetricAvailable: boolean | null = null;
+  let highlightMarker: HighlightMarker | null = null;
+  let highlightDistance: number | null = null;
+  let highlightDisposed = false;
 
   function validateTimeline(timeline: {
     distances: Float64Array;
@@ -94,6 +119,82 @@ export function createRendererController(
         !Number.isFinite(s)
       ) {
         throw new RangeError("timeline distances/speeds must be finite");
+      }
+    }
+  }
+
+  function ensureHighlightMarker(): HighlightMarker | null {
+    if (highlightDisposed) return null;
+    if (highlightMarker) return highlightMarker;
+    try {
+      const created = createHighlightMarker();
+      handle.scene.add(created.group);
+      highlightMarker = created;
+      return created;
+    } catch {
+      return null;
+    }
+  }
+
+  function refreshHighlight(): void {
+    if (!highlightMarker) return;
+    updateHighlightMarker(highlightMarker, trackData, highlightDistance);
+  }
+
+  // internal clear that optionally preserves highlight marker
+  function clearTrackInternal(disposeHighlightIfEmpty: boolean): void {
+    for (const m of trackMeshes) {
+      handle.scene.remove(m);
+      try {
+        m.geometry.dispose();
+      } catch {
+        // ignore
+      }
+      const mat = m.material as THREE.Material | THREE.Material[];
+      const mats = Array.isArray(mat) ? mat : [mat];
+      for (const mm of mats) {
+        try {
+          mm.dispose();
+        } catch {
+          // ignore
+        }
+      }
+    }
+    trackMeshes = [];
+    for (const s of supportMeshes) {
+      handle.scene.remove(s);
+      try {
+        s.geometry.dispose();
+      } catch {
+        // ignore
+      }
+      const mat = s.material as THREE.Material | THREE.Material[];
+      const mats = Array.isArray(mat) ? mat : [mat];
+      for (const mm of mats) {
+        try {
+          mm.dispose();
+        } catch {
+          // ignore
+        }
+      }
+    }
+    supportMeshes = [];
+    if (trainGroup) {
+      handle.scene.remove(trainGroup.group);
+      const geoms = new Set<THREE.BufferGeometry>();
+      const mats = new Set<THREE.Material>();
+      collectFromGroups(trainGroup.cars, geoms, mats);
+      disposeSets(geoms, mats);
+      trainGroup = null;
+    }
+    trackData = null;
+    playbackDistance = 0;
+    playbackSpeed = 0;
+    lastMetricAvailable = null;
+    if (disposeHighlightIfEmpty) {
+      // preserve marker? For clearTrack external call, we keep marker but hide it
+      if (highlightMarker) {
+        updateHighlightMarker(highlightMarker, null, null);
       }
     }
   }
@@ -124,6 +225,7 @@ export function createRendererController(
     const newMetricData = options.metricData;
     const newSelected = options.selectedElementIndex;
     const newSeams = options.seamIndices;
+    const newSeamEnabled = options.seamInspectionEnabled;
     // compute playback targets but do not commit until success
     let newPlaybackDistance = playbackDistance;
     let newPlaybackSpeed = playbackSpeed;
@@ -139,6 +241,9 @@ export function createRendererController(
           ? { selectedElementIndex: newSelected }
           : {}),
         ...(newSeams !== undefined ? { seamIndices: newSeams } : {}),
+        ...(newSeamEnabled !== undefined
+          ? { seamInspectionEnabled: newSeamEnabled }
+          : {}),
       });
       newMetricAvailable = built.metricAvailable;
       // extract geometries for exact-once ownership tracking
@@ -238,6 +343,7 @@ export function createRendererController(
       currentMetricData = newMetricData;
       selectedElementIndex = newSelected;
       seamIndices = newSeams;
+      seamInspectionEnabled = newSeamEnabled;
       lastMetricAvailable = newMetricAvailable;
       trackMeshes = trackMeshesLocal;
       supportMeshes = supportMeshesLocal;
@@ -248,6 +354,12 @@ export function createRendererController(
       trackMeshesLocal = [];
       supportMeshesLocal = [];
       trainGroupLocal = null;
+      // restore highlight after successful rebuild (marker reused)
+      if (highlightMarker && highlightDistance !== null) {
+        refreshHighlight();
+      } else if (highlightMarker) {
+        updateHighlightMarker(highlightMarker, trackData, highlightDistance);
+      }
     } catch (e) {
       // dispose remaining geometries not yet transferred to meshes (exact once)
       for (const g of [leftGeom, rightGeom, spineGeom, tiesGeom]) {
@@ -356,54 +468,11 @@ export function createRendererController(
   };
 
   const clearTrack = (): void => {
-    for (const m of trackMeshes) {
-      handle.scene.remove(m);
-      try {
-        m.geometry.dispose();
-      } catch {
-        // ignore
-      }
-      const mat = m.material as THREE.Material | THREE.Material[];
-      const mats = Array.isArray(mat) ? mat : [mat];
-      for (const mm of mats) {
-        try {
-          mm.dispose();
-        } catch {
-          // ignore
-        }
-      }
+    clearTrackInternal(true);
+    // keep marker but hide
+    if (highlightMarker) {
+      updateHighlightMarker(highlightMarker, null, null);
     }
-    trackMeshes = [];
-    for (const s of supportMeshes) {
-      handle.scene.remove(s);
-      try {
-        s.geometry.dispose();
-      } catch {
-        // ignore
-      }
-      const mat = s.material as THREE.Material | THREE.Material[];
-      const mats = Array.isArray(mat) ? mat : [mat];
-      for (const mm of mats) {
-        try {
-          mm.dispose();
-        } catch {
-          // ignore
-        }
-      }
-    }
-    supportMeshes = [];
-    if (trainGroup) {
-      handle.scene.remove(trainGroup.group);
-      const geoms = new Set<THREE.BufferGeometry>();
-      const mats = new Set<THREE.Material>();
-      collectFromGroups(trainGroup.cars, geoms, mats);
-      disposeSets(geoms, mats);
-      trainGroup = null;
-    }
-    trackData = null;
-    playbackDistance = 0;
-    playbackSpeed = 0;
-    lastMetricAvailable = null;
   };
 
   const updatePlayback = (distance: number, speed: number): void => {
@@ -488,6 +557,117 @@ export function createRendererController(
 
   const dispose = (): void => {
     clearTrack();
+    if (highlightMarker && !highlightDisposed) {
+      try {
+        handle.scene.remove(highlightMarker.group);
+      } catch {
+        // ignore
+      }
+      try {
+        disposeHighlightMarker(highlightMarker);
+      } catch {
+        // ignore
+      }
+      highlightDisposed = true;
+      highlightMarker = null;
+      highlightDistance = null;
+    }
+  };
+
+  const setHighlight = (distance: number | null): void => {
+    if (distance !== null && !Number.isFinite(distance)) {
+      // treat non-finite as null per neutral palette handling
+      highlightDistance = null;
+      if (highlightMarker)
+        updateHighlightMarker(highlightMarker, trackData, null);
+      return;
+    }
+    highlightDistance = distance;
+    if (distance === null) {
+      if (highlightMarker)
+        updateHighlightMarker(highlightMarker, trackData, null);
+      return;
+    }
+    // ensure marker exists (reuse)
+    const marker = ensureHighlightMarker();
+    if (!marker || !trackData) {
+      // no track: hide but retain distance for later reattach
+      if (marker) updateHighlightMarker(marker, null, null);
+      return;
+    }
+    updateHighlightMarker(marker, trackData, distance);
+  };
+
+  const updateSelectionInternal = (opts: {
+    selectedElementIndex?: number | null | undefined;
+    seamInspectionEnabled?: boolean | undefined;
+    seamIndices?: number[] | undefined;
+  }): void => {
+    const nextSelected =
+      opts.selectedElementIndex === null
+        ? undefined
+        : (opts.selectedElementIndex as number | undefined);
+    const nextSeamEnabled = opts.seamInspectionEnabled;
+    const nextSeamIndices = opts.seamIndices;
+    // if no track yet, just store for next attach
+    if (!trackData) {
+      selectedElementIndex = nextSelected;
+      seamInspectionEnabled = nextSeamEnabled;
+      seamIndices = nextSeamIndices;
+      return;
+    }
+    const savedDistance = playbackDistance;
+    const savedSpeed = playbackSpeed;
+    const savedMetricData = currentMetricData;
+    const savedMetric = currentMetric;
+    const savedHighlight = highlightDistance;
+    const data = trackData;
+    const prevMarker = highlightMarker;
+    if (prevMarker) {
+      try {
+        handle.scene.remove(prevMarker.group);
+      } catch {
+        // ignore
+      }
+    }
+    clearTrackInternal(false);
+    if (prevMarker && !highlightDisposed) {
+      try {
+        handle.scene.add(prevMarker.group);
+      } catch {
+        // ignore
+      }
+      highlightMarker = prevMarker;
+    }
+    // build new options merging existing and new
+    const finalSelected =
+      nextSelected !== undefined ? nextSelected : selectedElementIndex;
+    const finalSeamEnabled =
+      nextSeamEnabled !== undefined ? nextSeamEnabled : seamInspectionEnabled;
+    const finalSeamIndices =
+      nextSeamIndices !== undefined ? nextSeamIndices : seamIndices;
+    attachTrack(data, {
+      metric: savedMetric,
+      ...(savedMetricData !== undefined ? { metricData: savedMetricData } : {}),
+      ...(finalSelected !== undefined
+        ? { selectedElementIndex: finalSelected }
+        : {}),
+      ...(finalSeamIndices !== undefined
+        ? { seamIndices: finalSeamIndices }
+        : {}),
+      ...(finalSeamEnabled !== undefined
+        ? { seamInspectionEnabled: finalSeamEnabled }
+        : {}),
+    });
+    updatePlayback(savedDistance, savedSpeed);
+    if (savedHighlight !== null) {
+      highlightDistance = savedHighlight;
+      ensureHighlightMarker();
+      refreshHighlight();
+    }
+    selectedElementIndex = finalSelected;
+    seamInspectionEnabled = finalSeamEnabled;
+    seamIndices = finalSeamIndices;
   };
 
   return {
@@ -516,7 +696,25 @@ export function createRendererController(
         const data = trackData;
         const savedSelected = selectedElementIndex;
         const savedSeams = seamIndices;
-        clearTrack();
+        const savedSeamEnabled = seamInspectionEnabled;
+        const savedHighlight = highlightDistance;
+        const prevMarker = highlightMarker;
+        if (prevMarker) {
+          try {
+            handle.scene.remove(prevMarker.group);
+          } catch {
+            // ignore
+          }
+        }
+        clearTrackInternal(false);
+        if (prevMarker && !highlightDisposed) {
+          try {
+            handle.scene.add(prevMarker.group);
+          } catch {
+            // ignore
+          }
+          highlightMarker = prevMarker;
+        }
         attachTrack(data, {
           metric: currentMetric,
           ...(metricDataToUse !== undefined
@@ -526,10 +724,44 @@ export function createRendererController(
             ? { selectedElementIndex: savedSelected }
             : {}),
           ...(savedSeams !== undefined ? { seamIndices: savedSeams } : {}),
+          ...(savedSeamEnabled !== undefined
+            ? { seamInspectionEnabled: savedSeamEnabled }
+            : {}),
         });
         updatePlayback(savedDistance, savedSpeed);
+        if (savedHighlight !== null) {
+          highlightDistance = savedHighlight;
+          ensureHighlightMarker();
+          refreshHighlight();
+        }
       }
     },
+    setSelectedElement: (index: number | null) => {
+      updateSelectionInternal({ selectedElementIndex: index });
+    },
+    setSeamInspection: (
+      enabled: boolean,
+      seamIndicesArg?: number[] | undefined,
+    ) => {
+      updateSelectionInternal({
+        seamInspectionEnabled: enabled,
+        ...(seamIndicesArg !== undefined
+          ? { seamIndices: seamIndicesArg }
+          : {}),
+      });
+    },
+    updateSelection: (opts: {
+      selectedElementIndex?: number | null | undefined;
+      seamInspectionEnabled?: boolean | undefined;
+      seamIndices?: number[] | undefined;
+    }) => {
+      updateSelectionInternal(opts);
+    },
+    setHighlight,
+    getHighlightDistance: () => highlightDistance,
+    getHighlightMarker: () => highlightMarker,
+    getSelectedElement: () => selectedElementIndex ?? null,
+    isSeamInspectionEnabled: () => seamInspectionEnabled === true,
     dispose,
     getScene: () => handle.scene,
     getMetricState: () => {

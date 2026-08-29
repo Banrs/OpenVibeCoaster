@@ -41,6 +41,14 @@ export interface AppLifecycle {
   clearTrack(): void;
   updatePlayback(distance: number, speed: number): void;
   setMetric(metric: MetricId, metricData?: MetricData): void;
+  setHighlight(distance: number | null): void;
+  updateSelection(options: {
+    selectedElementIndex?: number | null | undefined;
+    seamInspectionEnabled?: boolean | undefined;
+    seamIndices?: number[] | undefined;
+  }): void;
+  setSelectedElement(index: number | null): void;
+  setSeamInspection(enabled: boolean, seamIndices?: number[] | undefined): void;
   getController(): RendererController | null;
   getRendererHandle(): RendererHandle | null;
   getCamera(): THREE.PerspectiveCamera | null;
@@ -80,6 +88,8 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   // and does NOT overwrite last-known-good attachment until a controller successfully builds it
   let pendingAttachment: AttachmentSnapshot | null = null;
   let pendingPlayback: { distance: number; speed: number } | null = null;
+  let pendingHighlight: number | null | undefined = undefined;
+  let storedHighlight: number | null | undefined = undefined;
   let lastFrameMs = 0;
   let successfulRenderCount = 0;
 
@@ -190,6 +200,8 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     // reattach authoritative attachment – pending takes precedence, transactional
     const targetAttachment = pendingAttachment ?? attachment;
     const targetPlayback = pendingAttachment ? pendingPlayback : lastPlayback;
+    const highlightToApply =
+      pendingHighlight !== undefined ? pendingHighlight : storedHighlight;
     if (targetAttachment) {
       try {
         controller.attachTrack(targetAttachment.data, targetAttachment.options);
@@ -198,6 +210,10 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
             targetPlayback.distance,
             targetPlayback.speed,
           );
+        }
+        // reapply highlight if any (must not rebuild track)
+        if (highlightToApply !== undefined) {
+          controller.setHighlight(highlightToApply);
         }
       } catch (e) {
         config.onSetupError?.(e);
@@ -210,6 +226,23 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         lastPlayback = pendingPlayback;
         pendingAttachment = null;
         pendingPlayback = null;
+      }
+      if (pendingHighlight !== undefined) {
+        // highlight applied – clear pending and sync stored
+        storedHighlight = pendingHighlight;
+        pendingHighlight = undefined;
+      } else if (storedHighlight !== undefined) {
+        // keep storedHighlight as is (already applied)
+      }
+    } else if (highlightToApply !== undefined && controller) {
+      try {
+        controller.setHighlight(highlightToApply);
+        if (pendingHighlight !== undefined) {
+          storedHighlight = pendingHighlight;
+          pendingHighlight = undefined;
+        }
+      } catch {
+        // ignore – highlight failed but not fatal
       }
     }
     return true;
@@ -368,6 +401,8 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     lastPlayback = null;
     pendingAttachment = null;
     pendingPlayback = null;
+    pendingHighlight = undefined;
+    storedHighlight = undefined;
   };
 
   const reinitialize = (): boolean => {
@@ -483,7 +518,14 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     lastPlayback = null;
     pendingAttachment = null;
     pendingPlayback = null;
+    pendingHighlight = undefined;
+    storedHighlight = undefined;
     controller?.clearTrack();
+    try {
+      controller?.setHighlight(null);
+    } catch {
+      // ignore
+    }
   };
 
   const updatePlayback = (distance: number, speed: number): void => {
@@ -577,6 +619,155 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     controller?.setMetric(metric, metricData);
   };
 
+  const setHighlight = (distance: number | null): void => {
+    if (distance !== null && !Number.isFinite(distance)) {
+      // normalize non-finite to null
+      distance = null;
+    }
+    storedHighlight = distance;
+    if (controller) {
+      controller.setHighlight(distance);
+      pendingHighlight = undefined;
+    } else {
+      // No controller – store pending to apply on next successful reinit
+      pendingHighlight = distance;
+    }
+  };
+
+  const updateSelection = (options: {
+    selectedElementIndex?: number | null | undefined;
+    seamInspectionEnabled?: boolean | undefined;
+    seamIndices?: number[] | undefined;
+  }): void => {
+    // transactional: if controller exists, try to apply; on failure restore attachment
+    if (controller && attachment) {
+      const prevAttachment = {
+        data: attachment.data,
+        options: { ...attachment.options },
+      };
+      const prevPlayback = lastPlayback ? { ...lastPlayback } : null;
+      // build next options
+      const nextOpts: AttachOptions = { ...attachment.options };
+      if (options.selectedElementIndex !== undefined) {
+        if (options.selectedElementIndex === null) {
+          const { selectedElementIndex: _omit, ...rest } =
+            nextOpts as unknown as Record<string, unknown>;
+          Object.assign(nextOpts, rest);
+          delete (nextOpts as unknown as Record<string, unknown>)
+            .selectedElementIndex;
+        } else {
+          nextOpts.selectedElementIndex = options.selectedElementIndex;
+        }
+      }
+      if (options.seamInspectionEnabled !== undefined) {
+        nextOpts.seamInspectionEnabled = options.seamInspectionEnabled;
+      }
+      if (options.seamIndices !== undefined) {
+        nextOpts.seamIndices = options.seamIndices;
+      }
+      const tentative: AttachmentSnapshot = {
+        data: attachment.data,
+        options: nextOpts,
+      };
+      if (
+        options.selectedElementIndex === null &&
+        !("selectedElementIndex" in nextOpts)
+      ) {
+        const { selectedElementIndex: _omit2, ...rest2 } =
+          tentative.options as unknown as Record<string, unknown>;
+        tentative.options = rest2 as AttachOptions;
+      }
+      try {
+        controller.updateSelection(options);
+      } catch (e) {
+        // restore previous attachment
+        try {
+          controller.attachTrack(prevAttachment.data, prevAttachment.options);
+          if (prevPlayback) {
+            controller.updatePlayback(
+              prevPlayback.distance,
+              prevPlayback.speed,
+            );
+          }
+          attachment = prevAttachment;
+          lastPlayback = prevPlayback;
+        } catch {
+          try {
+            controller.clearTrack();
+          } catch {
+            // ignore
+          }
+          attachment = null;
+          lastPlayback = null;
+        }
+        throw e;
+      }
+      attachment = tentative;
+      if (options.selectedElementIndex === null) {
+        const { selectedElementIndex: _omit3, ...rest3 } =
+          attachment.options as unknown as Record<string, unknown>;
+        attachment.options = rest3 as AttachOptions;
+      }
+      return;
+    }
+    // no controller – store as pending or direct if no attachment
+    if (attachment) {
+      const nextOpts: AttachOptions = { ...attachment.options };
+      if (options.selectedElementIndex !== undefined) {
+        if (options.selectedElementIndex === null) {
+          delete (nextOpts as unknown as Record<string, unknown>)
+            .selectedElementIndex;
+        } else {
+          nextOpts.selectedElementIndex = options.selectedElementIndex;
+        }
+      }
+      if (options.seamInspectionEnabled !== undefined)
+        nextOpts.seamInspectionEnabled = options.seamInspectionEnabled;
+      if (options.seamIndices !== undefined)
+        nextOpts.seamIndices = options.seamIndices;
+      attachment = { data: attachment.data, options: nextOpts };
+      if (options.selectedElementIndex === null) {
+        const { selectedElementIndex: _omit4, ...rest4 } =
+          attachment.options as unknown as Record<string, unknown>;
+        attachment.options = rest4 as AttachOptions;
+      }
+      return;
+    }
+    // pending path – update pendingAttachment selection
+    if (pendingAttachment) {
+      const nextOpts: AttachOptions = { ...pendingAttachment.options };
+      if (options.selectedElementIndex !== undefined) {
+        if (options.selectedElementIndex === null) {
+          delete (nextOpts as unknown as Record<string, unknown>)
+            .selectedElementIndex;
+        } else {
+          nextOpts.selectedElementIndex = options.selectedElementIndex;
+        }
+      }
+      if (options.seamInspectionEnabled !== undefined)
+        nextOpts.seamInspectionEnabled = options.seamInspectionEnabled;
+      if (options.seamIndices !== undefined)
+        nextOpts.seamIndices = options.seamIndices;
+      pendingAttachment = { data: pendingAttachment.data, options: nextOpts };
+      return;
+    }
+    controller?.updateSelection(options);
+  };
+
+  const setSelectedElement = (index: number | null): void => {
+    updateSelection({ selectedElementIndex: index });
+  };
+
+  const setSeamInspection = (
+    enabled: boolean,
+    seamIndicesArg?: number[] | undefined,
+  ): void => {
+    updateSelection({
+      seamInspectionEnabled: enabled,
+      ...(seamIndicesArg !== undefined ? { seamIndices: seamIndicesArg } : {}),
+    });
+  };
+
   return {
     init,
     dispose,
@@ -585,6 +776,10 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     clearTrack: clearTrackInternal,
     updatePlayback,
     setMetric,
+    setHighlight,
+    updateSelection,
+    setSelectedElement,
+    setSeamInspection,
     getController: () => controller,
     getRendererHandle: () => rendererHandle,
     getCamera: () => camera,

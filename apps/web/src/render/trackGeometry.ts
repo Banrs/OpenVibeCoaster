@@ -1,11 +1,14 @@
 import * as THREE from "three";
 import type { CompiledTrackData } from "@openvibecoaster/core";
 
-export type MetricId = "speed" | "gForce" | "height" | "energy";
+export type MetricId =
+  "speed" | "gForce" | "rollRate" | "clearance" | "height" | "energy";
 
 export interface MetricData {
   speed?: Float64Array | undefined;
   gForce?: Float64Array | undefined;
+  rollRate?: Float64Array | undefined;
+  clearance?: Float64Array | undefined;
   energy?: Float64Array | undefined;
 }
 
@@ -14,6 +17,7 @@ export interface BuildTrackOptions {
   metricData?: MetricData | undefined;
   selectedElementIndex?: number | undefined;
   seamIndices?: number[] | undefined;
+  seamInspectionEnabled?: boolean | undefined;
 }
 
 export interface TrackGeometries {
@@ -41,13 +45,38 @@ function colorForMetric(t: number, metric: MetricId): [number, number, number] {
   const tt = clamp01(t);
   switch (metric) {
     case "speed":
-      return [0.2 + tt * 0.8, 0.45 + tt * 0.45, 1 - tt * 0.6];
-    case "gForce":
-      return [tt, 1 - Math.abs(tt - 0.5), 0.15];
+      // blue -> cyan -> yellow (sequential)
+      return [0.18 + tt * 0.78, 0.42 + tt * 0.38, 0.95 - tt * 0.65];
+    case "gForce": {
+      // diverging: low g (cyan-blue) -> neutral (pale) -> high g (red)
+      if (tt < 0.5) {
+        const u = tt * 2;
+        return [0.05 + u * 0.45, 0.58 + u * 0.22, 0.92 - u * 0.32];
+      }
+      const u = (tt - 0.5) * 2;
+      return [0.65 + u * 0.35, 0.8 - u * 0.55, 0.6 - u * 0.4];
+    }
+    case "rollRate": {
+      // diverging distinct from gForce: negative teal -> neutral light -> positive magenta-purple
+      if (tt < 0.5) {
+        const u = tt * 2;
+        return [0.12 + u * 0.38, 0.55 + u * 0.25, 0.78 - u * 0.18];
+      }
+      const u = (tt - 0.5) * 2;
+      return [0.68 + u * 0.27, 0.32 + u * 0.08, 0.82 - u * 0.12];
+    }
+    case "clearance": {
+      // danger direction: low clearance = red, high = safe green/blue
+      // t=0 is low margin danger
+      const r = 1.0 - tt * 0.75;
+      const g = 0.18 + tt * 0.62;
+      const b = 0.2 + tt * 0.45;
+      return [r, g, b];
+    }
     case "height":
-      return [0.2 + tt * 0.4, 0.35 + tt * 0.4, 0.2 + tt * 0.2];
+      return [0.16 + tt * 0.36, 0.34 + tt * 0.42, 0.18 + tt * 0.22];
     case "energy":
-      return [0.55 + tt * 0.3, 0.35 + tt * 0.2, 0.75];
+      return [0.52 + tt * 0.36, 0.28 + tt * 0.28, 0.68 + tt * 0.18];
     default:
       return [0.6, 0.6, 0.65];
   }
@@ -63,15 +92,22 @@ function resolveMetricAvailability(
     const vals = new Float64Array(count);
     const pos = data.positions;
     for (let i = 0; i < count; i++) {
-      vals[i] = pos[i * 3 + 1] ?? 0;
+      const v = pos[i * 3 + 1];
+      if (v === undefined || !Number.isFinite(v))
+        return { available: false, values: null };
+      vals[i] = v;
     }
+    // verify height is finite across samples; neutral fallback handled by caller via available flag
     return { available: true, values: vals };
   }
   let arr: Float64Array | undefined;
   if (metric === "speed") arr = metricData?.speed;
   else if (metric === "gForce") arr = metricData?.gForce;
+  else if (metric === "rollRate") arr = metricData?.rollRate;
+  else if (metric === "clearance") arr = metricData?.clearance;
   else if (metric === "energy") arr = metricData?.energy;
-  if (!arr || arr.length !== count) return { available: false, values: null };
+  if (!arr || !(arr instanceof Float64Array) || arr.length !== count)
+    return { available: false, values: null };
   for (let i = 0; i < arr.length; i++) {
     const v = arr[i];
     if (v === undefined || !Number.isFinite(v))
@@ -205,11 +241,30 @@ export function buildTrackGeometries(
     if (options.selectedElementIndex === undefined) return false;
     return data.elementIndices[idx] === options.selectedElementIndex;
   };
-  const seamSet = new Set(options.seamIndices ?? []);
+  const seamSet = new Set<number>();
   const elementBoundaries = data.elementBoundaries;
+  const canonicalSet = new Set<number>();
   for (let i = 0; i < elementBoundaries.length; i++) {
     const b = elementBoundaries[i];
-    if (b !== undefined) seamSet.add(b);
+    if (b !== undefined && Number.isInteger(b) && b >= 0 && b < count)
+      canonicalSet.add(b);
+  }
+  if (options.seamInspectionEnabled === true) {
+    for (const b of canonicalSet) seamSet.add(b);
+    if (options.seamIndices) {
+      for (const idx of options.seamIndices) {
+        if (canonicalSet.has(idx)) seamSet.add(idx);
+      }
+    }
+  } else if (options.seamInspectionEnabled === false) {
+    // disabled: no seams
+  } else {
+    // legacy undefined: show explicitly supplied seamIndices only
+    if (options.seamIndices) {
+      for (const idx of options.seamIndices) {
+        if (Number.isInteger(idx) && idx >= 0 && idx < count) seamSet.add(idx);
+      }
+    }
   }
 
   const baseColors = new Float32Array(count * 3);

@@ -32,3 +32,10 @@ export { createRendererHandle, disposeScene } from "./renderer.js";
 export type { RendererHandle, CreateRendererOptions } from "./renderer.js";
 export { RenderMetrics } from "./metrics.js";
 export type { MetricsSnapshot } from "./metrics.js";
+export {
+  createHighlightMarker,
+  updateHighlightMarker,
+  disposeHighlightMarker,
+  normalizeHighlightDistance,
+} from "./highlight.js";
+export type { HighlightMarker } from "./highlight.js";

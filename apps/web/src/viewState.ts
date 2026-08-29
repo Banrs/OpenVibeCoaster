@@ -1,7 +1,8 @@
 export type GenerationStatus = "pending" | "ready" | "generating" | "error";
 export type AppMode = "edit" | "ride";
 export type CameraId = "front" | "middle" | "rear" | "chase" | "orbit";
-export type MetricId = "speed" | "gForce" | "height" | "energy";
+export type MetricId =
+  "speed" | "gForce" | "rollRate" | "clearance" | "height" | "energy";
 export type DataAction =
   | "generate"
   | "save"
@@ -23,6 +24,8 @@ export const CAMERA_IDS: readonly CameraId[] = [
 export const METRIC_IDS: readonly MetricId[] = [
   "speed",
   "gForce",
+  "rollRate",
+  "clearance",
   "height",
   "energy",
 ] as const;
