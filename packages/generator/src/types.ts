@@ -208,15 +208,6 @@ export interface GenerationResult {
   readonly spanBytes: Readonly<Record<string, string>>;
   readonly relaxationEvidence: readonly RelaxationEvidence[];
   readonly options: GenerationOptions;
-  readonly stageTimings: GenerationStageTimings;
-}
-
-export interface GenerationStageTimings {
-  readonly searchMs: number;
-  readonly solvingMs: number;
-  readonly compilationMs: number;
-  readonly validationMs: number;
-  readonly totalMs: number;
 }
 
 export interface RelaxationEvidence {

@@ -84,6 +84,27 @@ const trackVector = (values: Float64Array, index: number): Vec3 =>
   vec3(values[index * 3]!, values[index * 3 + 1]!, values[index * 3 + 2]!);
 
 describe("canonical top-hat coefficients", () => {
+  it("preserves authored-frame ownership when an element ID contains #", () => {
+    const plain = compileSemanticChain(
+      [createElement("topHat", "plain", { width: 40, bank: 0.73 })],
+      { startPose, samples: 32 },
+    );
+    const hashed = compileSemanticChain(
+      [createElement("topHat", "hat#primary", { width: 40, bank: 0.73 })],
+      { startPose, samples: 32 },
+    );
+
+    expect(hashed.solvedSpans.map((span) => span.id)).toEqual([
+      "hat#primary#0",
+      "hat#primary#1",
+    ]);
+    expect(hashed.solvedSpans.map((span) => span.rollCoefficients)).toEqual(
+      plain.solvedSpans.map((span) => span.rollCoefficients),
+    );
+    expect(hashed.track?.normals).toEqual(plain.track?.normals);
+    expect(hashed.track?.binormals).toEqual(plain.track?.binormals);
+  });
+
   it("applies arbitrary authored-frame correction once across both children", () => {
     const result = compileSemanticChain(
       [createElement("topHat", "topHat-001", { width: 40, bank: 0.73 })],

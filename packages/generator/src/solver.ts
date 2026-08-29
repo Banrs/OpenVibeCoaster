@@ -407,13 +407,30 @@ const targetResidual = (target: HardTarget, pose: Pose): number => {
   }
 };
 
-const hardConflict = (ids: readonly string[], detail: string): Diagnostic => ({
-  code: "INFEASIBLE_HARD_CONSTRAINTS",
-  severity: "error",
-  provenance: "PROJECT_ENGINEERING_LIMIT",
-  message: `Conflicting hard constraints (${ids.join(", ")}): ${detail}`,
-  suggestedRelaxation: `Relax ${ids.join(", ")} or one named hard target`,
-});
+const hardConflict = (
+  ids: readonly string[],
+  detail: string,
+  actual?: number,
+  limit?: number,
+): Diagnostic => {
+  const finiteActual = actual !== undefined && Number.isFinite(actual);
+  const finiteLimit = limit !== undefined && Number.isFinite(limit);
+  const margin =
+    finiteActual && finiteLimit ? (limit as number) - (actual as number) : 0;
+  return {
+    code: "INFEASIBLE_HARD_CONSTRAINTS",
+    severity: "error",
+    provenance: "PROJECT_ENGINEERING_LIMIT",
+    message: `Conflicting hard constraints (${ids.join(", ")}): ${detail}`,
+    suggestedRelaxation: `Relax ${ids.join(", ")} or one named hard target`,
+    relatedIds: [...ids],
+    ...(finiteActual ? { actual } : {}),
+    ...(finiteLimit ? { limit } : {}),
+    ...(finiteActual && finiteLimit && Number.isFinite(margin)
+      ? { margin }
+      : {}),
+  };
+};
 const targetTolerance = (
   target: HardTarget,
   tolerances: SeamTolerances,
@@ -487,7 +504,7 @@ const semanticVariables = (
     const element = elements[elementIndex]!;
     const parameters = element.parameters as Record<string, number | boolean>;
     const length = parameters.length;
-    if (typeof length === "number") {
+    if (typeof length === "number" && element.type !== "airtimeHill") {
       const [lower, upper] = variableBounds(length, 2, 500);
       add(elementIndex, "length", length, lower, upper);
     }
@@ -520,14 +537,6 @@ const semanticVariables = (
         parameters.targetForceG as number,
         -1.2,
         5,
-      );
-    if (element.type === "zeroGRoll")
-      add(
-        elementIndex,
-        "roll",
-        parameters.roll as number,
-        -Math.PI * 4,
-        Math.PI * 4,
       );
     if (typeof parameters.bank === "number")
       add(elementIndex, "bank", parameters.bank, -Math.PI, Math.PI);
@@ -567,7 +576,35 @@ const buildChain = (
   const hardGeometryFailures: GeometryFailure[] = [];
   let pose = startPose;
   for (const element of elements) {
-    const built = buildElement(element, pose, referenceSpeed);
+    let built = buildElement(element, pose, referenceSpeed);
+    if (
+      element.type === "overbankedTurn" &&
+      Math.abs(element.parameters.bank) > Math.PI / 2
+    ) {
+      const geometryElement = {
+        ...element,
+        parameters: { ...element.parameters, bank: 0 },
+      } as AnySemanticElement;
+      const geometry = buildElement(geometryElement, pose, referenceSpeed);
+      const startBank = pose.bank;
+      const bumpAmplitude = element.parameters.bank - startBank;
+      const bank = QuinticScalarSpan.fromCoefficients([
+        startBank,
+        0,
+        16 * bumpAmplitude,
+        -32 * bumpAmplitude,
+        16 * bumpAmplitude,
+        0,
+      ]);
+      built = {
+        solvedSpans: geometry.solvedSpans.map((span) => ({
+          ...span,
+          bank,
+          rollCoefficients: bank.coefficients,
+        })),
+        endPose: { ...geometry.endPose, bank: startBank },
+      };
+    }
     solvedSpans.push(...built.solvedSpans);
     if (element.type === "airtimeHill") {
       const solvedSpan = built.solvedSpans[0]!;
@@ -631,6 +668,7 @@ const canonicalBankSpan = (span: SolvedSpan): QuinticScalarSpan | undefined => {
 const applyAuthoredStartFrame = (
   spans: readonly SolvedSpan[],
   startPose: Pose,
+  firstElementId: string,
 ): readonly SolvedSpan[] => {
   const first = spans[0];
   if (!first) return spans;
@@ -645,8 +683,12 @@ const applyAuthoredStartFrame = (
     vec3Dot(tangent, vec3Cross(defaultNormal, startPose.normal)),
     vec3Dot(defaultNormal, startPose.normal),
   );
-  const owner = first.id.split("#", 1)[0]!;
-  const ownedSpans = spans.filter((span) => span.id.split("#", 1)[0] === owner);
+  const ownedSpans = spans.filter(
+    (span) =>
+      span.id === firstElementId ||
+      (span.id.startsWith(`${firstElementId}#`) &&
+        /^\d+$/.test(span.id.slice(firstElementId.length + 1))),
+  );
   const ownedIndex = new Map(
     ownedSpans.map((span, index) => [span.id, index] as const),
   );
@@ -812,24 +854,57 @@ export const solveSemanticChain = (
   const relaxations: string[] = [];
   for (const seam of seamDiagnostics) {
     if (exceedsHardTolerance(seam.hardResiduals, tolerances)) {
-      const failures = [
-        seam.positionM > tolerances.positionM ? "position" : undefined,
-        seam.tangentRad > tolerances.tangentRad ? "tangent" : undefined,
-        seam.curvaturePerM > tolerances.curvaturePerM ? "curvature" : undefined,
-        seam.curvatureVectorJumpPerM > tolerances.curvaturePerM
-          ? "curvature vector"
-          : undefined,
-        seam.curvatureGradientPerM2 > tolerances.curvatureGradientPerM2
-          ? "curvature gradient"
-          : undefined,
-        seam.bankRad > tolerances.bankRad ? "bank" : undefined,
-        seam.bankDerivativeRadPerM > tolerances.bankDerivativeRadPerM
-          ? "bank derivative"
-          : undefined,
-        seam.specificForceJumpG > tolerances.specificForceJumpG
-          ? "specific-force jump"
-          : undefined,
-      ].filter((failure): failure is string => failure !== undefined);
+      const failures = (
+        [
+          seam.positionM > tolerances.positionM
+            ? (["position", seam.positionM, tolerances.positionM] as const)
+            : undefined,
+          seam.tangentRad > tolerances.tangentRad
+            ? (["tangent", seam.tangentRad, tolerances.tangentRad] as const)
+            : undefined,
+          seam.curvaturePerM > tolerances.curvaturePerM
+            ? ([
+                "curvature",
+                seam.curvaturePerM,
+                tolerances.curvaturePerM,
+              ] as const)
+            : undefined,
+          seam.curvatureVectorJumpPerM > tolerances.curvaturePerM
+            ? ([
+                "curvature vector",
+                seam.curvatureVectorJumpPerM,
+                tolerances.curvaturePerM,
+              ] as const)
+            : undefined,
+          seam.curvatureGradientPerM2 > tolerances.curvatureGradientPerM2
+            ? ([
+                "curvature gradient",
+                seam.curvatureGradientPerM2,
+                tolerances.curvatureGradientPerM2,
+              ] as const)
+            : undefined,
+          seam.bankRad > tolerances.bankRad
+            ? (["bank", seam.bankRad, tolerances.bankRad] as const)
+            : undefined,
+          seam.bankDerivativeRadPerM > tolerances.bankDerivativeRadPerM
+            ? ([
+                "bank derivative",
+                seam.bankDerivativeRadPerM,
+                tolerances.bankDerivativeRadPerM,
+              ] as const)
+            : undefined,
+          seam.specificForceJumpG > tolerances.specificForceJumpG
+            ? ([
+                "specific-force jump",
+                seam.specificForceJumpG,
+                tolerances.specificForceJumpG,
+              ] as const)
+            : undefined,
+        ] as Array<readonly [string, number, number] | undefined>
+      ).filter(
+        (failure): failure is readonly [string, number, number] =>
+          failure !== undefined,
+      );
       const isClosureSeam =
         closureEnabled && seam.seamId.endsWith(`->${firstElement?.id}`);
       diagnostics.push(
@@ -837,7 +912,9 @@ export const solveSemanticChain = (
           isClosureSeam
             ? ["closed-loop pose/closure constraints", seam.seamId]
             : [seam.seamId],
-          `${failures.join(", ")} residual remains after bounded solve`,
+          `${failures.map(([name]) => name).join(", ")} residual remains after bounded solve`,
+          failures[0]?.[1],
+          failures[0]?.[2],
         ),
       );
     }
@@ -861,7 +938,17 @@ export const solveSemanticChain = (
         : failure.kind === "orientation"
           ? `infeasible force geometry: planar zero-G path leaves ${failure.actual.toFixed(6)} G in the gravity binormal component`
           : `infeasible force geometry: banked force target residual is ${failure.actual.toFixed(6)} G`;
-    diagnostics.push(hardConflict([constraintId], detail));
+    const actual =
+      failure.kind === "height"
+        ? Math.abs(failure.actual - failure.target)
+        : failure.actual;
+    const limit =
+      failure.kind === "height"
+        ? 1e-4
+        : failure.kind === "orientation"
+          ? 1e-10
+          : 0.05;
+    diagnostics.push(hardConflict([constraintId], detail, actual, limit));
   }
 
   const targets = options.targets ?? [];
@@ -874,6 +961,8 @@ export const solveSemanticChain = (
         hardConflict(
           [target.id],
           `${target.kind} residual is ${error.toExponential(3)}`,
+          error,
+          targetTolerance(target, tolerances),
         ),
       );
     } else if (
@@ -923,10 +1012,18 @@ export const solveSemanticChain = (
       bankError > tolerances.bankRad ? "endPose.bank" : undefined,
     ].filter((failure): failure is string => failure !== undefined);
     if (failures.length > 0) {
+      const evidence = [
+        ["endPose.position", positionError, tolerances.positionM],
+        ["endPose.tangent", tangentError, tolerances.tangentRad],
+        ["endPose.normal", normalError, tolerances.tangentRad],
+        ["endPose.bank", bankError, tolerances.bankRad],
+      ].find(([name]) => failures.includes(name as string));
       diagnostics.push(
         hardConflict(
           failures,
           `position ${positionError.toExponential(3)} m, tangent ${tangentError.toExponential(3)} rad, normal ${normalError.toExponential(3)} rad, bank ${bankError.toExponential(3)} rad remain after bounded solve`,
+          evidence?.[1] as number | undefined,
+          evidence?.[2] as number | undefined,
         ),
       );
     }
@@ -971,10 +1068,18 @@ export const solveSemanticChain = (
       const closure = seamDiagnostics[seamDiagnostics.length - 1];
       if (closure?.seamId.endsWith(`->${firstElement?.id}`))
         ids.push(closure.seamId);
+      const evidence = [
+        ["endPose.position", positionError, tolerances.positionM],
+        ["endPose.tangent", tangentError, tolerances.tangentRad],
+        ["endPose.normal", normalError, tolerances.tangentRad],
+        ["endPose.bank", bankError, tolerances.bankRad],
+      ].find(([name]) => poseFailures.includes(name as string));
       diagnostics.push(
         hardConflict(
           ids,
           `position ${positionError.toExponential(3)} m, tangent ${tangentError.toExponential(3)} rad, normal ${normalError.toExponential(3)} rad, bank ${bankError.toExponential(3)} rad`,
+          evidence?.[1] as number | undefined,
+          evidence?.[2] as number | undefined,
         ),
       );
     }
@@ -1021,6 +1126,7 @@ export const compileSemanticChain = (
   const solvedSpans = applyAuthoredStartFrame(
     result.solvedSpans,
     result.startPose,
+    elements[0]!.id,
   );
   return {
     ...result,

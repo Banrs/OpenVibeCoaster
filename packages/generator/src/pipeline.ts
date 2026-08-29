@@ -32,6 +32,7 @@ import {
   CertifiedWorkBudget,
   CertificationError,
   certifiedPolynomialBounds,
+  certifyPolynomialThreshold,
 } from "./polynomial-bounds";
 import { buildElement, createElement, defaultPose } from "./elements";
 import { ELEMENT_KINDS } from "./types";
@@ -45,14 +46,8 @@ import type {
   RelaxationEvidence,
   SolveOptions,
   HardTarget,
-  GenerationStageTimings,
   ElementParameterMap,
 } from "./types";
-
-const now = (): number =>
-  (
-    globalThis as unknown as { readonly performance?: { now(): number } }
-  ).performance?.now() ?? Date.now();
 
 const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
   const rng = new Xoshiro128ss(seed);
@@ -65,7 +60,7 @@ const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
     createElement("overbankedTurn", "overbankedTurn-003", {
       radius: 75,
       angle: Math.PI * 0.75,
-      bank: 0,
+      bank: Math.PI * 0.6,
     }),
   ];
   const provisionalHill = createElement("airtimeHill", "airtimeHill-004", {
@@ -95,8 +90,11 @@ const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
       referenceSpeed: 44,
     }),
     createElement("boost", "boost-005", { length: 220, targetSpeed: 44 }),
-    createElement("zeroGRoll", "zeroGRoll-006", { length: 4, roll: 0 }),
-    createElement("stall", "stall-007", { length: 100, height: 0 }),
+    createElement("zeroGRoll", "zeroGRoll-006", {
+      length: 28,
+      roll: Math.PI * 2,
+    }),
+    createElement("stall", "stall-007", { length: 100, height: 18 }),
     createElement("brake", "brake-008", { length: 220, targetSpeed: 8 }),
     createElement("brake", "magnetic-brakes-009", {
       length: 110,
@@ -106,14 +104,11 @@ const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
   ];
   return elements;
 };
-const canonicalTrackCache = new Map<string, ReturnType<typeof compileTrack>>();
-const CANONICAL_TRACK_CACHE_LIMIT = 16;
-
-export interface GenerationOperationCache {
+interface GenerationOperationCache {
   readonly spanLengthCache: Map<string, number>;
 }
 
-export const createGenerationOperationCache = (): GenerationOperationCache => ({
+const createGenerationOperationCache = (): GenerationOperationCache => ({
   spanLengthCache: new Map<string, number>(),
 });
 
@@ -234,6 +229,18 @@ const hashSpan = (span: SolvedSpan): string => {
   for (const character of spanBytes(span))
     hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193);
   return (hash >>> 0).toString(16).padStart(8, "0");
+};
+
+const ownerForSpan = <T>(
+  spanId: string,
+  elementById: ReadonlyMap<string, T>,
+): string | undefined => {
+  if (elementById.has(spanId)) return spanId;
+  const separator = spanId.lastIndexOf("#");
+  if (separator <= 0 || !/^\d+$/.test(spanId.slice(separator + 1)))
+    return undefined;
+  const owner = spanId.slice(0, separator);
+  return elementById.has(owner) ? owner : undefined;
 };
 
 const finiteNumber = (value: number | undefined): number | undefined =>
@@ -380,27 +387,216 @@ const pathSamples = (
   }));
 };
 
+interface CanonicalPathLocation {
+  readonly spanIndex: number;
+  readonly span: SolvedSpan;
+  readonly u: number;
+  readonly s: number;
+  readonly point: Vec3;
+  readonly tangent: Vec3;
+  readonly normal: Vec3;
+  readonly distanceSquared: number;
+}
+
+const closestGateLocation = (
+  spans: readonly SolvedSpan[],
+  target: Vec3,
+  cursor: { readonly spanIndex: number; readonly u: number },
+): CanonicalPathLocation => {
+  const budget = new CertifiedWorkBudget(1_000_000);
+  const geometries = spans.map(positionGeometry);
+  const lengths = geometries.map((geometry) => arcLength(geometry));
+  const offsets = lengths.map((_, index) =>
+    lengths.slice(0, index).reduce((sum, length) => sum + length, 0),
+  );
+  const distanceSquared = (point: Vec3): number => {
+    const delta = vec3Sub(point, target);
+    const value = vec3Dot(delta, delta);
+    if (!Number.isFinite(value))
+      throw new CertificationError("Gate distance arithmetic is non-finite");
+    return value;
+  };
+  const lowerDistanceSquared = (
+    bounds: ReturnType<typeof certifiedPolynomialBounds>,
+  ): number => {
+    let value = 0;
+    for (const axis of [0, 1, 2] as const) {
+      const delta =
+        target[axis] < bounds.min[axis]!
+          ? bounds.min[axis]! - target[axis]
+          : target[axis] > bounds.max[axis]!
+            ? target[axis] - bounds.max[axis]!
+            : 0;
+      value += delta * delta;
+    }
+    if (!Number.isFinite(value))
+      throw new CertificationError("Gate bound distance is non-finite");
+    return value;
+  };
+  interface IntervalCandidate {
+    readonly spanIndex: number;
+    readonly start: number;
+    readonly end: number;
+    readonly depth: number;
+    readonly lowerDistanceSquared: number;
+  }
+  const intervalCandidate = (
+    spanIndex: number,
+    start: number,
+    end: number,
+    depth: number,
+  ): IntervalCandidate => ({
+    spanIndex,
+    start,
+    end,
+    depth,
+    lowerDistanceSquared: lowerDistanceSquared(
+      certifiedPolynomialBounds(
+        geometries[spanIndex]!.coefficients,
+        start,
+        end,
+        budget,
+      ),
+    ),
+  });
+  const pending: IntervalCandidate[] = [];
+  let best:
+    | {
+        readonly spanIndex: number;
+        readonly u: number;
+        readonly point: Vec3;
+        readonly distanceSquared: number;
+      }
+    | undefined;
+  const consider = (spanIndex: number, u: number): void => {
+    const point = geometries[spanIndex]!.position(u);
+    const candidate = {
+      spanIndex,
+      u,
+      point,
+      distanceSquared: distanceSquared(point),
+    };
+    if (
+      best === undefined ||
+      candidate.distanceSquared < best.distanceSquared ||
+      (candidate.distanceSquared === best.distanceSquared &&
+        (candidate.spanIndex < best.spanIndex ||
+          (candidate.spanIndex === best.spanIndex && candidate.u < best.u)))
+    )
+      best = candidate;
+  };
+  for (
+    let spanIndex = cursor.spanIndex;
+    spanIndex < spans.length;
+    spanIndex += 1
+  ) {
+    const start = spanIndex === cursor.spanIndex ? cursor.u : 0;
+    if (start > 1) continue;
+    consider(spanIndex, start);
+    consider(spanIndex, 1);
+    consider(spanIndex, (start + 1) / 2);
+    pending.push(intervalCandidate(spanIndex, start, 1, 0));
+  }
+  if (best === undefined)
+    throw new CertificationError("Gate has no ordered canonical path interval");
+  while (pending.length > 0) {
+    pending.sort(
+      (left, right) =>
+        right.lowerDistanceSquared - left.lowerDistanceSquared ||
+        right.spanIndex - left.spanIndex ||
+        right.start - left.start,
+    );
+    const interval = pending.pop()!;
+    if (interval.lowerDistanceSquared >= best.distanceSquared - 1e-12) continue;
+    if (interval.depth >= 40)
+      throw new CertificationError(
+        `Gate closest parameter remained uncertified on ${spans[interval.spanIndex]!.id}`,
+      );
+    const middle = (interval.start + interval.end) / 2;
+    consider(interval.spanIndex, middle);
+    pending.push(
+      intervalCandidate(
+        interval.spanIndex,
+        interval.start,
+        middle,
+        interval.depth + 1,
+      ),
+      intervalCandidate(
+        interval.spanIndex,
+        middle,
+        interval.end,
+        interval.depth + 1,
+      ),
+    );
+  }
+  const selected = best as NonNullable<typeof best>;
+  const orderedSamples: Array<{
+    readonly spanIndex: number;
+    readonly u: number;
+    readonly point: Vec3;
+  }> = [];
+  for (let spanIndex = 0; spanIndex < spans.length; spanIndex += 1) {
+    const parameters = new Set(
+      Array.from({ length: 129 }, (_, index) => index / 128),
+    );
+    if (spanIndex === selected.spanIndex) parameters.add(selected.u);
+    for (const u of [...parameters].sort((left, right) => left - right))
+      orderedSamples.push({
+        spanIndex,
+        u,
+        point: geometries[spanIndex]!.position(u),
+      });
+  }
+  const frames = transportFramesAlongPath(
+    orderedSamples.map((sample) => sample.point),
+    orderedSamples.map((sample) =>
+      vec3Normalize(geometries[sample.spanIndex]!.derivative(sample.u, 1)),
+    ),
+    orderedSamples.map((_, index) => index),
+    orderedSamples.map(
+      (sample) => spans[sample.spanIndex]!.bank?.position(sample.u) ?? 0,
+    ),
+  );
+  const selectedIndex = orderedSamples.findIndex(
+    (sample) =>
+      sample.spanIndex === selected.spanIndex && sample.u === selected.u,
+  );
+  const frame = frames[selectedIndex]!;
+  return {
+    ...selected,
+    span: spans[selected.spanIndex]!,
+    s:
+      offsets[selected.spanIndex]! +
+      arcLength(geometries[selected.spanIndex]!, 0, selected.u),
+    tangent: frame.tangent,
+    normal: frame.normal,
+  };
+};
+
 const gateDiagnostics = (
   spans: readonly SolvedSpan[],
   intent: DesignIntentV1,
 ): readonly Diagnostic[] => {
   if (intent.gates.length === 0) return [];
-  const samples = pathSamples(spans);
   const diagnostics: Diagnostic[] = [];
-  let start = 0;
+  let cursor = { spanIndex: 0, u: 0 };
   for (const gate of intent.gates) {
     if (!gate.position) continue;
-    let best = samples[start];
-    for (let index = start; index < samples.length; index += 1)
-      if (
-        !best ||
-        vec3Distance(samples[index]!.point, gate.position!) <
-          vec3Distance(best.point, gate.position!)
-      )
-        best = samples[index]!;
-    if (!best) continue;
-    start = samples.indexOf(best);
-    const positionError = vec3Distance(best.point, gate.position!);
+    let best: CanonicalPathLocation;
+    try {
+      best = closestGateLocation(spans, gate.position, cursor);
+    } catch (error) {
+      diagnostics.push({
+        code: "GATE_POSITION_UNCERTIFIED",
+        severity: "fatal",
+        provenance: "PROJECT_ENGINEERING_LIMIT",
+        message: error instanceof Error ? error.message : String(error),
+        relatedIds: [gate.id],
+      });
+      continue;
+    }
+    cursor = { spanIndex: best.spanIndex, u: best.u };
+    const positionError = Math.sqrt(best.distanceSquared);
     if (positionError > 0.1)
       diagnostics.push(
         hardDiagnostic(
@@ -419,27 +615,18 @@ const gateDiagnostics = (
       const targetNormal = vec3Normalize(
         quatRotateVector(gate.orientation, vec3(0, 1, 0)),
       );
-      const tangentError = Math.acos(
-        Math.max(
-          -1,
-          Math.min(
-            1,
-            vec3Dot(
-              vec3Normalize(best.span.span.derivative(best.u, 1)),
-              targetTangent,
-            ),
-          ),
-        ),
+      const canonicalTangentError = Math.acos(
+        Math.max(-1, Math.min(1, vec3Dot(best.tangent, targetTangent))),
       );
       const rollError = Math.acos(
         Math.max(-1, Math.min(1, vec3Dot(best.normal, targetNormal))),
       );
-      const actual = Math.max(tangentError, rollError);
+      const actual = Math.max(canonicalTangentError, rollError);
       if (actual > 1e-5)
         diagnostics.push(
           hardDiagnostic(
             "GATE_ORIENTATION",
-            `Gate ${gate.id} orientation residual is ${actual.toExponential(3)} (tangent=${tangentError.toExponential(3)}, roll=${rollError.toExponential(3)})`,
+            `Gate ${gate.id} orientation residual is ${actual.toExponential(3)} (tangent=${canonicalTangentError.toExponential(3)}, roll=${rollError.toExponential(3)})`,
             [gate.id],
             actual,
             1e-5,
@@ -447,7 +634,6 @@ const gateDiagnostics = (
           ),
         );
     }
-    start += 1;
   }
   return diagnostics;
 };
@@ -553,103 +739,112 @@ const validateGenerationConstraints = (
         provenance: hard ? "PROJECT_ENGINEERING_LIMIT" : "DESIGN_ASSUMPTION",
       });
   }
+  const heightConstraints = intent.constraints.filter(
+    (constraint) =>
+      constraint.kind === "max-height" || constraint.kind === "min-height",
+  );
+  if (
+    intent.footprint === undefined &&
+    intent.heightRange === undefined &&
+    heightConstraints.length === 0
+  )
+    return sanitizeDiagnostics(diagnostics);
   const boundBudget = new CertifiedWorkBudget(1_000_000);
-  const boundsAt = (span: SolvedSpan) => {
-    const rows =
-      span.positionCoefficients ??
-      (span.span instanceof SeventhOrderHermiteSpan
-        ? span.span.coefficients
-        : undefined);
-    if (!rows)
-      throw new CertificationError(
-        `Span ${span.id} has no position polynomial`,
-      );
-    return certifiedPolynomialBounds(rows, 0, 1, boundBudget);
-  };
+  const thresholdAt = (
+    geometry: SeventhOrderHermiteSpan<Vec3>,
+    axis: 0 | 1 | 2,
+    limit: number,
+    direction: "maximum" | "minimum",
+  ) =>
+    certifyPolynomialThreshold(
+      geometry.coefficients[axis]!,
+      0,
+      1,
+      limit,
+      direction,
+      boundBudget,
+    );
+  const uncertified = (
+    code: string,
+    relatedIds: readonly string[],
+    error: unknown,
+  ): Diagnostic => ({
+    code: `${code}_UNCERTIFIED`,
+    severity: "fatal",
+    provenance: "PROJECT_ENGINEERING_LIMIT",
+    message: error instanceof Error ? error.message : String(error),
+    relatedIds,
+  });
   let station = 0;
   const footprint = intent.footprint;
   for (const span of spans) {
-    let bounds;
+    let geometry: SeventhOrderHermiteSpan<Vec3>;
     try {
-      bounds = boundsAt(span);
+      geometry = positionGeometry(span);
     } catch (error) {
-      diagnostics.push({
-        code: "CLEARANCE_UNCERTIFIED",
-        severity: "fatal",
-        provenance: "PROJECT_ENGINEERING_LIMIT",
-        message: error instanceof Error ? error.message : String(error),
-        relatedIds: [span.id],
-      });
+      diagnostics.push(uncertified("BOUNDS", [span.id], error));
       continue;
     }
-    const spanStart = station;
-    const location = { s: spanStart, position: span.span.position(0) };
+    const check = (
+      code: "FOOTPRINT" | "HEIGHT_RANGE",
+      axis: 0 | 1 | 2,
+      limit: number,
+      direction: "maximum" | "minimum",
+      message: string,
+    ): void => {
+      try {
+        const certified = thresholdAt(geometry, axis, limit, direction);
+        if (certified.status !== "violated") return;
+        const { u, value } = certified.witness;
+        diagnostics.push(
+          sanitizeDiagnostic({
+            ...hardDiagnostic(code, message, [span.id], value, limit, {
+              s: station + arcLength(geometry, 0, u),
+              position: geometry.position(u),
+            }),
+            margin: direction === "minimum" ? value - limit : limit - value,
+          }),
+        );
+      } catch (error) {
+        diagnostics.push(uncertified(code, [span.id], error));
+      }
+    };
     if (footprint)
       for (const axis of [0, 1, 2] as const) {
-        if (bounds.min[axis]! < footprint.min[axis]!)
-          diagnostics.push(
-            sanitizeDiagnostic({
-              ...hardDiagnostic(
-                "FOOTPRINT",
-                `Footprint minimum exceeded by ${span.id}`,
-                [span.id],
-                bounds.min[axis],
-                footprint.min[axis],
-                location,
-              ),
-              margin: bounds.min[axis]! - footprint.min[axis]!,
-            }),
-          );
-        if (bounds.max[axis]! > footprint.max[axis]!)
-          diagnostics.push(
-            sanitizeDiagnostic({
-              ...hardDiagnostic(
-                "FOOTPRINT",
-                `Footprint maximum exceeded by ${span.id}`,
-                [span.id],
-                bounds.max[axis],
-                footprint.max[axis],
-                location,
-              ),
-              margin: footprint.max[axis]! - bounds.max[axis]!,
-            }),
-          );
+        check(
+          "FOOTPRINT",
+          axis,
+          footprint.min[axis]!,
+          "minimum",
+          `Footprint minimum exceeded by ${span.id}`,
+        );
+        check(
+          "FOOTPRINT",
+          axis,
+          footprint.max[axis]!,
+          "maximum",
+          `Footprint maximum exceeded by ${span.id}`,
+        );
       }
     if (intent.heightRange) {
-      if (bounds.min[1]! < intent.heightRange.min)
-        diagnostics.push(
-          sanitizeDiagnostic({
-            ...hardDiagnostic(
-              "HEIGHT_RANGE",
-              `Height range minimum exceeded by ${span.id}`,
-              [span.id],
-              bounds.min[1],
-              intent.heightRange.min,
-              location,
-            ),
-            margin: bounds.min[1]! - intent.heightRange.min,
-          }),
-        );
-      if (bounds.max[1]! > intent.heightRange.max)
-        diagnostics.push(
-          sanitizeDiagnostic({
-            ...hardDiagnostic(
-              "HEIGHT_RANGE",
-              `Height range maximum exceeded by ${span.id}`,
-              [span.id],
-              bounds.max[1],
-              intent.heightRange.max,
-              location,
-            ),
-            margin: intent.heightRange.max - bounds.max[1]!,
-          }),
-        );
+      check(
+        "HEIGHT_RANGE",
+        1,
+        intent.heightRange.min,
+        "minimum",
+        `Height range minimum exceeded by ${span.id}`,
+      );
+      check(
+        "HEIGHT_RANGE",
+        1,
+        intent.heightRange.max,
+        "maximum",
+        `Height range maximum exceeded by ${span.id}`,
+      );
     }
-    station += arcLength(span.span);
+    station += arcLength(geometry);
   }
-  for (const constraint of intent.constraints) {
-    if (constraint.kind !== "max-height" && constraint.kind !== "min-height")
-      continue;
+  for (const constraint of heightConstraints) {
     const value = constraint.target ?? constraint.value;
     if (typeof value !== "number") continue;
     let failure:
@@ -657,22 +852,40 @@ const validateGenerationConstraints = (
           readonly span: SolvedSpan;
           readonly actual: number;
           readonly s: number;
+          readonly position: Vec3;
         }
       | undefined;
     let distance = 0;
     for (const span of spans) {
       try {
-        const bounds = boundsAt(span);
-        const actual =
-          constraint.kind === "max-height" ? bounds.max[1] : bounds.min[1];
-        const exceeded =
-          constraint.kind === "max-height" ? actual > value : actual < value;
-        if (exceeded && !failure) failure = { span, actual, s: distance };
-      } catch {
-        failure = undefined;
+        const geometry = positionGeometry(span);
+        const certified = thresholdAt(
+          geometry,
+          1,
+          value,
+          constraint.kind === "max-height" ? "maximum" : "minimum",
+        );
+        if (certified.status === "violated") {
+          const { u, value: actual } = certified.witness;
+          failure = {
+            span,
+            actual,
+            s: distance + arcLength(geometry, 0, u),
+            position: geometry.position(u),
+          };
+          break;
+        }
+      } catch (error) {
+        diagnostics.push(
+          uncertified(
+            constraint.kind === "max-height" ? "MAX_HEIGHT" : "MIN_HEIGHT",
+            [constraint.id, span.id],
+            error,
+          ),
+        );
         break;
       }
-      distance += arcLength(span.span);
+      distance += arcLength(positionGeometry(span));
     }
     if (!failure) continue;
     const hard = constraint.hard !== false;
@@ -684,7 +897,7 @@ const validateGenerationConstraints = (
           [constraint.id, failure.span.id],
           failure.actual,
           value,
-          { s: failure.s, position: failure.span.span.position(0) },
+          { s: failure.s, position: failure.position },
         ),
         margin:
           constraint.kind === "min-height"
@@ -778,31 +991,100 @@ interface CandidateEvaluation {
   readonly solved: ReturnType<typeof solver.solveSemanticChain>;
   readonly diagnostics: readonly Diagnostic[];
   readonly track?: ReturnType<typeof compileTrack>;
-  readonly solvingMs: number;
-  readonly validationMs: number;
 }
+
+export type GenerationBenchmarkEvent =
+  | "total:start"
+  | "total:end"
+  | "search:start"
+  | "search:end"
+  | "solving:start"
+  | "solving:end"
+  | "compilation:start"
+  | "compilation:end"
+  | "validation:start"
+  | "validation:end";
+
+type GenerationBenchmarkObserver = (event: GenerationBenchmarkEvent) => void;
+
+const flagshipBankProfile = (
+  spans: readonly SolvedSpan[],
+  elements: readonly AnySemanticElement[],
+  automatic: boolean,
+): readonly SolvedSpan[] => {
+  if (!automatic) return spans;
+  const overbank = elements.find(
+    (element) => element.type === "overbankedTurn",
+  );
+  if (!overbank) return spans;
+  const amplitude = (overbank.parameters as { readonly bank: number }).bank;
+  return spans.map((span) => {
+    if (span.id !== overbank.id) return span;
+    const base = span.bank
+      ? new QuinticScalarSpan({
+          v0: span.bank.position(0),
+          d10: span.bank.derivative(0, 1),
+          d20: span.bank.derivative(0, 2),
+          v1: span.bank.position(1),
+          d11: span.bank.derivative(1, 1),
+          d21: span.bank.derivative(1, 2),
+        })
+      : QuinticScalarSpan.fromCoefficients([0, 0, 0, 0, 0, 0]);
+    const bumpAmplitude = amplitude - base.position(0.5);
+    const bump = [
+      0,
+      0,
+      16 * bumpAmplitude,
+      -32 * bumpAmplitude,
+      16 * bumpAmplitude,
+      0,
+    ];
+    const bank = QuinticScalarSpan.fromCoefficients(
+      base.coefficients.map((coefficient, index) => coefficient + bump[index]!),
+    );
+    return { ...span, bank, rollCoefficients: bank.coefficients };
+  });
+};
 
 const evaluateCandidate = (
   elements: readonly AnySemanticElement[],
   intent: DesignIntentV1,
   options: GenerationOptions,
   targets: SolveOptions["targets"],
+  observer?: GenerationBenchmarkObserver,
 ): CandidateEvaluation => {
-  const solvingStart = now();
-  const solved = solver.solveSemanticChain(elements, {
+  observer?.("solving:start");
+  const solveElements =
+    intent.mode === "directed"
+      ? elements
+      : elements.map((element) =>
+          element.type === "overbankedTurn"
+            ? ({
+                ...element,
+                parameters: { ...element.parameters, bank: 0 },
+              } as AnySemanticElement)
+            : element,
+        );
+  const rawSolved = solver.solveSemanticChain(solveElements, {
     ...(targets && targets.length > 0 ? { targets } : {}),
     referenceSpeed: 44,
     maxIterations:
       intent.mode === "directed"
         ? 32
         : intent.targets.length === 0 && intent.constraints.length === 0
-          ? 0
+          ? 1
           : 8,
   });
-  const solvingMs = now() - solvingStart;
+  const solvedSpans = flagshipBankProfile(
+    rawSolved.solvedSpans,
+    elements,
+    intent.mode !== "directed",
+  );
+  const solved = { ...rawSolved, solvedSpans };
+  observer?.("solving:end");
+  observer?.("validation:start");
   const elementSpans = solved.solvedSpans.map(coefficientSpan);
   const spans = elementSpans.flat();
-  const validationStart = now();
   const solverDiagnostics = solved.diagnostics;
   const diagnostics: Diagnostic[] = [
     ...solverDiagnostics,
@@ -905,16 +1187,16 @@ const evaluateCandidate = (
       ),
     );
   }
-  return {
+  const evaluation = {
     elements,
     elementSpans,
     spans,
     solved,
     diagnostics: sanitizeDiagnostics(diagnostics),
     ...(track ? { track } : {}),
-    solvingMs,
-    validationMs: now() - validationStart,
   };
+  observer?.("validation:end");
+  return evaluation;
 };
 
 const buildFileResult = (
@@ -925,17 +1207,16 @@ const buildFileResult = (
   candidateLmIterations: readonly number[],
   relaxationLmIterations: readonly number[],
   relaxationEvidence: readonly RelaxationEvidence[],
-  searchMs: number,
-  totalStart: number,
   operationCache: GenerationOperationCache,
+  observer?: GenerationBenchmarkObserver,
 ): GenerationResult => {
-  const compilationStart = now();
+  observer?.("compilation:start");
   const elementById = new Map(
     evaluation.elements.map((element) => [element.id, element]),
   );
-  const ownerId = (id: string): string => id.split("#", 1)[0]!;
   const serializedSpans = evaluation.spans.map((span) => {
-    const element = elementById.get(ownerId(span.id));
+    const owner = ownerForSpan(span.id, elementById);
+    const element = owner === undefined ? undefined : elementById.get(owner);
     if (!element) throw new Error(`Missing semantic owner for span ${span.id}`);
     const parameters = element.parameters as unknown as Record<string, unknown>;
     const lengthKey = spanBytes(span);
@@ -951,14 +1232,7 @@ const buildFileResult = (
     return serializeSolvedSpanV1(span, element.type, length);
   });
   const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
-  const trackKey = canonicalSpans.map(spanBytes).join("|");
-  let canonicalTrack = canonicalTrackCache.get(trackKey);
-  if (!canonicalTrack) {
-    canonicalTrack = compileTrack(canonicalSpans, { samples: 32 });
-    canonicalTrackCache.set(trackKey, canonicalTrack);
-    if (canonicalTrackCache.size > CANONICAL_TRACK_CACHE_LIMIT)
-      canonicalTrackCache.delete(canonicalTrackCache.keys().next().value!);
-  }
+  const canonicalTrack = compileTrack(canonicalSpans, { samples: 32 });
   const effectiveIntent: DesignIntentV1 =
     intent.mode === "directed"
       ? intent
@@ -990,7 +1264,7 @@ const buildFileResult = (
   ) as Record<string, string>;
   for (const element of evaluation.elements) {
     const first = evaluation.spans.find(
-      (span) => ownerId(span.id) === element.id,
+      (span) => ownerForSpan(span.id, elementById) === element.id,
     );
     if (first) {
       bytes[element.id] = spanBytes(first);
@@ -1001,14 +1275,7 @@ const buildFileResult = (
     options.samples === undefined || options.samples === 32
       ? canonicalTrack
       : compileTrack(canonicalSpans, { samples: options.samples });
-  const stageTimings: GenerationStageTimings = {
-    searchMs,
-    solvingMs: evaluation.solvingMs,
-    compilationMs: now() - compilationStart,
-    validationMs: evaluation.validationMs,
-    totalMs: now() - totalStart,
-  };
-  return {
+  const result = {
     feasible: !evaluation.diagnostics.some(
       (diagnostic) =>
         diagnostic.severity === "error" || diagnostic.severity === "fatal",
@@ -1039,9 +1306,10 @@ const buildFileResult = (
       relaxationLmIterations.reduce((sum, iterations) => sum + iterations, 0),
     spanHashes: hashes,
     spanBytes: bytes,
-    options,
-    stageTimings,
+    options: Object.freeze({ ...options }),
   };
+  observer?.("compilation:end");
+  return result;
 };
 
 const targetOptions = (intent: DesignIntentV1): SolveOptions["targets"] =>
@@ -1054,12 +1322,13 @@ const targetOptions = (intent: DesignIntentV1): SolveOptions["targets"] =>
       hard: target.hard,
     }));
 
-export const generateCoaster = (
+const generateCoasterInternal = (
   intent: DesignIntentV1,
   options: GenerationOptions = {},
+  observer?: GenerationBenchmarkObserver,
 ): GenerationResult => {
-  const totalStart = now();
-  const searchStart = now();
+  observer?.("total:start");
+  observer?.("search:start");
   validateDesignIntentV1(intent);
   const maxCandidates =
     intent.mode === "directed" ||
@@ -1077,6 +1346,7 @@ export const generateCoaster = (
       intent,
       options,
       targetOptions(intent),
+      observer,
     );
     candidatesTested += 1;
     candidateLmIterations.push(evaluation.solved.lmIterations);
@@ -1094,8 +1364,21 @@ export const generateCoaster = (
   const evaluation = selected ?? last!;
   const evidence: RelaxationEvidence[] = [];
   const relaxationLmIterations: number[] = [];
+  const failedRequirementIds = new Set(
+    evaluation.diagnostics
+      .filter(
+        (diagnostic) =>
+          diagnostic.severity === "error" || diagnostic.severity === "fatal",
+      )
+      .flatMap((diagnostic) => diagnostic.relatedIds ?? []),
+  );
   for (const target of intent.targets) {
-    if (evidence.length >= 3 || target.hard === false) continue;
+    if (
+      evidence.length >= 3 ||
+      target.hard === false ||
+      !failedRequirementIds.has(target.id)
+    )
+      continue;
     const relaxedIntent = {
       ...intent,
       targets: intent.targets.filter((item) => item.id !== target.id),
@@ -1105,6 +1388,7 @@ export const generateCoaster = (
       relaxedIntent,
       options,
       targetOptions(relaxedIntent),
+      observer,
     );
     relaxationLmIterations.push(rerun.solved.lmIterations);
     if (
@@ -1137,7 +1421,12 @@ export const generateCoaster = (
     });
   }
   for (const constraint of intent.constraints) {
-    if (evidence.length >= 3 || constraint.hard === false) continue;
+    if (
+      evidence.length >= 3 ||
+      constraint.hard === false ||
+      !failedRequirementIds.has(constraint.id)
+    )
+      continue;
     const relaxedIntent = {
       ...intent,
       constraints: intent.constraints.filter(
@@ -1149,6 +1438,7 @@ export const generateCoaster = (
       relaxedIntent,
       options,
       targetOptions(relaxedIntent),
+      observer,
     );
     relaxationLmIterations.push(rerun.solved.lmIterations);
     const failed = rerun.diagnostics.some((diagnostic) =>
@@ -1166,8 +1456,8 @@ export const generateCoaster = (
         margins: relaxationMargins(constraint, rerun),
       });
   }
-  const searchMs = now() - searchStart;
-  return buildFileResult(
+  observer?.("search:end");
+  const result = buildFileResult(
     evaluation,
     intent,
     options,
@@ -1175,11 +1465,23 @@ export const generateCoaster = (
     candidateLmIterations,
     relaxationLmIterations,
     evidence,
-    searchMs,
-    totalStart,
     operationCache,
+    observer,
   );
+  observer?.("total:end");
+  return result;
 };
+
+export const generateCoaster = (
+  intent: DesignIntentV1,
+  options: GenerationOptions = {},
+): GenerationResult => generateCoasterInternal(intent, options);
+
+export const generateCoasterForBenchmark = (
+  intent: DesignIntentV1,
+  options: GenerationOptions,
+  observer: GenerationBenchmarkObserver,
+): GenerationResult => generateCoasterInternal(intent, options, observer);
 
 const generationWithSpans = (
   candidate: GenerationResult,
@@ -1190,9 +1492,9 @@ const generationWithSpans = (
   const elementById = new Map(
     candidate.elements.map((element) => [element.id, element]),
   );
-  const ownerId = (id: string): string => id.split("#", 1)[0]!;
   const serializedSpans = spans.map((span) => {
-    const element = elementById.get(ownerId(span.id));
+    const owner = ownerForSpan(span.id, elementById);
+    const element = owner === undefined ? undefined : elementById.get(owner);
     if (!element) throw new Error(`Missing semantic owner for span ${span.id}`);
     const parameters = element.parameters as Record<string, unknown>;
     const length =
@@ -1225,7 +1527,7 @@ const generationWithSpans = (
   ) as Record<string, string>;
   for (const element of candidate.elements) {
     const first = canonicalSpans.find(
-      (span) => ownerId(span.id) === element.id,
+      (span) => ownerForSpan(span.id, elementById) === element.id,
     );
     if (first) {
       spanBytesMap[element.id] = spanBytes(first);
@@ -1253,7 +1555,14 @@ const generationWithSpans = (
   };
 };
 
-const spanOwner = (id: string): string => id.split("#", 1)[0]!;
+const generationOwner = (
+  generated: GenerationResult,
+  spanId: string,
+): string | undefined =>
+  ownerForSpan(
+    spanId,
+    new Map(generated.elements.map((element) => [element.id, element])),
+  );
 const selectedIndexOrMinusOne = (
   generated: GenerationResult,
   id: string,
@@ -1266,10 +1575,14 @@ const coefficientBoundaryPose = (
   const owner = generated.elements[semanticBoundary - 1]?.id;
   const first = generated.elements[semanticBoundary]?.id;
   const ownerSpans = owner
-    ? generated.solvedSpans.filter((span) => spanOwner(span.id) === owner)
+    ? generated.solvedSpans.filter(
+        (span) => generationOwner(generated, span.id) === owner,
+      )
     : [];
   const firstSpans = first
-    ? generated.solvedSpans.filter((span) => spanOwner(span.id) === first)
+    ? generated.solvedSpans.filter(
+        (span) => generationOwner(generated, span.id) === first,
+      )
     : [];
   const source = owner ? ownerSpans.at(-1) : firstSpans[0];
   if (!source) return defaultPose();
@@ -1320,12 +1633,17 @@ const coefficientBoundaryPose = (
 
 const localSeamDiagnostics = (
   spans: readonly SolvedSpan[],
+  elements: readonly AnySemanticElement[],
   closed: boolean,
 ): readonly Diagnostic[] => {
   const diagnostics: Diagnostic[] = [];
+  const elementById = new Map(elements.map((element) => [element.id, element]));
   for (const seam of solver.diagnoseSeams(spans, { closed })) {
     const [leftId, rightId] = seam.seamId.split("->");
-    if (spanOwner(leftId!) === spanOwner(rightId!)) continue;
+    if (
+      ownerForSpan(leftId!, elementById) === ownerForSpan(rightId!, elementById)
+    )
+      continue;
     const failure =
       seam.positionM > 1e-4 ||
       seam.tangentRad > 1e-5 ||
@@ -1375,7 +1693,7 @@ const mergedDiagnostics = (
 ): readonly Diagnostic[] => {
   const diagnostics = [
     ...localDiagnostics,
-    ...localSeamDiagnostics(spans, isClosedChain(elements)),
+    ...localSeamDiagnostics(spans, elements, isClosedChain(elements)),
     ...gateDiagnostics(spans, intent),
     ...validateGenerationConstraints(
       elements,
@@ -1527,6 +1845,29 @@ export const regenerateLocal = (
       untouchedSpanBytes: generated.spanBytes,
     };
   }
+  const patchIds = Object.keys(options.changes ?? {});
+  const patchIndices = patchIds.map((id) => ({
+    id,
+    index: generated.elements.findIndex((element) => element.id === id),
+  }));
+  const unknownPatchIds = patchIndices
+    .filter(({ index }) => index < 0)
+    .map(({ id }) => id);
+  if (unknownPatchIds.length > 0) {
+    const item = hardDiagnostic(
+      "LOCAL_REGENERATION",
+      `Unknown local regeneration patch owners: ${unknownPatchIds.join(", ")}`,
+      unknownPatchIds,
+    );
+    return {
+      feasible: false,
+      generation: generated,
+      diagnostics: [{ ...item, severity: "fatal" }],
+      changedWindow: [selectedIndex, selectedIndex],
+      untouchedSpanHashes: generated.spanHashes,
+      untouchedSpanBytes: generated.spanBytes,
+    };
+  }
   const sourceElements: AnySemanticElement[] = options.intent
     ? baseIntent.elements.map((element) => {
         const kind = (element.kind ??
@@ -1594,9 +1935,31 @@ export const regenerateLocal = (
       : Math.min(...rightPinnedCandidates);
   const minimumStart = leftPinned + 1;
   const maximumEnd = rightPinned - 1;
+  const blockedPatchIds = patchIndices
+    .filter(({ index }) => index < minimumStart || index > maximumEnd)
+    .map(({ id }) => id);
+  if (blockedPatchIds.length > 0) {
+    const item = hardDiagnostic(
+      "LOCAL_REGENERATION",
+      `Pinned boundary blocks local regeneration patches: ${blockedPatchIds.join(", ")}`,
+      blockedPatchIds,
+    );
+    return {
+      feasible: false,
+      generation: generated,
+      diagnostics: [{ ...item, severity: "fatal" }],
+      changedWindow: [selectedIndex, selectedIndex],
+      untouchedSpanHashes: generated.spanHashes,
+      untouchedSpanBytes: generated.spanBytes,
+    };
+  }
+  const includedPatchIndices = patchIndices.map(({ index }) => index);
   const initialWindow: readonly [number, number] = [
-    Math.max(minimumStart, selectedIndex - 1),
-    Math.min(maximumEnd, selectedIndex + 1),
+    Math.min(
+      Math.max(minimumStart, selectedIndex - 1),
+      ...includedPatchIndices,
+    ),
+    Math.max(Math.min(maximumEnd, selectedIndex + 1), ...includedPatchIndices),
   ];
   const queue: Array<readonly [number, number]> = [initialWindow];
   const visited = new Set<string>();
@@ -1623,15 +1986,24 @@ export const regenerateLocal = (
       const localSpans = localSolved.solvedSpans.flatMap(coefficientSpan);
       const oldByOwner = new Map<string, SolvedSpan[]>();
       for (const span of generated.solvedSpans) {
-        const group = oldByOwner.get(spanOwner(span.id)) ?? [];
+        const owner = generationOwner(generated, span.id);
+        if (owner === undefined)
+          throw new Error(`Missing semantic owner for span ${span.id}`);
+        const group = oldByOwner.get(owner) ?? [];
         group.push(span);
-        oldByOwner.set(spanOwner(span.id), group);
+        oldByOwner.set(owner, group);
       }
       const localByOwner = new Map<string, SolvedSpan[]>();
+      const changedElementById = new Map(
+        changedElements.map((element) => [element.id, element]),
+      );
       for (const span of localSpans) {
-        const group = localByOwner.get(spanOwner(span.id)) ?? [];
+        const owner = ownerForSpan(span.id, changedElementById);
+        if (owner === undefined)
+          throw new Error(`Missing semantic owner for local span ${span.id}`);
+        const group = localByOwner.get(owner) ?? [];
         group.push(span);
-        localByOwner.set(spanOwner(span.id), group);
+        localByOwner.set(owner, group);
       }
       const mergedSpans: SolvedSpan[] = [];
       for (let index = 0; index < generated.elements.length; index += 1) {
@@ -1674,7 +2046,7 @@ export const regenerateLocal = (
           untouchedSpanBytes[id] = generated.spanBytes[id]!;
           const oldSpans = oldByOwner.get(id) ?? [];
           const newSpans = localGeneration.solvedSpans.filter(
-            (span) => spanOwner(span.id) === id,
+            (span) => generationOwner(localGeneration, span.id) === id,
           );
           if (
             oldSpans.length !== newSpans.length ||

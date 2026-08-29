@@ -5,6 +5,18 @@ export interface CertifiedBounds {
   readonly max: Vec3;
 }
 
+export interface CertifiedThresholdWitness {
+  readonly u: number;
+  readonly value: number;
+}
+
+export type CertifiedThresholdResult =
+  | { readonly status: "satisfied" }
+  | {
+      readonly status: "violated";
+      readonly witness: CertifiedThresholdWitness;
+    };
+
 export class CertificationError extends RangeError {
   public constructor(message: string) {
     super(message);
@@ -243,6 +255,91 @@ const restrictedBernstein = (
     }
     return value;
   });
+};
+
+const evaluatePolynomial = (
+  coefficients: readonly number[],
+  u: number,
+  budget: CertifiedWorkBudget,
+): number => {
+  let value = 0;
+  for (let index = coefficients.length - 1; index >= 0; index -= 1) {
+    budget.charge();
+    value = finite(value * u + coefficients[index]!, "Polynomial evaluation");
+  }
+  return value;
+};
+
+export const certifyPolynomialThreshold = (
+  coefficients: readonly number[],
+  start: number,
+  end: number,
+  limit: number,
+  direction: "maximum" | "minimum",
+  budget: CertifiedWorkBudget,
+  maxDepth = 32,
+): CertifiedThresholdResult => {
+  finite(limit, "Polynomial threshold");
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 0)
+    throw new CertificationError(
+      "Polynomial threshold depth must be a non-negative safe integer",
+    );
+  const pending: Array<{
+    readonly start: number;
+    readonly end: number;
+    readonly depth: number;
+  }> = [{ start, end, depth: 0 }];
+  while (pending.length > 0) {
+    budget.charge();
+    const interval = pending.pop()!;
+    const bernstein = restrictedBernstein(
+      coefficients,
+      interval.start,
+      interval.end,
+      budget,
+    );
+    const lower = finite(
+      Math.min(...bernstein.map((value) => value.lo)),
+      "Polynomial threshold lower bound",
+    );
+    const upper = finite(
+      Math.max(...bernstein.map((value) => value.hi)),
+      "Polynomial threshold upper bound",
+    );
+    if (
+      (direction === "maximum" && upper <= limit) ||
+      (direction === "minimum" && lower >= limit)
+    )
+      continue;
+    const middle = (interval.start + interval.end) / 2;
+    const witnesses = [interval.start, middle, interval.end].map((u) => ({
+      u,
+      value: evaluatePolynomial(coefficients, u, budget),
+    }));
+    const witness = witnesses.reduce((selected, candidate) =>
+      direction === "maximum"
+        ? candidate.value > selected.value
+          ? candidate
+          : selected
+        : candidate.value < selected.value
+          ? candidate
+          : selected,
+    );
+    if (
+      (direction === "maximum" && witness.value > limit) ||
+      (direction === "minimum" && witness.value < limit)
+    )
+      return { status: "violated", witness };
+    if (interval.depth >= maxDepth)
+      throw new CertificationError(
+        `Polynomial ${direction} threshold remained uncertified`,
+      );
+    pending.push(
+      { start: middle, end: interval.end, depth: interval.depth + 1 },
+      { start: interval.start, end: middle, depth: interval.depth + 1 },
+    );
+  }
+  return { status: "satisfied" };
 };
 
 export const certifiedPolynomialBounds = (

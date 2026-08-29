@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   compileCoasterFile,
+  createElement,
   generateCoaster,
   regenerateLocal,
   validateClearance,
 } from "./index";
-import { createGenerationOperationCache } from "./pipeline";
 import {
   CompiledTrackData,
   aabbFromPoints,
@@ -151,7 +151,7 @@ describe("wave 3 deterministic generator", () => {
       mode: "full-auto",
       elements: [],
     });
-    expect(result.feasible).toBe(true);
+    expect(result.feasible, JSON.stringify(result.diagnostics)).toBe(true);
     expect(result.diagnostics.some((item) => item.severity === "error")).toBe(
       false,
     );
@@ -173,6 +173,49 @@ describe("wave 3 deterministic generator", () => {
     expect((topHat!.parameters as { readonly height: number }).height).toBe(80);
     expect(result.track.totalLength).toBeGreaterThanOrEqual(1600);
     expect(result.track.totalLength).toBeLessThanOrEqual(2200);
+    expect(
+      Math.abs(
+        (result.elements[3]!.parameters as { readonly bank: number }).bank,
+      ),
+    ).toBeGreaterThan(Math.PI / 2);
+    expect(
+      Math.abs(
+        (result.elements[6]!.parameters as { readonly roll: number }).roll,
+      ),
+    ).toBeCloseTo(Math.PI * 2, 12);
+    expect(
+      (result.elements[7]!.parameters as { readonly height: number }).height,
+    ).toBeGreaterThan(0);
+    const overbankSpans = result.solvedSpans.filter((span) =>
+      span.id.startsWith("overbankedTurn-003"),
+    );
+    expect(
+      Math.max(
+        ...overbankSpans.flatMap((span) =>
+          Array.from({ length: 33 }, (_, index) =>
+            Math.abs(span.bank!.position(index / 32)),
+          ),
+        ),
+      ),
+    ).toBeGreaterThan(Math.PI / 2);
+    const rollSpans = result.solvedSpans.filter((span) =>
+      span.id.startsWith("zeroGRoll-006"),
+    );
+    expect(
+      rollSpans.at(-1)!.bank!.position(1) - rollSpans[0]!.bank!.position(0),
+    ).toBeCloseTo(Math.PI * 2, 10);
+    const stallSpans = result.solvedSpans.filter((span) =>
+      span.id.startsWith("stall-007"),
+    );
+    const stallHeights = stallSpans.flatMap((span) =>
+      Array.from(
+        { length: 33 },
+        (_, index) => span.span.position(index / 32)[1],
+      ),
+    );
+    expect(
+      Math.max(...stallHeights) - Math.min(...stallHeights),
+    ).toBeGreaterThan(10);
     const topHatSpans = result.file.solvedSpans.filter((span) =>
       span.id.startsWith("topHat-002#"),
     );
@@ -301,7 +344,8 @@ describe("wave 3 deterministic generator", () => {
       mode: "full-auto",
       elements: [],
     });
-    expect(result.lmIterations).toBeGreaterThanOrEqual(0);
+    expect(result.lmIterations).toBeGreaterThan(0);
+    expect(result.candidateLmIterations.every((value) => value > 0)).toBe(true);
     expect(result.selectedLmIterations).toBeLessThanOrEqual(32);
     expect(result.candidateLmIterations.every((value) => value <= 32)).toBe(
       true,
@@ -454,6 +498,29 @@ describe("wave 3 deterministic generator", () => {
     );
   });
 
+  it("solves a continuous gate location between every legacy sample", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      elements: [
+        {
+          id: "long-line",
+          kind: "station",
+          type: "station",
+          parameters: { length: 500, bank: 0, closed: false },
+        },
+      ],
+      gates: [{ id: "between-samples", position: [0, 0, 250.5] as const }],
+      pinnedElementIds: [],
+    });
+
+    expect(result.feasible).toBe(true);
+    expect(
+      result.diagnostics.some((item) =>
+        item.relatedIds?.includes("between-samples"),
+      ),
+    ).toBe(false);
+  });
+
   it("reports exact infeasibility for a hard end-z target", () => {
     const result = generateCoaster({
       ...directedIntent,
@@ -469,6 +536,37 @@ describe("wave 3 deterministic generator", () => {
     expect(failure?.margin).toBeDefined();
     expect(result.relaxationEvidence[0]?.rerun).toBe(true);
     expect(result.relaxationEvidence[0]?.change).toContain("finish-z");
+  });
+
+  it("retains finite hard-conflict evidence and relaxes only failed IDs", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      elements: [directedIntent.elements[0]!],
+      targets: [
+        { id: "satisfied-x", kind: "end-x", target: 0, hard: true },
+        { id: "satisfied-y", kind: "end-y", target: 0, hard: true },
+        { id: "satisfied-bank", kind: "end-bank", target: 0, hard: true },
+        { id: "failed-end-z", kind: "end-z", target: 999, hard: true },
+      ],
+      pinnedElementIds: [],
+    });
+    const conflict = result.diagnostics.find(
+      (item) => item.code === "INFEASIBLE_HARD_CONSTRAINTS",
+    );
+
+    expect(result.feasible).toBe(false);
+    expect(conflict?.relatedIds).toContain("failed-end-z");
+    expect(conflict?.actual).toBeTypeOf("number");
+    expect(conflict?.limit).toBeTypeOf("number");
+    expect(conflict?.margin).toBeTypeOf("number");
+    expect(
+      [conflict?.actual, conflict?.limit, conflict?.margin].every(
+        (value) => value === undefined || Number.isFinite(value),
+      ),
+    ).toBe(true);
+    expect(result.relaxationEvidence.map((item) => item.change)).toEqual([
+      "Relax hard target failed-end-z",
+    ]);
   });
 
   it("rejects unknown hard constraints and enforces required semantics", () => {
@@ -517,7 +615,7 @@ describe("wave 3 deterministic generator", () => {
     expect(
       results.every((result) =>
         result.candidateLmIterations.every(
-          (iterations) => iterations >= 0 && iterations <= 32,
+          (iterations) => iterations > 0 && iterations <= 32,
         ),
       ),
     ).toBe(true);
@@ -983,6 +1081,220 @@ describe("wave 3 deterministic generator", () => {
     expect(result.generation.spanBytes["brake-003"]).toBe(
       generated.spanBytes["brake-003"],
     );
+  });
+
+  it("includes every remotely patched owner in the local solve window", () => {
+    const elements = ["s1", "s2", "s3", "s4"].map((id) => ({
+      id,
+      kind: "station",
+      type: "station",
+      parameters: { length: 12, bank: 0, closed: false },
+    }));
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements,
+      pinnedElementIds: [],
+    });
+    const result = regenerateLocal(generated, "s1", {
+      changes: { s4: { length: 20 } },
+    });
+    const saved = result.generation.file.solvedSpans.find(
+      (span) => span.id === "s4",
+    );
+    const runtime = result.generation.solvedSpans.find(
+      (span) => span.id === "s4",
+    );
+
+    expect(result.feasible).toBe(true);
+    expect(result.changedWindow).toEqual([0, 3]);
+    expect(result.generation.intent.elements[3]!.parameters?.length).toBe(20);
+    expect(saved?.length).toBe(20);
+    expect(runtime).toBeDefined();
+    if (!runtime) throw new Error("Missing regenerated s4 span");
+    expect(runtime.span.position(1)[2] - runtime.span.position(0)[2]).toBe(20);
+  });
+
+  it("rejects a remote patch blocked by a pinned boundary with its exact ID", () => {
+    const elements = ["s1", "s2", "s3", "s4"].map((id) => ({
+      id,
+      kind: "station",
+      type: "station",
+      parameters: { length: 12, bank: 0, closed: false },
+    }));
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements,
+      pinnedElementIds: ["s3"],
+    });
+    const result = regenerateLocal(generated, "s1", {
+      changes: { s4: { length: 20 } },
+    });
+
+    expect(result.feasible).toBe(false);
+    expect(
+      result.diagnostics.some(
+        (item) =>
+          item.relatedIds?.includes("s4") && /pinned/i.test(item.message),
+      ),
+    ).toBe(true);
+    expect(result.generation).toBe(generated);
+  });
+
+  it("accepts a true polynomial maximum below a loose Bernstein hull", () => {
+    const geometry = SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+      [0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 1, -1, 0, 0, 0, 0, 0],
+      [0, 1, 0, 0, 0, 0, 0, 0],
+    ]);
+    const bank = QuinticScalarSpan.fromCoefficients([0, 0, 0, 0, 0, 0]);
+    const base = solver.solveSemanticChain([
+      createElement("station", "parabola", { length: 2 }),
+    ]);
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain").mockReturnValue({
+      ...base,
+      solvedSpans: [
+        {
+          id: "parabola",
+          kind: "station",
+          span: geometry,
+          bank,
+          positionCoefficients: geometry.coefficients,
+          rollCoefficients: bank.coefficients,
+        },
+      ],
+    });
+    try {
+      const accepted = generateCoaster({
+        ...directedIntent,
+        elements: [
+          {
+            id: "parabola",
+            kind: "station",
+            type: "station",
+            parameters: { length: 2, bank: 0, closed: false },
+          },
+        ],
+        constraints: [
+          { id: "loose-max", kind: "max-height", target: 0.26, hard: true },
+        ],
+        pinnedElementIds: [],
+      });
+      const violated = generateCoaster({
+        ...directedIntent,
+        elements: [
+          {
+            id: "parabola",
+            kind: "station",
+            type: "station",
+            parameters: { length: 2, bank: 0, closed: false },
+          },
+        ],
+        constraints: [
+          { id: "tight-max", kind: "max-height", target: 0.24, hard: true },
+        ],
+        pinnedElementIds: [],
+      });
+      const witness = violated.diagnostics.find((item) =>
+        item.relatedIds?.includes("tight-max"),
+      );
+
+      expect(accepted.feasible).toBe(true);
+      expect(violated.feasible).toBe(false);
+      expect(witness?.actual).toBeCloseTo(0.25, 10);
+      expect(witness?.limit).toBe(0.24);
+      expect(witness?.margin).toBeCloseTo(-0.01, 10);
+      expect(witness?.location?.s).toBeGreaterThan(0);
+      expect(witness?.location?.position?.[1]).toBeCloseTo(
+        witness?.actual ?? Number.NaN,
+        12,
+      );
+    } finally {
+      solveSpy.mockRestore();
+    }
+  });
+
+  it("fails closed when an exact polynomial limit cannot be certified", () => {
+    const geometry = SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+      [0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 1, -1, 0, 0, 0, 0, 0],
+      [0, 1, 0, 0, 0, 0, 0, 0],
+    ]);
+    const bank = QuinticScalarSpan.fromCoefficients([0, 0, 0, 0, 0, 0]);
+    const base = solver.solveSemanticChain([
+      createElement("station", "parabola", { length: 2 }),
+    ]);
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain").mockReturnValue({
+      ...base,
+      solvedSpans: [
+        {
+          id: "parabola",
+          kind: "station",
+          span: geometry,
+          bank,
+          positionCoefficients: geometry.coefficients,
+          rollCoefficients: bank.coefficients,
+        },
+      ],
+    });
+    try {
+      const result = generateCoaster({
+        ...directedIntent,
+        elements: [
+          {
+            id: "parabola",
+            kind: "station",
+            type: "station",
+            parameters: { length: 2, bank: 0, closed: false },
+          },
+        ],
+        constraints: [
+          { id: "exact-max", kind: "max-height", target: 0.25, hard: true },
+        ],
+        pinnedElementIds: [],
+      });
+
+      expect(result.feasible).toBe(false);
+      expect(
+        result.diagnostics.some(
+          (item) =>
+            item.code === "MAX_HEIGHT_UNCERTIFIED" &&
+            item.severity === "fatal" &&
+            item.relatedIds?.includes("exact-max"),
+        ),
+      ).toBe(true);
+    } finally {
+      solveSpy.mockRestore();
+    }
+  });
+
+  it("round-trips and locally regenerates child spans for IDs containing #", () => {
+    const id = "hat#primary";
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements: [
+        {
+          id,
+          kind: "topHat",
+          type: "topHat",
+          parameters: { height: 80, width: 40, bank: 0 },
+        },
+      ],
+      pinnedElementIds: [],
+    });
+    const childIds = [`${id}#0`, `${id}#1`];
+
+    expect(generated.solvedSpans.map((span) => span.id)).toEqual(childIds);
+    expect(
+      compileCoasterFile(generated.serializedFile).solvedSpans.map(
+        (span) => span.id,
+      ),
+    ).toEqual(childIds);
+    const local = regenerateLocal(generated, id);
+    expect(local.feasible).toBe(true);
+    expect(local.generation.solvedSpans.map((span) => span.id)).toEqual(
+      childIds,
+    );
+    expect(local.generation.serializedFile).toBe(generated.serializedFile);
   });
 
   it("reports below-minimum height with a negative margin", () => {
@@ -1713,13 +2025,17 @@ describe("wave 3 deterministic generator", () => {
     }
   });
 
-  it("isolates span-length keys to each generation operation", () => {
-    const first = createGenerationOperationCache();
-    const second = createGenerationOperationCache();
-    for (let index = 0; index < 4096; index += 1)
-      first.spanLengthCache.set(`distinct-${index}`, index);
-    expect(first.spanLengthCache.size).toBe(4096);
-    expect(second.spanLengthCache.size).toBe(0);
-    expect(second.spanLengthCache).not.toBe(first.spanLengthCache);
+  it("returns independent deterministic data without pipeline timing state", () => {
+    const first = generateCoaster(directedIntent);
+    const second = generateCoaster(directedIntent);
+
+    expect(first).not.toBe(second);
+    expect(first.track).not.toBe(second.track);
+    expect(first.track.positions).not.toBe(second.track.positions);
+    expect(first.solvedSpans).not.toBe(second.solvedSpans);
+    expect(first.serializedFile).toBe(second.serializedFile);
+    expect(first.track.positions).toEqual(second.track.positions);
+    expect(first.diagnostics).toEqual(second.diagnostics);
+    expect(first).not.toHaveProperty("stageTimings");
   });
 });

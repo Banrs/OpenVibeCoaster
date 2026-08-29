@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
 import { generateCoaster } from "./index";
+import {
+  generateCoasterForBenchmark,
+  type GenerationBenchmarkEvent,
+} from "./pipeline";
 
 declare const console: { log(message: string): void };
 const now = (): number =>
@@ -40,24 +44,68 @@ const percentile = (values: readonly number[], fraction: number): number => {
   );
 };
 
+const timedGeneration = (
+  measuredIntent: Parameters<typeof generateCoaster>[0],
+  options: Parameters<typeof generateCoaster>[1] = {},
+): {
+  readonly result: ReturnType<typeof generateCoaster>;
+  readonly timings: Readonly<
+    Record<
+      "searchMs" | "solvingMs" | "compilationMs" | "validationMs" | "totalMs",
+      number
+    >
+  >;
+} => {
+  const starts = new Map<string, number>();
+  const timings = {
+    searchMs: 0,
+    solvingMs: 0,
+    compilationMs: 0,
+    validationMs: 0,
+    totalMs: 0,
+  };
+  const observer = (event: GenerationBenchmarkEvent): void => {
+    const [stage, boundary] = event.split(":") as [
+      "search" | "solving" | "compilation" | "validation" | "total",
+      "start" | "end",
+    ];
+    if (boundary === "start") {
+      starts.set(stage, now());
+      return;
+    }
+    const start = starts.get(stage);
+    if (start === undefined)
+      throw new Error(`Missing benchmark stage ${stage}`);
+    timings[`${stage}Ms`] += now() - start;
+  };
+  const result = generateCoasterForBenchmark(measuredIntent, options, observer);
+  return { result, timings };
+};
+
 it("runs the deterministic generation benchmark", () => {
   const wallStart = now();
   for (const seed of [0xffffffff, 0x12345678, 0x87654321])
     generateCoaster({ ...intent, seed });
-  const results = Array.from({ length: 50 }, (_, seed) =>
-    generateCoaster({ ...intent, seed }, { samples: 32 }),
+  const measured = Array.from({ length: 50 }, (_, seed) =>
+    timedGeneration({ ...intent, seed }, { samples: 32 }),
   );
-  const nonzeroLm = generateCoaster(
+  const results = measured.map(({ result }) => result);
+  const nonzeroLmMeasured = timedGeneration(
     {
       ...intent,
       seed: 17,
       constraints: [
-        { id: "bounded-work", kind: "min-height", target: -1000, hard: true },
+        {
+          id: "bounded-work",
+          kind: "min-height",
+          target: -1000,
+          hard: true,
+        },
       ],
     },
     { samples: 32 },
   );
-  const rejection = generateCoaster(
+  const rejectionMeasured = timedGeneration(
     {
       ...intent,
       seed: 19,
@@ -65,41 +113,58 @@ it("runs the deterministic generation benchmark", () => {
     },
     { samples: 8 },
   );
-  const relaxation = generateCoaster({
+  const relaxationMeasured = timedGeneration({
     ...directedIntent,
     seed: 23,
     targets: [{ id: "relax", kind: "end-z", target: 999, hard: true }],
   });
+  const nonzeroLm = nonzeroLmMeasured.result;
+  const rejection = rejectionMeasured.result;
+  const relaxation = relaxationMeasured.result;
   const representative = [
-    ...results.map((result, seed) => ({
+    ...measured.map(({ result, timings }, seed) => ({
       name: `full-auto-${seed}`,
       seed,
       result,
+      totalMs: timings.totalMs,
     })),
-    { name: "rejection", seed: 19, result: rejection },
-    { name: "nonzero-lm", seed: 17, result: nonzeroLm },
-    { name: "relaxation", seed: 23, result: relaxation },
+    {
+      name: "rejection",
+      seed: 19,
+      result: rejection,
+      totalMs: rejectionMeasured.timings.totalMs,
+    },
+    {
+      name: "nonzero-lm",
+      seed: 17,
+      result: nonzeroLm,
+      totalMs: nonzeroLmMeasured.timings.totalMs,
+    },
+    {
+      name: "relaxation",
+      seed: 23,
+      result: relaxation,
+      totalMs: relaxationMeasured.timings.totalMs,
+    },
   ];
   const misses = representative
-    .filter(({ result }) => result.stageTimings.totalMs > 1000)
-    .map(({ name, result }) => ({
+    .filter(({ totalMs }) => totalMs > 1000)
+    .map(({ name, totalMs }) => ({
       name,
-      totalMs: result.stageTimings.totalMs,
+      totalMs,
     }));
+  const totals = measured.map(({ timings }) => timings.totalMs);
+  const p95Ms = percentile(totals, 0.95);
   const stage = (
-    name: keyof (typeof results)[number]["stageTimings"],
+    name: keyof (typeof measured)[number]["timings"],
   ): { readonly p50Ms: number; readonly p95Ms: number } => {
-    const values = results.map((result) => result.stageTimings[name]);
+    const values = measured.map(({ timings }) => timings[name]);
     return { p50Ms: percentile(values, 0.5), p95Ms: percentile(values, 0.95) };
   };
-  const p95Ms = percentile(
-    results.map((result) => result.stageTimings.totalMs),
-    0.95,
-  );
   const summary = {
     warmupSeeds: 3,
     seeds: results.length,
-    representative: representative.map(({ name, seed, result }) => ({
+    representative: representative.map(({ name, seed, result, totalMs }) => ({
       name,
       seed,
       feasible: result.feasible,
@@ -109,7 +174,7 @@ it("runs the deterministic generation benchmark", () => {
       relaxationLmIterations: result.relaxationLmIterations,
       relaxationLmWork: result.relaxationLmWork,
       totalLmWork: result.lmIterations,
-      totalMs: result.stageTimings.totalMs,
+      totalMs,
     })),
     candidatesTested: results.map((result) => result.candidatesTested),
     candidateLmWork: results.map((result) => result.candidateLmWork),
@@ -120,7 +185,7 @@ it("runs the deterministic generation benchmark", () => {
         lmIterations: rejection.lmIterations,
         candidateLmWork: rejection.candidateLmWork,
         relaxationLmWork: rejection.relaxationLmWork,
-        totalMs: rejection.stageTimings.totalMs,
+        totalMs: rejectionMeasured.timings.totalMs,
         rejected: !rejection.feasible,
       },
       nonzeroLm: {
@@ -128,21 +193,18 @@ it("runs the deterministic generation benchmark", () => {
         lmIterations: nonzeroLm.lmIterations,
         candidateLmWork: nonzeroLm.candidateLmWork,
         relaxationLmWork: nonzeroLm.relaxationLmWork,
-        totalMs: nonzeroLm.stageTimings.totalMs,
+        totalMs: nonzeroLmMeasured.timings.totalMs,
       },
       relaxation: {
         candidatesTested: relaxation.candidatesTested,
         lmIterations: relaxation.lmIterations,
         candidateLmWork: relaxation.candidateLmWork,
         relaxationLmWork: relaxation.relaxationLmWork,
-        totalMs: relaxation.stageTimings.totalMs,
+        totalMs: relaxationMeasured.timings.totalMs,
         rerun: relaxation.relaxationEvidence.some((item) => item.rerun),
       },
     },
-    p50Ms: percentile(
-      results.map((result) => result.stageTimings.totalMs),
-      0.5,
-    ),
+    p50Ms: percentile(totals, 0.5),
     p95Ms,
     stages: {
       search: stage("searchMs"),
@@ -175,7 +237,22 @@ it("runs the deterministic generation benchmark", () => {
   ).toBe(true);
   expect(
     results.every((result) =>
-      result.candidateLmIterations.every((value) => value >= 0 && value <= 32),
+      result.candidateLmIterations.every((value) => value > 0 && value <= 32),
+    ),
+  ).toBe(true);
+  expect(
+    results.every(
+      (result) =>
+        Math.abs(
+          (result.elements[3]!.parameters as { readonly bank: number }).bank,
+        ) >
+          Math.PI / 2 &&
+        Math.abs(
+          (result.elements[6]!.parameters as { readonly roll: number }).roll,
+        ) ===
+          Math.PI * 2 &&
+        (result.elements[7]!.parameters as { readonly height: number }).height >
+          0,
     ),
   ).toBe(true);
   expect(summary.feasible).toBe(true);
