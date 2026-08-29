@@ -512,8 +512,174 @@ describe("pure multi-car simulator", () => {
       config: config({ zones: [zones[1]!] }),
       initial: { headDistanceM: 20, speedMps: 8 },
     });
-    expect(result.frames.at(-1)?.speedMps).toBe(0);
-    expect(result.frames.at(-1)?.status).toBe("stall");
+    // Proportional brake with target 0 asymptotes to 0
+    expect(result.frames.at(-1)?.speedMps).toBeLessThan(0.5);
+    expect(result.frames.at(-1)?.speedMps).toBeGreaterThanOrEqual(0);
+  });
+
+  it("brake honors targetSpeedMps: above target brakes proportionally capped opposite signed motion", () => {
+    const zone: OperationZone = {
+      id: "brake",
+      kind: "brake",
+      startDistanceM: 0,
+      endDistanceM: 100,
+      targetSpeedMps: 5,
+      brakeForcePerCarN: 18000,
+    };
+    const above = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      8,
+    );
+    expect(above[0]?.brakeActive).toBe(true);
+    expect(above[0]?.brake).toBeCloseTo(-6000);
+    const capped = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      20,
+    );
+    expect(capped[0]?.brake).toBeCloseTo(-18000);
+    const rollback = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      -8,
+    );
+    expect(rollback[0]?.brake).toBeCloseTo(6000);
+    expect(rollback[0]?.brakeActive).toBe(true);
+  });
+
+  it("brake at or below target has zero force but remains active and can coast", () => {
+    const zone: OperationZone = {
+      id: "brake",
+      kind: "brake",
+      startDistanceM: 0,
+      endDistanceM: 100,
+      targetSpeedMps: 5,
+    };
+    const at = computePerCarForces(
+      line(100),
+      config({ zones: [zone], rollingResistanceCoefficient: 0, dragCdA: 0 }),
+      10,
+      5,
+    );
+    expect(at[0]?.brake).toBe(0);
+    expect(at[0]?.brakeActive).toBe(true);
+    const below = computePerCarForces(
+      line(100),
+      config({ zones: [zone], rollingResistanceCoefficient: 0, dragCdA: 0 }),
+      10,
+      3,
+    );
+    expect(below[0]?.brake).toBe(0);
+    const coast = simulateRide(line(100), {
+      durationSeconds: 0.5,
+      config: config({
+        zones: [zone],
+        rollingResistanceCoefficient: 0,
+        dragCdA: 0,
+      }),
+      initial: { headDistanceM: 10, speedMps: 5 },
+    });
+    expect(coast.frames.at(-1)?.speedMps).toBeCloseTo(5, 1);
+  });
+
+  it("unspecified brake target defaults to 0 and brakes proportionally", () => {
+    const zone: OperationZone = {
+      id: "brake",
+      kind: "brake",
+      startDistanceM: 0,
+      endDistanceM: 100,
+    };
+    const low = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      2,
+    );
+    expect(low[0]?.brake).toBeCloseTo(-4000);
+    const zero = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      0,
+    );
+    expect(zero[0]?.brake).toBe(0);
+    expect(zero[0]?.brakeActive).toBe(true);
+  });
+
+  it("station without target remains passive", () => {
+    const zone: OperationZone = {
+      id: "station",
+      kind: "station",
+      startDistanceM: 0,
+      endDistanceM: 100,
+    };
+    const forces = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      5,
+    );
+    expect(forces[0]?.brake).toBe(0);
+    expect(forces[0]?.brakeActive).toBe(false);
+    const coast = simulateRide(line(100), {
+      durationSeconds: 0.5,
+      config: config({
+        zones: [zone],
+        rollingResistanceCoefficient: 0,
+        dragCdA: 0,
+      }),
+      initial: { headDistanceM: 10, speedMps: 5 },
+    });
+    expect(coast.frames.at(-1)?.speedMps).toBeCloseTo(5, 1);
+  });
+
+  it("station with explicit target 0 brakes to hold and respects signed rollback", () => {
+    const zone: OperationZone = {
+      id: "terminal",
+      kind: "station",
+      startDistanceM: 0,
+      endDistanceM: 100,
+      targetSpeedMps: 0,
+    };
+    const forward = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      8,
+    );
+    expect(forward[0]?.brake).toBeCloseTo(-16000);
+    expect(forward[0]?.brakeActive).toBe(true);
+    const atZero = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      0,
+    );
+    expect(atZero[0]?.brake).toBe(0);
+    expect(atZero[0]?.brakeActive).toBe(true);
+    const rollback = computePerCarForces(
+      line(100),
+      config({ zones: [zone] }),
+      10,
+      -4,
+    );
+    expect(rollback[0]?.brake).toBeCloseTo(8000);
+    expect(rollback[0]?.brakeActive).toBe(true);
+    const held = simulateRide(line(100), {
+      durationSeconds: 3,
+      config: config({
+        zones: [zone],
+        rollingResistanceCoefficient: 0,
+        dragCdA: 0,
+      }),
+      initial: { headDistanceM: 10, speedMps: 8 },
+    });
+    expect(held.frames.at(-1)?.speedMps).toBeLessThan(0.5);
+    expect(held.frames.some((f) => f.telemetry.brakeActivity)).toBe(true);
   });
 
   it("returns diagnostics instead of throwing for malformed numeric configuration", () => {

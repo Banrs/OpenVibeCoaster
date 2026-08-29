@@ -310,4 +310,48 @@ describe("lifecycle onFrame seam", () => {
     lc.dispose();
     expect(lc.getRafId()).toBeNull();
   });
+
+  it("legitimate performance.now()===0 yields exactly one zero then real 16ms delta", () => {
+    const win = polyfillWindow();
+    const canvas = fakeCanvas();
+    let cb: any = null;
+    const raf = vi.fn((c: FrameRequestCallback) => {
+      cb = c;
+      return 6;
+    });
+    (win as unknown as Record<string, unknown>).requestAnimationFrame =
+      raf as unknown as typeof requestAnimationFrame;
+    (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
+      raf as unknown as typeof requestAnimationFrame;
+    vi.spyOn(performance, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(16)
+      .mockReturnValueOnce(32);
+    const deltas: number[] = [];
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      createController: (() => ({
+        attachTrack: vi.fn(),
+        clearTrack: vi.fn(),
+        updatePlayback: vi.fn(),
+        setMetric: vi.fn(),
+        hasTrack: () => false,
+        getMetricState: () => null,
+        getTrackData: () => null,
+        applyCamera: vi.fn(),
+        dispose: vi.fn(),
+      })) as unknown as typeof import("./controller.js").createRendererController,
+      getWindow: () => win,
+      onFrame: (d) => deltas.push(d),
+    });
+    lc.init();
+    cb!(0);
+    expect(deltas[0]).toBe(0);
+    cb!(0);
+    expect(deltas[1]).toBeCloseTo(0.016, 6);
+    expect(deltas[1]).toBeGreaterThan(0);
+    lc.dispose();
+  });
 });

@@ -63,7 +63,7 @@ describe("engineering worker authoritative flow", () => {
     },
   );
 
-  it("generate rejects invalid intent as failure", { timeout: 20000 }, () => {
+  it("generate rejects invalid intent as failure", () => {
     const badIntent = { schemaVersion: 1, seed: 1 } as unknown;
     const result = handleGenerate("req-bad", badIntent);
     expect(result.type).toBe("failure");
@@ -106,7 +106,7 @@ describe("engineering worker authoritative flow", () => {
     },
   );
 
-  it("compile-simulate with invalid file rejects", { timeout: 20000 }, () => {
+  it("compile-simulate with invalid file rejects", () => {
     const result = handleCompileSimulate("req-cs-bad", {
       not: "a file",
     } as unknown);
@@ -344,7 +344,7 @@ describe("engineering worker authoritative flow", () => {
     expect(result.type).toBe("failure");
   });
 
-  it("regenerate rejects invalid file", { timeout: 20000 }, () => {
+  it("regenerate rejects invalid file", () => {
     const result = handleRegenerate(
       "req-reg-file-bad",
       "not a file" as unknown,
@@ -353,14 +353,10 @@ describe("engineering worker authoritative flow", () => {
     expect(result.type).toBe("failure");
   });
 
-  it(
-    "parse/reject: generate with malformed JSON file via regenerate path",
-    { timeout: 20000 },
-    () => {
-      const result = handleRegenerate("req-parse", "not json at all", "x");
-      expect(result.type).toBe("failure");
-    },
-  );
+  it("parse/reject: generate with malformed JSON file via regenerate path", () => {
+    const result = handleRegenerate("req-parse", "not json at all", "x");
+    expect(result.type).toBe("failure");
+  });
 
   it(
     "worker responses transfer every eligible owned buffer exactly once and do not retain",

@@ -144,6 +144,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   let pendingHighlight: number | null | undefined = undefined;
   let storedHighlight: number | null | undefined = undefined;
   let lastFrameMs = 0;
+  let hasLastFrame = false;
   let successfulRenderCount = 0;
 
   const getWin = (): Window & typeof globalThis =>
@@ -331,6 +332,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     }
 
     const metrics = config.metrics;
+    hasLastFrame = false;
     lastFrameMs = 0;
     const tick = (): void => {
       if (!rendererHandle || !camera || !controller) {
@@ -338,7 +340,8 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         return;
       }
       const now = globalThis.performance.now();
-      const deltaMs = lastFrameMs === 0 ? 0 : now - lastFrameMs;
+      const deltaMs = hasLastFrame ? now - lastFrameMs : 0;
+      hasLastFrame = true;
       lastFrameMs = now;
       metrics?.beginFrame();
       // onFrame seam – finite non-negative delta, before render, single RAF
@@ -460,6 +463,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     teardownRafAndResize();
     disposeHandles();
     successfulRenderCount = 0;
+    hasLastFrame = false;
     lastFrameMs = 0;
     attachment = null;
     lastPlayback = null;

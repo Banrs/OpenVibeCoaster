@@ -126,14 +126,46 @@ function buildOperationZones(
     }
   }
   zones.sort((a, b) => a.startDistanceM - b.startDistanceM);
+  // Deterministic project target for final contiguous magnetic/final brake run (allows 5 m/s coast to station)
+  const lastBrakeIdx = zones.reduce(
+    (best, z, i) =>
+      z.kind === "brake" &&
+      (best === -1 || z.startDistanceM > zones[best]!.startDistanceM)
+        ? i
+        : best,
+    -1,
+  );
+  if (lastBrakeIdx >= 0) {
+    const zb = zones[lastBrakeIdx]!;
+    zones[lastBrakeIdx] = { ...zb, targetSpeedMps: 5 };
+  }
+  // Terminal station closure: only the last station run (terminal) gets explicit target 0 to stop/hold; initial station remains passive
+  const lastStationIdx = zones.reduce((best, z, i) => {
+    if (z.kind !== "station") return best;
+    // Prefer terminal station that ends at totalLength; fallback to max start
+    const isTerminal = Math.abs(z.endDistanceM - track.totalLength) < 1e-9;
+    if (best === -1) return i;
+    const bestIsTerminal =
+      Math.abs(zones[best]!.endDistanceM - track.totalLength) < 1e-9;
+    if (isTerminal && !bestIsTerminal) return i;
+    if (!isTerminal && bestIsTerminal) return best;
+    return z.startDistanceM > zones[best]!.startDistanceM ? i : best;
+  }, -1);
+  if (lastStationIdx >= 0) {
+    const zs = zones[lastStationIdx]!;
+    // Only terminal station should be closed; ensure it is at or near track end
+    if (Math.abs(zs.endDistanceM - track.totalLength) < 1e-9) {
+      zones[lastStationIdx] = { ...zs, targetSpeedMps: 0 };
+    }
+  }
   return zones;
 }
 
 function durationForTrack(track: CompiledTrackData): number {
-  // Deterministic duration derived from track length, capped at 120s sufficient for flagship (~1500m).
-  // Formula: base 10s + length/12, clamped [20,120]. Fixed RK4 1/240, telemetry 1/120.
+  // Deterministic duration derived from track length, capped at 180s sufficient for flagship (~1843m actual default).
+  // Formula: base 10s + length/12, clamped [20,180]. Fixed RK4 1/240, telemetry 1/120.
   const raw = track.totalLength / 12 + 10;
-  return Math.min(120, Math.max(20, raw));
+  return Math.min(180, Math.max(20, raw));
 }
 
 type HeadSelection =

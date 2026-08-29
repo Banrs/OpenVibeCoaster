@@ -101,36 +101,131 @@ describe("hydrateEngineeringSuccess", () => {
   );
 
   it(
-    "hydration returns owned/frozen diagnostics, relaxations, copied spanHashes",
+    "hydration returns owned/frozen diagnostics, relaxations, copied spanHashes and deeply frozen nested containers",
     { timeout: 20000 },
     async () => {
       const success = handleGenerate("hydrate-owned", validIntent as unknown);
       if (success.type !== "success") throw new Error("expected success");
-      const hydrated = hydrateEngineeringSuccess(success);
+      // Inject synthetic diagnostic to exercise nested freeze branches regardless of generator output
+      const withNested = {
+        ...success,
+        diagnostics: [
+          ...success.diagnostics,
+          {
+            code: "SYNTH",
+            severity: "warning" as const,
+            provenance: "PROJECT_ENGINEERING_LIMIT" as const,
+            message: "synthetic",
+            location: {
+              s: 12.3,
+              position: [
+                1, 2, 3,
+              ] as unknown as import("@openvibecoaster/core").Vec3,
+            },
+            relatedIds: ["a", "b"],
+          },
+        ],
+      } as unknown as typeof success;
+      const hydrated = hydrateEngineeringSuccess(withNested);
       expect(Object.isFrozen(hydrated.diagnostics)).toBe(true);
       expect(Object.isFrozen(hydrated.relaxations)).toBe(true);
       expect(Object.isFrozen(hydrated.spanHashes)).toBe(true);
       expect(Object.isFrozen(hydrated.file)).toBe(true);
-      expect(hydrated.diagnostics).not.toBe(success.diagnostics);
+      expect(hydrated.diagnostics).not.toBe(withNested.diagnostics);
       expect(hydrated.relaxations).not.toBe(success.relaxations);
       expect(hydrated.spanHashes).not.toBe(success.spanHashes);
       expect(hydrated.file).not.toBe(success.file);
-      if (hydrated.diagnostics.length > 0) {
-        expect(hydrated.diagnostics[0]).not.toBe(success.diagnostics[0]);
-        if (hydrated.diagnostics[0]?.location?.position) {
-          const originalPos = hydrated.diagnostics[0]!.location!.position!;
-          const successPos = success.diagnostics[0]?.location?.position;
-          if (successPos) {
-            expect(originalPos).not.toBe(successPos);
-            expect(originalPos).toEqual(successPos);
-          }
+      // Nested diagnostic containers are frozen and not aliased
+      const diag = hydrated.diagnostics[hydrated.diagnostics.length - 1]!;
+      expect(Object.isFrozen(diag)).toBe(true);
+      expect(Object.isFrozen(diag.location as unknown as object)).toBe(true);
+      expect(
+        Object.isFrozen(diag.location!.position as unknown as object),
+      ).toBe(true);
+      expect(Object.isFrozen(diag.relatedIds as unknown as object)).toBe(true);
+      expect(diag.location).not.toBe(
+        (
+          withNested.diagnostics as unknown as import("@openvibecoaster/core").Diagnostic[]
+        )[(withNested.diagnostics as unknown[]).length - 1]!.location,
+      );
+      expect(diag.location!.position).not.toBe(
+        (
+          withNested.diagnostics as unknown as import("@openvibecoaster/core").Diagnostic[]
+        )[(withNested.diagnostics as unknown[]).length - 1]!.location!.position,
+      );
+      expect(diag.relatedIds).not.toBe(
+        (
+          withNested.diagnostics as unknown as import("@openvibecoaster/core").Diagnostic[]
+        )[(withNested.diagnostics as unknown[]).length - 1]!.relatedIds,
+      );
+      // Mutation attempts are inert – values cannot change
+      const origS = diag.location!.s;
+      try {
+        (diag.location as unknown as Record<string, unknown>).s = 999;
+      } catch {}
+      expect(diag.location!.s).toBe(origS);
+      const origPos0 = diag.location!.position![0]!;
+      try {
+        (diag.location!.position as unknown as number[])[0] = 9999;
+      } catch {}
+      expect(diag.location!.position![0]).toBe(origPos0);
+      const origRelLen = diag.relatedIds!.length;
+      try {
+        (diag.relatedIds as unknown as string[]).push("c");
+      } catch {}
+      expect(diag.relatedIds!.length).toBe(origRelLen);
+      // File deep freeze – nested plain containers frozen and mutation inert
+      expect(Object.isFrozen(hydrated.file.intent as unknown as object)).toBe(
+        true,
+      );
+      expect(
+        Object.isFrozen(hydrated.file.intent.elements as unknown as object),
+      ).toBe(true);
+      expect(
+        Object.isFrozen(hydrated.file.solvedSpans as unknown as object),
+      ).toBe(true);
+      if (hydrated.file.solvedSpans.length > 0) {
+        const span0 = hydrated.file.solvedSpans[0] as unknown as Record<
+          string,
+          unknown
+        >;
+        expect(Object.isFrozen(span0 as unknown as object)).toBe(true);
+        expect(
+          Object.isFrozen(span0.positionCoefficients as unknown as object),
+        ).toBe(true);
+        if (Array.isArray(span0.positionCoefficients)) {
+          expect(
+            Object.isFrozen(
+              (span0.positionCoefficients as unknown[])[0] as unknown as object,
+            ),
+          ).toBe(true);
         }
-        if (hydrated.diagnostics[0]?.relatedIds) {
-          expect(hydrated.diagnostics[0]!.relatedIds).not.toBe(
-            success.diagnostics[0]!.relatedIds,
-          );
-        }
+        expect(
+          Object.isFrozen(span0.rollCoefficients as unknown as object),
+        ).toBe(true);
+        const origLen = (span0.positionCoefficients as unknown[]).length;
+        try {
+          (span0.positionCoefficients as unknown as unknown[]).push([
+            1, 2, 3, 4, 5, 6, 7, 8,
+          ]);
+        } catch {}
+        expect((span0.positionCoefficients as unknown[]).length).toBe(origLen);
       }
+      const origName = hydrated.file.name;
+      try {
+        (hydrated.file as unknown as Record<string, unknown>).name = "mutated";
+      } catch {}
+      expect(hydrated.file.name).toBe(origName);
+      // Relaxations/spanHashes mutation inert
+      const origRelaxLen = hydrated.relaxations.length;
+      try {
+        (hydrated.relaxations as unknown as string[]).push("x");
+      } catch {}
+      expect(hydrated.relaxations.length).toBe(origRelaxLen);
+      // Typed-array views: structuredClone did not JSON-roundtrip, buffers remain views (proven elsewhere) and file clone handles views safely
+      expect(hydrated.file.solvedSpans.length).toBe(
+        success.file.solvedSpans.length,
+      );
     },
   );
 

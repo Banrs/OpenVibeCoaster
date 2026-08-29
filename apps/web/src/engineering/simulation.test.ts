@@ -80,41 +80,37 @@ describe("full-ride simulation", () => {
     },
   );
 
-  it(
-    "short tracks remain safe and produce exact diagnostics",
-    { timeout: 20000 },
-    async () => {
-      const shortIntent = createDesignIntentV1({
-        generatorVersion: "test-v1",
-        seed: 7,
-        mode: "directed",
-        family: "steel-sitdown-lsm-v1",
-        elements: [
-          {
-            id: "station-0",
-            kind: "station",
-            type: "station",
-            parameters: { length: 4, bank: 0, closed: false },
-          },
-          {
-            id: "station-1",
-            kind: "station",
-            type: "station",
-            parameters: { length: 4, bank: 0, closed: false },
-          },
-        ],
-        gates: [],
-        targets: [],
-        constraints: [],
-        pinnedElementIds: [],
-      });
-      const gen = generateCoaster(shortIntent);
-      const result = handleCompileSimulate("sim-short", gen.file as unknown);
-      expect(result.type).toBe("failure");
-      if (result.type !== "failure") throw new Error("expected failure");
-      expect(result.diagnostics[0]!.code).toBe("TRAIN_LENGTH_EXCEEDS_TRACK");
-    },
-  );
+  it("short tracks remain safe and produce exact diagnostics", async () => {
+    const shortIntent = createDesignIntentV1({
+      generatorVersion: "test-v1",
+      seed: 7,
+      mode: "directed",
+      family: "steel-sitdown-lsm-v1",
+      elements: [
+        {
+          id: "station-0",
+          kind: "station",
+          type: "station",
+          parameters: { length: 4, bank: 0, closed: false },
+        },
+        {
+          id: "station-1",
+          kind: "station",
+          type: "station",
+          parameters: { length: 4, bank: 0, closed: false },
+        },
+      ],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    });
+    const gen = generateCoaster(shortIntent);
+    const result = handleCompileSimulate("sim-short", gen.file as unknown);
+    expect(result.type).toBe("failure");
+    if (result.type !== "failure") throw new Error("expected failure");
+    expect(result.diagnostics[0]!.code).toBe("TRAIN_LENGTH_EXCEEDS_TRACK");
+  });
 
   it(
     "determinism – same track produces identical timeline",
@@ -153,7 +149,7 @@ describe("full-ride simulation", () => {
   );
 
   it(
-    "flagship 1.6-2.2km with rolling profile completes full ride with launch/brake and Hydrated RideTimeline",
+    "flagship 1.6-2.2km with rolling profile completes full ride with launch/brake and Hydrated RideTimeline (~1843m actual default)",
     { timeout: 60000 },
     async () => {
       const result = handleGenerate("sim-flagship", flagshipIntent as unknown);
@@ -169,6 +165,22 @@ describe("full-ride simulation", () => {
       const lastHead = head[head.length - 1]!;
       expect(lastHead).toBeGreaterThan(hydrated.track.totalLength * 0.85);
       expect(lastHead).toBeLessThanOrEqual(hydrated.track.totalLength);
+      // Derive final element start via authoritative elementBoundaries -> distances, assert lastHead enters final station
+      const eb = hydrated.track.elementBoundaries;
+      const dists = hydrated.track.distances;
+      expect(eb.length % 2).toBe(0);
+      expect(eb.length).toBeGreaterThanOrEqual(2);
+      const finalStartSample = eb[eb.length - 2]!;
+      const finalEndSample = eb[eb.length - 1]!;
+      expect(finalStartSample).toBeLessThan(finalEndSample);
+      expect(finalStartSample).toBeGreaterThanOrEqual(0);
+      expect(finalEndSample).toBe(dists.length - 1);
+      const finalStartDist = dists[finalStartSample]!;
+      const finalEndDist = dists[finalEndSample]!;
+      expect(finalEndDist).toBeCloseTo(hydrated.track.totalLength, 6);
+      expect(lastHead).toBeGreaterThanOrEqual(finalStartDist);
+      expect(lastHead).toBeLessThanOrEqual(finalEndDist);
+      expect(lastHead).toBeGreaterThanOrEqual(finalStartDist + 1);
       const frames = timeline.frames;
       expect(frames.some((f) => f.telemetry.launchActivity)).toBe(true);
       expect(frames.some((f) => f.telemetry.brakeActivity)).toBe(true);

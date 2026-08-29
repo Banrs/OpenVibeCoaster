@@ -653,6 +653,20 @@ const forceAt = (
   let brake = 0;
   let launchActive = false;
   let brakeActive = false;
+  const addTargetBrake = (target: number, limit: number): void => {
+    if (Math.abs(speedMps) <= target) return;
+    const rawRequested = checkedFinite(
+      config.lsmTargetGainNPerMps * (Math.abs(speedMps) - target),
+      `${forceField}.requestedBrake`,
+      "Requested brake force must be finite",
+    );
+    const capped = Math.min(limit, Math.max(0, rawRequested));
+    brake = checkedFinite(
+      brake - Math.sign(speedMps) * capped,
+      `${forceField}.brake`,
+      "Brake force must be finite",
+    );
+  };
   for (const zone of zones) {
     if (zone.kind === "launch" || zone.kind === "boost") {
       launchActive = true;
@@ -690,15 +704,21 @@ const forceAt = (
       );
     } else if (zone.kind === "brake") {
       brakeActive = true;
+      const target = Math.max(0, zone.targetSpeedMps ?? 0);
       const limit = Math.max(
         0,
         zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
       );
-      brake = checkedFinite(
-        brake - Math.sign(speedMps) * limit,
-        `${forceField}.brake`,
-        "Brake force must be finite",
+      addTargetBrake(target, limit);
+    } else if (zone.kind === "station") {
+      if (zone.targetSpeedMps === undefined) continue;
+      brakeActive = true;
+      const target = Math.max(0, zone.targetSpeedMps);
+      const limit = Math.max(
+        0,
+        zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
       );
+      addTargetBrake(target, limit);
     }
   }
   return {

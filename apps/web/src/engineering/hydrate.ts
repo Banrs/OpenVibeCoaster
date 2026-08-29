@@ -58,6 +58,28 @@ export function hydrateEngineeringSuccess(response: unknown): {
     );
   const timeline = RideTimeline.fromTransferable(success.timeline);
   // Deep owned/frozen copies – caller mutation cannot affect hydrated values, no JSON round-trip
+  // CoasterFileV1 is JSON-like after structuredClone: deep-freeze plain arrays/objects.
+  // If an ArrayBuffer view is encountered, JS cannot freeze a non-empty typed array
+  // (throws) – preserve ownership safely and return without claiming it was frozen, no throw.
+  const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
+    if (value === null || typeof value !== "object") return value;
+    const obj = value as unknown as object;
+    if (seen.has(obj)) return value;
+    seen.add(obj);
+    if (
+      ArrayBuffer.isView(value as unknown as ArrayBufferView) ||
+      value instanceof ArrayBuffer
+    ) {
+      // Preserve ownership; do not enumerate indices and do not claim frozen for typed views
+      return value;
+    }
+    for (const key of Object.getOwnPropertyNames(obj as object)) {
+      const child = (value as unknown as Record<string, unknown>)[key];
+      if (child !== null && typeof child === "object")
+        deepFreeze(child as unknown, seen);
+    }
+    return Object.freeze(value as unknown as T) as T;
+  };
   const diagnostics = Object.freeze(
     success.diagnostics.map((d) => {
       const copy: Diagnostic = {
@@ -74,12 +96,18 @@ export function hydrateEngineeringSuccess(response: unknown): {
           : {}),
         ...(d.relatedIds ? { relatedIds: [...d.relatedIds] } : {}),
       };
-      return Object.freeze(copy);
+      // Explicitly freeze nested hydration-owned containers (required by review)
+      if (copy.location) Object.freeze(copy.location);
+      if (copy.location?.position)
+        Object.freeze(copy.location.position as unknown as object);
+      if (copy.relatedIds) Object.freeze(copy.relatedIds as unknown as object);
+      return deepFreeze(Object.freeze(copy));
     }),
   );
   const relaxations = Object.freeze([...success.relaxations]);
   const spanHashes = Object.freeze({ ...success.spanHashes });
-  const file = Object.freeze(structuredClone(success.file));
+  const rawFile = structuredClone(success.file);
+  const file = deepFreeze(Object.freeze(rawFile));
   return {
     track,
     timeline,
