@@ -625,7 +625,13 @@ if (
       else response = handleCompileSimulate(req.requestId, req.file);
 
       if (response.type === "success") {
-        // Refresh workerSendEpochMs immediately before postMessage to include clone/delivery latency basis
+        // Build transfer list first so the send-epoch timestamp is captured
+        // in the immediately-next step before the actual postMessage, as
+        // required by the User Timing contract.
+        const transfers = collectTransferables({
+          track: response.track,
+          timeline: response.timeline,
+        });
         const refreshed: EngineeringWorkerSuccess = {
           ...response,
           timings: {
@@ -633,10 +639,6 @@ if (
             workerSendEpochMs: getWorkerEpochMs(),
           },
         };
-        const transfers = collectTransferables({
-          track: refreshed.track,
-          timeline: refreshed.timeline,
-        });
         g.postMessage(refreshed, transfers);
         void transfers;
       } else {

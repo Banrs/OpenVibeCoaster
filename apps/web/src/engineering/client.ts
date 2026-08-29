@@ -10,6 +10,14 @@ import {
   validateEngineeringWorkerResponse,
 } from "./protocol";
 
+/**
+ * Single-digit millisecond tolerance for tiny clock skew between worker
+ * and main thread epoch-normalized clocks. Negative transfer raw values
+ * within this window are clamped to 0; materially future worker timestamps
+ * beyond the tolerance are treated as timing validation errors.
+ */
+const CLOCK_SKEW_TOLERANCE_MS = 5;
+
 export interface WorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
   terminate(): void;
@@ -98,7 +106,11 @@ export class EngineeringWorkerClient {
         : Date.now() - clientNow;
     const clientEpoch = clientOrigin + clientNow;
     const raw = clientEpoch - timings.workerSendEpochMs;
-    const transferMs = raw < 0 ? 0 : raw;
+    // Clamp only tiny negative skew within documented tolerance; larger
+    // future timestamps are handled as validation errors by the caller.
+    let transferMs: number;
+    if (raw < 0 && raw >= -CLOCK_SKEW_TOLERANCE_MS) transferMs = 0;
+    else transferMs = raw;
     if (
       typeof performance !== "undefined" &&
       typeof performance.measure === "function"
@@ -108,16 +120,31 @@ export class EngineeringWorkerClient {
           duration: timings.simulationMs,
         });
       } catch {
-        // ignore measure errors
+        // ignore measure errors — success must still settle
       }
       try {
         performance.measure("ovc:worker-transfer", {
           duration: transferMs,
         });
       } catch {
-        // ignore
+        // ignore — non-fatal to engineering success
       }
     }
+  }
+
+  private getClientEpochMs(): number {
+    const now =
+      typeof performance !== "undefined" &&
+      typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    const origin =
+      typeof performance !== "undefined" &&
+      typeof performance.timeOrigin === "number" &&
+      Number.isFinite(performance.timeOrigin)
+        ? performance.timeOrigin
+        : Date.now() - now;
+    return origin + now;
   }
 
   private handleMessage(ev: MessageEvent): void {
@@ -146,6 +173,22 @@ export class EngineeringWorkerClient {
       }
       this.pending.delete(response.requestId);
       if (validated.type === "success") {
+        const clientEpoch = this.getClientEpochMs();
+        const raw = clientEpoch - validated.timings.workerSendEpochMs;
+        if (raw < -CLOCK_SKEW_TOLERANCE_MS) {
+          const err = Object.assign(
+            new Error(
+              `Worker timestamp ${(-raw).toFixed(1)}ms in the future exceeds ${CLOCK_SKEW_TOLERANCE_MS}ms tolerance`,
+            ),
+            {
+              code: "clock-skew",
+              requestId: validated.requestId,
+              rawTransferMs: raw,
+            },
+          );
+          entry.reject(err);
+          return;
+        }
         try {
           this.recordTimingMeasures(validated.timings);
         } catch {

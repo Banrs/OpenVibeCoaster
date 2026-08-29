@@ -596,4 +596,68 @@ describe("engineering worker authoritative flow", () => {
     expect((bad as unknown as Record<string, unknown>).timings).toBeUndefined();
     expect(() => validateEngineeringWorkerResponse(bad)).not.toThrow();
   });
+
+  it(
+    "worker captures send epoch after building transfer list (immediately before postMessage)",
+    { timeout: 20000 },
+    async () => {
+      // Behavior evidence: collectTransferables must be invoked before the
+      // final workerSendEpochMs capture. We verify via mock invocation order.
+      const g = globalThis as any;
+      const savedPost = g.postMessage;
+      const savedAdd = g.addEventListener;
+      const savedTimeOriginDesc = Object.getOwnPropertyDescriptor(
+        performance,
+        "timeOrigin",
+      );
+      const postSpy = vi.fn();
+      let handler: ((ev: any) => void) | null = null;
+      g.postMessage = postSpy;
+      g.addEventListener = vi.fn((type: string, cb: any) => {
+        if (type === "message") handler = cb;
+      });
+      // Isolate modules so worker re-registers with our spies
+      vi.resetModules();
+      // Ensure deterministic timeOrigin for assertion
+      Object.defineProperty(performance, "timeOrigin", {
+        value: 10000,
+        configurable: true,
+        writable: true,
+      });
+      const transferMod = await import("./transfer");
+      const transferSpy = vi.spyOn(transferMod, "collectTransferables");
+      const nowSpy = vi.spyOn(performance, "now");
+      // Import worker fresh — it will see mocked postMessage/addEventListener
+      await import("./worker");
+      expect(handler).not.toBeNull();
+      nowSpy.mockClear();
+      transferSpy.mockClear();
+      postSpy.mockClear();
+      handler!({
+        data: { type: "generate", requestId: "order-1", intent: validIntent },
+      });
+      expect(postSpy).toHaveBeenCalledTimes(1);
+      expect(transferSpy).toHaveBeenCalledTimes(1);
+      expect(nowSpy).toHaveBeenCalled();
+      // The transfer list must be built before the final epoch capture
+      const transferOrder = transferSpy.mock.invocationCallOrder[0]!;
+      const lastNowOrder =
+        nowSpy.mock.invocationCallOrder[
+          nowSpy.mock.invocationCallOrder.length - 1
+        ]!;
+      expect(transferOrder).toBeLessThan(lastNowOrder);
+      const payload = postSpy.mock.calls[0]![0] as any;
+      expect(payload.timings.workerSendEpochMs).toBeGreaterThanOrEqual(10000);
+      // Restore global state and module cache for remaining tests (none after this)
+      g.postMessage = savedPost;
+      g.addEventListener = savedAdd;
+      if (savedTimeOriginDesc)
+        Object.defineProperty(performance, "timeOrigin", savedTimeOriginDesc);
+      else delete (performance as any).timeOrigin;
+      vi.restoreAllMocks();
+      vi.resetModules();
+      // Re-import worker to restore original module for any subsequent import
+      await import("./worker");
+    },
+  );
 });

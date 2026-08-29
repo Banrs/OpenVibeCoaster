@@ -8,7 +8,6 @@ import {
   beforeAll,
 } from "vitest";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
-import { generateCoaster } from "@openvibecoaster/generator";
 import { EngineeringWorkerClient, type WorkerLike } from "./client";
 import type { EngineeringWorkerSuccess } from "./protocol";
 import { validateEngineeringWorkerResponse } from "./protocol";
@@ -103,58 +102,8 @@ let cachedSuccessTemplate: EngineeringWorkerSuccess | null = null;
 function getSuccessTemplate(): EngineeringWorkerSuccess {
   if (cachedSuccessTemplate) return cachedSuccessTemplate;
   const hg = handleGenerate("template-req", validIntent as unknown);
-  if (hg.type === "success") {
-    cachedSuccessTemplate = hg as EngineeringWorkerSuccess;
-    return cachedSuccessTemplate;
-  }
-  // Fallback to generateCoaster if handleGenerate failed (should not happen)
-  const gen = generateCoaster(validIntent);
-  const now =
-    typeof performance !== "undefined" && typeof performance.now === "function"
-      ? performance.now()
-      : Date.now();
-  const origin =
-    typeof performance !== "undefined" &&
-    typeof performance.timeOrigin === "number" &&
-    Number.isFinite(performance.timeOrigin)
-      ? performance.timeOrigin
-      : Date.now() - now;
-  cachedSuccessTemplate = {
-    type: "success",
-    requestId: "template",
-    file: gen.file,
-    track: {
-      positions: gen.track.positions,
-      tangents: gen.track.tangents,
-      normals: gen.track.normals,
-      binormals: gen.track.binormals,
-      distances: gen.track.distances,
-      curvature: gen.track.curvature,
-      curvatureVector: gen.track.curvatureVector,
-      bank: gen.track.bank,
-      bankDerivative: gen.track.bankDerivative,
-      zoneMasks: gen.track.zoneMasks,
-      zoneNames: [...gen.track.zoneNames],
-      elementIndices: gen.track.elementIndices,
-      elementBoundaries: gen.track.elementBoundaries,
-      parameters: gen.track.parameters,
-      totalLength: gen.track.totalLength,
-      checksum: gen.track.checksum,
-    },
-    timeline: {
-      sampleRateHz: 120,
-      length: 10,
-      carCount: 1,
-      buffers: [new ArrayBuffer(8)],
-    } as unknown as EngineeringWorkerSuccess["timeline"],
-    diagnostics: [],
-    relaxations: [],
-    spanHashes: gen.spanHashes ?? { test: "00000000" },
-    timings: {
-      simulationMs: 12.5,
-      workerSendEpochMs: origin + now,
-    },
-  } as unknown as EngineeringWorkerSuccess;
+  if (hg.type !== "success") throw new Error("authoritative fixture failed");
+  cachedSuccessTemplate = hg as EngineeringWorkerSuccess;
   return cachedSuccessTemplate;
 }
 
@@ -598,6 +547,71 @@ describe("EngineeringWorkerClient User Timing", () => {
       (c) => c[0] === "ovc:worker-transfer",
     );
     expect((transferCall![1] as { duration: number }).duration).toBe(0);
+    // boundary: exactly tolerance still clamps to 0 and succeeds
+    measureSpy.mockClear();
+    vi.spyOn(performance, "now").mockReturnValue(clientNow);
+    const atToleranceEpoch = clientOrigin + clientNow + 5;
+    const pAt = client.generate("skew-at-tol", validIntent);
+    workers[0]!.emitMessage(
+      makeSuccess("skew-at-tol", {
+        simulationMs: 1,
+        workerSendEpochMs: atToleranceEpoch,
+      }),
+    );
+    await expect(pAt).resolves.toBeDefined();
+    expect(measureSpy).toHaveBeenCalledTimes(2);
+    const atTolTransfer = measureSpy.mock.calls.find(
+      (c) => c[0] === "ovc:worker-transfer",
+    );
+    expect((atTolTransfer![1] as { duration: number }).duration).toBe(0);
+  });
+
+  it("rejects materially future worker timestamp beyond tolerance, no measures, pending removed", async () => {
+    const client = new EngineeringWorkerClient(factory);
+    const measureSpy = vi
+      .spyOn(performance, "measure")
+      .mockImplementation(() => ({}) as PerformanceMeasure);
+    const clientNow = 200;
+    const clientOrigin = 1000;
+    Object.defineProperty(performance, "timeOrigin", {
+      value: clientOrigin,
+      configurable: true,
+    });
+    vi.spyOn(performance, "now").mockReturnValue(clientNow);
+    const futureEpoch = clientOrigin + clientNow + 100; // 100ms in future beyond 5ms tolerance
+    const p = client.generate("future", validIntent);
+    expect(client.getPendingCount()).toBe(1);
+    workers[0]!.emitMessage(
+      makeSuccess("future", {
+        simulationMs: 4,
+        workerSendEpochMs: futureEpoch,
+      }),
+    );
+    await expect(p).rejects.toThrow(/future|tolerance|clock-skew|skew/i);
+    expect(measureSpy).not.toHaveBeenCalled();
+    expect(client.getPendingCount()).toBe(0);
+    // next valid request must still succeed with exactly one pair
+    const pNext = client.generate("future-next", validIntent);
+    workers[0]!.emitMessage(makeSuccess("future-next"));
+    await expect(pNext).resolves.toBeDefined();
+    expect(measureSpy).toHaveBeenCalledTimes(2);
+    const sim = measureSpy.mock.calls.find((c) => c[0] === "ovc:simulation");
+    const tr = measureSpy.mock.calls.find(
+      (c) => c[0] === "ovc:worker-transfer",
+    );
+    expect(sim).toBeDefined();
+    expect(tr).toBeDefined();
+  });
+
+  it("performance measure failure remains non-fatal to valid success", async () => {
+    const client = new EngineeringWorkerClient(factory);
+    vi.spyOn(performance, "measure").mockImplementation(() => {
+      throw new Error("measure fail");
+    });
+    const p = client.generate("measure-fail", validIntent);
+    workers[0]!.emitMessage(makeSuccess("measure-fail"));
+    await expect(p).resolves.toBeDefined();
+    expect(client.getPendingCount()).toBe(0);
   });
 
   it("does not emit measures for stale or cancelled responses", async () => {
