@@ -40,6 +40,33 @@ const intent = {
   pinnedElementIds: ["station-000"],
 };
 
+const flatSolidBoundaryPairs = (epsilon: number) => [
+  {
+    name: "interior top-to-side nearest feature",
+    first: vec3(0.25 - epsilon, -0.25, 0.5),
+    second: vec3(0.25 + epsilon, -0.25, 0.5),
+    expected: [-0.25 + epsilon, -0.25] as const,
+  },
+  {
+    name: "top boundary",
+    first: vec3(0.5, -epsilon, 0.5),
+    second: vec3(0.5, epsilon, 0.5),
+    expected: [-epsilon, epsilon] as const,
+  },
+  {
+    name: "side curtain",
+    first: vec3(-epsilon, -0.25, 0.5),
+    second: vec3(epsilon, -0.25, 0.5),
+    expected: [epsilon, -epsilon] as const,
+  },
+  {
+    name: "corner curtains",
+    first: vec3(-epsilon, -0.25, -epsilon),
+    second: vec3(epsilon, -0.25, epsilon),
+    expected: [Math.SQRT2 * epsilon, -epsilon] as const,
+  },
+];
+
 describe("wave 3 core contracts", () => {
   it("validates canonical intent and rejects extra fields", () => {
     expect(() => validateDesignIntentV1(intent)).not.toThrow();
@@ -369,34 +396,10 @@ describe("wave 3 core contracts", () => {
       heights: [0, 0, 0, 0],
     });
     const epsilon = 1e-4;
-    const probes = [
-      {
-        name: "interior top-to-side nearest feature",
-        first: vec3(0.25 - epsilon, -0.25, 0.5),
-        second: vec3(0.25 + epsilon, -0.25, 0.5),
-        expected: [-0.25 + epsilon, -0.25] as const,
-      },
-      {
-        name: "top boundary",
-        first: vec3(0.5, -epsilon, 0.5),
-        second: vec3(0.5, epsilon, 0.5),
-        expected: [-epsilon, epsilon] as const,
-      },
-      {
-        name: "side curtain",
-        first: vec3(-epsilon, -0.25, 0.5),
-        second: vec3(epsilon, -0.25, 0.5),
-        expected: [epsilon, -epsilon] as const,
-      },
-      {
-        name: "corner curtains",
-        first: vec3(-epsilon, -0.25, -epsilon),
-        second: vec3(epsilon, -0.25, epsilon),
-        expected: [Math.SQRT2 * epsilon, -epsilon] as const,
-      },
-    ];
 
-    for (const { name, first, second, expected } of probes) {
+    for (const { name, first, second, expected } of flatSolidBoundaryPairs(
+      epsilon,
+    )) {
       const firstDistance = environment.signedDistance(first);
       const secondDistance = environment.signedDistance(second);
       const separation = Math.hypot(
@@ -425,30 +428,9 @@ describe("wave 3 core contracts", () => {
     fc.assert(
       fc.property(fc.integer({ min: 1, max: 1000 }), (step) => {
         const epsilon = step / 1_000_000;
-        const pairs = [
-          [
-            vec3(0.25 - epsilon, -0.25, 0.5),
-            vec3(0.25 + epsilon, -0.25, 0.5),
-            [-0.25 + epsilon, -0.25],
-          ],
-          [
-            vec3(0.5, -epsilon, 0.5),
-            vec3(0.5, epsilon, 0.5),
-            [-epsilon, epsilon],
-          ],
-          [
-            vec3(-epsilon, -0.25, 0.5),
-            vec3(epsilon, -0.25, 0.5),
-            [epsilon, -epsilon],
-          ],
-          [
-            vec3(-epsilon, -0.25, -epsilon),
-            vec3(epsilon, -0.25, epsilon),
-            [Math.SQRT2 * epsilon, -epsilon],
-          ],
-        ] as const;
-
-        for (const [first, second, expected] of pairs) {
+        for (const { name, first, second, expected } of flatSolidBoundaryPairs(
+          epsilon,
+        )) {
           const separation = Math.hypot(
             first[0] - second[0],
             first[1] - second[1],
@@ -456,10 +438,10 @@ describe("wave 3 core contracts", () => {
           );
           const firstDistance = environment.signedDistance(first);
           const secondDistance = environment.signedDistance(second);
-          expect(firstDistance).toBeCloseTo(expected[0], 14);
-          expect(secondDistance).toBeCloseTo(expected[1], 14);
+          expect(firstDistance, name).toBeCloseTo(expected[0], 14);
+          expect(secondDistance, name).toBeCloseTo(expected[1], 14);
           const distanceChange = Math.abs(firstDistance - secondDistance);
-          expect(distanceChange).toBeLessThanOrEqual(separation + 1e-14);
+          expect(distanceChange, name).toBeLessThanOrEqual(separation + 1e-14);
           checkedPairs += 1;
         }
       }),
@@ -608,6 +590,22 @@ describe("wave 3 core contracts", () => {
     ).toBeCloseTo(0.3535533905932738, 14);
   });
 
+  it("keeps mixed-scale curtain projections finite around the overflow threshold", () => {
+    for (const scale of [1e-108, 1e-109, 1e-110]) {
+      const environment = new HeightfieldEnvironment({
+        width: 2,
+        depth: 2,
+        cellSize: scale,
+        heights: [0, scale, 0, scale],
+      });
+
+      expect(
+        environment.signedDistance(vec3(1e200, -1e200, 0)),
+        `cell size ${scale}`,
+      ).toBe(1e200);
+    }
+  });
+
   it("rejects only signed distances that cannot remain finite", () => {
     const environment = new HeightfieldEnvironment({
       width: 2,
@@ -669,6 +667,43 @@ describe("wave 3 core contracts", () => {
         1e-14,
       );
     }
+  });
+
+  it("returns the earliest bounded entry of a numerically coplanar sloped ray", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [-4, -4, -4, -1],
+    });
+
+    const hit = environment.raycast(
+      vec3(-0.125, -4.375, 0.125),
+      vec3(1, 3, 0),
+      0.5,
+    );
+
+    expect(hit).toBeDefined();
+    expect(hit?.distance).toBeCloseTo(0.39528470752104744, 15);
+    expect(hit?.point).toEqual(vec3(0, -4, 0.125));
+  });
+
+  it("uses the same face normal for normal queries and ray ties on a sloped crease", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 3,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 1, 0, 0, 1],
+    });
+
+    const normal = environment.normalAt(1, 0.25);
+    const hit = environment.raycast(vec3(1, 1, 0.25), vec3(0, -1, 0), 2);
+
+    expect(normal[0]).toBeCloseTo(-Math.SQRT1_2, 15);
+    expect(normal[1]).toBeCloseTo(Math.SQRT1_2, 15);
+    expect(normal[2]).toBe(0);
+    expect(hit?.distance).toBe(1);
+    expect(hit?.normal).toEqual(normal);
   });
 
   it("publishes robust unit normals for huge slopes and ray hits", () => {

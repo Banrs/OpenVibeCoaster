@@ -80,6 +80,20 @@ const scaledDot = (left: Vec3, right: Vec3, label: string): number => {
   );
 };
 
+const scaledDotRoundoff = (left: Vec3, right: Vec3): number => {
+  const scale = Math.max(
+    Math.abs(right[0]),
+    Math.abs(right[1]),
+    Math.abs(right[2]),
+  );
+  if (scale === 0) return 0;
+  const magnitude =
+    Math.abs(left[0] * (right[0] / scale)) +
+    Math.abs(left[1] * (right[1] / scale)) +
+    Math.abs(left[2] * (right[2] / scale));
+  return scale * (16 * Number.EPSILON * magnitude);
+};
+
 const pointDistance = (point: Vec3, target: Vec3): number => {
   const difference = subtractFinite(
     point,
@@ -94,25 +108,27 @@ const pointDistance = (point: Vec3, target: Vec3): number => {
 
 const pointSegmentDistance = (point: Vec3, a: Vec3, b: Vec3): number => {
   const edge = subtractFinite(b, a, "Heightfield edge difference");
-  const relative = subtractFinite(point, a, "Heightfield distance difference");
-  const scale = Math.max(
-    Math.abs(edge[0]),
-    Math.abs(edge[1]),
-    Math.abs(edge[2]),
+  if (edge[0] === 0 && edge[1] === 0 && edge[2] === 0)
+    return pointDistance(point, a);
+  const direction = robustNormalize(edge, "Heightfield edge direction");
+  const alongFromA = scaledDot(
+    direction,
+    subtractFinite(point, a, "Heightfield distance difference"),
+    "Heightfield edge projection",
   );
-  if (!(scale > 0)) return pointDistance(point, a);
-  const scaledEdge = vec3(edge[0] / scale, edge[1] / scale, edge[2] / scale);
-  const denominator =
-    scaledEdge[0] * scaledEdge[0] +
-    scaledEdge[1] * scaledEdge[1] +
-    scaledEdge[2] * scaledEdge[2];
-  let numerator = 0;
-  for (let axis = 0; axis < 3; axis += 1)
-    if (scaledEdge[axis] !== 0)
-      numerator += (relative[axis]! / scale) * scaledEdge[axis]!;
-  if (Number.isNaN(numerator))
-    throw new RangeError("Heightfield edge projection must be finite");
-  const along = Math.max(0, Math.min(1, numerator / denominator));
+  if (alongFromA <= 0) return pointDistance(point, a);
+  const alongFromB = scaledDot(
+    direction,
+    subtractFinite(point, b, "Heightfield distance difference"),
+    "Heightfield edge projection",
+  );
+  if (alongFromB >= 0) return pointDistance(point, b);
+  const remaining = -alongFromB;
+  const ratioScale = Math.max(alongFromA, remaining);
+  const along =
+    alongFromA /
+    ratioScale /
+    (alongFromA / ratioScale + remaining / ratioScale);
   return pointDistance(
     point,
     vec3(
@@ -526,6 +542,19 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return this.triangle(x0, z0, tx >= tz);
   }
 
+  private isSelectedTriangleAt(
+    triangle: HeightfieldTriangle,
+    x: number,
+    z: number,
+  ): boolean {
+    const selected = this.triangleAt(x, z);
+    return (
+      selected.column === triangle.column &&
+      selected.row === triangle.row &&
+      selected.first === triangle.first
+    );
+  }
+
   public normalAt(x: number, z: number): Vec3 {
     return this.triangleAt(x, z).normal;
   }
@@ -609,9 +638,14 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       for (let column = 0; column < this.width - 1; column += 1)
         for (const first of [true, false]) {
           const triangle = this.triangle(column, row, first);
+          const originDifference = subtractFinite(
+            origin,
+            triangle.a,
+            "Raycast triangle difference",
+          );
           const originOffset = scaledDot(
             triangle.normal,
-            subtractFinite(origin, triangle.a, "Raycast triangle difference"),
+            originDifference,
             "Raycast plane offset",
           );
           const denominator = requireFinite(
@@ -620,12 +654,14 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
               triangle.normal[2] * dir[2],
             "Raycast plane direction",
           );
-          const root =
-            denominator === 0
-              ? originOffset === 0
-                ? coplanarEntry(triangle)
-                : undefined
-              : -originOffset / denominator;
+          const parallel =
+            Math.abs(denominator) <= scaledDotRoundoff(triangle.normal, dir);
+          const root = parallel
+            ? Math.abs(originOffset) <=
+              scaledDotRoundoff(triangle.normal, originDifference)
+              ? coplanarEntry(triangle)
+              : undefined
+            : -originOffset / denominator;
           if (
             root === undefined ||
             !Number.isFinite(root) ||
@@ -641,6 +677,11 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
             candidatePoint[0] > this.maximumX ||
             candidatePoint[2] < this.origin[1] ||
             candidatePoint[2] > this.maximumZ ||
+            !this.isSelectedTriangleAt(
+              triangle,
+              candidatePoint[0],
+              candidatePoint[2],
+            ) ||
             !this.triangleContainsProjection(
               triangle,
               candidatePoint[0],
