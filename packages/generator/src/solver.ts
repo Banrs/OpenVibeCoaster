@@ -604,16 +604,22 @@ const applyAuthoredStartFrame = (
     vec3Scale(tangent, vec3Dot(reference, tangent)),
   );
   const defaultNormal = vec3Normalize(projected);
-  const bankAtStart = first.bank.position(0);
-  const currentNormal = vec3Normalize(
-    vec3Add(
-      vec3Scale(defaultNormal, Math.cos(bankAtStart)),
-      vec3Scale(vec3Cross(tangent, defaultNormal), Math.sin(bankAtStart)),
-    ),
-  );
+  const baseBank =
+    first.rollCoefficients !== undefined
+      ? QuinticScalarSpan.fromCoefficients(first.rollCoefficients)
+      : first.bank instanceof QuinticScalarSpan
+        ? first.bank
+        : new QuinticScalarSpan({
+            v0: first.bank.position(0),
+            d10: first.bank.derivative(0, 1),
+            d20: first.bank.derivative(0, 2),
+            v1: first.bank.position(1),
+            d11: first.bank.derivative(1, 1),
+            d21: first.bank.derivative(1, 2),
+          });
   const correction = Math.atan2(
-    vec3Dot(tangent, vec3Cross(currentNormal, startPose.normal)),
-    vec3Dot(currentNormal, startPose.normal),
+    vec3Dot(tangent, vec3Cross(defaultNormal, startPose.normal)),
+    vec3Dot(defaultNormal, startPose.normal),
   );
   if (Math.abs(correction) < 1e-12) return spans;
   const correctionSpan = new QuinticScalarSpan({
@@ -624,17 +630,17 @@ const applyAuthoredStartFrame = (
     d11: 0,
     d21: 0,
   });
+  const canonicalBank = QuinticScalarSpan.fromCoefficients(
+    baseBank.coefficients.map(
+      (coefficient, index) => coefficient + correctionSpan.coefficients[index]!,
+    ),
+  );
   return spans.map((span, index) =>
     index === 0
       ? {
           ...span,
-          bank: {
-            position: (u: number) =>
-              span.bank!.position(u) + correctionSpan.position(u),
-            derivative: (u: number, order = 1) =>
-              span.bank!.derivative(u, order) +
-              correctionSpan.derivative(u, order),
-          },
+          bank: canonicalBank,
+          rollCoefficients: canonicalBank.coefficients,
         }
       : span,
   );

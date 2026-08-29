@@ -107,8 +107,15 @@ const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
   return elements;
 };
 const canonicalTrackCache = new Map<string, ReturnType<typeof compileTrack>>();
-const spanLengthCache = new Map<string, number>();
 const CANONICAL_TRACK_CACHE_LIMIT = 16;
+
+export interface GenerationOperationCache {
+  readonly spanLengthCache: Map<string, number>;
+}
+
+export const createGenerationOperationCache = (): GenerationOperationCache => ({
+  spanLengthCache: new Map<string, number>(),
+});
 
 const asElements = (
   intent: DesignIntentV1,
@@ -445,7 +452,7 @@ const gateDiagnostics = (
   return diagnostics;
 };
 
-const constraintDiagnostics = (
+export const validateGenerationConstraints = (
   elements: readonly AnySemanticElement[],
   spans: readonly SolvedSpan[],
   intent: DesignIntentV1,
@@ -790,7 +797,12 @@ const evaluateCandidate = (
   const diagnostics: Diagnostic[] = [
     ...solverDiagnostics,
     ...gateDiagnostics(spans, intent),
-    ...constraintDiagnostics(elements, spans, intent, options.environment),
+    ...validateGenerationConstraints(
+      elements,
+      spans,
+      intent,
+      options.environment,
+    ),
   ];
   const targetLocationS = spans.reduce(
     (sum, span) => sum + arcLength(span.span),
@@ -905,6 +917,7 @@ const buildFileResult = (
   relaxationEvidence: readonly RelaxationEvidence[],
   searchMs: number,
   totalStart: number,
+  operationCache: GenerationOperationCache,
 ): GenerationResult => {
   const compilationStart = now();
   const elementById = new Map(
@@ -916,10 +929,10 @@ const buildFileResult = (
     if (!element) throw new Error(`Missing semantic owner for span ${span.id}`);
     const parameters = element.parameters as unknown as Record<string, unknown>;
     const lengthKey = spanBytes(span);
-    let curvedLength = spanLengthCache.get(lengthKey);
+    let curvedLength = operationCache.spanLengthCache.get(lengthKey);
     if (curvedLength === undefined) {
       curvedLength = arcLength(span.span);
-      spanLengthCache.set(lengthKey, curvedLength);
+      operationCache.spanLengthCache.set(lengthKey, curvedLength);
     }
     const length =
       typeof parameters.length === "number"
@@ -1047,6 +1060,7 @@ export const generateCoaster = (
   let last: CandidateEvaluation | undefined;
   let candidatesTested = 0;
   const candidateLmIterations: number[] = [];
+  const operationCache = createGenerationOperationCache();
   for (let candidate = 0; candidate < maxCandidates; candidate += 1) {
     const evaluation = evaluateCandidate(
       asElements(intent, candidate),
@@ -1153,6 +1167,7 @@ export const generateCoaster = (
     evidence,
     searchMs,
     totalStart,
+    operationCache,
   );
 };
 
@@ -1352,7 +1367,12 @@ const mergedDiagnostics = (
     ...localDiagnostics,
     ...localSeamDiagnostics(spans, isClosedChain(elements)),
     ...gateDiagnostics(spans, intent),
-    ...constraintDiagnostics(elements, spans, intent, options.environment),
+    ...validateGenerationConstraints(
+      elements,
+      spans,
+      intent,
+      options.environment,
+    ),
   ];
   const end = spans[spans.length - 1]!;
   const endPose = {

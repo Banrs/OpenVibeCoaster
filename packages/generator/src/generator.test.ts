@@ -9,6 +9,13 @@ import {
   solveSemanticChain,
   stableElementId,
 } from "./index";
+import {
+  compileCoasterFile,
+  createCoasterFileV1,
+  QuinticScalarSpan,
+  serializeCoasterFileV1,
+  serializeSolvedSpanV1,
+} from "@openvibecoaster/core";
 import type { ElementKind, Pose } from "./index";
 import {
   vec3,
@@ -647,6 +654,93 @@ describe("semantic chain geometry", () => {
       1,
       6,
     );
+  });
+
+  it("canonicalizes an arbitrary banked start frame through serialization", () => {
+    const startPose: Pose = {
+      position: vec3(4, -3, 2),
+      tangent: vec3(1, 2, 3),
+      normal: vec3(-2, 1, 0),
+      bank: 0.37,
+    };
+    const intent = {
+      schemaVersion: 1 as const,
+      generatorVersion: "generator-v1",
+      seed: 19,
+      mode: "directed" as const,
+      family: "steel-sitdown-lsm-v1" as const,
+      elements: [
+        {
+          id: "station-000",
+          kind: "station",
+          type: "station",
+          parameters: { length: 12, bank: 0.81, closed: false },
+        },
+      ],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    };
+    const compiled = compileSemanticChain(
+      [createElement("station", "station-000", { length: 12, bank: 0.81 })],
+      { startPose, samples: 32 },
+    );
+    const span = compiled.solvedSpans[0]!;
+    expect(span.rollCoefficients).toBeDefined();
+    expect(span.bank).toBeInstanceOf(QuinticScalarSpan);
+    expect((span.bank as QuinticScalarSpan).coefficients).toEqual(
+      span.rollCoefficients,
+    );
+    expect(() => serializeSolvedSpanV1(span, "station", 12)).not.toThrow();
+    const serializedSpan = serializeSolvedSpanV1(span, "station", 12);
+    const file = createCoasterFileV1({
+      name: "arbitrary-frame",
+      intent,
+      solvedSpans: [serializedSpan],
+      seed: intent.seed,
+      generatorVersion: intent.generatorVersion,
+      profileVersion: "profile-v1",
+      researchSnapshotIds: [],
+      compiledDataChecksum: compiled.track!.checksum,
+    });
+    const encoded = serializeCoasterFileV1(file);
+    const loaded = compileCoasterFile(encoded);
+    expect(loaded.track.checksum).toBe(compiled.track!.checksum);
+    expect(loaded.track.positions).toEqual(compiled.track!.positions);
+    expect(loaded.track.tangents).toEqual(compiled.track!.tangents);
+    expect(loaded.track.normals).toEqual(compiled.track!.normals);
+    expect(loaded.track.binormals).toEqual(compiled.track!.binormals);
+    expect(loaded.track.bank).toEqual(compiled.track!.bank);
+    const tangent = vec3Normalize(startPose.tangent);
+    const unrolled = vec3Normalize(startPose.normal);
+    const expectedRolled = vec3Normalize(
+      vec3Add(
+        vec3Scale(unrolled, Math.cos(startPose.bank)),
+        vec3Scale(vec3Cross(tangent, unrolled), Math.sin(startPose.bank)),
+      ),
+    );
+    expect(
+      vec3Dot(
+        expectedRolled,
+        vec3(
+          compiled.track!.normals[0]!,
+          compiled.track!.normals[1]!,
+          compiled.track!.normals[2]!,
+        ),
+      ),
+    ).toBeCloseTo(1, 10);
+    expect(loaded.file.solvedSpans[0]!.rollCoefficients).toEqual(
+      span.rollCoefficients,
+    );
+    for (const u of [0, 0.13, 0.5, 0.91, 1]) {
+      expect(loaded.solvedSpans[0]!.span.position(u)).toEqual(
+        span.span.position(u),
+      );
+      expect(loaded.solvedSpans[0]!.bank!.position(u)).toEqual(
+        span.bank!.position(u),
+      );
+    }
   });
 });
 

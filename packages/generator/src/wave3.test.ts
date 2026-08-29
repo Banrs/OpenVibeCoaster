@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   compileCoasterFile,
+  createElement,
   generateCoaster,
   regenerateLocal,
   validateClearance,
 } from "./index";
+import {
+  createGenerationOperationCache,
+  validateGenerationConstraints,
+} from "./pipeline";
 import {
   CompiledTrackData,
   aabbFromPoints,
@@ -597,30 +602,54 @@ describe("wave 3 deterministic generator", () => {
   });
 
   it("catches an off-grid polynomial crossing missed by sampled boxes", () => {
+    const center = 0.37;
+    const epsilon = 0.001;
+    const canonicalFirst = SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+      [0, 10, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0],
+    ]);
+    const canonicalSecondRows = [
+      [10 * center, 0, 0, 0, 0, 0, 0, 0],
+      [
+        100_000 * center ** 2 - epsilon,
+        -200_000 * center,
+        100_000,
+        0,
+        0,
+        0,
+        0,
+        0,
+      ],
+      [0, 0, 0, 0, 0, 0, 0, 0],
+    ] as const;
+    const canonicalSecond =
+      SeventhOrderHermiteSpan.fromCoefficients<Vec3>(canonicalSecondRows);
+    const shifted = (
+      source: SeventhOrderHermiteSpan<Vec3>,
+      yOffset: number,
+    ) => ({
+      position: (u: number) => {
+        const point = source.position(u);
+        return vec3(point[0], point[1] + yOffset, point[2]);
+      },
+      derivative: (u: number, order = 1) => source.derivative(u, order),
+    });
     const first = {
       id: "off-grid-first",
-      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
-        [0, 10, 0, 0, 0, 0, 0, 0],
-        [0.5, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0],
-      ]),
+      span: shifted(canonicalFirst, 100),
+      positionCoefficients: canonicalFirst.coefficients,
       bank: { position: () => 0, derivative: () => 0 },
     };
     const second = {
       id: "off-grid-second",
-      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
-        [5, 0, 0, 0, 0, 0, 0, 0],
-        [14.19, -74, 100, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0],
-      ]),
+      span: shifted(canonicalSecond, 200),
+      positionCoefficients: canonicalSecondRows,
       bank: { position: () => 0, derivative: () => 0 },
     };
-    const sampledFirst = [0, 0.25, 0.5, 0.75, 1].map((u) =>
-      first.span.position(u),
-    );
-    const sampledSecond = [0, 0.25, 0.5, 0.75, 1].map((u) =>
-      second.span.position(u),
-    );
+    const legacySites = [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1];
+    const sampledFirst = legacySites.map((u) => first.span.position(u));
+    const sampledSecond = legacySites.map((u) => second.span.position(u));
     expect(
       Math.min(
         ...sampledFirst.flatMap((left) =>
@@ -629,7 +658,10 @@ describe("wave 3 deterministic generator", () => {
           ),
         ),
       ),
-    ).toBeGreaterThan(0.1);
+    ).toBeGreaterThan(50);
+    expect(
+      canonicalSecond.position(center - Math.sqrt(epsilon / 100_000)),
+    ).toEqual(expect.arrayContaining([10 * center, expect.closeTo(0, 10), 0]));
     const diagnostics = validateClearance([first, second], undefined, {
       trainEnvelopeRadius: 0.01,
       samplesPerSpan: 5,
@@ -1300,55 +1332,90 @@ describe("wave 3 deterministic generator", () => {
   }, 120000);
 
   it("uses certified interior bounds for hard height and footprint violations", () => {
-    const result = generateCoaster({
+    const center = 0.371;
+    const curvature = 1500;
+    const peak = 1.01;
+    const excursion = Array(8).fill(0) as number[];
+    excursion[0] = peak - curvature * center ** 2;
+    excursion[1] = 2 * curvature * center;
+    excursion[2] = -curvature;
+    excursion[7] = 0.001;
+    const flat = [0, 0, 0, 0, 0, 0, 0, 0];
+    const span = {
+      id: "narrow-max",
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        excursion,
+        excursion,
+        flat,
+      ]),
+      positionCoefficients: [excursion, excursion, flat],
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const intent = {
       ...directedIntent,
-      elements: [
-        directedIntent.elements[0]!,
-        {
-          id: "stall-001",
-          kind: "stall",
-          type: "stall",
-          parameters: { length: 32, height: 18, bank: 0 },
-        },
-      ],
-      footprint: { min: [-1, -1, -1] as const, max: [100, 1, 100] as const },
-      heightRange: { min: -1, max: 1 },
+      footprint: { min: [-300, -300, -1] as const, max: [1, 1, 1] as const },
+      heightRange: { min: -300, max: 1 },
       constraints: [{ id: "max", kind: "max-height", target: 1, hard: true }],
-    });
-    expect(result.feasible).toBe(false);
-    expect(
-      result.diagnostics.some((item) => item.code === "HEIGHT_RANGE"),
-    ).toBe(true);
-    expect(result.diagnostics.some((item) => item.code === "MAX_HEIGHT")).toBe(
-      true,
+    };
+    const oldSamples = Array.from({ length: 129 }, (_, index) => index / 128);
+    for (const u of oldSamples) {
+      const point = span.span.position(u);
+      expect(point[0]).toBeLessThanOrEqual(1);
+      expect(point[1]).toBeLessThanOrEqual(1);
+    }
+    expect(span.span.position(center)[0]).toBeGreaterThan(1.005);
+    expect(span.span.position(center)[1]).toBeGreaterThan(1.005);
+    const diagnostics = validateGenerationConstraints(
+      [createElement("station", "station-000")],
+      [span],
+      intent,
+      undefined,
     );
-    expect(result.diagnostics.some((item) => item.code === "FOOTPRINT")).toBe(
-      true,
-    );
+    expect(diagnostics.some((item) => item.code === "HEIGHT_RANGE")).toBe(true);
+    expect(diagnostics.some((item) => item.code === "MAX_HEIGHT")).toBe(true);
+    expect(diagnostics.some((item) => item.code === "FOOTPRINT")).toBe(true);
   });
 
   it("uses certified interior bounds for hard minimum-height violations", () => {
-    const result = generateCoaster({
-      ...directedIntent,
-      elements: [
-        directedIntent.elements[0]!,
-        {
-          id: "stall-001",
-          kind: "stall",
-          type: "stall",
-          parameters: { length: 32, height: -18, bank: 0 },
-        },
+    const center = 0.371;
+    const floor = -1.01;
+    const curvature = 1500;
+    const rows = [
+      [0, 0, 0, 0, 0, 0, 0, 0],
+      [
+        floor + curvature * center ** 2,
+        -2 * curvature * center,
+        curvature,
+        0,
+        0,
+        0,
+        0,
+        0.001,
       ],
-      heightRange: { min: -1, max: 100 },
+      [0, 0, 0, 0, 0, 0, 0, 0],
+    ] as const;
+    const span = {
+      id: "narrow-min",
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>(rows),
+      positionCoefficients: rows,
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const intent = {
+      ...directedIntent,
+      heightRange: { min: -1, max: 300 },
       constraints: [{ id: "min", kind: "min-height", target: -1, hard: true }],
-    });
-    expect(result.feasible).toBe(false);
-    expect(result.diagnostics.some((item) => item.code === "MIN_HEIGHT")).toBe(
-      true,
+    };
+    for (const index of Array.from({ length: 129 }, (_, value) => value))
+      expect(span.span.position(index / 128)[1]).toBeGreaterThanOrEqual(-1);
+    expect(span.span.position(center)[1]).toBeLessThan(-1.005);
+    const diagnostics = validateGenerationConstraints(
+      [createElement("station", "station-000")],
+      [span],
+      intent,
+      undefined,
     );
-    expect(
-      result.diagnostics.some((item) => item.code === "HEIGHT_RANGE"),
-    ).toBe(true);
+    expect(diagnostics.some((item) => item.code === "MIN_HEIGHT")).toBe(true);
+    expect(diagnostics.some((item) => item.code === "HEIGHT_RANGE")).toBe(true);
   });
 
   it("skips clearance queries after every hard candidate failure is known", () => {
@@ -1419,5 +1486,15 @@ describe("wave 3 deterministic generator", () => {
           );
       }
     }
+  });
+
+  it("isolates span-length keys to each generation operation", () => {
+    const first = createGenerationOperationCache();
+    const second = createGenerationOperationCache();
+    for (let index = 0; index < 4096; index += 1)
+      first.spanLengthCache.set(`distinct-${index}`, index);
+    expect(first.spanLengthCache.size).toBe(4096);
+    expect(second.spanLengthCache.size).toBe(0);
+    expect(second.spanLengthCache).not.toBe(first.spanLengthCache);
   });
 });
