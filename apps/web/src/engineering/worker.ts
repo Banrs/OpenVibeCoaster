@@ -6,6 +6,7 @@ import {
   type Diagnostic,
 } from "@openvibecoaster/core";
 import {
+  coasterFileSpanHashes,
   generateCoaster,
   regenerateCoasterFileLocal,
 } from "@openvibecoaster/generator";
@@ -14,6 +15,8 @@ import {
   simulateRide,
   RideTimeline,
 } from "@openvibecoaster/simulator";
+import type { OperationZone } from "@openvibecoaster/simulator";
+import { resolveTerrainEnvironment } from "../terrain/environment.js";
 import type {
   CompiledTrackTransfer,
   EngineeringWorkerFailure,
@@ -66,6 +69,71 @@ function trackToTransfer(track: CompiledTrackData): CompiledTrackTransfer {
     totalLength: track.totalLength,
     checksum: track.checksum,
   };
+}
+
+function resolveEnvForProfile(
+  profileId: string | undefined,
+): ReturnType<typeof resolveTerrainEnvironment> {
+  // Throws on unknown profile – caller converts to diagnostic
+  return resolveTerrainEnvironment(profileId);
+}
+
+function buildOperationZones(
+  track: CompiledTrackData,
+): readonly OperationZone[] {
+  const allowed: ReadonlyArray<OperationZone["kind"]> = [
+    "station",
+    "launch",
+    "boost",
+    "brake",
+  ];
+  const zones: OperationZone[] = [];
+  const distances = track.distances;
+  const masks = track.zoneMasks;
+  const count = distances.length;
+  for (const kind of allowed) {
+    const idx = track.zoneNames.indexOf(kind);
+    if (idx < 0) continue;
+    const bit = 1 << idx;
+    let runStart: number | undefined;
+    let runIdx = 0;
+    for (let i = 0; i < count; i++) {
+      const has = (masks[i]! & bit) !== 0;
+      if (has && runStart === undefined) runStart = i;
+      else if (!has && runStart !== undefined) {
+        const start = distances[runStart]!;
+        const end = distances[i]!;
+        if (end > start)
+          zones.push({
+            id: `${kind}-${runIdx++}`,
+            kind,
+            startDistanceM: start,
+            endDistanceM: end,
+          });
+        runStart = undefined;
+      }
+    }
+    if (runStart !== undefined) {
+      const start = distances[runStart]!;
+      const end = track.totalLength;
+      if (end > start)
+        zones.push({
+          id: `${kind}-${runIdx++}`,
+          kind,
+          startDistanceM: start,
+          endDistanceM: end,
+        });
+    }
+  }
+  zones.sort((a, b) => a.startDistanceM - b.startDistanceM);
+  return zones;
+}
+
+function durationForTrack(track: CompiledTrackData): number {
+  // Deterministic duration derived from track length, capped at 120s sufficient for flagship (~1500m).
+  // Formula: base 10s + length/12, clamped [20,120]. Fixed RK4 1/240, telemetry 1/120.
+  const raw = track.totalLength / 12 + 10;
+  return Math.min(120, Math.max(20, raw));
 }
 
 type HeadSelection =
@@ -191,15 +259,18 @@ function simulateForTrack(
   );
   if (!headSelection.ok)
     return { ok: false, diagnostic: headSelection.diagnostic };
+  const zones = buildOperationZones(track);
+  const durationSeconds = durationForTrack(track);
   const config = {
     ...baseConfig,
-    durationSeconds: 5,
-    timelineStepSeconds: 1 / 60,
+    zones,
+    durationSeconds,
+    timelineStepSeconds: 1 / 120,
     fixedStepSeconds: 1 / 240,
     closedTrack: false as const,
   };
   const result = simulateRide(track, {
-    durationSeconds: 5,
+    durationSeconds,
     config,
     initial: { headDistanceM: headSelection.headDistanceM, speedMps: 5 },
   });
@@ -222,9 +293,22 @@ export function handleGenerate(
       ),
     ]);
   }
+  const typedIntent = intent as DesignIntentV1;
+  let env: ReturnType<typeof resolveTerrainEnvironment>;
+  try {
+    env = resolveEnvForProfile(typedIntent.terrainProfileId);
+  } catch (err) {
+    return failure(requestId, [
+      toDiagnostic(
+        "TERRAIN_PROFILE_UNKNOWN",
+        err instanceof Error ? err.message : String(err),
+        "fatal",
+      ),
+    ]);
+  }
   let generation: ReturnType<typeof generateCoaster>;
   try {
-    generation = generateCoaster(intent as DesignIntentV1);
+    generation = generateCoaster(typedIntent, env ? { environment: env } : {});
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(
@@ -261,6 +345,13 @@ export function handleGenerate(
       [...generation.relaxations],
     );
   }
+  let spanHashes: Readonly<Record<string, string>>;
+  try {
+    spanHashes =
+      generation.spanHashes ?? coasterFileSpanHashes(generation.file);
+  } catch {
+    spanHashes = generation.spanHashes;
+  }
   return {
     type: "success",
     requestId,
@@ -272,6 +363,7 @@ export function handleGenerate(
       ...(sim.diagnostics as Diagnostic[]),
     ],
     relaxations: [...generation.relaxations],
+    spanHashes,
   };
 }
 
@@ -288,11 +380,32 @@ export function handleRegenerate(
       ),
     ]);
   }
+  // Resolve environment from file's intent if present; also check file load for terrain
+  let env: ReturnType<typeof resolveTerrainEnvironment>;
+  try {
+    const provisional = compileCoasterFile(
+      fileInput as CoasterFileV1 | string | Uint8Array,
+    );
+    env = resolveEnvForProfile(provisional.file.intent.terrainProfileId);
+  } catch (err) {
+    // If compile fails, localResult will handle; but unknown profile should fail explicitly
+    if (
+      err instanceof Error &&
+      err.message.includes("Unknown terrain profile")
+    ) {
+      return failure(requestId, [
+        toDiagnostic("TERRAIN_PROFILE_UNKNOWN", err.message, "fatal"),
+      ]);
+    }
+    // otherwise defer to localRegenerate error handling
+    env = undefined;
+  }
   let localResult: ReturnType<typeof regenerateCoasterFileLocal>;
   try {
     localResult = regenerateCoasterFileLocal(
       fileInput as CoasterFileV1 | string | Uint8Array,
       elementId as string,
+      env ? { environment: env } : {},
     );
   } catch (err) {
     return failure(requestId, [
@@ -327,6 +440,13 @@ export function handleRegenerate(
       [...generation.relaxations],
     );
   }
+  let spanHashes: Readonly<Record<string, string>>;
+  try {
+    spanHashes =
+      generation.spanHashes ?? coasterFileSpanHashes(generation.file);
+  } catch {
+    spanHashes = generation.spanHashes;
+  }
   return {
     type: "success",
     requestId,
@@ -338,6 +458,7 @@ export function handleRegenerate(
       ...(sim.diagnostics as Diagnostic[]),
     ],
     relaxations: [...generation.relaxations],
+    spanHashes,
   };
 }
 
@@ -358,6 +479,7 @@ export function handleCompileSimulate(
       ),
     ]);
   }
+  // Compile-simulate recompiles only; does not re-solve. Validate file checksum via compile, then simulate.
   const track = loaded.track;
   const sim = simulateForTrack(track);
   if (!sim.ok) return failure(requestId, [sim.diagnostic]);
@@ -370,6 +492,18 @@ export function handleCompileSimulate(
   ) {
     return failure(requestId, sim.diagnostics as Diagnostic[], []);
   }
+  let spanHashes: Readonly<Record<string, string>>;
+  try {
+    spanHashes = coasterFileSpanHashes(loaded.file);
+  } catch (err) {
+    return failure(requestId, [
+      toDiagnostic(
+        "SPAN_HASH_ERROR",
+        err instanceof Error ? err.message : String(err),
+        "fatal",
+      ),
+    ]);
+  }
   return {
     type: "success",
     requestId,
@@ -378,6 +512,7 @@ export function handleCompileSimulate(
     timeline: sim.timeline.toTransferable(),
     diagnostics: sim.diagnostics as Diagnostic[],
     relaxations: [],
+    spanHashes,
   };
 }
 

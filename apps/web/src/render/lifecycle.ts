@@ -31,6 +31,7 @@ export interface AppLifecycleConfig {
   metrics?: RenderMetrics;
   onResize2D?: () => void;
   getWindow?: () => Window & typeof globalThis;
+  onFrame?: (deltaSeconds: number) => void;
 }
 
 export interface AppLifecycle {
@@ -333,6 +334,22 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       const deltaMs = now - lastFrameMs;
       lastFrameMs = now;
       metrics?.beginFrame();
+      // onFrame seam – finite non-negative delta, before render, single RAF
+      const rawDeltaSeconds = deltaMs / 1000;
+      const deltaSeconds =
+        Number.isFinite(rawDeltaSeconds) && rawDeltaSeconds >= 0
+          ? rawDeltaSeconds
+          : 0;
+      if (config.onFrame) {
+        try {
+          config.onFrame(deltaSeconds);
+        } catch (e) {
+          config.onRuntimeError?.(e);
+          metrics?.endFrame();
+          teardownRafAndResize();
+          return;
+        }
+      }
       const camId = config.getCameraId?.() ?? ("orbit" as CameraId);
       const reduced = config.getReducedMotion?.() ?? false;
       let runtimeError: unknown = null;

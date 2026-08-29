@@ -134,6 +134,7 @@ function makeSuccess(requestId: string): EngineeringWorkerSuccess {
     } as unknown as EngineeringWorkerSuccess["timeline"],
     diagnostics: [],
     relaxations: [],
+    spanHashes: { test: "00000000" },
   };
 }
 

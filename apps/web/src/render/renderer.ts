@@ -3,6 +3,11 @@ import {
   createDeterministicHeightfield,
   createTerrainGroup,
 } from "./terrain.js";
+import {
+  resolveTerrainEnvironment,
+  ROLLING_TERRAIN_PROFILE_ID,
+  BLOCKING_TERRAIN_PROFILE_ID,
+} from "../terrain/environment.js";
 
 export interface RendererHandle {
   scene: THREE.Scene;
@@ -63,7 +68,21 @@ function buildScene(terrainSeed: string): THREE.Scene {
     fill.name = "fill";
     scene.add(fill);
 
-    const env = createDeterministicHeightfield(terrainSeed);
+    const env = (() => {
+      // Prefer explicit profile IDs for deterministic terrain
+      if (
+        terrainSeed === ROLLING_TERRAIN_PROFILE_ID ||
+        terrainSeed === BLOCKING_TERRAIN_PROFILE_ID
+      ) {
+        return resolveTerrainEnvironment(terrainSeed)!;
+      }
+      // "default-terrain" is the initial seed before any generation – map to rolling profile for footprint
+      if (terrainSeed === "default-terrain") {
+        return resolveTerrainEnvironment(ROLLING_TERRAIN_PROFILE_ID)!;
+      }
+      // For generic seeds, use legacy seeded generation – allows tests to spy on createDeterministicHeightfield
+      return createDeterministicHeightfield(terrainSeed);
+    })();
     const terrain = createTerrainGroup(env);
     terrainMesh = terrain.mesh;
     terrainGrid = terrain.grid;

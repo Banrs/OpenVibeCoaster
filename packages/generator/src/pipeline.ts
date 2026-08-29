@@ -276,9 +276,10 @@ const spanBytes = (span: SolvedSpan): string => {
   ];
   const bytes = new Uint8Array(coefficients.length * 8);
   const view = new DataView(bytes.buffer);
-  coefficients.forEach((coefficient, index) =>
-    view.setFloat64(index * 8, coefficient, true),
-  );
+  coefficients.forEach((coefficient, index) => {
+    const canonical = coefficient === 0 ? 0 : coefficient;
+    view.setFloat64(index * 8, canonical, true);
+  });
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
     "",
   );
@@ -300,6 +301,29 @@ const ownerForSpan = <T>(
     return undefined;
   const owner = spanId.slice(0, separator);
   return elementById.has(owner) ? owner : undefined;
+};
+
+export const coasterFileSpanHashes = (
+  fileInput: CoasterFileV1 | string | Uint8Array,
+): Readonly<Record<string, string>> => {
+  const loaded = compileCoasterFile(
+    fileInput as CoasterFileV1 | string | Uint8Array,
+    { samples: 32 },
+  );
+  const elementById = new Map(
+    loaded.file.intent.elements.map((element) => [element.id, element]),
+  );
+  const hashes: Record<string, string> = {};
+  for (const span of loaded.solvedSpans) {
+    hashes[span.id] = hashSpan(span);
+  }
+  for (const element of loaded.file.intent.elements) {
+    const first = loaded.solvedSpans.find(
+      (span) => ownerForSpan(span.id, elementById) === element.id,
+    );
+    if (first) hashes[element.id] = hashSpan(first);
+  }
+  return Object.freeze({ ...hashes });
 };
 
 const finiteNumber = (value: number | undefined): number | undefined =>

@@ -56,6 +56,7 @@ export type EngineeringWorkerSuccess = {
   readonly timeline: RideTimelineTransfer;
   readonly diagnostics: readonly Diagnostic[];
   readonly relaxations: readonly string[];
+  readonly spanHashes: Readonly<Record<string, string>>;
 };
 
 export type EngineeringWorkerFailure = {
@@ -183,8 +184,104 @@ export function validateEngineeringWorkerResponse(
     if (!isRecord(rec.timeline)) fail("response.timeline", "object");
     if (!Array.isArray(rec.diagnostics)) fail("response.diagnostics", "array");
     if (!Array.isArray(rec.relaxations)) fail("response.relaxations", "array");
+    if (!isRecord(rec.spanHashes)) fail("response.spanHashes", "object");
+    for (const [key, value] of Object.entries(
+      rec.spanHashes as Record<string, unknown>,
+    )) {
+      if (typeof key !== "string" || key.trim().length === 0)
+        fail("response.spanHashes key", "non-empty string");
+      if (typeof value !== "string" || !/^[0-9a-f]{8}$/i.test(value))
+        fail(`response.spanHashes[${key}]`, "8-char hex");
+    }
+    // strict: no extra fields
+    const allowed = new Set([
+      "type",
+      "requestId",
+      "file",
+      "track",
+      "timeline",
+      "diagnostics",
+      "relaxations",
+      "spanHashes",
+    ]);
+    for (const key of Object.keys(rec))
+      if (!allowed.has(key)) fail(`response.${key}`, "no extra field");
+    // Validate file and track inner strictness via compile
+    try {
+      const fileVal = rec.file as unknown;
+      if (typeof fileVal === "string" || fileVal instanceof Uint8Array)
+        deserializeCoasterFileV1(fileVal as string | Uint8Array);
+      else compileCoasterFile(fileVal as CoasterFileV1);
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
+    // Validate track has required typed arrays and checksum matches file
+    const track = rec.track as unknown as Record<string, unknown>;
+    const requiredArrays: Array<[string, string]> = [
+      ["positions", "Float64Array"],
+      ["tangents", "Float64Array"],
+      ["normals", "Float64Array"],
+      ["binormals", "Float64Array"],
+      ["distances", "Float64Array"],
+      ["curvature", "Float64Array"],
+      ["curvatureVector", "Float64Array"],
+      ["bank", "Float64Array"],
+      ["bankDerivative", "Float64Array"],
+      ["zoneMasks", "Uint32Array"],
+      ["elementIndices", "Uint32Array"],
+      ["elementBoundaries", "Uint32Array"],
+      ["parameters", "Float64Array"],
+    ];
+    for (const [name, kind] of requiredArrays) {
+      const v = track[name];
+      if (kind === "Float64Array" && !(v instanceof Float64Array))
+        fail(`response.track.${name}`, "Float64Array");
+      if (kind === "Uint32Array" && !(v instanceof Uint32Array))
+        fail(`response.track.${name}`, "Uint32Array");
+    }
+    if (!Array.isArray(track.zoneNames))
+      fail("response.track.zoneNames", "array");
+    if (
+      typeof track.totalLength !== "number" ||
+      !Number.isFinite(track.totalLength)
+    )
+      fail("response.track.totalLength", "finite number");
+    if (
+      typeof track.checksum !== "string" ||
+      !/^[0-9a-f]{8}$/i.test(track.checksum)
+    )
+      fail("response.track.checksum", "8-char hex");
+    // timeline basic checks
+    const tl = rec.timeline as unknown as Record<string, unknown>;
+    if (
+      typeof tl.sampleRateHz !== "number" ||
+      !Number.isFinite(tl.sampleRateHz)
+    )
+      fail("response.timeline.sampleRateHz", "finite number");
+    if (
+      typeof tl.length !== "number" ||
+      !Number.isInteger(tl.length) ||
+      tl.length < 0
+    )
+      fail("response.timeline.length", "non-negative integer");
+    if (!Array.isArray(tl.buffers)) fail("response.timeline.buffers", "array");
+    for (let i = 0; i < (tl.buffers as unknown[]).length; i++)
+      if (!((tl.buffers as unknown[])[i] instanceof ArrayBuffer))
+        fail(`response.timeline.buffers[${i}]`, "ArrayBuffer");
   } else if (type === "failure") {
     if (!Array.isArray(rec.diagnostics)) fail("response.diagnostics", "array");
     if (!Array.isArray(rec.relaxations)) fail("response.relaxations", "array");
+    const allowed = new Set([
+      "type",
+      "requestId",
+      "diagnostics",
+      "relaxations",
+    ]);
+    for (const key of Object.keys(rec))
+      if (!allowed.has(key)) fail(`response.${key}`, "no extra field");
+  } else {
+    const allowed = new Set(["type", "requestId"]);
+    for (const key of Object.keys(rec))
+      if (!allowed.has(key)) fail(`response.${key}`, "no extra field");
   }
 }

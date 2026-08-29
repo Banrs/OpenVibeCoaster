@@ -15,6 +15,7 @@ export {
   solveTrack,
 } from "./solver";
 export {
+  coasterFileSpanHashes,
   compileCoasterFile,
   generate,
   generateCoaster,
