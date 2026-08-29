@@ -13,6 +13,8 @@ import {
   vec3,
   createCoasterFileV1,
   createDesignIntentV1,
+  serializeCoasterFileV1,
+  deserializeCoasterFileV1,
 } from "@openvibecoaster/core";
 
 function makeTrack(): CompiledTrackData {
@@ -685,5 +687,173 @@ describe("ExperienceController – injection and epochs", () => {
     const id2 = ctrl.requestGenerate({ mode: "insta", seed: 2 });
     expect(ctrl.setResult({ ...badResult, file: valid }, id2)).toBe(true);
     expect(ctrl.getState().status).toBe("ready");
+  });
+  it("edit then pin then localRegenerate payload is canonical, preserves coefficients/checksum, and exposes intent", () => {
+    const onLocal = vi.fn();
+    const ctrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: onLocal,
+      onCompileLoad: vi.fn(),
+    });
+    const baseFile = makeFile("station-000");
+    const baseResult = {
+      file: baseFile,
+      track: makeTrack(),
+      timeline: new RideTimeline({
+        sampleRateHz: 10,
+        timeSeconds: new Float64Array([0, 1]),
+        headDistanceM: new Float64Array([0, 10]),
+        speedMps: new Float64Array([5, 6]),
+      }),
+      diagnostics: [],
+      spanHashes: { a: "hash-a", b: "hash-b" },
+    } as unknown as AuthoritativeExperienceResult;
+    const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
+    ctrl.setResult(baseResult, id);
+    expect(ctrl.editElementParameter("station-000", "length", 99)).toBe(true);
+    const twoFile = (() => {
+      const kind1 = "station";
+      const kind2 = "stall";
+      const id1 = "station-000";
+      const id2 = "stall-001";
+      const intent = createDesignIntentV1({
+        generatorVersion: "test",
+        seed: 7,
+        mode: "directed",
+        family: "steel-sitdown-lsm-v1",
+        elements: [
+          { id: id1, kind: kind1, type: kind1 },
+          { id: id2, kind: kind2, type: kind2 },
+        ],
+        gates: [],
+        targets: [],
+        constraints: [],
+        pinnedElementIds: [],
+      });
+      const span1 = new SeventhOrderHermiteSpan({
+        p0: vec3(0, 0, 0),
+        d10: vec3(1, 0, 0),
+        d20: vec3(0, 0, 0),
+        d30: vec3(0, 0, 0),
+        p1: vec3(10, 0, 0),
+        d11: vec3(1, 0, 0),
+        d21: vec3(0, 0, 0),
+        d31: vec3(0, 0, 0),
+      });
+      const bank = new QuinticScalarSpan({
+        v0: 0,
+        d10: 0,
+        d20: 0,
+        v1: 0,
+        d11: 0,
+        d21: 0,
+      });
+      const track2 = compileTrack([
+        { id: id1, span: span1, bank, zones: [] },
+        { id: id2, span: span1, bank, zones: [] },
+      ]);
+      return createCoasterFileV1({
+        name: "test2",
+        intent,
+        solvedSpans: [
+          {
+            id: id1,
+            kind: kind1,
+            positionCoefficients: span1.coefficients,
+            rollCoefficients: bank.coefficients,
+            length: 10,
+          },
+          {
+            id: id2,
+            kind: kind2,
+            positionCoefficients: span1.coefficients,
+            rollCoefficients: bank.coefficients,
+            length: 10,
+          },
+        ],
+        seed: 7,
+        generatorVersion: "test",
+        profileVersion: "test",
+        researchSnapshotIds: [],
+        compiledDataChecksum: track2.checksum,
+      });
+    })();
+    const twoResult = {
+      file: twoFile,
+      track: makeTrack(),
+      timeline: new RideTimeline({
+        sampleRateHz: 10,
+        timeSeconds: new Float64Array([0, 1]),
+        headDistanceM: new Float64Array([0, 10]),
+        speedMps: new Float64Array([5, 6]),
+      }),
+      diagnostics: [],
+      spanHashes: { a: "hash-a", b: "hash-b" },
+    } as unknown as AuthoritativeExperienceResult;
+    const id2 = ctrl.requestGenerate({ mode: "insta", seed: 2 });
+    ctrl.setResult(twoResult, id2);
+    ctrl.selectElement("station-000");
+    expect(ctrl.editElementParameter("station-000", "length", 123)).toBe(true);
+    expect(ctrl.togglePin("stall-001")).toBe(true);
+    const draft = ctrl.getState().draftFile!;
+    expect(
+      Object.keys(draft as unknown as Record<string, unknown>),
+    ).not.toContain("design");
+    expect(Object.keys(draft)).not.toContain("design");
+    expect((draft as unknown as Record<string, unknown>).design).toBeDefined();
+    const editedIntent = draft.intent;
+    const editedEl = editedIntent.elements.find((e) => e.id === "station-000")!;
+    expect((editedEl.parameters as Record<string, unknown>).length).toBe(123);
+    expect(editedIntent.pinnedElementIds).toEqual(["stall-001"]);
+    expect(draft.solvedSpans[0]!.positionCoefficients).not.toBe(
+      twoFile.solvedSpans[0]!.positionCoefficients,
+    );
+    expect(JSON.stringify(draft.solvedSpans[0]!.positionCoefficients)).toBe(
+      JSON.stringify(twoFile.solvedSpans[0]!.positionCoefficients),
+    );
+    expect(draft.compiledDataChecksum).toBe(twoFile.compiledDataChecksum);
+    ctrl.selectElement("station-000");
+    ctrl.requestLocalRegenerate();
+    expect(onLocal).toHaveBeenCalled();
+    const payloadFile = (
+      onLocal.mock.calls[0]![0] as unknown as { file: CoasterFileV1 }
+    ).file;
+    expect(
+      Object.keys(payloadFile as unknown as Record<string, unknown>),
+    ).not.toContain("design");
+    const serialized = serializeCoasterFileV1(payloadFile);
+    const parsed = deserializeCoasterFileV1(serialized);
+    expect(
+      parsed.intent.elements.find((e) => e.id === "station-000")!.parameters,
+    ).toHaveProperty("length", 123);
+    expect(parsed.intent.pinnedElementIds).toEqual(["stall-001"]);
+    expect(() => serializeCoasterFileV1(payloadFile)).not.toThrow();
+    expect(() =>
+      deserializeCoasterFileV1(serializeCoasterFileV1(payloadFile)),
+    ).not.toThrow();
+    const beforeParams = JSON.stringify(
+      twoFile.intent.elements.find((e) => e.id === "station-000")!.parameters,
+    );
+    expect(ctrl.editElementParameter("station-000", "length", Number.NaN)).toBe(
+      false,
+    );
+    expect(
+      ctrl.editElementParameter(
+        "station-000",
+        "length",
+        Number.POSITIVE_INFINITY,
+      ),
+    ).toBe(false);
+    expect(
+      JSON.stringify(
+        twoFile.intent.elements.find((e) => e.id === "station-000")!.parameters,
+      ),
+    ).toBe(beforeParams);
+    expect(
+      ctrl
+        .getState()
+        .draftFile!.intent.elements.find((e) => e.id === "station-000")!
+        .parameters,
+    ).toHaveProperty("length", 123);
   });
 });

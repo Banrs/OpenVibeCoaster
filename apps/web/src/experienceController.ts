@@ -5,10 +5,12 @@ import type {
 } from "@openvibecoaster/core";
 import {
   compileCoasterFile,
+  createCoasterFileV1,
+  createDesignIntentV1,
   deserializeCoasterFileV1,
   serializeCoasterFileV1,
 } from "@openvibecoaster/core";
-import type { Vec3 } from "@openvibecoaster/core";
+import type { DesignIntentV1, Vec3 } from "@openvibecoaster/core";
 import type { RideTimeline } from "@openvibecoaster/simulator";
 import type { DirectedEditorInput } from "./directedInput.js";
 import type { TimelineSelection } from "./telemetry.js";
@@ -144,39 +146,23 @@ const normalizeSpanHashes = (
 // (e.g., positions returns new Float64Array, timeline getters return copies, and the classes are frozen);
 // they are transferred by reference without duplication. Caller retains its original objects unfrozen;
 // we freeze only owned small copies on the smallest coherent boundary.
-const cloneFile = (file: CoasterFileV1): CoasterFileV1 => {
-  const serialized = serializeCoasterFileV1(file);
-  const owned = deserializeCoasterFileV1(serialized);
-  const designElements = owned.design.elements.map((element) =>
-    Object.freeze({
-      ...element,
-      ...(element.parameters
-        ? { parameters: Object.freeze({ ...element.parameters }) }
-        : {}),
-    }),
-  );
-  const designGates = owned.design.gates?.map((gate) =>
-    Object.freeze({ ...gate }),
-  );
-  const designConstraints = owned.design.constraints?.map((c) =>
-    Object.freeze({ ...c }),
-  );
-  const design = Object.freeze({
-    elements: Object.freeze(designElements),
-    ...(designGates ? { gates: Object.freeze(designGates) } : {}),
-    ...(designConstraints
-      ? { constraints: Object.freeze(designConstraints) }
-      : {}),
-  }) as CoasterFileV1["design"];
-  const base = { ...owned } as unknown as Record<string, unknown>;
-  Object.defineProperty(base, "design", {
-    value: design,
-    enumerable: false,
-    writable: false,
-    configurable: false,
+const cloneFile = (file: CoasterFileV1): CoasterFileV1 =>
+  deserializeCoasterFileV1(serializeCoasterFileV1(file));
+
+const rebuildFileWithIntent = (
+  baseFile: CoasterFileV1,
+  newIntent: DesignIntentV1,
+): CoasterFileV1 =>
+  createCoasterFileV1({
+    name: baseFile.name,
+    intent: newIntent,
+    solvedSpans: [...baseFile.solvedSpans],
+    seed: baseFile.seed,
+    generatorVersion: baseFile.generatorVersion,
+    profileVersion: baseFile.profileVersion,
+    researchSnapshotIds: [...baseFile.researchSnapshotIds],
+    compiledDataChecksum: baseFile.compiledDataChecksum,
   });
-  return Object.freeze(base as unknown as CoasterFileV1);
-};
 
 const copyDiagnostics = (diags: readonly Diagnostic[]): readonly Diagnostic[] =>
   Object.freeze(
@@ -563,6 +549,7 @@ export function createExperienceController(
         result: ownedResult,
         lastGoodResult: ownedResult,
         error: null,
+        pinnedElementIds: Object.freeze([...ownedFile.intent.pinnedElementIds]),
         draftFile: ownedFile,
         selectedElementId,
         timelineSelection:
@@ -592,41 +579,57 @@ export function createExperienceController(
       const base = state.result ?? lastGoodResult;
       if (!base || !selectedElementExists(elementId)) return false;
       if (typeof value === "number" && !Number.isFinite(value)) return false;
-      const draft = cloneFile(state.draftFile ?? base.file);
-      const element = draft.design.elements.find(
-        (candidate) => candidate.id === elementId,
+      const baseFile = state.draftFile ?? base.file;
+      const intentElement = baseFile.intent.elements.find(
+        (e) => e.id === elementId,
       );
-      if (!element) return false;
-      // Create new parameters object without mutating caller
-      const parameters = Object.freeze({
-        ...(element.parameters as Record<string, unknown>),
-        [parameter]: value,
-      });
-      const elements = draft.design.elements.map((candidate) =>
-        candidate.id === elementId
-          ? Object.freeze({ ...candidate, parameters })
-          : candidate,
+      if (!intentElement) return false;
+      const newParameters: Record<string, string | number | boolean> = {
+        ...(intentElement.parameters as Record<
+          string,
+          string | number | boolean
+        >),
+        [parameter]: value as string | number | boolean,
+      };
+      const newIntentElements = baseFile.intent.elements.map((e) =>
+        e.id === elementId ? { ...e, parameters: newParameters } : e,
       );
-      const nextDesign = Object.freeze({
-        ...draft.design,
-        elements: Object.freeze(elements),
+      const newIntent = createDesignIntentV1({
+        ...baseFile.intent,
+        elements: newIntentElements,
       });
-      const nextFile = Object.freeze({
-        ...draft,
-        design: nextDesign,
-      }) as CoasterFileV1;
-      publish({ ...state, draftFile: nextFile });
-      return true;
+      try {
+        const newFile = rebuildFileWithIntent(baseFile, newIntent);
+        publish({ ...state, draftFile: newFile });
+        return true;
+      } catch {
+        return false;
+      }
     },
     togglePin: (elementId) => {
-      // Use stable semantic IDs, not index-derived
       if (!selectedElementExists(elementId)) return false;
+      const base = state.result ?? lastGoodResult;
+      if (!base) return false;
+      const baseFile = state.draftFile ?? base.file;
       const pinned = state.pinnedElementIds.includes(elementId);
-      const pinnedElementIds = pinned
+      const newPinned = pinned
         ? state.pinnedElementIds.filter((id) => id !== elementId)
         : [...state.pinnedElementIds, elementId];
-      publish({ ...state, pinnedElementIds: Object.freeze(pinnedElementIds) });
-      return !pinned;
+      const newIntent = createDesignIntentV1({
+        ...baseFile.intent,
+        pinnedElementIds: [...newPinned],
+      });
+      try {
+        const newFile = rebuildFileWithIntent(baseFile, newIntent);
+        publish({
+          ...state,
+          pinnedElementIds: Object.freeze(newPinned),
+          draftFile: newFile,
+        });
+        return !pinned;
+      } catch {
+        return false;
+      }
     },
     selectTimelineIndex: (index) => {
       const result = state.result ?? lastGoodResult;
@@ -651,10 +654,7 @@ export function createExperienceController(
     resolveCompileLoad: (payload, incomingRequestId) => {
       if (incomingRequestId !== requestId) return;
       try {
-        const file = compileCoasterFile(payload);
-        // Validates payload syntax only; remains generating until authoritative result via setResult.
-        // No readiness transition here – worker must supply track/timeline.
-        void file;
+        compileCoasterFile(payload);
       } catch (error) {
         failure(error, incomingRequestId);
       }
