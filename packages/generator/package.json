@@ -6,7 +6,7 @@
   "exports": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "bench": "vitest --root ../.. run packages/generator/src/bench.test.ts --reporter=dot"
+    "bench": "vitest --root ../.. --mode bench run packages/generator/src/bench.test.ts --reporter=dot"
   },
   "dependencies": {
     "@openvibecoaster/core": "*",

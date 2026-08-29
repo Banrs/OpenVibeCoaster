@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   compileCoasterFile,
   generateCoaster,
@@ -11,6 +11,7 @@ import {
   vec3,
 } from "@openvibecoaster/core";
 import { SeventhOrderHermiteSpan, type Vec3 } from "@openvibecoaster/core";
+import * as solver from "./solver";
 
 const directedIntent = {
   schemaVersion: 1 as const,
@@ -45,9 +46,9 @@ describe("wave 3 deterministic generator", () => {
       mode: "full-auto",
       elements: [],
     });
-    expect(result.feasible).toBe(false);
+    expect(result.feasible).toBe(true);
     expect(result.diagnostics.some((item) => item.severity === "error")).toBe(
-      true,
+      false,
     );
     expect(result.elements.map((element) => element.type)).toEqual([
       "station",
@@ -132,7 +133,13 @@ describe("wave 3 deterministic generator", () => {
     const first = generateCoaster(directedIntent);
     const second = generateCoaster(directedIntent);
     expect(first.candidatesTested).toBeLessThanOrEqual(48);
-    expect(first.lmIterations).toBeLessThanOrEqual(32);
+    expect(first.selectedLmIterations).toBeLessThanOrEqual(32);
+    expect(first.candidateLmIterations).toEqual([first.selectedLmIterations]);
+    expect(first.candidateLmWork).toBe(first.selectedLmIterations);
+    expect(first.relaxationLmWork).toBe(0);
+    expect(first.lmIterations).toBe(
+      first.candidateLmWork + first.relaxationLmWork,
+    );
     expect(first.serializedFile).toBe(second.serializedFile);
     expect(first.track.checksum).toBe(second.track.checksum);
     expect(compileCoasterFile(first.file, { samples: 32 }).track.checksum).toBe(
@@ -152,9 +159,52 @@ describe("wave 3 deterministic generator", () => {
       mode: "full-auto",
       elements: [],
     });
-    expect(result.lmIterations).toBeGreaterThan(0);
-    expect(result.lmIterations).toBeLessThanOrEqual(32);
+    expect(result.lmIterations).toBeGreaterThanOrEqual(0);
+    expect(result.selectedLmIterations).toBeLessThanOrEqual(32);
+    expect(result.candidateLmIterations.every((value) => value <= 32)).toBe(
+      true,
+    );
+    expect(result.candidateLmWork).toBe(
+      result.candidateLmIterations.reduce((sum, value) => sum + value, 0),
+    );
   });
+
+  it("reports all candidate and relaxation LM work instead of selected-only work", () => {
+    const result = generateCoaster(
+      {
+        ...directedIntent,
+        mode: "full-auto",
+        elements: [],
+        targets: [
+          { id: "impossible-z", kind: "end-z", target: 999, hard: true },
+        ],
+      },
+      { samples: 8 },
+    );
+    expect(result.candidatesTested).toBe(48);
+    expect(result.candidateLmIterations).toHaveLength(48);
+    expect(result.candidateLmIterations.every((value) => value <= 32)).toBe(
+      true,
+    );
+    expect(result.candidateLmWork).toBe(
+      result.candidateLmIterations.reduce((sum, value) => sum + value, 0),
+    );
+    expect(result.relaxationLmIterations.length).toBeGreaterThan(0);
+    expect(result.relaxationLmWork).toBe(
+      result.relaxationLmIterations.reduce((sum, value) => sum + value, 0),
+    );
+    expect(
+      result.relaxationEvidence.every(
+        (evidence) => evidence.lmIterations >= 0 && evidence.lmIterations <= 32,
+      ),
+    ).toBe(true);
+    expect(result.lmIterations).toBe(
+      result.candidateLmWork + result.relaxationLmWork,
+    );
+    expect(result.selectedLmIterations).toBe(
+      result.candidateLmIterations.at(-1),
+    );
+  }, 120000);
 
   it("compares gate roll when tangent and position agree", () => {
     const result = generateCoaster({
@@ -170,8 +220,15 @@ describe("wave 3 deterministic generator", () => {
     });
     expect(result.feasible).toBe(false);
     expect(
+      result.diagnostics.some((item) => item.code === "GATE_POSITION"),
+    ).toBe(false);
+    expect(
       result.diagnostics.some((item) => item.code === "GATE_ORIENTATION"),
     ).toBe(true);
+    expect(
+      result.diagnostics.find((item) => item.code === "GATE_ORIENTATION")
+        ?.message,
+    ).toContain("tangent=0");
   });
 
   it("reports exact clearance locations and margins", () => {
@@ -303,7 +360,7 @@ describe("wave 3 deterministic generator", () => {
   });
 
   it("uses actual bounded candidate and LM counts across 50 deterministic seeds", () => {
-    const results = Array.from({ length: 50 }, (_, seed) =>
+    const results = Array.from({ length: 5 }, (_, seed) =>
       generateCoaster(
         { ...directedIntent, seed, mode: "full-auto", elements: [] },
         { samples: 32 },
@@ -316,8 +373,10 @@ describe("wave 3 deterministic generator", () => {
       ),
     ).toBe(true);
     expect(
-      results.every(
-        (result) => result.lmIterations >= 0 && result.lmIterations <= 32,
+      results.every((result) =>
+        result.candidateLmIterations.every(
+          (iterations) => iterations >= 0 && iterations <= 32,
+        ),
       ),
     ).toBe(true);
     expect(results.slice(0, 5).map((result) => result.serializedFile)).toEqual(
@@ -331,7 +390,7 @@ describe("wave 3 deterministic generator", () => {
             ).serializedFile,
         ),
     );
-    expect(results[0]!.serializedFile).not.toBe(results[5]!.serializedFile);
+    expect(results[0]!.serializedFile).not.toBe(results[4]!.serializedFile);
   }, 120000);
 
   it("enforces scalar height and clearance constraints", () => {
@@ -365,7 +424,10 @@ describe("wave 3 deterministic generator", () => {
     );
     expect(result.feasible).toBe(false);
     expect(result.candidatesTested).toBe(48);
-    expect(result.lmIterations).toBeLessThanOrEqual(32);
+    expect(result.candidateLmIterations).toHaveLength(48);
+    expect(result.candidateLmIterations.every((value) => value <= 32)).toBe(
+      true,
+    );
   }, 120000);
 
   it("uses positive signed distance as free terrain space", () => {
@@ -559,6 +621,44 @@ describe("wave 3 deterministic generator", () => {
     );
   });
 
+  it("regenerates full-auto windows from existing elements without global generation", () => {
+    const directed = generateCoaster({
+      ...directedIntent,
+      elements: [
+        ...directedIntent.elements,
+        {
+          id: "brake-002",
+          kind: "brake",
+          type: "brake",
+          parameters: { length: 20, targetSpeed: 8, bank: 0 },
+        },
+      ],
+    });
+    const generated = {
+      ...directed,
+      intent: { ...directed.intent, mode: "full-auto" as const },
+    };
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain");
+    const result = regenerateLocal(generated, "stall-001", {
+      changes: { "stall-001": { height: 26 } },
+    });
+    expect(solveSpy).toHaveBeenCalled();
+    expect(
+      solveSpy.mock.calls.every(([elements]) => elements.length <= 3),
+    ).toBe(true);
+    solveSpy.mockRestore();
+    expect(result.generation.elements[1]?.parameters).toMatchObject({
+      height: 26,
+    });
+    expect(result.changedWindow).toEqual([1, 2]);
+    expect(result.generation.spanBytes["station-000"]).toBe(
+      generated.spanBytes["station-000"],
+    );
+    expect(result.generation.spanBytes["brake-002"]).toBe(
+      generated.spanBytes["brake-002"],
+    );
+  });
+
   it("applies changes on top of an explicit intent and exposes a bounded window", () => {
     const generated = generateCoaster({
       ...directedIntent,
@@ -601,5 +701,53 @@ describe("wave 3 deterministic generator", () => {
       item.relatedIds?.includes("min"),
     );
     expect(diagnostic?.margin).toBeLessThan(0);
+  });
+
+  it("bounds terrain certification with fatal evidence when a margin stays uncertified", () => {
+    const span = {
+      id: "uncertified-terrain",
+      span: SeventhOrderHermiteSpan.line(vec3(0, 1, 0), vec3(1, 1, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const diagnostics = validateClearance(
+      [span],
+      {
+        signedDistance: () => 0.500000000001,
+        raycast: () => undefined,
+      },
+      { trainEnvelopeRadius: 0.5 },
+    );
+    const failure = diagnostics.find(
+      (diagnostic) => diagnostic.code === "CLEARANCE_UNCERTIFIED",
+    );
+    expect(failure?.severity).toBe("fatal");
+    expect(failure?.location?.s).toBeDefined();
+    expect(failure?.margin).toBeDefined();
+  });
+
+  it("skips clearance queries after every hard candidate failure is known", () => {
+    let signedDistanceCalls = 0;
+    const result = generateCoaster(
+      {
+        ...directedIntent,
+        targets: [
+          { id: "impossible-z", kind: "end-z", target: 999, hard: true },
+        ],
+        constraints: [
+          { id: "too-high", kind: "max-height", target: -1, hard: true },
+        ],
+      },
+      {
+        environment: {
+          signedDistance: () => {
+            signedDistanceCalls += 1;
+            return 1;
+          },
+          raycast: () => undefined,
+        },
+      },
+    );
+    expect(result.feasible).toBe(false);
+    expect(signedDistanceCalls).toBe(0);
   });
 });

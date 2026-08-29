@@ -197,7 +197,16 @@ export interface GenerationResult {
   readonly diagnostics: readonly Diagnostic[];
   readonly relaxations: readonly string[];
   readonly candidatesTested: number;
+  /** Total LM iterations spent across every candidate and relaxation rerun. */
   readonly lmIterations: number;
+  /** LM iterations for the candidate selected for the returned geometry. */
+  readonly selectedLmIterations: number;
+  /** One entry for every evaluated candidate, including rejected candidates. */
+  readonly candidateLmIterations: readonly number[];
+  readonly candidateLmWork: number;
+  /** One entry for every relaxation rerun, including reruns that remain infeasible. */
+  readonly relaxationLmIterations: readonly number[];
+  readonly relaxationLmWork: number;
   readonly spanHashes: Readonly<Record<string, string>>;
   readonly spanBytes: Readonly<Record<string, string>>;
   readonly relaxationEvidence: readonly RelaxationEvidence[];
@@ -217,6 +226,7 @@ export interface RelaxationEvidence {
   readonly change: string;
   readonly rerun: true;
   readonly feasible: boolean;
+  readonly lmIterations: number;
   readonly margins: Readonly<Record<string, number>>;
 }
 

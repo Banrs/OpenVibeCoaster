@@ -1,8 +1,12 @@
 import { defineConfig } from "vitest/config";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   test: {
-    include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
+    include:
+      mode === "bench"
+        ? ["packages/generator/src/bench.test.ts"]
+        : ["packages/**/*.test.ts", "apps/**/*.test.ts"],
+    exclude: mode === "bench" ? [] : ["packages/generator/src/bench.test.ts"],
     passWithNoTests: true,
     coverage: {
       provider: "v8",
@@ -10,4 +14,4 @@ export default defineConfig({
       exclude: ["**/*.test.ts", "**/dist/**"],
     },
   },
-});
+}));

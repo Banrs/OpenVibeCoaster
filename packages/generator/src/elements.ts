@@ -579,6 +579,36 @@ const circularSpan = (
   };
 };
 
+const transitionedCircularSpan = (
+  pose: Pose,
+  radius: number,
+  turns: number,
+  signed: number,
+): { span: ParametricSpan<Vec3>; endPose: Pose } => {
+  const circular = circularSpan(pose, radius, turns, signed);
+  const basis = basisFor(pose);
+  const speed = radius * turns * 2 * Math.PI;
+  const span = new SeventhOrderHermiteSpan({
+    p0: pose.position,
+    d10: vec3Scale(basis.tangent, speed),
+    d20: vec3(0, 0, 0),
+    d30: vec3(0, 0, 0),
+    p1: circular.span.position(1),
+    d11: circular.span.derivative(1, 1),
+    d21: vec3(0, 0, 0),
+    d31: vec3(0, 0, 0),
+  });
+  return {
+    span,
+    endPose: orthonormalizePose({
+      position: span.position(1),
+      tangent: vec3Normalize(span.derivative(1, 1)),
+      normal: basis.normal,
+      bank: pose.bank,
+    }),
+  };
+};
+
 const bankLaw = (from: number, to: number): ParametricSpan<number> =>
   new QuinticScalarSpan({ v0: from, d10: 0, d20: 0, v1: to, d11: 0, d21: 0 });
 const lineSpan = (
@@ -683,14 +713,23 @@ export const buildElement = (
     }
     case "airtimeHill": {
       const p = element.parameters as ElementParameterMap["airtimeHill"];
-      const profile = forceProfileSpan(
-        normalizedPose,
-        p.length,
-        p.targetForceG,
-        p.referenceSpeed,
-      );
-      span = profile.span;
-      endPose = { ...profile.endPose, bank: p.bank };
+      const flatForceProfile = (
+        element as AnySemanticElement & { readonly flatForceProfile?: boolean }
+      ).flatForceProfile;
+      if (flatForceProfile) {
+        const line = lineSpan(normalizedPose, p.length, p.bank);
+        span = line.span;
+        endPose = line.endPose;
+      } else {
+        const profile = forceProfileSpan(
+          normalizedPose,
+          p.length,
+          p.targetForceG,
+          p.referenceSpeed,
+        );
+        span = profile.span;
+        endPose = { ...profile.endPose, bank: p.bank };
+      }
       endBank = p.bank;
       break;
     }
@@ -702,8 +741,19 @@ export const buildElement = (
         Math.abs(p.angle) / (2 * Math.PI),
         Math.sign(p.angle) || 1,
       );
-      span = curve.span;
-      endPose = { ...curve.endPose, bank: p.bank };
+      const smoothEnds = (
+        element as AnySemanticElement & { readonly smoothEnds?: boolean }
+      ).smoothEnds;
+      const generatedCurve = smoothEnds
+        ? transitionedCircularSpan(
+            normalizedPose,
+            p.radius,
+            Math.abs(p.angle) / (2 * Math.PI),
+            Math.sign(p.angle) || 1,
+          )
+        : curve;
+      span = generatedCurve.span;
+      endPose = { ...generatedCurve.endPose, bank: p.bank };
       endBank = p.bank;
       break;
     }
