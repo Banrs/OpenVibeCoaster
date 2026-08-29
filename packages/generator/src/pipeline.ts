@@ -1400,8 +1400,8 @@ const mergedDiagnostics = (
       const limit = typeof target.target === "number" ? target.target : 0;
       const error = Math.abs(actual - limit);
       if (error > 1e-4)
-        diagnostics.push(
-          hardDiagnostic(
+        diagnostics.push({
+          ...hardDiagnostic(
             "TARGET",
             `Target ${target.id} total-length residual is ${error.toExponential(3)}`,
             [target.id],
@@ -1409,7 +1409,12 @@ const mergedDiagnostics = (
             1e-4,
             { s: actual, position: endPose.position },
           ),
-        );
+          severity: target.hard === false ? "warning" : "error",
+          provenance:
+            target.hard === false
+              ? "DESIGN_ASSUMPTION"
+              : "PROJECT_ENGINEERING_LIMIT",
+        });
       continue;
     }
     const error = targetError(
@@ -1421,8 +1426,8 @@ const mergedDiagnostics = (
     const limit =
       target.kind === "end-bank" || target.kind === "end-tangent" ? 1e-5 : 1e-4;
     if (error > limit)
-      diagnostics.push(
-        hardDiagnostic(
+      diagnostics.push({
+        ...hardDiagnostic(
           "TARGET",
           `Target ${target.id} ${target.kind} residual is ${error.toExponential(3)}`,
           [target.id],
@@ -1430,7 +1435,12 @@ const mergedDiagnostics = (
           limit,
           { s: endS, position: endPose.position },
         ),
-      );
+        severity: target.hard === false ? "warning" : "error",
+        provenance:
+          target.hard === false
+            ? "DESIGN_ASSUMPTION"
+            : "PROJECT_ENGINEERING_LIMIT",
+      });
   }
   const hardTrackClearance = intent.constraints
     .filter(

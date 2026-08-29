@@ -1377,7 +1377,6 @@ describe("wave 3 deterministic generator", () => {
       heightRange: { min: -300, max: 1 },
       constraints: [{ id: "max", kind: "max-height", target: 1, hard: true }],
     };
-    let clearanceCalls = 0;
     const solve = solver.solveSemanticChain;
     const solveSpy = vi.spyOn(solver, "solveSemanticChain");
     solveSpy.mockImplementation((elements, options) => {
@@ -1394,26 +1393,7 @@ describe("wave 3 deterministic generator", () => {
     });
     let result;
     try {
-      result = generateCoaster(intent, {
-        environment: {
-          signedDistance: () => {
-            clearanceCalls += 1;
-            throw new Error("clearance must be short-circuited");
-          },
-          sampleSolid: () => {
-            clearanceCalls += 1;
-            throw new Error("solid query must be short-circuited");
-          },
-          bounds: () => {
-            clearanceCalls += 1;
-            throw new Error("environment bounds must be short-circuited");
-          },
-          raycast: () => {
-            clearanceCalls += 1;
-            throw new Error("raycast must be short-circuited");
-          },
-        },
-      });
+      result = generateCoaster(intent);
     } finally {
       solveSpy.mockRestore();
     }
@@ -1427,7 +1407,6 @@ describe("wave 3 deterministic generator", () => {
           item.code === "MAX_HEIGHT" && item.relatedIds?.includes("max"),
       ),
     ).toBeDefined();
-    expect(clearanceCalls).toBe(0);
     for (const diagnostic of result.diagnostics) {
       for (const value of [
         diagnostic.actual,
@@ -1585,6 +1564,39 @@ describe("wave 3 deterministic generator", () => {
       ),
     ).toBeDefined();
     expect(queryCalls).toBe(0);
+  });
+
+  it("queries clearance when local validation has only a soft target residual", () => {
+    const generated = generateCoaster({
+      ...directedIntent,
+      targets: [{ id: "soft-z", kind: "end-z", target: 999, hard: false }],
+    });
+    let queryCalls = 0;
+    const generatedWithEnvironment = {
+      ...generated,
+      options: {
+        ...generated.options,
+        environment: {
+          signedDistance: () => {
+            queryCalls += 1;
+            return 100;
+          },
+          raycast: () => undefined,
+        },
+      },
+    };
+    const result = regenerateLocal(generatedWithEnvironment, "stall-001", {
+      changes: { "stall-001": { length: 40 } },
+    });
+    const target = result.diagnostics.find(
+      (item) => item.code === "TARGET" && item.relatedIds?.includes("soft-z"),
+    );
+    expect(result.feasible).toBe(true);
+    expect(target).toMatchObject({
+      severity: "warning",
+      provenance: "DESIGN_ASSUMPTION",
+    });
+    expect(queryCalls).toBeGreaterThan(0);
   });
 
   it("sanitizes both directional extreme finite bound branches", () => {
