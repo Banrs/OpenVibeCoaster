@@ -13,6 +13,11 @@ export function nearestRankPercentile(
   if (!Number.isFinite(percentile) || percentile < 0 || percentile > 100) {
     throw new Error(`percentile must be finite 0..100, got ${percentile}`);
   }
+  for (let i = 1; i < sortedAscending.length; i += 1) {
+    if (sortedAscending[i]! < sortedAscending[i - 1]!) {
+      throw new Error("sortedAscending must be sorted ascending");
+    }
+  }
   const n = sortedAscending.length;
   const rank = Math.ceil((percentile / 100) * n);
   const index = Math.min(Math.max(rank - 1, 0), n - 1);
@@ -40,10 +45,6 @@ export function percentilePair(values: readonly number[]): {
     p50: nearestRankPercentile(sorted, 50),
     p95: nearestRankPercentile(sorted, 95),
   };
-}
-
-export function isValidDuration(value: unknown): boolean {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 export interface BenchmarkPercentiles {

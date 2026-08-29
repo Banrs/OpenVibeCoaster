@@ -39,8 +39,13 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
   test("warm up 3 seeds then 50 measured seeds via UI at 1080p, Performance API only, p50/p95", async ({
     page,
   }) => {
-    // Scoped realistic timeout only on this benchmark test.
-    test.setTimeout(240_000);
+    // Scoped realistic timeout: root measured ~11.98s certified terrain per run
+    // before simulation for each of 53 sequential UI generations (3 warmup + 50 measured)
+    // → 53 × 11.98s ≈ 635s, plus per-seed generation/simulation/mesh clears,
+    // 8s status wait, 8s frame wait (30 steady frames at 1080p), and preview
+    // build overhead. 1_200_000 ms (20 min) covers certified terrain + overhead
+    // without touching global Playwright config.
+    test.setTimeout(1_200_000);
 
     await page.setViewportSize({
       width: VIEWPORT.width,
@@ -51,7 +56,7 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
     const pageErrors: string[] = [];
     const fetchXhrRequests: string[] = [];
     const crossOriginRequests: string[] = [];
-    const baseOrigin = "http://127.0.0.1:4173";
+    let pageOrigin = "";
 
     page.on("console", (message) => {
       if (message.type() === "error") {
@@ -72,16 +77,18 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
         // Same-origin build assets are document/script/stylesheet, not fetch/xhr, so they are excluded here.
         fetchXhrRequests.push(`${resourceType}:${url}`);
       }
-      // Cross-origin: any https?/wss? whose origin differs from the production preview origin.
-      // Same-origin build assets (http://127.0.0.1:4173/...) are not cross-origin.
+      // Cross-origin: any https?/wss? whose origin differs from the navigated preview origin.
+      // Same-origin build assets (same origin as page URL) are not cross-origin.
       try {
         const parsed = new URL(url);
+        const originToCompare = pageOrigin || "";
         if (
           (parsed.protocol === "http:" ||
             parsed.protocol === "https:" ||
             parsed.protocol === "wss:" ||
             parsed.protocol === "ws:") &&
-          parsed.origin !== baseOrigin
+          originToCompare &&
+          parsed.origin !== originToCompare
         ) {
           crossOriginRequests.push(url);
         }
@@ -92,6 +99,11 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
 
     await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
+    try {
+      pageOrigin = new URL(page.url()).origin;
+    } catch {
+      pageOrigin = "";
+    }
 
     // Helpers to interact only via named Performance API measures – no fixtures/route/fetch/sleeps/window.__test*/synthetic arrays/product imports.
     async function clearNamedMeasures(): Promise<void> {
@@ -105,6 +117,16 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
           }
         }
       }, names);
+    }
+
+    async function clearFrameMeasuresOnly(): Promise<void> {
+      await page.evaluate((frameName: string) => {
+        try {
+          performance.clearMeasures(frameName);
+        } catch {
+          // ignore missing
+        }
+      }, MEASURE_FRAME);
     }
 
     async function getMeasureDurations(): Promise<Record<string, number[]>> {
@@ -223,6 +245,12 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
         state.checksum.trim().length,
         `seed ${seed}: checksum length must be plausible`,
       ).toBeGreaterThanOrEqual(8);
+
+      // Isolate steady frames: loading frames that fired during generation must
+      // not leak into the steady p95. After ready + flagship length/checksum
+      // proof and immediately before waiting for 30 steady frames, clear only
+      // ovc:frame so simulation/transfer/mesh measures remain for this run.
+      await clearFrameMeasuresOnly();
 
       // Steady frames only after mesh is ready at 1080p.
       // Use actual ovc:frame measures, not rAF callback intervals in the test.
