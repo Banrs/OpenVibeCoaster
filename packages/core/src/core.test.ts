@@ -753,50 +753,79 @@ describe("compiled track and heightfield", () => {
     expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
   });
 
-  it("returns the first of two symmetric crossings inside one bilinear cell", () => {
+  it("returns the first of two symmetric crossings across planar triangles", () => {
     const env = new HeightfieldEnvironment({
       width: 2,
       depth: 2,
       cellSize: 1,
-      heights: new Float64Array([0, 0, 0, -2 / 3]),
+      heights: new Float64Array([1, 0, 0, 1]),
     });
-    const direction = vec3(Math.sqrt(3 / 8), -0.5, Math.sqrt(3 / 8));
-    const hit = env.raycast(vec3(0, 0.25 - 0.25 * 1e-8, 0), direction, 2);
+    const rayHeight = 0.5;
+    const hit = env.raycast(vec3(0, rayHeight, 1), vec3(1, 0, -1), 2);
+    // Across z = 1 - x, the two triangle planes are y = 2x and y = 2 - 2x.
+    const firstCoordinate = rayHeight / 2;
+    const secondCoordinate = 1 - firstCoordinate;
     expect(hit).toBeDefined();
-    expect(hit?.distance).toBeCloseTo(0.9999, 8);
+    expect(hit?.distance).toBeCloseTo(
+      Math.hypot(firstCoordinate, firstCoordinate),
+      12,
+    );
+    expect(hit?.distance).toBeLessThan(
+      Math.hypot(secondCoordinate, secondCoordinate),
+    );
+    expect(hit?.point[0]).toBeGreaterThanOrEqual(0);
+    expect(hit?.point[0]).toBeLessThanOrEqual(1);
+    expect(hit?.point[2]).toBeGreaterThanOrEqual(0);
+    expect(hit?.point[2]).toBeLessThanOrEqual(1);
     expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
   });
 
-  it("finds a tangential root without an endpoint sign change", () => {
+  it("returns the bounded entry of a coplanar ray", () => {
     const env = new HeightfieldEnvironment({
       width: 2,
       depth: 2,
       cellSize: 1,
-      heights: new Float64Array([0, 0, 0, -2 / 3]),
+      heights: new Float64Array([0, 0, 0, 0]),
     });
-    const direction = vec3(Math.sqrt(3 / 8), -0.5, Math.sqrt(3 / 8));
-    const hit = env.raycast(vec3(0, 0.25, 0), direction, 2);
+    const hit = env.raycast(vec3(-1, 0, 0.25), vec3(1, 0, 0), 3);
     expect(hit).toBeDefined();
     expect(hit?.distance).toBeCloseTo(1, 8);
+    expect(hit?.point).toEqual(vec3(0, 0, 0.25));
+    expect(hit?.point[0]).toBeGreaterThanOrEqual(0);
+    expect(hit?.point[0]).toBeLessThanOrEqual(1);
+    expect(hit?.point[2]).toBeGreaterThanOrEqual(0);
+    expect(hit?.point[2]).toBeLessThanOrEqual(1);
     expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
   });
 
-  it("accepts a valid root at extreme finite height scale", () => {
-    const extremeHeight = 1e12 * Math.PI;
+  it("accepts an exact triangle root at extreme finite height scale", () => {
+    const extremeHeight = 1e200;
     const crossingCoordinate = 0.009;
+    const rayHeight = extremeHeight * crossingCoordinate ** 2;
     const env = new HeightfieldEnvironment({
       width: 2,
       depth: 2,
       cellSize: 1,
       heights: new Float64Array([0, 0, 0, extremeHeight]),
     });
-    const hit = env.raycast(
-      vec3(0, extremeHeight * crossingCoordinate ** 2, 0),
-      vec3(1, 0, 1),
-      0.1,
-    );
+    const hit = env.raycast(vec3(0, rayHeight, 0), vec3(1, 0, 1), 0.1);
+    // On the shared diagonal, both triangle planes give y / extremeHeight = x = z.
+    const expectedCoordinate = rayHeight / extremeHeight;
     expect(hit).toBeDefined();
-    expect(hit?.distance).toBeCloseTo(crossingCoordinate * Math.sqrt(2), 12);
+    expect(hit?.distance).toBeCloseTo(
+      Math.hypot(expectedCoordinate, expectedCoordinate),
+      15,
+    );
+    expect(hit?.point[0]).toBeGreaterThanOrEqual(0);
+    expect(hit?.point[0]).toBeLessThanOrEqual(1);
+    expect(hit?.point[2]).toBeGreaterThanOrEqual(0);
+    expect(hit?.point[2]).toBeLessThanOrEqual(1);
+    expect(hit?.normal.every(Number.isFinite)).toBe(true);
+    expect(
+      Math.hypot(hit?.normal[0] ?? 0, hit?.normal[1] ?? 0, hit?.normal[2] ?? 0),
+    ).toBeCloseTo(1, 15);
+    expect(hit?.normal[1]).toBeGreaterThan(0);
+    expect(hit ? env.signedDistance(hit.point) : 1).toBeCloseTo(0, 8);
   });
 
   it("bounds no-hit work for an extreme terrain slope", () => {

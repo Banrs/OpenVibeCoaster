@@ -1,5 +1,5 @@
 import type { EnvironmentQuery, EnvironmentRaycast } from "./contracts";
-import { aabbFromPoints, vec3, vec3Normalize } from "./math";
+import { aabbFromPoints, vec3 } from "./math";
 import type { Aabb, Vec3 } from "./math";
 
 export interface HeightfieldOptions {
@@ -25,128 +25,102 @@ const requireFiniteVector = (value: Vec3, label: string): Vec3 => {
   return value;
 };
 
-interface TriangleClosestPoint {
-  readonly barycentric: readonly [number, number, number];
-  readonly distance: number;
+interface HeightfieldTriangle {
+  readonly a: Vec3;
+  readonly b: Vec3;
+  readonly c: Vec3;
+  readonly normal: Vec3;
+  readonly column: number;
+  readonly row: number;
+  readonly first: boolean;
 }
 
-const closestPointOnTriangle = (
-  point: Vec3,
-  a: Vec3,
-  b: Vec3,
-  c: Vec3,
-): TriangleClosestPoint => {
-  const subtract = (left: Vec3, right: Vec3): Vec3 =>
-    vec3(left[0] - right[0], left[1] - right[1], left[2] - right[2]);
-  const rawAb = subtract(b, a);
-  const rawAc = subtract(c, a);
-  const rawAp = subtract(point, a);
-  const calculationScale = Math.max(
-    Math.abs(rawAb[0]),
-    Math.abs(rawAb[1]),
-    Math.abs(rawAb[2]),
-    Math.abs(rawAc[0]),
-    Math.abs(rawAc[1]),
-    Math.abs(rawAc[2]),
-    Math.abs(rawAp[0]),
-    Math.abs(rawAp[1]),
-    Math.abs(rawAp[2]),
+const subtractFinite = (left: Vec3, right: Vec3, label: string): Vec3 =>
+  vec3(
+    requireFinite(left[0] - right[0], label),
+    requireFinite(left[1] - right[1], label),
+    requireFinite(left[2] - right[2], label),
   );
-  if (!(calculationScale > 0) || !Number.isFinite(calculationScale))
-    throw new RangeError(
-      "Heightfield triangle must be finite and non-degenerate",
-    );
-  const scaled = (value: Vec3): Vec3 =>
+
+const robustNormalize = (value: Vec3, label: string): Vec3 => {
+  const scale = Math.max(
+    Math.abs(value[0]),
+    Math.abs(value[1]),
+    Math.abs(value[2]),
+  );
+  if (!(scale > 0) || !Number.isFinite(scale))
+    throw new RangeError(`${label} must be finite and non-zero`);
+  const x = value[0] / scale;
+  const y = value[1] / scale;
+  const z = value[2] / scale;
+  const length = Math.hypot(x, y, z);
+  return requireFiniteVector(
     vec3(
-      value[0] / calculationScale,
-      value[1] / calculationScale,
-      value[2] / calculationScale,
-    );
-  const scaledA = vec3();
-  const scaledB = scaled(rawAb);
-  const scaledC = scaled(rawAc);
-  const scaledPoint = scaled(rawAp);
-  const dot = (left: Vec3, right: Vec3): number =>
-    requireFinite(
-      left[0] * right[0] + left[1] * right[1] + left[2] * right[2],
-      "Heightfield triangle calculation",
-    );
-  const result = (
-    first: number,
-    second: number,
-    third: number,
-  ): TriangleClosestPoint => {
-    const closest = vec3(
-      first * scaledA[0] + second * scaledB[0] + third * scaledC[0],
-      first * scaledA[1] + second * scaledB[1] + third * scaledC[1],
-      first * scaledA[2] + second * scaledB[2] + third * scaledC[2],
-    );
-    return {
-      barycentric: [first, second, third],
-      distance: requireFinite(
-        Math.hypot(
-          closest[0] - scaledPoint[0],
-          closest[1] - scaledPoint[1],
-          closest[2] - scaledPoint[2],
-        ) * calculationScale,
-        "Heightfield triangle distance",
-      ),
-    };
-  };
-
-  const ab = scaledB;
-  const ac = scaledC;
-  const ap = scaledPoint;
-  const d1 = dot(ab, ap);
-  const d2 = dot(ac, ap);
-  if (d1 <= 0 && d2 <= 0) return result(1, 0, 0);
-
-  const bp = subtract(scaledPoint, scaledB);
-  const d3 = dot(ab, bp);
-  const d4 = dot(ac, bp);
-  if (d3 >= 0 && d4 <= d3) return result(0, 1, 0);
-
-  const vc = requireFinite(
-    d1 * d4 - d3 * d2,
-    "Heightfield triangle calculation",
+      x === 0 ? 0 : x / length,
+      y === 0 ? 0 : y / length,
+      z === 0 ? 0 : z / length,
+    ),
+    label,
   );
-  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
-    const along = d1 / (d1 - d3);
-    return result(1 - along, along, 0);
-  }
+};
 
-  const cp = subtract(scaledPoint, scaledC);
-  const d5 = dot(ab, cp);
-  const d6 = dot(ac, cp);
-  if (d6 >= 0 && d5 <= d6) return result(0, 0, 1);
-
-  const vb = requireFinite(
-    d5 * d2 - d1 * d6,
-    "Heightfield triangle calculation",
+const scaledDot = (left: Vec3, right: Vec3, label: string): number => {
+  const scale = Math.max(
+    Math.abs(right[0]),
+    Math.abs(right[1]),
+    Math.abs(right[2]),
   );
-  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
-    const along = d2 / (d2 - d6);
-    return result(1 - along, 0, along);
-  }
-
-  const va = requireFinite(
-    d3 * d6 - d5 * d4,
-    "Heightfield triangle calculation",
+  if (scale === 0) return 0;
+  return requireFinite(
+    (left[0] * (right[0] / scale) +
+      left[1] * (right[1] / scale) +
+      left[2] * (right[2] / scale)) *
+      scale,
+    label,
   );
-  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
-    const along = (d4 - d3) / (d4 - d3 + d5 - d6);
-    return result(0, 1 - along, along);
-  }
+};
 
-  const denominator = va + vb + vc;
-  if (!(denominator > 0) || !Number.isFinite(denominator))
-    throw new RangeError(
-      "Heightfield triangle must be finite and non-degenerate",
-    );
-  const inverse = 1 / denominator;
-  const second = vb * inverse;
-  const third = vc * inverse;
-  return result(1 - second - third, second, third);
+const pointDistance = (point: Vec3, target: Vec3): number => {
+  const difference = subtractFinite(
+    point,
+    target,
+    "Heightfield distance difference",
+  );
+  return requireFinite(
+    Math.hypot(difference[0], difference[1], difference[2]),
+    "Signed distance",
+  );
+};
+
+const pointSegmentDistance = (point: Vec3, a: Vec3, b: Vec3): number => {
+  const edge = subtractFinite(b, a, "Heightfield edge difference");
+  const relative = subtractFinite(point, a, "Heightfield distance difference");
+  const scale = Math.max(
+    Math.abs(edge[0]),
+    Math.abs(edge[1]),
+    Math.abs(edge[2]),
+  );
+  if (!(scale > 0)) return pointDistance(point, a);
+  const scaledEdge = vec3(edge[0] / scale, edge[1] / scale, edge[2] / scale);
+  const denominator =
+    scaledEdge[0] * scaledEdge[0] +
+    scaledEdge[1] * scaledEdge[1] +
+    scaledEdge[2] * scaledEdge[2];
+  let numerator = 0;
+  for (let axis = 0; axis < 3; axis += 1)
+    if (scaledEdge[axis] !== 0)
+      numerator += (relative[axis]! / scale) * scaledEdge[axis]!;
+  if (Number.isNaN(numerator))
+    throw new RangeError("Heightfield edge projection must be finite");
+  const along = Math.max(0, Math.min(1, numerator / denominator));
+  return pointDistance(
+    point,
+    vec3(
+      a[0] + edge[0] * along,
+      a[1] + edge[1] * along,
+      a[2] + edge[2] * along,
+    ),
+  );
 };
 
 export class HeightfieldEnvironment implements EnvironmentQuery {
@@ -250,6 +224,67 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     );
   }
 
+  private surfacePoint(column: number, row: number): Vec3 {
+    return vec3(
+      requireFinite(
+        this.origin[0] + column * this.cellSize,
+        "Heightfield surface x coordinate",
+      ),
+      this.sample(column, row),
+      requireFinite(
+        this.origin[1] + row * this.cellSize,
+        "Heightfield surface z coordinate",
+      ),
+    );
+  }
+
+  private triangle(
+    column: number,
+    row: number,
+    first: boolean,
+  ): HeightfieldTriangle {
+    const p00 = this.surfacePoint(column, row);
+    const p10 = this.surfacePoint(column + 1, row);
+    const p01 = this.surfacePoint(column, row + 1);
+    const p11 = this.surfacePoint(column + 1, row + 1);
+    const xSlope = requireFinite(
+      ((first ? p10[1] : p11[1]) - (first ? p00[1] : p01[1])) / this.cellSize,
+      "Heightfield x gradient",
+    );
+    const zSlope = requireFinite(
+      ((first ? p11[1] : p01[1]) - (first ? p10[1] : p00[1])) / this.cellSize,
+      "Heightfield z gradient",
+    );
+    return {
+      a: p00,
+      b: first ? p10 : p11,
+      c: first ? p11 : p01,
+      normal: robustNormalize(vec3(-xSlope, 1, -zSlope), "Heightfield normal"),
+      column,
+      row,
+      first,
+    };
+  }
+
+  private triangleContainsProjection(
+    triangle: HeightfieldTriangle,
+    x: number,
+    z: number,
+  ): boolean {
+    const cellX = this.origin[0] + triangle.column * this.cellSize;
+    const cellZ = this.origin[1] + triangle.row * this.cellSize;
+    const localX = (x - cellX) / this.cellSize;
+    const localZ = (z - cellZ) / this.cellSize;
+    if (!Number.isFinite(localX) || !Number.isFinite(localZ)) return false;
+    return (
+      localX >= 0 &&
+      localX <= 1 &&
+      localZ >= 0 &&
+      localZ <= 1 &&
+      (triangle.first ? localZ <= localX : localX <= localZ)
+    );
+  }
+
   private localCoordinate(
     value: number,
     axisOrigin: number,
@@ -274,11 +309,11 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     const h10 = this.sample(column + 1, row);
     const h01 = this.sample(column, row + 1);
     const h11 = this.sample(column + 1, row + 1);
-    return requireFinite(
-      (1 - localZ) * ((1 - localX) * h00 + localX * h10) +
-        localZ * ((1 - localX) * h01 + localX * h11),
-      "Heightfield interpolated height",
-    );
+    const height =
+      localX >= localZ
+        ? h00 + (h10 - h00) * localX + (h11 - h10) * localZ
+        : h00 + (h11 - h01) * localX + (h01 - h00) * localZ;
+    return requireFinite(height, "Heightfield interpolated height");
   }
 
   public heightAt(x: number, z: number): number {
@@ -306,208 +341,145 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
   public signedDistance(point: Vec3): number {
     requireFiniteVector(point, "Signed-distance point");
     const distance = this.closestSurfaceDistance(point);
-    const columnOffset = requireFinite(
-      point[1] - this.heightAt(point[0], point[2]),
-      "Signed-distance sign",
-    );
-    const result = columnOffset >= 0 ? distance : -distance;
+    const inside =
+      point[0] > this.origin[0] &&
+      point[0] < this.maximumX &&
+      point[2] > this.origin[1] &&
+      point[2] < this.maximumZ &&
+      point[1] < this.heightAt(point[0], point[2]);
+    const result = inside ? -distance : distance;
     return requireFinite(result, "Signed distance");
   }
 
-  private closestSurfaceDistance(point: Vec3): number {
-    // A bilinear patch differs from its two-triangle interpolant by at most
-    // one quarter of the mixed corner difference. Subdivision drives that
-    // Hausdorff bound down quadratically, so the smallest queued lower bound
-    // certifies the global closest distance instead of trusting a local solve.
-    type PatchNode = {
-      readonly column: number;
-      readonly row: number;
-      readonly u0: number;
-      readonly u1: number;
-      readonly v0: number;
-      readonly v1: number;
-      readonly depth: number;
-      readonly lowerBound: number;
-    };
+  private triangleDistance(point: Vec3, triangle: HeightfieldTriangle): number {
+    const relative = subtractFinite(
+      point,
+      triangle.a,
+      "Heightfield triangle difference",
+    );
+    const planeDistance = scaledDot(
+      triangle.normal,
+      relative,
+      "Heightfield triangle distance",
+    );
+    const projectedX = point[0] - planeDistance * triangle.normal[0];
+    const projectedZ = point[2] - planeDistance * triangle.normal[2];
+    if (
+      Number.isFinite(projectedX) &&
+      Number.isFinite(projectedZ) &&
+      this.triangleContainsProjection(triangle, projectedX, projectedZ)
+    )
+      return Math.abs(planeDistance);
+    return Math.min(
+      pointSegmentDistance(point, triangle.a, triangle.b),
+      pointSegmentDistance(point, triangle.b, triangle.c),
+      pointSegmentDistance(point, triangle.c, triangle.a),
+    );
+  }
 
-    const clampedX = Math.max(
-      this.origin[0],
-      Math.min(this.maximumX, point[0]),
+  private curtainDistance(point: Vec3, a: Vec3, b: Vec3): number {
+    const edgeX = requireFinite(b[0] - a[0], "Heightfield curtain edge");
+    const edgeZ = requireFinite(b[2] - a[2], "Heightfield curtain edge");
+    const edgeLength = requireFinite(
+      Math.hypot(edgeX, edgeZ),
+      "Heightfield curtain edge length",
     );
-    const clampedZ = Math.max(
-      this.origin[1],
-      Math.min(this.maximumZ, point[2]),
+    const directionX = edgeX / edgeLength;
+    const directionZ = edgeZ / edgeLength;
+    const relativeX = requireFinite(
+      point[0] - a[0],
+      "Heightfield curtain difference",
     );
-    const initialPoint = vec3(
-      clampedX,
-      this.heightAt(clampedX, clampedZ),
-      clampedZ,
+    const relativeZ = requireFinite(
+      point[2] - a[2],
+      "Heightfield curtain difference",
     );
-    let bestDistance = requireFinite(
-      Math.hypot(
-        initialPoint[0] - point[0],
-        initialPoint[1] - point[1],
-        initialPoint[2] - point[2],
-      ),
+    const along = requireFinite(
+      relativeX * directionX + relativeZ * directionZ,
+      "Heightfield curtain projection",
+    );
+    const perpendicular = requireFinite(
+      relativeX * -directionZ + relativeZ * directionX,
+      "Heightfield curtain projection",
+    );
+    if (along >= 0 && along <= edgeLength) {
+      const top = requireFinite(
+        a[1] + (b[1] - a[1]) * (along / edgeLength),
+        "Heightfield curtain top",
+      );
+      if (point[1] <= top) return Math.abs(perpendicular);
+    }
+
+    const upwardA =
+      point[1] <= a[1]
+        ? 0
+        : requireFinite(point[1] - a[1], "Heightfield curtain height");
+    const upwardB =
+      point[1] <= b[1]
+        ? 0
+        : requireFinite(point[1] - b[1], "Heightfield curtain height");
+    const verticalRayDistance = Math.min(
+      Math.hypot(along, upwardA),
+      Math.hypot(along - edgeLength, upwardB),
+    );
+    const planarDistance =
+      point[1] <= Math.min(a[1], b[1])
+        ? verticalRayDistance
+        : Math.min(
+            verticalRayDistance,
+            pointSegmentDistance(
+              vec3(along, point[1], 0),
+              vec3(0, a[1], 0),
+              vec3(edgeLength, b[1], 0),
+            ),
+          );
+    return requireFinite(
+      Math.hypot(perpendicular, planarDistance),
       "Signed distance",
     );
+  }
 
-    const tolerance =
-      1e-10 +
-      256 *
-        Number.EPSILON *
-        Math.max(
-          1,
-          this.cellSize,
-          bestDistance,
-          Math.abs(point[0]),
-          Math.abs(point[1]),
-          Math.abs(point[2]),
-        );
-    const nodes: PatchNode[] = [];
-
-    const pointInPatch = (
-      column: number,
-      row: number,
-      u: number,
-      v: number,
-    ): Vec3 =>
-      vec3(
-        requireFinite(
-          this.origin[0] + (column + u) * this.cellSize,
-          "Heightfield surface x coordinate",
-        ),
-        this.heightInCell(column, row, u, v),
-        requireFinite(
-          this.origin[1] + (row + v) * this.cellSize,
-          "Heightfield surface z coordinate",
-        ),
-      );
-    const axisDistance = (value: number, minimum: number, maximum: number) =>
-      value < minimum ? minimum - value : value > maximum ? value - maximum : 0;
-
-    const evaluate = (node: Omit<PatchNode, "lowerBound">): void => {
-      const p00 = pointInPatch(node.column, node.row, node.u0, node.v0);
-      const p10 = pointInPatch(node.column, node.row, node.u1, node.v0);
-      const p01 = pointInPatch(node.column, node.row, node.u0, node.v1);
-      const p11 = pointInPatch(node.column, node.row, node.u1, node.v1);
-      const minimumX = p00[0];
-      const maximumX = p11[0];
-      const minimumZ = p00[2];
-      const maximumZ = p11[2];
-      const minimumY = Math.min(p00[1], p10[1], p01[1], p11[1]);
-      const maximumY = Math.max(p00[1], p10[1], p01[1], p11[1]);
-      const boxLowerBound = Math.hypot(
-        axisDistance(point[0], minimumX, maximumX),
-        axisDistance(point[1], minimumY, maximumY),
-        axisDistance(point[2], minimumZ, maximumZ),
-      );
-      if (boxLowerBound >= bestDistance - tolerance) return;
-
-      const triangleCandidate = (
-        a: Vec3,
-        b: Vec3,
-        c: Vec3,
-        uvA: readonly [number, number],
-        uvB: readonly [number, number],
-        uvC: readonly [number, number],
-      ): number => {
-        const closest = closestPointOnTriangle(point, a, b, c);
-        const [first, second, third] = closest.barycentric;
-        const u = first * uvA[0] + second * uvB[0] + third * uvC[0];
-        const v = first * uvA[1] + second * uvB[1] + third * uvC[1];
-        const candidate = pointInPatch(node.column, node.row, u, v);
-        bestDistance = Math.min(
-          bestDistance,
-          requireFinite(
-            Math.hypot(
-              candidate[0] - point[0],
-              candidate[1] - point[1],
-              candidate[2] - point[2],
-            ),
-            "Signed-distance candidate",
-          ),
-        );
-        return closest.distance;
-      };
-      const firstTriangleDistance = triangleCandidate(
-        p00,
-        p10,
-        p11,
-        [node.u0, node.v0],
-        [node.u1, node.v0],
-        [node.u1, node.v1],
-      );
-      const secondTriangleDistance = triangleCandidate(
-        p00,
-        p11,
-        p01,
-        [node.u0, node.v0],
-        [node.u1, node.v1],
-        [node.u0, node.v1],
-      );
-      const approximationError =
-        Math.abs(
-          requireFinite(
-            p00[1] - p10[1] - p01[1] + p11[1],
-            "Heightfield bilinear deviation",
-          ),
-        ) / 4;
-      const lowerBound = Math.max(
-        boxLowerBound,
-        0,
-        Math.min(firstTriangleDistance, secondTriangleDistance) -
-          approximationError,
-      );
-      if (lowerBound < bestDistance - tolerance)
-        nodes.push({ ...node, lowerBound });
-    };
-
+  private closestSurfaceDistance(point: Vec3): number {
+    let closest = Number.POSITIVE_INFINITY;
     for (let row = 0; row < this.depth - 1; row += 1)
       for (let column = 0; column < this.width - 1; column += 1)
-        evaluate({ column, row, u0: 0, u1: 1, v0: 0, v1: 1, depth: 0 });
+        for (const first of [true, false])
+          closest = Math.min(
+            closest,
+            this.triangleDistance(point, this.triangle(column, row, first)),
+          );
 
-    let iterations = 0;
-    while (nodes.length > 0) {
-      let minimumIndex = 0;
-      for (let index = 1; index < nodes.length; index += 1)
-        if (nodes[index]!.lowerBound < nodes[minimumIndex]!.lowerBound)
-          minimumIndex = index;
-      const node = nodes[minimumIndex]!;
-      nodes.splice(minimumIndex, 1);
-      if (node.lowerBound >= bestDistance - tolerance) break;
-      if (node.depth >= 52 || iterations >= 1_000_000)
-        throw new RangeError("Signed-distance global search did not converge");
-      iterations += 1;
-      const middleU = (node.u0 + node.u1) / 2;
-      const middleV = (node.v0 + node.v1) / 2;
-      const childDepth = node.depth + 1;
-      evaluate({
-        ...node,
-        u1: middleU,
-        v1: middleV,
-        depth: childDepth,
-      });
-      evaluate({
-        ...node,
-        u0: middleU,
-        v1: middleV,
-        depth: childDepth,
-      });
-      evaluate({
-        ...node,
-        u1: middleU,
-        v0: middleV,
-        depth: childDepth,
-      });
-      evaluate({
-        ...node,
-        u0: middleU,
-        v0: middleV,
-        depth: childDepth,
-      });
+    for (let column = 0; column < this.width - 1; column += 1) {
+      closest = Math.min(
+        closest,
+        this.curtainDistance(
+          point,
+          this.surfacePoint(column, 0),
+          this.surfacePoint(column + 1, 0),
+        ),
+        this.curtainDistance(
+          point,
+          this.surfacePoint(column, this.depth - 1),
+          this.surfacePoint(column + 1, this.depth - 1),
+        ),
+      );
     }
-    return requireFinite(bestDistance, "Signed distance");
+    for (let row = 0; row < this.depth - 1; row += 1) {
+      closest = Math.min(
+        closest,
+        this.curtainDistance(
+          point,
+          this.surfacePoint(0, row),
+          this.surfacePoint(0, row + 1),
+        ),
+        this.curtainDistance(
+          point,
+          this.surfacePoint(this.width - 1, row),
+          this.surfacePoint(this.width - 1, row + 1),
+        ),
+      );
+    }
+    return requireFinite(closest, "Signed distance");
   }
 
   public sampleSolid(point: Vec3): number {
@@ -532,7 +504,7 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return result;
   }
 
-  private gradientAt(x: number, z: number): readonly [number, number] {
+  private triangleAt(x: number, z: number): HeightfieldTriangle {
     requireFinite(x, "Heightfield normal x coordinate");
     requireFinite(z, "Heightfield normal z coordinate");
     const localX = this.localCoordinate(
@@ -551,26 +523,11 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     const z0 = Math.min(this.depth - 2, Math.floor(localZ));
     const tx = localX - x0;
     const tz = localZ - z0;
-    const h00 = this.sample(x0, z0);
-    const h10 = this.sample(x0 + 1, z0);
-    const h01 = this.sample(x0, z0 + 1);
-    const h11 = this.sample(x0 + 1, z0 + 1);
-    return [
-      requireFinite(
-        ((h10 - h00) * (1 - tz) + (h11 - h01) * tz) / this.cellSize,
-        "Heightfield x gradient",
-      ),
-      requireFinite(
-        ((h01 - h00) * (1 - tx) + (h11 - h10) * tx) / this.cellSize,
-        "Heightfield z gradient",
-      ),
-    ];
+    return this.triangle(x0, z0, tx >= tz);
   }
 
   public normalAt(x: number, z: number): Vec3 {
-    const [dx, dz] = this.gradientAt(x, z);
-    const normal = vec3Normalize(vec3(-dx, 1, -dz));
-    return requireFiniteVector(normal, "Heightfield normal");
+    return this.triangleAt(x, z).normal;
   }
 
   public raycast(
@@ -607,180 +564,119 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       );
     };
     pointAt(maxDistance);
-    const columnValue = (distance: number): number => {
-      const point = pointAt(distance);
-      return requireFinite(
-        point[1] - this.heightAt(point[0], point[2]),
-        "Raycast height difference",
-      );
-    };
-    const valueTolerance = 1e-10;
-    if (Math.abs(columnValue(0)) <= valueTolerance) {
-      const point = pointAt(0);
-      return {
-        distance: 0,
-        point,
-        normal: this.normalAt(point[0], point[2]),
-      };
-    }
-    const breakpoints = [0, maxDistance];
-    const addGridCrossings = (
-      axisOrigin: number,
-      axisDirection: number,
-      sampleCount: number,
-      gridOrigin: number,
-    ): void => {
-      if (axisDirection === 0) return;
-      for (let index = 0; index < sampleCount; index += 1) {
-        const distance =
-          (gridOrigin + index * this.cellSize - axisOrigin) / axisDirection;
-        if (distance > 0 && distance < maxDistance) breakpoints.push(distance);
-      }
-    };
-    addGridCrossings(origin[0], dir[0], this.width, this.origin[0]);
-    addGridCrossings(origin[2], dir[2], this.depth, this.origin[1]);
-    breakpoints.sort((a, b) => a - b);
-    const sortedBreakpoints: number[] = [];
-    for (const breakpoint of breakpoints)
-      if (
-        sortedBreakpoints.length === 0 ||
-        breakpoint > sortedBreakpoints[sortedBreakpoints.length - 1]!
-      )
-        sortedBreakpoints.push(breakpoint);
-
-    const findRoot = (
-      low: number,
-      high: number,
-      coefficients: readonly [number, number, number],
+    const coplanarEntry = (
+      triangle: HeightfieldTriangle,
     ): number | undefined => {
-      const quadratic = requireFinite(
-        coefficients[0],
-        "Raycast quadratic coefficient",
+      const cellX = this.origin[0] + triangle.column * this.cellSize;
+      const cellZ = this.origin[1] + triangle.row * this.cellSize;
+      const localX = requireFinite(
+        (origin[0] - cellX) / this.cellSize,
+        "Raycast local x coordinate",
       );
-      const linear = requireFinite(
-        coefficients[1],
-        "Raycast linear coefficient",
+      const localZ = requireFinite(
+        (origin[2] - cellZ) / this.cellSize,
+        "Raycast local z coordinate",
       );
-      const constant = requireFinite(
-        coefficients[2],
-        "Raycast constant coefficient",
-      );
-      const scale = Math.max(
-        Math.abs(quadratic),
-        Math.abs(linear),
-        Math.abs(constant),
-      );
-      if (scale === 0) return low;
-      const a = quadratic / scale;
-      const b = linear / scale;
-      const c = constant / scale;
-      const roots: number[] = [];
-      if (a === 0) {
-        if (b === 0) return undefined;
-        roots.push(-c / b);
-      } else {
-        let discriminant = b * b - 4 * a * c;
-        const discriminantTolerance =
-          64 * Number.EPSILON * (b * b + Math.abs(4 * a * c) + 1);
-        if (discriminant < -discriminantTolerance) return undefined;
-        if (Math.abs(discriminant) <= discriminantTolerance) discriminant = 0;
-        const squareRoot = Math.sqrt(discriminant);
-        if (squareRoot === 0) roots.push(-b / (2 * a));
-        else {
-          const q = -0.5 * (b + Math.sign(b || 1) * squareRoot);
-          roots.push(q / a);
-          if (q !== 0) roots.push(c / q);
+      const xSlope = dir[0] / this.cellSize;
+      const zSlope = dir[2] / this.cellSize;
+      const halfspaces = [
+        [localX, xSlope],
+        [localZ, zSlope],
+        [1 - localX, -xSlope],
+        [1 - localZ, -zSlope],
+        triangle.first
+          ? [localX - localZ, xSlope - zSlope]
+          : [localZ - localX, zSlope - xSlope],
+      ] as const;
+      let low = 0;
+      let high = maxDistance;
+      for (const [value, slope] of halfspaces) {
+        if (slope === 0) {
+          if (value < 0) return undefined;
+          continue;
         }
+        const crossing = -value / slope;
+        if (slope > 0) low = Math.max(low, crossing);
+        else high = Math.min(high, crossing);
+        if (low > high) return undefined;
       }
-      const intervalTolerance = 1e-10;
-      let earliest: number | undefined;
-      for (const root of roots) {
-        requireFinite(root, "Raycast generated root");
-        if (
-          root >= low - intervalTolerance &&
-          root <= high + intervalTolerance
-        ) {
-          const candidate = Math.max(low, Math.min(high, root));
-          if (earliest === undefined || candidate < earliest)
-            earliest = candidate;
-        }
-      }
-      return earliest;
+      return low === 0 ? 0 : low;
     };
 
     let hitDistance: number | undefined;
-    for (
-      let interval = 0;
-      interval + 1 < sortedBreakpoints.length;
-      interval += 1
-    ) {
-      const low = sortedBreakpoints[interval]!;
-      const high = sortedBreakpoints[interval + 1]!;
-      const middle = (low + high) / 2;
-      const middlePoint = pointAt(middle);
-      const rawX = requireFinite(
-        (middlePoint[0] - this.origin[0]) / this.cellSize,
-        "Raycast local x coordinate",
-      );
-      const rawZ = requireFinite(
-        (middlePoint[2] - this.origin[1]) / this.cellSize,
-        "Raycast local z coordinate",
-      );
-      const clampedX = Math.max(0, Math.min(this.width - 1, rawX));
-      const clampedZ = Math.max(0, Math.min(this.depth - 1, rawZ));
-      const cellX = Math.min(this.width - 2, Math.floor(clampedX));
-      const cellZ = Math.min(this.depth - 2, Math.floor(clampedZ));
-      const xSlope =
-        rawX > 0 && rawX < this.width - 1 ? dir[0] / this.cellSize : 0;
-      const zSlope =
-        rawZ > 0 && rawZ < this.depth - 1 ? dir[2] / this.cellSize : 0;
-      const xIntercept =
-        (xSlope === 0 ? clampedX - cellX : rawX - cellX) - xSlope * middle;
-      const zIntercept =
-        (zSlope === 0 ? clampedZ - cellZ : rawZ - cellZ) - zSlope * middle;
-      const h00 = this.sample(cellX, cellZ);
-      const h10 = this.sample(cellX + 1, cellZ);
-      const h01 = this.sample(cellX, cellZ + 1);
-      const h11 = this.sample(cellX + 1, cellZ + 1);
-      const xHeight = h10 - h00;
-      const zHeight = h01 - h00;
-      const crossHeight = h11 - h10 - h01 + h00;
-      const heightConstant =
-        h00 +
-        xHeight * xIntercept +
-        zHeight * zIntercept +
-        crossHeight * xIntercept * zIntercept;
-      const heightLinear =
-        xHeight * xSlope +
-        zHeight * zSlope +
-        crossHeight * (xIntercept * zSlope + zIntercept * xSlope);
-      const heightQuadratic = crossHeight * xSlope * zSlope;
-      const coefficients = [
-        -heightQuadratic,
-        dir[1] - heightLinear,
-        origin[1] - heightConstant,
-      ] as const;
-      const root = findRoot(low, high, coefficients);
-      if (root !== undefined) {
-        const rootScale = requireFinite(
-          Math.abs(coefficients[0] * root * root) +
-            Math.abs(coefficients[1] * root) +
-            Math.abs(coefficients[2]),
-          "Raycast root scale",
-        );
-        const rootTolerance = 64 * Number.EPSILON * rootScale;
-        if (Math.abs(columnValue(root)) <= rootTolerance) {
-          hitDistance = root;
-          break;
+    let hitNormal: Vec3 | undefined;
+    for (let row = 0; row < this.depth - 1; row += 1)
+      for (let column = 0; column < this.width - 1; column += 1)
+        for (const first of [true, false]) {
+          const triangle = this.triangle(column, row, first);
+          const originOffset = scaledDot(
+            triangle.normal,
+            subtractFinite(origin, triangle.a, "Raycast triangle difference"),
+            "Raycast plane offset",
+          );
+          const denominator = requireFinite(
+            triangle.normal[0] * dir[0] +
+              triangle.normal[1] * dir[1] +
+              triangle.normal[2] * dir[2],
+            "Raycast plane direction",
+          );
+          const root =
+            denominator === 0
+              ? originOffset === 0
+                ? coplanarEntry(triangle)
+                : undefined
+              : -originOffset / denominator;
+          if (
+            root === undefined ||
+            !Number.isFinite(root) ||
+            root < 0 ||
+            root > maxDistance ||
+            (hitDistance !== undefined && root >= hitDistance)
+          )
+            continue;
+          const candidateDistance = root === 0 ? 0 : root;
+          const candidatePoint = pointAt(candidateDistance);
+          if (
+            candidatePoint[0] < this.origin[0] ||
+            candidatePoint[0] > this.maximumX ||
+            candidatePoint[2] < this.origin[1] ||
+            candidatePoint[2] > this.maximumZ ||
+            !this.triangleContainsProjection(
+              triangle,
+              candidatePoint[0],
+              candidatePoint[2],
+            )
+          )
+            continue;
+          const residual = scaledDot(
+            triangle.normal,
+            subtractFinite(
+              candidatePoint,
+              triangle.a,
+              "Raycast triangle difference",
+            ),
+            "Raycast plane residual",
+          );
+          const residualTolerance =
+            64 *
+            Number.EPSILON *
+            Math.max(
+              this.cellSize,
+              Math.abs(candidatePoint[1]),
+              Math.abs(triangle.a[1]),
+              Math.abs(triangle.b[1]),
+              Math.abs(triangle.c[1]),
+            );
+          if (Math.abs(residual) > residualTolerance) continue;
+          hitDistance = candidateDistance;
+          hitNormal = triangle.normal;
         }
-      }
-    }
-    if (hitDistance === undefined) return undefined;
+    if (hitDistance === undefined || hitNormal === undefined) return undefined;
     const hitPoint = pointAt(hitDistance);
     const result = {
       distance: requireFinite(hitDistance, "Raycast hit distance"),
       point: hitPoint,
-      normal: this.normalAt(hitPoint[0], hitPoint[2]),
+      normal: hitNormal,
     };
     requireFiniteVector(result.point, "Raycast hit point");
     requireFiniteVector(result.normal, "Raycast hit normal");

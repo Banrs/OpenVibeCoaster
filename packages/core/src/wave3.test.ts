@@ -317,9 +317,155 @@ describe("wave 3 core contracts", () => {
       origin: [10, -4],
     });
     expect(environment.sampleSolid(vec3(10, 10, -4))).toBeGreaterThan(0);
-    expect(environment.sampleSolid(vec3(10, -1, -4))).toBeLessThan(0);
+    expect(environment.sampleSolid(vec3(12.5, -1, -1.5))).toBeLessThan(0);
     expect(environment.bounds().min).toEqual([10, 0, -4]);
     expect(environment.bounds().max).toEqual([15, 3, 1]);
+  });
+
+  it("uses the fixed top triangles for saddle height and distance", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 1],
+    });
+
+    expect(environment.heightAt(0.5, 0.5)).toBe(0.5);
+    expect(environment.signedDistance(vec3(0.5, 0.25, 0.5))).toBeCloseTo(
+      -0.1767766952966369,
+      14,
+    );
+  });
+
+  it("returns signed distance to the top and downward perimeter curtains", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 0],
+    });
+
+    expect(environment.signedDistance(vec3(0.5, -0.1, 0.5))).toBeCloseTo(
+      -0.1,
+      14,
+    );
+    expect(environment.signedDistance(vec3(0.5, -2, 0.5))).toBeCloseTo(
+      -0.5,
+      14,
+    );
+    expect(environment.signedDistance(vec3(-0.25, -2, 0.5))).toBeCloseTo(
+      0.25,
+      14,
+    );
+    expect(environment.signedDistance(vec3(-3, -4, -4))).toBeCloseTo(5, 14);
+    expect(environment.signedDistance(vec3(0, -4, 0.5))).toBe(0);
+  });
+
+  it("is analytically 1-Lipschitz across solid feature transitions", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 0],
+    });
+    const epsilon = 1e-4;
+    const probes = [
+      {
+        name: "interior top-to-side nearest feature",
+        first: vec3(0.25 - epsilon, -0.25, 0.5),
+        second: vec3(0.25 + epsilon, -0.25, 0.5),
+        expected: [-0.25 + epsilon, -0.25] as const,
+      },
+      {
+        name: "top boundary",
+        first: vec3(0.5, -epsilon, 0.5),
+        second: vec3(0.5, epsilon, 0.5),
+        expected: [-epsilon, epsilon] as const,
+      },
+      {
+        name: "side curtain",
+        first: vec3(-epsilon, -0.25, 0.5),
+        second: vec3(epsilon, -0.25, 0.5),
+        expected: [epsilon, -epsilon] as const,
+      },
+      {
+        name: "corner curtains",
+        first: vec3(-epsilon, -0.25, -epsilon),
+        second: vec3(epsilon, -0.25, epsilon),
+        expected: [Math.SQRT2 * epsilon, -epsilon] as const,
+      },
+    ];
+
+    for (const { name, first, second, expected } of probes) {
+      const firstDistance = environment.signedDistance(first);
+      const secondDistance = environment.signedDistance(second);
+      const separation = Math.hypot(
+        first[0] - second[0],
+        first[1] - second[1],
+        first[2] - second[2],
+      );
+      expect(firstDistance, name).toBeCloseTo(expected[0], 14);
+      expect(secondDistance, name).toBeCloseTo(expected[1], 14);
+      expect(
+        Math.abs(firstDistance - secondDistance),
+        name,
+      ).toBeLessThanOrEqual(separation + 1e-14);
+    }
+  });
+
+  it("keeps property probes crossing every solid boundary 1-Lipschitz", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 0],
+    });
+    let checkedPairs = 0;
+
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 1000 }), (step) => {
+        const epsilon = step / 1_000_000;
+        const pairs = [
+          [
+            vec3(0.25 - epsilon, -0.25, 0.5),
+            vec3(0.25 + epsilon, -0.25, 0.5),
+            [-0.25 + epsilon, -0.25],
+          ],
+          [
+            vec3(0.5, -epsilon, 0.5),
+            vec3(0.5, epsilon, 0.5),
+            [-epsilon, epsilon],
+          ],
+          [
+            vec3(-epsilon, -0.25, 0.5),
+            vec3(epsilon, -0.25, 0.5),
+            [epsilon, -epsilon],
+          ],
+          [
+            vec3(-epsilon, -0.25, -epsilon),
+            vec3(epsilon, -0.25, epsilon),
+            [Math.SQRT2 * epsilon, -epsilon],
+          ],
+        ] as const;
+
+        for (const [first, second, expected] of pairs) {
+          const separation = Math.hypot(
+            first[0] - second[0],
+            first[1] - second[1],
+            first[2] - second[2],
+          );
+          const firstDistance = environment.signedDistance(first);
+          const secondDistance = environment.signedDistance(second);
+          expect(firstDistance).toBeCloseTo(expected[0], 14);
+          expect(secondDistance).toBeCloseTo(expected[1], 14);
+          const distanceChange = Math.abs(firstDistance - secondDistance);
+          expect(distanceChange).toBeLessThanOrEqual(separation + 1e-14);
+          checkedPairs += 1;
+        }
+      }),
+      { numRuns: 100, seed: 0x51de501d },
+    );
+    expect(checkedPairs).toBe(400);
   });
 
   it("reproduces the reviewer 3 by 3 local-projection discontinuity", () => {
@@ -397,7 +543,7 @@ describe("wave 3 core contracts", () => {
       heights: [3, 3, 3, 3],
     });
     expect(flat.signedDistance(vec3(0.5, 5, 0.5))).toBeCloseTo(2, 10);
-    expect(flat.signedDistance(vec3(0.5, 1, 0.5))).toBeCloseTo(-2, 10);
+    expect(flat.signedDistance(vec3(0.5, 1, 0.5))).toBeCloseTo(-0.5, 10);
 
     const heights = Array.from({ length: 25 }, (_, index) => {
       const x = index % 5;
@@ -444,7 +590,7 @@ describe("wave 3 core contracts", () => {
     ).toBeCloseTo(0.3535533905932738, 14);
     expect(
       environment.signedDistance(vec3(7.5e99, 2.5e99, 5e99)) / scale,
-    ).toBeCloseTo(-0.3535533905932738, 14);
+    ).toBeCloseTo(-0.25, 14);
   });
 
   it("accepts large geometry when its bounds and distance remain finite", () => {
@@ -494,10 +640,74 @@ describe("wave 3 core contracts", () => {
       6.4031242374328485,
       12,
     );
-    expect(environment.signedDistance(vec3(-3, -4, -4))).toBeCloseTo(
-      -6.4031242374328485,
-      12,
+    expect(environment.signedDistance(vec3(-3, -4, -4))).toBeCloseTo(5, 12);
+  });
+
+  it("raycasts only bounded top triangles and returns surface hits", () => {
+    const flat = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 0],
+    });
+    expect(flat.raycast(vec3(-1, 1, 0.5), vec3(0, -1, 0), 2)).toBeUndefined();
+
+    const saddle = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 1],
+    });
+    for (const origin of [vec3(0.75, 2, 0.25), vec3(0.25, 2, 0.75)]) {
+      const hit = saddle.raycast(origin, vec3(0, -1, 0), 3);
+      expect(hit).toBeDefined();
+      expect(hit?.point[0]).toBeGreaterThanOrEqual(0);
+      expect(hit?.point[0]).toBeLessThanOrEqual(1);
+      expect(hit?.point[2]).toBeGreaterThanOrEqual(0);
+      expect(hit?.point[2]).toBeLessThanOrEqual(1);
+      expect(Math.abs(saddle.signedDistance(hit!.point))).toBeLessThanOrEqual(
+        1e-14,
+      );
+    }
+  });
+
+  it("publishes robust unit normals for huge slopes and ray hits", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 1e200, 0, 1e200],
+    });
+    const normal = environment.normalAt(0.5, 0.5);
+    expect(normal[0]).toBeCloseTo(-1, 14);
+    expect(normal[1]).toBeCloseTo(1e-200, 214);
+    expect(normal[2]).toBe(0);
+    expect(Math.hypot(...normal)).toBeCloseTo(1, 14);
+
+    const hit = environment.raycast(
+      vec3(0.5, 7.5e199, 0.5),
+      vec3(0, -1, 0),
+      5e199,
     );
+    expect(hit).toBeDefined();
+    expect(hit?.normal.every(Number.isFinite)).toBe(true);
+    expect(Math.hypot(...hit!.normal)).toBeCloseTo(1, 14);
+  });
+
+  it("does not turn a near-surface upward ray into a starting hit", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 0],
+    });
+
+    expect(
+      environment.raycast(vec3(0.5, 5e-11, 0.5), vec3(0, 1, 0), 1),
+    ).toBeUndefined();
+    expect(
+      environment.raycast(vec3(0.5, 0, 0.5), vec3(0, 1, 0), 1)?.distance,
+    ).toBe(0);
   });
 
   it("keeps ray roots invariant under huge positive and negative scales", () => {
