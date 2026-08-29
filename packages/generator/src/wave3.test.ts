@@ -521,6 +521,74 @@ describe("wave 3 deterministic generator", () => {
     ).toBe(false);
   });
 
+  it("returns one exact fatal diagnostic for every gate without a position", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      gates: [
+        { id: "legacy-at-near", at: 1 },
+        { id: "legacy-at-far", at: 999 },
+      ],
+    });
+    const failures = result.diagnostics.filter(
+      (item) => item.code === "GATE_POSITION_REQUIRED",
+    );
+
+    expect(result.feasible).toBe(false);
+    expect(failures).toHaveLength(2);
+    expect(failures.map((item) => item.relatedIds)).toEqual([
+      ["legacy-at-near"],
+      ["legacy-at-far"],
+    ]);
+    expect(failures.every((item) => item.severity === "fatal")).toBe(true);
+  });
+
+  it("fails zero, non-finite, and malformed gate quaternions", () => {
+    const zero = generateCoaster({
+      ...directedIntent,
+      gates: [
+        {
+          id: "zero-quaternion",
+          position: [0, 0, 6] as const,
+          orientation: [0, 0, 0, 0] as const,
+        },
+      ],
+    });
+    expect(zero.feasible).toBe(false);
+    expect(
+      zero.diagnostics.some(
+        (item) =>
+          item.code === "GATE_ORIENTATION_INVALID" &&
+          item.severity === "fatal" &&
+          item.relatedIds?.[0] === "zero-quaternion",
+      ),
+    ).toBe(true);
+
+    expect(() =>
+      generateCoaster({
+        ...directedIntent,
+        gates: [
+          {
+            id: "nan-quaternion",
+            position: [0, 0, 6] as const,
+            orientation: [Number.NaN, 0, 0, 1] as const,
+          },
+        ],
+      }),
+    ).toThrow("expected finite number");
+    expect(() =>
+      generateCoaster({
+        ...directedIntent,
+        gates: [
+          {
+            id: "malformed-quaternion",
+            position: [0, 0, 6] as const,
+            orientation: [0, 0, 1] as never,
+          },
+        ],
+      }),
+    ).toThrow("expected quaternion");
+  });
+
   it("reports exact infeasibility for a hard end-z target", () => {
     const result = generateCoaster({
       ...directedIntent,
@@ -567,6 +635,96 @@ describe("wave 3 deterministic generator", () => {
     expect(result.relaxationEvidence.map((item) => item.change)).toEqual([
       "Relax hard target failed-end-z",
     ]);
+    expect(conflict?.suggestedRelaxation).toBe(
+      "Relax failed hard target: failed-end-z",
+    );
+  });
+
+  it("caps relaxation work at three reruns even when a derived ID collides", () => {
+    const base = solver.solveSemanticChain([
+      createElement("station", "station-000", { length: 12 }),
+    ]);
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain").mockReturnValue({
+      ...base,
+      feasible: false,
+      lmIterations: 32,
+      diagnostics: [
+        {
+          code: "INFEASIBLE_HARD_CONSTRAINTS",
+          severity: "error",
+          message: "Derived geometry failure for h1:height",
+          relatedIds: ["h1:height"],
+        },
+      ],
+    });
+    try {
+      const result = generateCoaster({
+        ...directedIntent,
+        elements: [directedIntent.elements[0]!],
+        targets: [
+          { id: "h1:height", kind: "end-z", target: 999, hard: true },
+          { id: "failed-x", kind: "end-x", target: 999, hard: true },
+          { id: "failed-y", kind: "end-y", target: 999, hard: true },
+          { id: "failed-bank", kind: "end-bank", target: 2, hard: true },
+        ],
+        pinnedElementIds: [],
+      });
+
+      expect(solveSpy).toHaveBeenCalledTimes(4);
+      expect(result.relaxationLmIterations).toEqual([32, 32, 32]);
+      expect(result.relaxationEvidence.map((item) => item.change)).toEqual([
+        "Relax hard target h1:height",
+        "Relax hard target failed-x",
+        "Relax hard target failed-y",
+      ]);
+      expect(
+        result.relaxationEvidence.every((item) =>
+          Object.values(item.margins).every(Number.isFinite),
+        ),
+      ).toBe(true);
+    } finally {
+      solveSpy.mockRestore();
+    }
+  });
+
+  it("does not rerun a satisfied hard target that collides with a derived ID", () => {
+    const base = solver.solveSemanticChain([
+      createElement("station", "station-000", { length: 12 }),
+    ]);
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain").mockReturnValue({
+      ...base,
+      feasible: false,
+      lmIterations: 32,
+      diagnostics: [
+        {
+          code: "INFEASIBLE_HARD_CONSTRAINTS",
+          severity: "error",
+          message: "Derived geometry failure for h1:height",
+          relatedIds: ["h1:height"],
+        },
+      ],
+    });
+    try {
+      const result = generateCoaster({
+        ...directedIntent,
+        elements: [directedIntent.elements[0]!],
+        targets: [
+          {
+            id: "h1:height",
+            kind: "end-z",
+            target: base.endPose.position[2],
+            hard: true,
+          },
+        ],
+        pinnedElementIds: [],
+      });
+
+      expect(solveSpy).toHaveBeenCalledTimes(1);
+      expect(result.relaxationLmIterations).toEqual([]);
+      expect(result.relaxationEvidence).toEqual([]);
+    } finally {
+      solveSpy.mockRestore();
+    }
   });
 
   it("rejects unknown hard constraints and enforces required semantics", () => {
@@ -1112,6 +1270,124 @@ describe("wave 3 deterministic generator", () => {
     expect(runtime).toBeDefined();
     if (!runtime) throw new Error("Missing regenerated s4 span");
     expect(runtime.span.position(1)[2] - runtime.span.position(0)[2]).toBe(20);
+  });
+
+  it("includes intent-only parameter changes in the local solve window", () => {
+    const elements = ["s1", "s2", "s3", "s4"].map((id) => ({
+      id,
+      kind: "station",
+      type: "station",
+      parameters: { length: 12, bank: 0, closed: false },
+    }));
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements,
+      pinnedElementIds: [],
+    });
+    const replacementIntent = {
+      ...generated.intent,
+      elements: generated.intent.elements.map((element) =>
+        element.id === "s4"
+          ? {
+              ...element,
+              parameters: { ...element.parameters, length: 20 },
+            }
+          : element,
+      ),
+    };
+    const result = regenerateLocal(generated, "s1", {
+      intent: replacementIntent,
+    });
+    const runtime = result.generation.solvedSpans.find(
+      (span) => span.id === "s4",
+    );
+
+    expect(result.feasible).toBe(true);
+    expect(result.changedWindow).toEqual([0, 3]);
+    expect(runtime).toBeDefined();
+    if (!runtime) throw new Error("Missing regenerated s4 span");
+    expect(runtime.span.position(1)[2] - runtime.span.position(0)[2]).toBe(20);
+    expect(result.generation.file.solvedSpans[3]?.length).toBe(20);
+  });
+
+  it("rejects replacement intent topology changes and missing patch owners", () => {
+    const elements = ["s1", "s2", "s3", "s4"].map((id) => ({
+      id,
+      kind: "station",
+      type: "station",
+      parameters: { length: 12, bank: 0, closed: false },
+    }));
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements,
+      pinnedElementIds: [],
+    });
+    const missing = regenerateLocal(generated, "s1", {
+      intent: {
+        ...generated.intent,
+        elements: generated.intent.elements.slice(0, -1),
+      },
+      changes: { s4: { length: 20 } },
+    });
+    const reordered = regenerateLocal(generated, "s1", {
+      intent: {
+        ...generated.intent,
+        elements: [
+          generated.intent.elements[1]!,
+          generated.intent.elements[0]!,
+          ...generated.intent.elements.slice(2),
+        ],
+      },
+    });
+
+    expect(missing.feasible).toBe(false);
+    expect(missing.generation).toBe(generated);
+    expect(
+      missing.diagnostics.some(
+        (item) => item.severity === "fatal" && item.relatedIds?.includes("s4"),
+      ),
+    ).toBe(true);
+    expect(reordered.feasible).toBe(false);
+    expect(reordered.generation).toBe(generated);
+    expect(reordered.diagnostics[0]?.severity).toBe("fatal");
+  });
+
+  it("rejects an intent-only parameter change to a pinned element", () => {
+    const elements = ["s1", "s2", "s3", "s4"].map((id) => ({
+      id,
+      kind: "station",
+      type: "station",
+      parameters: { length: 12, bank: 0, closed: false },
+    }));
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements,
+      pinnedElementIds: ["s4"],
+    });
+    const result = regenerateLocal(generated, "s1", {
+      intent: {
+        ...generated.intent,
+        elements: generated.intent.elements.map((element) =>
+          element.id === "s4"
+            ? {
+                ...element,
+                parameters: { ...element.parameters, length: 20 },
+              }
+            : element,
+        ),
+      },
+    });
+
+    expect(result.feasible).toBe(false);
+    expect(result.generation).toBe(generated);
+    expect(
+      result.diagnostics.some(
+        (item) =>
+          item.severity === "fatal" &&
+          item.relatedIds?.includes("s4") &&
+          /pinned/i.test(item.message),
+      ),
+    ).toBe(true);
   });
 
   it("rejects a remote patch blocked by a pinned boundary with its exact ID", () => {
@@ -2025,17 +2301,101 @@ describe("wave 3 deterministic generator", () => {
     }
   });
 
-  it("returns independent deterministic data without pipeline timing state", () => {
-    const first = generateCoaster(directedIntent);
-    const second = generateCoaster(directedIntent);
+  it("returns deeply independent deterministic result graphs", () => {
+    const callerIntent = {
+      ...directedIntent,
+      elements: directedIntent.elements.map((element) => ({
+        ...element,
+        parameters: { ...element.parameters },
+      })),
+      gates: [
+        {
+          id: "owned-gate",
+          position: [0, 0, 6] as [number, number, number],
+        },
+      ],
+      targets: [{ id: "owned-target", kind: "end-z", target: 44, hard: false }],
+      constraints: [
+        { id: "owned-constraint", kind: "min-height", target: -1, hard: false },
+      ],
+      pinnedElementIds: ["station-000"],
+    };
+    const callerOptions = {
+      samples: 32,
+      researchSnapshotIds: ["snapshot-a"],
+    };
+    const first = generateCoaster(callerIntent, callerOptions);
+    const second = generateCoaster(callerIntent, callerOptions);
 
     expect(first).not.toBe(second);
+    expect(first.intent).not.toBe(second.intent);
+    expect(first.intent).not.toBe(callerIntent);
+    expect(first.intent.elements).not.toBe(second.intent.elements);
+    expect(first.intent.elements[0]?.parameters).not.toBe(
+      second.intent.elements[0]?.parameters,
+    );
+    expect(first.intent.gates).not.toBe(second.intent.gates);
+    expect(first.intent.gates[0]?.position).not.toBe(
+      second.intent.gates[0]?.position,
+    );
+    expect(first.intent.targets).not.toBe(second.intent.targets);
+    expect(first.intent.constraints).not.toBe(second.intent.constraints);
+    expect(first.file).not.toBe(second.file);
+    expect(first.file.intent).not.toBe(second.file.intent);
+    expect(first.file.solvedSpans).not.toBe(second.file.solvedSpans);
+    expect(first.file.solvedSpans[0]?.positionCoefficients).not.toBe(
+      second.file.solvedSpans[0]?.positionCoefficients,
+    );
+    expect(first.elements).not.toBe(second.elements);
+    expect(first.elements[0]?.parameters).not.toBe(
+      second.elements[0]?.parameters,
+    );
+    expect(first.options).not.toBe(second.options);
+    expect(first.options).not.toBe(callerOptions);
+    expect(first.options.researchSnapshotIds).not.toBe(
+      second.options.researchSnapshotIds,
+    );
     expect(first.track).not.toBe(second.track);
     expect(first.track.positions).not.toBe(second.track.positions);
     expect(first.solvedSpans).not.toBe(second.solvedSpans);
+    expect(first.solvedSpans[0]?.positionCoefficients).not.toBe(
+      second.solvedSpans[0]?.positionCoefficients,
+    );
+    expect(first.candidateLmIterations).not.toBe(second.candidateLmIterations);
+    expect(first.diagnostics).not.toBe(second.diagnostics);
     expect(first.serializedFile).toBe(second.serializedFile);
     expect(first.track.positions).toEqual(second.track.positions);
     expect(first.diagnostics).toEqual(second.diagnostics);
     expect(first).not.toHaveProperty("stageTimings");
+
+    callerIntent.elements[0]!.parameters.length = 999;
+    callerIntent.gates[0]!.position[2] = 999;
+    callerIntent.targets[0]!.target = 999;
+    callerIntent.constraints[0]!.target = 999;
+    callerIntent.pinnedElementIds.push("stall-001");
+    callerOptions.researchSnapshotIds.push("snapshot-b");
+    expect(first.intent.elements[0]?.parameters?.length).toBe(12);
+    expect(first.intent.gates[0]?.position?.[2]).toBe(6);
+    expect(first.intent.targets[0]?.target).toBe(44);
+    expect(first.intent.constraints[0]?.target).toBe(-1);
+    expect(first.intent.pinnedElementIds).toEqual(["station-000"]);
+    expect(first.options.researchSnapshotIds).toEqual(["snapshot-a"]);
+
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.intent.elements)).toBe(true);
+    expect(Object.isFrozen(first.intent.elements[0]!.parameters)).toBe(true);
+    expect(Object.isFrozen(first.intent.gates[0]!.position)).toBe(true);
+    expect(
+      Object.isFrozen(first.file.solvedSpans[0]!.positionCoefficients),
+    ).toBe(true);
+    expect(Object.isFrozen(first.options.researchSnapshotIds)).toBe(true);
+    expect(() => {
+      (first.intent.gates[0]!.position as unknown as number[])[2] = 999;
+    }).toThrow(TypeError);
+
+    const exposedPositions = first.track.positions;
+    exposedPositions[0] = 999;
+    expect(first.track.positions[0]).not.toBe(999);
+    expect(second.track.positions[0]).not.toBe(999);
   });
 });

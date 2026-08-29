@@ -6,7 +6,10 @@ import {
   arcLength,
   compileCoasterFile,
   createCoasterFileV1,
+  canonicalJson,
+  parseDesignIntentV1,
   serializeCoasterFileV1,
+  serializeDesignIntentV1,
   serializeSolvedSpanV1,
   reconstructSolvedSpan,
   validateDesignIntentV1,
@@ -111,6 +114,69 @@ interface GenerationOperationCache {
 const createGenerationOperationCache = (): GenerationOperationCache => ({
   spanLengthCache: new Map<string, number>(),
 });
+
+const canonicalIntentCopy = (intent: DesignIntentV1): DesignIntentV1 =>
+  parseDesignIntentV1(serializeDesignIntentV1(intent));
+
+const ownedEnvironment = (
+  environment: EnvironmentQuery | undefined,
+): EnvironmentQuery | undefined =>
+  environment === undefined
+    ? undefined
+    : {
+        signedDistance: environment.signedDistance.bind(environment),
+        ...(environment.sampleSolid
+          ? { sampleSolid: environment.sampleSolid.bind(environment) }
+          : {}),
+        ...(environment.bounds
+          ? { bounds: environment.bounds.bind(environment) }
+          : {}),
+        raycast: environment.raycast.bind(environment),
+      };
+
+const ownedGenerationOptions = (
+  options: GenerationOptions,
+): GenerationOptions => {
+  const { environment, researchSnapshotIds, ...rest } = options;
+  return {
+    ...rest,
+    ...(environment === undefined
+      ? {}
+      : { environment: ownedEnvironment(environment)! }),
+    ...(researchSnapshotIds === undefined
+      ? {}
+      : { researchSnapshotIds: [...researchSnapshotIds] }),
+  };
+};
+
+const ownedElements = (
+  elements: readonly AnySemanticElement[],
+): readonly AnySemanticElement[] =>
+  elements.map(
+    (element) =>
+      ({
+        id: element.id,
+        type: element.type,
+        kind: element.kind,
+        parameters: { ...element.parameters },
+      }) as AnySemanticElement,
+  );
+
+const deepFreeze = <T>(value: T, seen = new Set<object>()): T => {
+  if (
+    value === null ||
+    (typeof value !== "object" && typeof value !== "function")
+  )
+    return value;
+  const object = value as object;
+  if (seen.has(object)) return value;
+  seen.add(object);
+  for (const key of Reflect.ownKeys(object)) {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (descriptor && "value" in descriptor) deepFreeze(descriptor.value, seen);
+  }
+  return Object.freeze(value);
+};
 
 const asElements = (
   intent: DesignIntentV1,
@@ -581,10 +647,20 @@ const gateDiagnostics = (
   const diagnostics: Diagnostic[] = [];
   let cursor = { spanIndex: 0, u: 0 };
   for (const gate of intent.gates) {
-    if (!gate.position) continue;
+    const gatePosition = finitePosition(gate.position);
+    if (!gatePosition) {
+      diagnostics.push({
+        code: "GATE_POSITION_REQUIRED",
+        severity: "fatal",
+        provenance: "PROJECT_ENGINEERING_LIMIT",
+        message: `Gate ${gate.id} requires a finite position for generation`,
+        relatedIds: [gate.id],
+      });
+      continue;
+    }
     let best: CanonicalPathLocation;
     try {
-      best = closestGateLocation(spans, gate.position, cursor);
+      best = closestGateLocation(spans, gatePosition, cursor);
     } catch (error) {
       diagnostics.push({
         code: "GATE_POSITION_UNCERTIFIED",
@@ -609,6 +685,17 @@ const gateDiagnostics = (
         ),
       );
     if (gate.orientation) {
+      const orientationLength = Math.hypot(...gate.orientation);
+      if (!Number.isFinite(orientationLength) || orientationLength < 1e-15) {
+        diagnostics.push({
+          code: "GATE_ORIENTATION_INVALID",
+          severity: "fatal",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: `Gate ${gate.id} requires a finite nonzero orientation quaternion`,
+          relatedIds: [gate.id],
+        });
+        continue;
+      }
       const targetTangent = vec3Normalize(
         quatRotateVector(gate.orientation, vec3(0, 0, 1)),
       );
@@ -643,9 +730,11 @@ const validateGenerationConstraints = (
   spans: readonly SolvedSpan[],
   intent: DesignIntentV1,
   environment: EnvironmentQuery | undefined,
+  failedHardRequirementIds?: Set<string>,
 ): readonly Diagnostic[] => {
   const diagnostics: Diagnostic[] = [];
   for (const constraint of intent.constraints) {
+    const diagnosticStart = diagnostics.length;
     const value = constraint.target ?? constraint.value;
     const hard = constraint.hard !== false;
     const severity = hard ? "error" : "warning";
@@ -661,7 +750,7 @@ const validateGenerationConstraints = (
         "track-clearance",
       ].includes(constraint.kind)
     ) {
-      if (hard)
+      if (hard) {
         diagnostics.push(
           hardDiagnostic(
             "UNSUPPORTED_HARD_CONSTRAINT",
@@ -669,6 +758,8 @@ const validateGenerationConstraints = (
             [constraint.id],
           ),
         );
+        failedHardRequirementIds?.add(constraint.id);
+      }
       continue;
     }
     if (
@@ -738,6 +829,16 @@ const validateGenerationConstraints = (
         severity,
         provenance: hard ? "PROJECT_ENGINEERING_LIMIT" : "DESIGN_ASSUMPTION",
       });
+    if (
+      hard &&
+      diagnostics
+        .slice(diagnosticStart)
+        .some(
+          (diagnostic) =>
+            diagnostic.severity === "error" || diagnostic.severity === "fatal",
+        )
+    )
+      failedHardRequirementIds?.add(constraint.id);
   }
   const heightConstraints = intent.constraints.filter(
     (constraint) =>
@@ -845,6 +946,8 @@ const validateGenerationConstraints = (
     station += arcLength(geometry);
   }
   for (const constraint of heightConstraints) {
+    const diagnosticStart = diagnostics.length;
+    const hard = constraint.hard !== false;
     const value = constraint.target ?? constraint.value;
     if (typeof value !== "number") continue;
     let failure:
@@ -887,8 +990,20 @@ const validateGenerationConstraints = (
       }
       distance += arcLength(positionGeometry(span));
     }
-    if (!failure) continue;
-    const hard = constraint.hard !== false;
+    if (!failure) {
+      if (
+        hard &&
+        diagnostics
+          .slice(diagnosticStart)
+          .some(
+            (diagnostic) =>
+              diagnostic.severity === "error" ||
+              diagnostic.severity === "fatal",
+          )
+      )
+        failedHardRequirementIds?.add(constraint.id);
+      continue;
+    }
     diagnostics.push(
       sanitizeDiagnostic({
         ...hardDiagnostic(
@@ -907,6 +1022,7 @@ const validateGenerationConstraints = (
         provenance: hard ? "PROJECT_ENGINEERING_LIMIT" : "DESIGN_ASSUMPTION",
       }),
     );
+    if (hard) failedHardRequirementIds?.add(constraint.id);
   }
   return sanitizeDiagnostics(diagnostics);
 };
@@ -984,12 +1100,20 @@ const relaxationMargins = (
   };
 };
 
+const finiteMargins = (
+  margins: Readonly<Record<string, number>>,
+): Readonly<Record<string, number>> =>
+  Object.fromEntries(
+    Object.entries(margins).filter((entry) => Number.isFinite(entry[1])),
+  );
+
 interface CandidateEvaluation {
   readonly elements: readonly AnySemanticElement[];
   readonly elementSpans: readonly (readonly SolvedSpan[])[];
   readonly spans: readonly SolvedSpan[];
   readonly solved: ReturnType<typeof solver.solveSemanticChain>;
   readonly diagnostics: readonly Diagnostic[];
+  readonly failedHardRequirementIds: ReadonlySet<string>;
   readonly track?: ReturnType<typeof compileTrack>;
 }
 
@@ -1086,6 +1210,7 @@ const evaluateCandidate = (
   const elementSpans = solved.solvedSpans.map(coefficientSpan);
   const spans = elementSpans.flat();
   const solverDiagnostics = solved.diagnostics;
+  const failedHardRequirementIds = new Set<string>();
   const diagnostics: Diagnostic[] = [
     ...solverDiagnostics,
     ...gateDiagnostics(spans, intent),
@@ -1094,6 +1219,7 @@ const evaluateCandidate = (
       spans,
       intent,
       options.environment,
+      failedHardRequirementIds,
     ),
   ];
   const targetLocationS = spans.reduce(
@@ -1112,7 +1238,8 @@ const evaluateCandidate = (
         target.kind === "end-bank" || target.kind === "end-tangent"
           ? 1e-5
           : 1e-4;
-      if (actual > limit)
+      if (actual > limit) {
+        if (target.hard !== false) failedHardRequirementIds.add(target.id);
         diagnostics.push({
           ...hardDiagnostic(
             "TARGET",
@@ -1124,6 +1251,7 @@ const evaluateCandidate = (
           ),
           severity: target.hard === false ? "warning" : "error",
         });
+      }
     }
   const requiredTrackClearance = intent.constraints
     .filter(
@@ -1142,7 +1270,8 @@ const evaluateCandidate = (
       const actual = track!.totalLength;
       const limit = typeof target.target === "number" ? target.target : 0;
       const error = Math.abs(actual - limit);
-      if (error > 1e-4)
+      if (error > 1e-4) {
+        if (target.hard !== false) failedHardRequirementIds.add(target.id);
         diagnostics.push({
           ...hardDiagnostic(
             "TARGET",
@@ -1153,6 +1282,7 @@ const evaluateCandidate = (
           ),
           severity: target.hard ? "error" : "warning",
         });
+      }
     }
   }
   const hasHardFailure = diagnostics.some(
@@ -1173,6 +1303,20 @@ const evaluateCandidate = (
     const clearanceConstraintIds = intent.constraints
       .filter((constraint) => constraint.kind === "track-clearance")
       .map((constraint) => constraint.id);
+    for (const constraint of intent.constraints) {
+      const required = constraint.target ?? constraint.value;
+      if (
+        constraint.kind === "track-clearance" &&
+        constraint.hard !== false &&
+        typeof required === "number" &&
+        clearance.some(
+          (item) =>
+            item.code === "TRACK_CLEARANCE" &&
+            (item.actual === undefined || item.actual < required),
+        )
+      )
+        failedHardRequirementIds.add(constraint.id);
+    }
     diagnostics.push(
       ...clearance.map((item) =>
         item.code === "TRACK_CLEARANCE" && clearanceConstraintIds.length > 0
@@ -1193,6 +1337,7 @@ const evaluateCandidate = (
     spans,
     solved,
     diagnostics: sanitizeDiagnostics(diagnostics),
+    failedHardRequirementIds,
     ...(track ? { track } : {}),
   };
   observer?.("validation:end");
@@ -1245,9 +1390,11 @@ const buildFileResult = (
             parameters: element.parameters,
           })),
         };
+  const ownedIntent = canonicalIntentCopy(effectiveIntent);
+  const resultElements = ownedElements(evaluation.elements);
   const file = createCoasterFileV1({
     name: options.name ?? "OpenVibeCoaster",
-    intent: effectiveIntent,
+    intent: ownedIntent,
     solvedSpans: serializedSpans,
     seed: intent.seed,
     generatorVersion: options.generatorVersion ?? intent.generatorVersion,
@@ -1275,13 +1422,13 @@ const buildFileResult = (
     options.samples === undefined || options.samples === 32
       ? canonicalTrack
       : compileTrack(canonicalSpans, { samples: options.samples });
-  const result = {
+  const result: GenerationResult = {
     feasible: !evaluation.diagnostics.some(
       (diagnostic) =>
         diagnostic.severity === "error" || diagnostic.severity === "fatal",
     ),
-    intent: effectiveIntent,
-    elements: evaluation.elements,
+    intent: ownedIntent,
+    elements: resultElements,
     solvedSpans: Object.freeze(canonicalSpans),
     track,
     file,
@@ -1306,10 +1453,10 @@ const buildFileResult = (
       relaxationLmIterations.reduce((sum, iterations) => sum + iterations, 0),
     spanHashes: hashes,
     spanBytes: bytes,
-    options: Object.freeze({ ...options }),
+    options: ownedGenerationOptions(options),
   };
   observer?.("compilation:end");
-  return result;
+  return deepFreeze(result);
 };
 
 const targetOptions = (intent: DesignIntentV1): SolveOptions["targets"] =>
@@ -1364,25 +1511,19 @@ const generateCoasterInternal = (
   const evaluation = selected ?? last!;
   const evidence: RelaxationEvidence[] = [];
   const relaxationLmIterations: number[] = [];
-  const failedRequirementIds = new Set(
-    evaluation.diagnostics
-      .filter(
-        (diagnostic) =>
-          diagnostic.severity === "error" || diagnostic.severity === "fatal",
-      )
-      .flatMap((diagnostic) => diagnostic.relatedIds ?? []),
-  );
+  let relaxationReruns = 0;
   for (const target of intent.targets) {
     if (
-      evidence.length >= 3 ||
+      relaxationReruns >= 3 ||
       target.hard === false ||
-      !failedRequirementIds.has(target.id)
+      !evaluation.failedHardRequirementIds.has(target.id)
     )
       continue;
     const relaxedIntent = {
       ...intent,
       targets: intent.targets.filter((item) => item.id !== target.id),
     };
+    relaxationReruns += 1;
     const rerun = evaluateCandidate(
       evaluation.elements,
       relaxedIntent,
@@ -1391,12 +1532,6 @@ const generateCoasterInternal = (
       observer,
     );
     relaxationLmIterations.push(rerun.solved.lmIterations);
-    if (
-      rerun.diagnostics.some((diagnostic) =>
-        diagnostic.relatedIds?.includes(target.id),
-      )
-    )
-      continue;
     const actual =
       target.kind === "total-length"
         ? (rerun.track?.totalLength ??
@@ -1417,14 +1552,14 @@ const generateCoasterInternal = (
           diagnostic.severity === "error" || diagnostic.severity === "fatal",
       ),
       lmIterations: rerun.solved.lmIterations,
-      margins: { [target.kind]: limit - actual },
+      margins: finiteMargins({ [target.kind]: limit - actual }),
     });
   }
   for (const constraint of intent.constraints) {
     if (
-      evidence.length >= 3 ||
+      relaxationReruns >= 3 ||
       constraint.hard === false ||
-      !failedRequirementIds.has(constraint.id)
+      !evaluation.failedHardRequirementIds.has(constraint.id)
     )
       continue;
     const relaxedIntent = {
@@ -1433,6 +1568,7 @@ const generateCoasterInternal = (
         (item) => item.id !== constraint.id,
       ),
     };
+    relaxationReruns += 1;
     const rerun = evaluateCandidate(
       evaluation.elements,
       relaxedIntent,
@@ -1441,20 +1577,16 @@ const generateCoasterInternal = (
       observer,
     );
     relaxationLmIterations.push(rerun.solved.lmIterations);
-    const failed = rerun.diagnostics.some((diagnostic) =>
-      diagnostic.relatedIds?.includes(constraint.id),
-    );
-    if (!failed)
-      evidence.push({
-        change: `Relax hard constraint ${constraint.id}`,
-        rerun: true,
-        feasible: !rerun.diagnostics.some(
-          (diagnostic) =>
-            diagnostic.severity === "error" || diagnostic.severity === "fatal",
-        ),
-        lmIterations: rerun.solved.lmIterations,
-        margins: relaxationMargins(constraint, rerun),
-      });
+    evidence.push({
+      change: `Relax hard constraint ${constraint.id}`,
+      rerun: true,
+      feasible: !rerun.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.severity === "error" || diagnostic.severity === "fatal",
+      ),
+      lmIterations: rerun.solved.lmIterations,
+      margins: finiteMargins(relaxationMargins(constraint, rerun)),
+    });
   }
   observer?.("search:end");
   const result = buildFileResult(
@@ -1505,11 +1637,13 @@ const generationWithSpans = (
   });
   const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
   const canonicalTrack = compileTrack(canonicalSpans, { samples: 32 });
+  const ownedIntent = canonicalIntentCopy(intent);
+  const resultElements = ownedElements(candidate.elements);
   const file = createCoasterFileV1({
     name: candidate.file.name,
-    intent,
+    intent: ownedIntent,
     solvedSpans: serializedSpans,
-    seed: intent.seed,
+    seed: ownedIntent.seed,
     generatorVersion: candidate.file.generatorVersion,
     profileVersion: candidate.file.profileVersion,
     researchSnapshotIds: candidate.file.researchSnapshotIds,
@@ -1538,9 +1672,10 @@ const generationWithSpans = (
     candidate.options.samples === undefined || candidate.options.samples === 32
       ? canonicalTrack
       : compileTrack(canonicalSpans, { samples: candidate.options.samples });
-  return {
+  const result: GenerationResult = {
     ...candidate,
-    intent,
+    intent: ownedIntent,
+    elements: resultElements,
     solvedSpans: Object.freeze(canonicalSpans),
     track,
     file,
@@ -1548,11 +1683,13 @@ const generationWithSpans = (
     spanBytes: spanBytesMap,
     spanHashes: spanHashesMap,
     diagnostics: Object.freeze(diagnostics),
+    options: ownedGenerationOptions(candidate.options),
     feasible: !diagnostics.some(
       (diagnostic) =>
         diagnostic.severity === "error" || diagnostic.severity === "fatal",
     ),
   };
+  return deepFreeze(result);
 };
 
 const generationOwner = (
@@ -1845,13 +1982,61 @@ export const regenerateLocal = (
       untouchedSpanBytes: generated.spanBytes,
     };
   }
+  validateDesignIntentV1(baseIntent);
+  const topologyFailureIds = new Set<string>();
+  const topologyLength = Math.max(
+    generated.elements.length,
+    baseIntent.elements.length,
+  );
+  for (let index = 0; index < topologyLength; index += 1) {
+    const source = generated.elements[index];
+    const replacement = baseIntent.elements[index];
+    const replacementKind = replacement?.kind ?? replacement?.type;
+    if (
+      source === undefined ||
+      replacement === undefined ||
+      source.id !== replacement.id ||
+      source.type !== replacementKind
+    ) {
+      if (source) topologyFailureIds.add(source.id);
+      if (replacement) topologyFailureIds.add(replacement.id);
+    }
+  }
+  if (topologyFailureIds.size > 0) {
+    const ids = [...topologyFailureIds];
+    const item = hardDiagnostic(
+      "LOCAL_REGENERATION",
+      `Replacement intent topology must preserve source element order, IDs, and kinds: ${ids.join(", ")}`,
+      ids,
+    );
+    return {
+      feasible: false,
+      generation: generated,
+      diagnostics: [{ ...item, severity: "fatal" }],
+      changedWindow: [selectedIndex, selectedIndex],
+      untouchedSpanHashes: generated.spanHashes,
+      untouchedSpanBytes: generated.spanBytes,
+    };
+  }
+  const sourceElements: AnySemanticElement[] = baseIntent.elements.map(
+    (element) => {
+      const kind = (element.kind ??
+        element.type) as (typeof ELEMENT_KINDS)[number];
+      return createElement(
+        kind,
+        element.id,
+        element.parameters ?? {},
+      ) as AnySemanticElement;
+    },
+  );
   const patchIds = Object.keys(options.changes ?? {});
   const patchIndices = patchIds.map((id) => ({
     id,
     index: generated.elements.findIndex((element) => element.id === id),
+    replacementIndex: sourceElements.findIndex((element) => element.id === id),
   }));
   const unknownPatchIds = patchIndices
-    .filter(({ index }) => index < 0)
+    .filter(({ index, replacementIndex }) => index < 0 || replacementIndex < 0)
     .map(({ id }) => id);
   if (unknownPatchIds.length > 0) {
     const item = hardDiagnostic(
@@ -1868,17 +2053,6 @@ export const regenerateLocal = (
       untouchedSpanBytes: generated.spanBytes,
     };
   }
-  const sourceElements: AnySemanticElement[] = options.intent
-    ? baseIntent.elements.map((element) => {
-        const kind = (element.kind ??
-          element.type) as (typeof ELEMENT_KINDS)[number];
-        return createElement(
-          kind,
-          element.id,
-          element.parameters ?? {},
-        ) as AnySemanticElement;
-      })
-    : [...generated.elements];
   const changedElements: AnySemanticElement[] = sourceElements.map(
     (element) => {
       const patch = options.changes?.[element.id];
@@ -1895,6 +2069,17 @@ export const regenerateLocal = (
       ) as AnySemanticElement;
     },
   );
+  const parameterChangedOwnerIds = new Set<string>();
+  for (const [index, element] of changedElements.entries())
+    if (
+      canonicalJson(element.parameters) !==
+      canonicalJson(generated.elements[index]!.parameters)
+    )
+      parameterChangedOwnerIds.add(element.id);
+  const regeneratedOwnerIds = new Set([
+    ...patchIds,
+    ...parameterChangedOwnerIds,
+  ]);
   const changedIntent = {
     ...baseIntent,
     elements: changedElements.map((element) => ({
@@ -1905,7 +2090,7 @@ export const regenerateLocal = (
     })),
   } as unknown as DesignIntentV1;
   for (const id of pinned)
-    if (options.changes?.[id]) {
+    if (parameterChangedOwnerIds.has(id)) {
       const item = hardDiagnostic(
         "LOCAL_REGENERATION",
         `Pinned element ${id} cannot be changed during local regeneration`,
@@ -1935,14 +2120,18 @@ export const regenerateLocal = (
       : Math.min(...rightPinnedCandidates);
   const minimumStart = leftPinned + 1;
   const maximumEnd = rightPinned - 1;
-  const blockedPatchIds = patchIndices
+  const changedOwnerIndices = [...regeneratedOwnerIds].map((id) => ({
+    id,
+    index: generated.elements.findIndex((element) => element.id === id),
+  }));
+  const blockedChangeIds = changedOwnerIndices
     .filter(({ index }) => index < minimumStart || index > maximumEnd)
     .map(({ id }) => id);
-  if (blockedPatchIds.length > 0) {
+  if (blockedChangeIds.length > 0) {
     const item = hardDiagnostic(
       "LOCAL_REGENERATION",
-      `Pinned boundary blocks local regeneration patches: ${blockedPatchIds.join(", ")}`,
-      blockedPatchIds,
+      `Pinned boundary blocks local regeneration changes: ${blockedChangeIds.join(", ")}`,
+      blockedChangeIds,
     );
     return {
       feasible: false,
@@ -1953,22 +2142,27 @@ export const regenerateLocal = (
       untouchedSpanBytes: generated.spanBytes,
     };
   }
-  const includedPatchIndices = patchIndices.map(({ index }) => index);
+  const includedChangeIndices = changedOwnerIndices.map(({ index }) => index);
   const initialWindow: readonly [number, number] = [
     Math.min(
       Math.max(minimumStart, selectedIndex - 1),
-      ...includedPatchIndices,
+      ...includedChangeIndices,
     ),
-    Math.max(Math.min(maximumEnd, selectedIndex + 1), ...includedPatchIndices),
+    Math.max(Math.min(maximumEnd, selectedIndex + 1), ...includedChangeIndices),
   ];
   const queue: Array<readonly [number, number]> = [initialWindow];
   const visited = new Set<string>();
+  const requestedOwnerIds = new Set([
+    selectedElementId,
+    ...regeneratedOwnerIds,
+  ]);
   let lastDiagnostics: readonly Diagnostic[] = [];
   while (queue.length > 0) {
     const [localStart, localEnd] = queue.shift()!;
     const key = `${localStart}:${localEnd}`;
     if (visited.has(key)) continue;
     visited.add(key);
+    let failureIds: readonly string[] = [selectedElementId];
     try {
       const localSolved = solver.solveSemanticChain(
         changedElements.slice(localStart, localEnd + 1),
@@ -2004,6 +2198,24 @@ export const regenerateLocal = (
         const group = localByOwner.get(owner) ?? [];
         group.push(span);
         localByOwner.set(owner, group);
+      }
+      const missingSourceOwnerIds = [...requestedOwnerIds].filter(
+        (id) => !oldByOwner.has(id),
+      );
+      if (missingSourceOwnerIds.length > 0) {
+        failureIds = missingSourceOwnerIds;
+        throw new Error(
+          `Source generation is missing requested owners: ${missingSourceOwnerIds.join(", ")}`,
+        );
+      }
+      const missingRegeneratedOwnerIds = [...requestedOwnerIds].filter(
+        (id) => !localByOwner.has(id),
+      );
+      if (missingRegeneratedOwnerIds.length > 0) {
+        failureIds = missingRegeneratedOwnerIds;
+        throw new Error(
+          `Regenerated result is missing requested owners: ${missingRegeneratedOwnerIds.join(", ")}`,
+        );
       }
       const mergedSpans: SolvedSpan[] = [];
       for (let index = 0; index < generated.elements.length; index += 1) {
@@ -2081,7 +2293,7 @@ export const regenerateLocal = (
           ...hardDiagnostic(
             "LOCAL_REGENERATION",
             error instanceof Error ? error.message : String(error),
-            [selectedElementId],
+            failureIds,
           ),
           severity: "fatal",
         },

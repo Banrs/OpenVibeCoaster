@@ -412,6 +412,7 @@ const hardConflict = (
   detail: string,
   actual?: number,
   limit?: number,
+  suggestionKind: "requirement" | "target" = "requirement",
 ): Diagnostic => {
   const finiteActual = actual !== undefined && Number.isFinite(actual);
   const finiteLimit = limit !== undefined && Number.isFinite(limit);
@@ -422,7 +423,7 @@ const hardConflict = (
     severity: "error",
     provenance: "PROJECT_ENGINEERING_LIMIT",
     message: `Conflicting hard constraints (${ids.join(", ")}): ${detail}`,
-    suggestedRelaxation: `Relax ${ids.join(", ")} or one named hard target`,
+    suggestedRelaxation: `Relax failed hard ${suggestionKind}: ${ids.join(", ")}`,
     relatedIds: [...ids],
     ...(finiteActual ? { actual } : {}),
     ...(finiteLimit ? { limit } : {}),
@@ -963,6 +964,7 @@ export const solveSemanticChain = (
           `${target.kind} residual is ${error.toExponential(3)}`,
           error,
           targetTolerance(target, tolerances),
+          "target",
         ),
       );
     } else if (
@@ -1090,6 +1092,9 @@ export const solveSemanticChain = (
       hardConflict(
         hardIds,
         "multiple hard endpoint targets cannot be satisfied simultaneously",
+        undefined,
+        undefined,
+        "target",
       ),
     );
   if (initialState.solvedSpans.length !== solvedSpans.length)

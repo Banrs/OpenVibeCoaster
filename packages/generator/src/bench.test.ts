@@ -44,6 +44,60 @@ const percentile = (values: readonly number[], fraction: number): number => {
   );
 };
 
+const polynomialValue = (coefficients: readonly number[], u: number): number =>
+  coefficients.reduce(
+    (value, coefficient, power) => value + coefficient * u ** power,
+    0,
+  );
+
+const flagshipGeometry = (
+  result: ReturnType<typeof generateCoaster>,
+): {
+  readonly length: number;
+  readonly maxBank: number;
+  readonly accumulatedRoll: number;
+  readonly stallRise: number;
+  readonly lmWork: number;
+} => {
+  const overbankSpans = result.solvedSpans.filter((span) =>
+    span.id.startsWith("overbankedTurn-003"),
+  );
+  const rollSpans = result.solvedSpans.filter((span) =>
+    span.id.startsWith("zeroGRoll-006"),
+  );
+  const stallSpans = result.solvedSpans.filter((span) =>
+    span.id.startsWith("stall-007"),
+  );
+  const firstRoll = rollSpans[0]?.rollCoefficients;
+  if (!firstRoll || overbankSpans.length === 0 || stallSpans.length === 0)
+    throw new Error("Missing canonical flagship coefficient spans");
+  const bankValues = overbankSpans.flatMap((span) => {
+    const bank = span.rollCoefficients;
+    if (!bank) throw new Error(`Missing roll coefficients for ${span.id}`);
+    return Array.from({ length: 257 }, (_, index) =>
+      Math.abs(polynomialValue(bank, index / 256)),
+    );
+  });
+  const stallHeights = stallSpans.flatMap((span) => {
+    const height = span.positionCoefficients?.[1];
+    if (!height) throw new Error(`Missing height coefficients for ${span.id}`);
+    return Array.from({ length: 257 }, (_, index) =>
+      polynomialValue(height, index / 256),
+    );
+  });
+  return {
+    length: result.track.totalLength,
+    maxBank: Math.max(...bankValues),
+    accumulatedRoll: rollSpans.reduce((total, span) => {
+      const bank = span.rollCoefficients;
+      if (!bank) throw new Error(`Missing roll coefficients for ${span.id}`);
+      return total + polynomialValue(bank, 1) - polynomialValue(bank, 0);
+    }, 0),
+    stallRise: Math.max(...stallHeights) - Math.min(...stallHeights),
+    lmWork: result.candidateLmWork,
+  };
+};
+
 const timedGeneration = (
   measuredIntent: Parameters<typeof generateCoaster>[0],
   options: Parameters<typeof generateCoaster>[1] = {},
@@ -90,6 +144,7 @@ it("runs the deterministic generation benchmark", () => {
     timedGeneration({ ...intent, seed }, { samples: 32 }),
   );
   const results = measured.map(({ result }) => result);
+  const flagshipMetrics = results.map(flagshipGeometry);
   const nonzeroLmMeasured = timedGeneration(
     {
       ...intent,
@@ -179,6 +234,7 @@ it("runs the deterministic generation benchmark", () => {
     candidatesTested: results.map((result) => result.candidatesTested),
     candidateLmWork: results.map((result) => result.candidateLmWork),
     relaxationLmWork: results.map((result) => result.relaxationLmWork),
+    flagshipGeometry: flagshipMetrics,
     measuredCases: {
       rejection: {
         candidatesTested: rejection.candidatesTested,
@@ -241,18 +297,15 @@ it("runs the deterministic generation benchmark", () => {
     ),
   ).toBe(true);
   expect(
-    results.every(
-      (result) =>
-        Math.abs(
-          (result.elements[3]!.parameters as { readonly bank: number }).bank,
-        ) >
-          Math.PI / 2 &&
-        Math.abs(
-          (result.elements[6]!.parameters as { readonly roll: number }).roll,
-        ) ===
-          Math.PI * 2 &&
-        (result.elements[7]!.parameters as { readonly height: number }).height >
-          0,
+    flagshipMetrics.every(
+      (metrics, index) =>
+        metrics.length >= 1600 &&
+        metrics.length <= 2200 &&
+        metrics.maxBank > Math.PI / 2 &&
+        Math.abs(Math.abs(metrics.accumulatedRoll) - Math.PI * 2) < 1e-10 &&
+        metrics.stallRise > 10 &&
+        metrics.lmWork > 0 &&
+        metrics.lmWork <= results[index]!.candidatesTested * 32,
     ),
   ).toBe(true);
   expect(summary.feasible).toBe(true);
