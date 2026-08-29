@@ -1214,35 +1214,6 @@ export const validateClearance = (
     const segmentsBySpan = certifiedSpans.map(() => [] as Segment[]);
     for (const segment of selfSegments)
       segmentsBySpan[segment.spanIndex]!.push(segment);
-    const _endpointBoundsCache = new Map<string, Bounds>();
-    const _endpointBounds = (spanIndex: number, u: 0 | 1): Bounds => {
-      const key = `${spanIndex}:${u}`;
-      const cached = _endpointBoundsCache.get(key);
-      if (cached) return cached;
-      const ranges = polynomialRows(certifiedSpans[spanIndex]!).map((row) => {
-        if (u === 0) return { lo: row[0]!, hi: row[0]! };
-        let lo = 0;
-        let hi = 0;
-        for (const coefficient of row) {
-          budget.charge(2);
-          lo = finite(
-            nextDown(finite(lo + coefficient, "Endpoint lower sum")),
-            "Endpoint lower bound",
-          );
-          hi = finite(
-            nextUp(finite(hi + coefficient, "Endpoint upper sum")),
-            "Endpoint upper bound",
-          );
-        }
-        return { lo, hi };
-      });
-      const result = {
-        min: vec3(ranges[0]!.lo, ranges[1]!.lo, ranges[2]!.lo),
-        max: vec3(ranges[0]!.hi, ranges[1]!.hi, ranges[2]!.hi),
-      };
-      _endpointBoundsCache.set(key, result);
-      return result;
-    };
     const endpointCoincidenceCache = new Map<string, boolean>();
     const endpointsCoincide = (
       firstSpanIndex: number,

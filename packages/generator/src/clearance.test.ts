@@ -390,11 +390,20 @@ describe("certified same-span clearance", () => {
     const diagnostics = validateClearance([first, second], undefined, {
       trainEnvelopeRadius: 0,
     });
+    const secondDiagnostics = validateClearance([first, second], undefined, {
+      trainEnvelopeRadius: 0,
+    });
+    expect(secondDiagnostics).toEqual(diagnostics);
 
     const failure = diagnostics.find(
       (diagnostic) => diagnostic.code === "TRACK_CLEARANCE",
     );
     expect(failure).toBeDefined();
+    expect(failure?.relatedIds).toEqual([
+      "huge-base-first",
+      "huge-base-second",
+    ]);
+    expect(failure?.location?.position).toHaveLength(3);
     expect(
       [
         failure?.location?.s,
@@ -406,6 +415,7 @@ describe("certified same-span clearance", () => {
     ).toBe(true);
     expect(failure?.actual).toBeLessThanOrEqual(failure?.limit ?? -1);
     expect(failure?.limit).toBe(0);
+    expect(failure?.margin).toBe(failure!.actual! - failure!.limit!);
   });
 
   it("returns deterministic finite exact evidence for a same-span crossing", () => {
