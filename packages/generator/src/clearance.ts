@@ -34,6 +34,10 @@ interface Segment {
   readonly bounds: Bounds;
 }
 
+type CertifiedSpan = SolvedSpan & {
+  readonly span: SeventhOrderHermiteSpan<Vec3>;
+};
+
 interface PairNode {
   readonly first: Segment;
   readonly second: Segment;
@@ -76,6 +80,26 @@ const polynomialRows = (solved: SolvedSpan): readonly (readonly number[])[] => {
   return rows;
 };
 
+const canonicalSpan = (
+  solved: SolvedSpan,
+  budget: CertifiedWorkBudget,
+): CertifiedSpan => {
+  const rows = polynomialRows(solved).map((row) =>
+    row.map((coefficient) =>
+      chargeFinite(
+        budget,
+        coefficient,
+        `Span ${solved.id} position coefficient`,
+      ),
+    ),
+  );
+  return {
+    ...solved,
+    span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>(rows),
+    positionCoefficients: rows,
+  };
+};
+
 const chargeFinite = (
   budget: CertifiedWorkBudget,
   value: number,
@@ -86,7 +110,7 @@ const chargeFinite = (
 };
 
 const safePosition = (
-  span: SolvedSpan,
+  span: CertifiedSpan,
   u: number,
   budget: CertifiedWorkBudget,
 ): Vec3 => {
@@ -96,7 +120,7 @@ const safePosition = (
 };
 
 const safeDerivative = (
-  span: SolvedSpan,
+  span: CertifiedSpan,
   u: number,
   order: number,
   budget: CertifiedWorkBudget,
@@ -107,7 +131,7 @@ const safeDerivative = (
 };
 
 const safeArcLength = (
-  span: SolvedSpan,
+  span: CertifiedSpan,
   start = 0,
   end = 1,
   budget: CertifiedWorkBudget,
@@ -134,7 +158,8 @@ const outwardDifference = (
   budget: CertifiedWorkBudget,
 ): number => {
   budget.charge();
-  return finite(nextDown(left - right), "Certified lower subtraction");
+  const difference = finite(left - right, "Certified lower subtraction");
+  return finite(nextDown(difference), "Certified lower subtraction");
 };
 
 const outwardSum = (
@@ -143,7 +168,8 @@ const outwardSum = (
   budget: CertifiedWorkBudget,
 ): number => {
   budget.charge();
-  return finite(nextUp(left + right), "Certified upper addition");
+  const sum = finite(left + right, "Certified upper addition");
+  return finite(nextUp(sum), "Certified upper addition");
 };
 
 const inflate = (
@@ -177,7 +203,8 @@ const boxDistanceLower = (
     return 0;
   };
   budget.charge();
-  return finite(nextDown(Math.hypot(gap(0), gap(1), gap(2))), "Box distance");
+  const distance = finite(Math.hypot(gap(0), gap(1), gap(2)), "Box distance");
+  return finite(nextDown(distance), "Box distance");
 };
 
 const distanceToBoxUpper = (
@@ -192,10 +219,11 @@ const distanceToBoxUpper = (
       Math.abs(point[axis] - box.max[axis]),
     );
   };
-  return finite(
-    nextUp(Math.hypot(distance(0), distance(1), distance(2))),
+  const upper = finite(
+    Math.hypot(distance(0), distance(1), distance(2)),
     "Distance-to-box bound",
   );
+  return finite(nextUp(upper), "Distance-to-box bound");
 };
 
 const overlaps = (left: Bounds, right: Bounds): boolean =>
@@ -286,7 +314,7 @@ const failureDiagnostic = (
   uncertain(error instanceof Error ? error.message : String(error), ids);
 
 const validateSpanNumerics = (
-  span: SolvedSpan,
+  span: CertifiedSpan,
   budget: CertifiedWorkBudget,
 ): void => {
   const rows = polynomialRows(span);
@@ -320,7 +348,7 @@ const validateSpanNumerics = (
 const curveS = (
   segment: Segment,
   u: number,
-  spans: readonly SolvedSpan[],
+  spans: readonly CertifiedSpan[],
   budget: CertifiedWorkBudget,
 ): number =>
   finite(
@@ -330,11 +358,11 @@ const curveS = (
   );
 
 const makeSegments = (
-  spans: readonly SolvedSpan[],
+  spans: readonly CertifiedSpan[],
   initialCount: number,
   broadAmount: number,
   budget: CertifiedWorkBudget,
-  getBounds: (span: SolvedSpan, start: number, end: number) => Bounds,
+  getBounds: (span: CertifiedSpan, start: number, end: number) => Bounds,
 ): Segment[] => {
   const segmentCount = CertifiedWorkBudget.checkedProduct(
     spans.length,
@@ -449,7 +477,8 @@ export const validateClearance = (
       throw new CertificationError("No spans can be certified");
     if (spans.length > Number.MAX_SAFE_INTEGER / (initialCount - 1))
       throw new CertificationError("Segment count overflows");
-    for (const span of spans) validateSpanNumerics(span, budget);
+    const certifiedSpans = spans.map((span) => canonicalSpan(span, budget));
+    for (const span of certifiedSpans) validateSpanNumerics(span, budget);
     if (environment?.bounds) {
       const bounds = environment.bounds();
       for (const value of [...bounds.min, ...bounds.max])
@@ -458,7 +487,7 @@ export const validateClearance = (
     const limit = finite(radius * 2 + requestedClearance, "Clearance limit");
     const boundCache = new Map<string, Bounds>();
     const getBounds = (
-      span: SolvedSpan,
+      span: CertifiedSpan,
       start: number,
       end: number,
     ): Bounds => {
@@ -475,7 +504,7 @@ export const validateClearance = (
       return computed;
     };
     const segments = makeSegments(
-      spans,
+      certifiedSpans,
       initialCount,
       limit / 2,
       budget,
@@ -510,7 +539,7 @@ export const validateClearance = (
       end: number,
       depth: number,
     ): TerrainNode => {
-      const span = spans[segment.spanIndex]!;
+      const span = certifiedSpans[segment.spanIndex]!;
       const midpoint = (start + end) / 2;
       const witnessParameters = [start, midpoint, end];
       let witnessU = midpoint;
@@ -555,7 +584,7 @@ export const validateClearance = (
       };
     };
     const certifyTerrain = (segment: Segment): void => {
-      const span = spans[segment.spanIndex]!;
+      const span = certifiedSpans[segment.spanIndex]!;
       const stationaryParameters = new Set<number>();
       for (const axis of [0, 1, 2] as const)
         for (let seed = 0; seed <= 16; seed += 1) {
@@ -581,7 +610,7 @@ export const validateClearance = (
           "Terrain clearance witness",
         );
         if (actual <= 0) {
-          const s = curveS(segment, parameter, spans, budget);
+          const s = curveS(segment, parameter, certifiedSpans, budget);
           diagnostics.push(
             finiteDiagnostic(
               "TERRAIN_CLEARANCE",
@@ -655,8 +684,8 @@ export const validateClearance = (
       push(makeTerrainNode(segment, segment.startU, segment.endU, 0));
       while (pending.length > 0) {
         const node = pop();
-        const span = spans[segment.spanIndex]!;
-        const s = curveS(segment, node.witnessU, spans, budget);
+        const span = certifiedSpans[segment.spanIndex]!;
+        const s = curveS(segment, node.witnessU, certifiedSpans, budget);
         if (node.actual <= 0) {
           diagnostics.push(
             finiteDiagnostic(
@@ -692,7 +721,7 @@ export const validateClearance = (
         try {
           certifyTerrain(segment);
         } catch (error) {
-          stopWith(error, [spans[segment.spanIndex]!.id]);
+          stopWith(error, [certifiedSpans[segment.spanIndex]!.id]);
         }
       }
     }
@@ -707,7 +736,7 @@ export const validateClearance = (
       budget.charge();
       if (
         other === segment ||
-        adjacent(other, segment, closed, spans.length) ||
+        adjacent(other, segment, closed, certifiedSpans.length) ||
         !overlaps(other.bounds, segment.bounds)
       )
         return;
@@ -765,8 +794,8 @@ export const validateClearance = (
       while (stack.length > 0) {
         const node = stack.pop()!;
         budget.charge();
-        const firstSpan = spans[node.first.spanIndex]!;
-        const secondSpan = spans[node.second.spanIndex]!;
+        const firstSpan = certifiedSpans[node.first.spanIndex]!;
+        const secondSpan = certifiedSpans[node.second.spanIndex]!;
         const firstBox = getBounds(firstSpan, node.firstU0, node.firstU1);
         const secondBox = getBounds(secondSpan, node.secondU0, node.secondU1);
         if (boxDistanceLower(firstBox, secondBox, budget) > limit) continue;
@@ -800,7 +829,7 @@ export const validateClearance = (
           node.secondU1 < node.firstU0 - PARAMETER_TOLERANCE;
         if (disjointParameters && witnessDistance <= limit) {
           const point = safePosition(firstSpan, witnessFirst, budget);
-          const s = curveS(node.first, witnessFirst, spans, budget);
+          const s = curveS(node.first, witnessFirst, certifiedSpans, budget);
           diagnostics.push(
             finiteDiagnostic(
               "TRACK_CLEARANCE",
@@ -846,8 +875,8 @@ export const validateClearance = (
         processPair(root);
       } catch (error) {
         stopWith(error, [
-          spans[root.first.spanIndex]!.id,
-          spans[root.second.spanIndex]!.id,
+          certifiedSpans[root.first.spanIndex]!.id,
+          certifiedSpans[root.second.spanIndex]!.id,
         ]);
       }
     }

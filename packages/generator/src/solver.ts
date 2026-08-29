@@ -592,11 +592,11 @@ const buildChain = (
 };
 
 const applyAuthoredStartFrame = (
-  state: ChainState,
+  spans: readonly SolvedSpan[],
   startPose: Pose,
-): ChainState => {
-  const first = state.solvedSpans[0];
-  if (!first?.bank) return state;
+): readonly SolvedSpan[] => {
+  const first = spans[0];
+  if (!first?.bank) return spans;
   const tangent = vec3Normalize(first.span.derivative(0, 1));
   const reference = Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
   const projected = vec3Sub(
@@ -615,7 +615,7 @@ const applyAuthoredStartFrame = (
     vec3Dot(tangent, vec3Cross(currentNormal, startPose.normal)),
     vec3Dot(currentNormal, startPose.normal),
   );
-  if (Math.abs(correction) < 1e-12) return state;
+  if (Math.abs(correction) < 1e-12) return spans;
   const correctionSpan = new QuinticScalarSpan({
     v0: correction,
     d10: 0,
@@ -624,7 +624,7 @@ const applyAuthoredStartFrame = (
     d11: 0,
     d21: 0,
   });
-  const solvedSpans = state.solvedSpans.map((span, index) =>
+  return spans.map((span, index) =>
     index === 0
       ? {
           ...span,
@@ -638,7 +638,6 @@ const applyAuthoredStartFrame = (
         }
       : span,
   );
-  return { ...state, solvedSpans };
 };
 
 const appendEndpointResiduals = (
@@ -738,13 +737,10 @@ export const solveSemanticChain = (
   const initial = bindings.map((binding) => binding.initial);
   const referenceSpeed = options.referenceSpeed ?? 25;
   const stateFor = (values: readonly number[]): ChainState =>
-    applyAuthoredStartFrame(
-      buildChain(
-        elementsAt(elements, bindings, values),
-        startPose,
-        referenceSpeed,
-      ),
+    buildChain(
+      elementsAt(elements, bindings, values),
       startPose,
+      referenceSpeed,
     );
   const initialState = stateFor(initial);
   const residualAt = (values: readonly number[]): readonly number[] => [
@@ -985,9 +981,14 @@ export const compileSemanticChain = (
       ? {}
       : { tolerance: options.tolerance }),
   };
+  const solvedSpans = applyAuthoredStartFrame(
+    result.solvedSpans,
+    result.startPose,
+  );
   return {
     ...result,
-    track: compileTrack(result.solvedSpans, compileOptions),
+    solvedSpans: Object.freeze(solvedSpans),
+    track: compileTrack(solvedSpans, compileOptions),
   };
 };
 

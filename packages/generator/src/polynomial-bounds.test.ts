@@ -104,7 +104,7 @@ describe("certified polynomial bounds", () => {
   });
 
   it.each([Number.NaN, Number.POSITIVE_INFINITY])(
-    "rejects non-finite evaluated positions (%s) fatally",
+    "uses finite stored coefficients instead of a lying runtime position (%s)",
     (invalidPosition) => {
       const finiteRows = [
         [0, 1, 0, 0, 0, 0, 0, 0],
@@ -121,12 +121,110 @@ describe("certified polynomial bounds", () => {
         bank: { position: () => 0, derivative: () => 0 },
       };
       const diagnostics = validateClearance([span], undefined);
+      expect(diagnostics.some((item) => item.severity === "fatal")).toBe(false);
+      expect(diagnostics).toEqual([]);
+    },
+  );
+
+  it("certifies collisions from stored coefficients when public spans lie", () => {
+    const firstGeometry = SeventhOrderHermiteSpan.line<Vec3>(
+      vec3(0, 0, 0),
+      vec3(10, 0, 0),
+    );
+    const secondGeometry = SeventhOrderHermiteSpan.line<Vec3>(
+      vec3(5, -1, 0),
+      vec3(5, 1, 0),
+    );
+    const first = {
+      id: "canonical-first",
+      span: SeventhOrderHermiteSpan.line<Vec3>(
+        vec3(0, 100, 0),
+        vec3(10, 100, 0),
+      ),
+      positionCoefficients: firstGeometry.coefficients,
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const second = {
+      id: "canonical-second",
+      span: SeventhOrderHermiteSpan.line<Vec3>(
+        vec3(500, -100, 0),
+        vec3(500, -99, 0),
+      ),
+      positionCoefficients: secondGeometry.coefficients,
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const diagnostics = validateClearance([first, second], undefined, {
+      trainEnvelopeRadius: 0.1,
+      samplesPerSpan: 5,
+    });
+    expect(diagnostics.some((item) => item.code === "TRACK_CLEARANCE")).toBe(
+      true,
+    );
+    expect(diagnostics.some((item) => item.severity === "fatal")).toBe(false);
+  });
+
+  it("fails closed when finite coordinates or radii overflow distance arithmetic", () => {
+    const first = {
+      id: "overflow-first",
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        [Number.MAX_VALUE, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+      ]),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const second = {
+      id: "overflow-second",
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        [-Number.MAX_VALUE, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+      ]),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const coordinateDiagnostics = validateClearance(
+      [first, second],
+      undefined,
+      {
+        samplesPerSpan: 2,
+        trainEnvelopeRadius: 1,
+      },
+    );
+    const radiusDiagnostics = validateClearance(
+      [
+        {
+          id: "overflow-radius",
+          span: SeventhOrderHermiteSpan.line<Vec3>(
+            vec3(0, 1, 0),
+            vec3(1, 1, 0),
+          ),
+          bank: { position: () => 0, derivative: () => 0 },
+        },
+      ],
+      undefined,
+      { trainEnvelopeRadius: Number.MAX_VALUE },
+    );
+    for (const diagnostics of [coordinateDiagnostics, radiusDiagnostics]) {
       expect(
         diagnostics.some((item) => item.code === "CLEARANCE_UNCERTIFIED"),
       ).toBe(true);
       expect(diagnostics.some((item) => item.severity === "fatal")).toBe(true);
-    },
-  );
+      for (const diagnostic of diagnostics) {
+        expect(
+          [diagnostic.actual, diagnostic.limit, diagnostic.margin].every(
+            (value) => value === undefined || Number.isFinite(value),
+          ),
+        ).toBe(true);
+        if (diagnostic.location) {
+          expect(Number.isFinite(diagnostic.location.s)).toBe(true);
+          if (diagnostic.location.position)
+            expect(diagnostic.location.position.every(Number.isFinite)).toBe(
+              true,
+            );
+        }
+      }
+    }
+  });
 
   it("rejects non-finite environment distances fatally", () => {
     const span = {

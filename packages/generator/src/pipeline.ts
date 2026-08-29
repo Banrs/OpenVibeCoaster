@@ -17,6 +17,7 @@ import {
   vec3Dot,
   vec3Sub,
   vec3Normalize,
+  vec3Scale,
   vec3,
   transportFramesAlongPath,
   type Diagnostic,
@@ -227,6 +228,88 @@ const hashSpan = (span: SolvedSpan): string => {
     hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193);
   return (hash >>> 0).toString(16).padStart(8, "0");
 };
+
+const finiteNumber = (value: number | undefined): number | undefined =>
+  value !== undefined && Number.isFinite(value) ? value : undefined;
+
+const finitePosition = (value: Vec3 | undefined): Vec3 | undefined =>
+  value && value.every(Number.isFinite) ? value : undefined;
+
+const sanitizeDiagnostic = (diagnostic: Diagnostic): Diagnostic => {
+  const actual = finiteNumber(diagnostic.actual);
+  const limit = finiteNumber(diagnostic.limit);
+  const suppliedMargin = finiteNumber(diagnostic.margin);
+  const margin =
+    suppliedMargin ??
+    (actual !== undefined && limit !== undefined
+      ? finiteNumber(limit - actual)
+      : undefined);
+  const locationS = finiteNumber(diagnostic.location?.s);
+  const locationPosition = finitePosition(diagnostic.location?.position);
+  const evidenceWasInvalid =
+    (diagnostic.actual !== undefined && actual === undefined) ||
+    (diagnostic.limit !== undefined && limit === undefined) ||
+    (diagnostic.margin !== undefined && suppliedMargin === undefined) ||
+    (diagnostic.location !== undefined && locationS === undefined) ||
+    (diagnostic.location?.position !== undefined &&
+      locationPosition === undefined) ||
+    (actual !== undefined &&
+      limit !== undefined &&
+      suppliedMargin === undefined &&
+      margin === undefined);
+  const {
+    actual: _actual,
+    limit: _limit,
+    margin: _margin,
+    location: _location,
+    ...rest
+  } = diagnostic;
+  return {
+    ...rest,
+    ...(actual === undefined ? {} : { actual }),
+    ...(limit === undefined ? {} : { limit }),
+    ...(margin === undefined ? {} : { margin }),
+    ...(locationS === undefined
+      ? {}
+      : {
+          location: {
+            s: locationS,
+            ...(locationPosition === undefined
+              ? {}
+              : { position: locationPosition }),
+          },
+        }),
+    ...(evidenceWasInvalid
+      ? {
+          code: "NUMERIC_UNCERTIFIED",
+          severity: "fatal" as const,
+          message: `${diagnostic.message}; non-finite diagnostic evidence`,
+        }
+      : {}),
+  };
+};
+
+const sanitizeDiagnostics = (
+  diagnostics: readonly Diagnostic[],
+): readonly Diagnostic[] => diagnostics.map(sanitizeDiagnostic);
+
+const positionGeometry = (span: SolvedSpan): SeventhOrderHermiteSpan<Vec3> => {
+  const rows =
+    span.positionCoefficients ??
+    (span.span instanceof SeventhOrderHermiteSpan
+      ? span.span.coefficients
+      : undefined);
+  if (!rows || rows.length !== 3 || rows.some((row) => row.length !== 8))
+    throw new CertificationError(
+      `Span ${span.id} has no certified degree-seven position polynomial`,
+    );
+  if (rows.some((row) => row.some((value) => !Number.isFinite(value))))
+    throw new CertificationError(
+      `Span ${span.id} has non-finite position coefficients`,
+    );
+  return SeventhOrderHermiteSpan.fromCoefficients<Vec3>(rows);
+};
+
 const hardDiagnostic = (
   code: string,
   message: string,
@@ -234,19 +317,20 @@ const hardDiagnostic = (
   actual?: number,
   limit?: number,
   location?: { readonly s: number; readonly position?: Vec3 },
-): Diagnostic => ({
-  code,
-  severity: "error",
-  provenance: "PROJECT_ENGINEERING_LIMIT",
-  message,
-  ...(relatedIds ? { relatedIds } : {}),
-  ...(actual === undefined ? {} : { actual }),
-  ...(limit === undefined ? {} : { limit }),
-  ...(actual === undefined || limit === undefined
-    ? {}
-    : { margin: limit - actual }),
-  ...(location ? { location } : {}),
-});
+): Diagnostic =>
+  sanitizeDiagnostic({
+    code,
+    severity: "error",
+    provenance: "PROJECT_ENGINEERING_LIMIT",
+    message,
+    ...(relatedIds ? { relatedIds } : {}),
+    ...(actual === undefined ? {} : { actual }),
+    ...(limit === undefined ? {} : { limit }),
+    ...(actual === undefined || limit === undefined
+      ? {}
+      : { margin: limit - actual }),
+    ...(location ? { location } : {}),
+  });
 
 const pathSamples = (
   spans: readonly SolvedSpan[],
@@ -261,14 +345,15 @@ const pathSamples = (
   const points: { span: SolvedSpan; u: number; s: number; point: Vec3 }[] = [];
   let distance = 0;
   for (const span of spans) {
-    const length = arcLength(span.span, 0, 1);
+    const geometry = positionGeometry(span);
+    const length = arcLength(geometry, 0, 1);
     for (let index = 0; index <= 128; index += 1) {
       const u = index / 128;
       points.push({
         span,
         u,
         s: distance + length * u,
-        point: span.span.position(u),
+        point: geometry.position(u),
       });
     }
     distance += length;
@@ -276,7 +361,7 @@ const pathSamples = (
   const frames = transportFramesAlongPath(
     points.map((sample) => sample.point),
     points.map((sample) =>
-      vec3Normalize(sample.span.span.derivative(sample.u, 1)),
+      vec3Normalize(positionGeometry(sample.span).derivative(sample.u, 1)),
     ),
     points.map((_, index) => index),
     points.map((sample) => sample.span.bank?.position(sample.u) ?? 0),
@@ -803,7 +888,7 @@ const evaluateCandidate = (
     elementSpans,
     spans,
     solved,
-    diagnostics,
+    diagnostics: sanitizeDiagnostics(diagnostics),
     ...(track ? { track } : {}),
     solvingMs,
     validationMs: now() - validationStart,
@@ -1177,16 +1262,33 @@ const coefficientBoundaryPose = (
     generated.track.tangents[boundaryIndex * 3 + 1]!,
     generated.track.tangents[boundaryIndex * 3 + 2]!,
   );
-  const bank = source.bank?.position(u) ?? 0;
+  const position = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+    source.positionCoefficients!,
+  );
+  const bankSpan = source.rollCoefficients
+    ? QuinticScalarSpan.fromCoefficients(source.rollCoefficients)
+    : source.bank;
+  const bank = bankSpan?.position(u) ?? 0;
   const rolledNormal = vec3(
     generated.track.normals[boundaryIndex * 3]!,
     generated.track.normals[boundaryIndex * 3 + 1]!,
     generated.track.normals[boundaryIndex * 3 + 2]!,
   );
+  const compiledBinormal = vec3(
+    generated.track.binormals[boundaryIndex * 3]!,
+    generated.track.binormals[boundaryIndex * 3 + 1]!,
+    generated.track.binormals[boundaryIndex * 3 + 2]!,
+  );
+  const normal = vec3Normalize(
+    vec3Sub(
+      vec3Scale(rolledNormal, Math.cos(bank)),
+      vec3Scale(compiledBinormal, Math.sin(bank)),
+    ),
+  );
   return {
-    position: source.span.position(u),
+    position: position.position(u),
     tangent,
-    normal: rolledNormal,
+    normal,
     bank,
   };
 };
@@ -1236,7 +1338,7 @@ const localSeamDiagnostics = (
         ),
       );
   }
-  return diagnostics;
+  return sanitizeDiagnostics(diagnostics);
 };
 
 const mergedDiagnostics = (

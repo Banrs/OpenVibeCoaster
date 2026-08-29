@@ -6,11 +6,13 @@ import {
   validateClearance,
 } from "./index";
 import {
+  CompiledTrackData,
   aabbFromPoints,
   compileTrack,
   HeightfieldEnvironment,
   serializeCoasterFileV1,
   vec3,
+  vec3Cross,
   vec3Normalize,
   type SolvedSpan,
 } from "@openvibecoaster/core";
@@ -49,11 +51,7 @@ const rigidlyRotate = (value: Vec3): Vec3 => {
   const xAngle = -0.47;
   const cosZ = Math.cos(zAngle);
   const sinZ = Math.sin(zAngle);
-  const rotatedZ = vec3(
-    cosZ * x - sinZ * y,
-    sinZ * x + cosZ * y,
-    z,
-  );
+  const rotatedZ = vec3(cosZ * x - sinZ * y, sinZ * x + cosZ * y, z);
   const cosX = Math.cos(xAngle);
   const sinX = Math.sin(xAngle);
   return vec3(
@@ -70,13 +68,15 @@ const rigidlyTransform = (value: Vec3): Vec3 => {
 
 const rigidlyTransformSpan = (span: SolvedSpan): SolvedSpan => {
   const rows = span.positionCoefficients;
+  if (!rows) throw new Error(`Missing position coefficients for ${span.id}`);
   const positionCoefficients = [0, 1, 2].map((component) =>
     Array.from({ length: 8 }, (_, power) => {
       const rotated = rigidlyRotate(
         vec3(rows[0]![power]!, rows[1]![power]!, rows[2]![power]!),
       );
-      return rotated[component]! +
-        (power === 0 ? [31, -17, 23][component]! : 0);
+      return (
+        rotated[component]! + (power === 0 ? [31, -17, 23][component]! : 0)
+      );
     }),
   );
   const transformed = {
@@ -95,6 +95,49 @@ const rigidlyTransformSpan = (span: SolvedSpan): SolvedSpan => {
   };
   return transformed;
 };
+
+const rigidlyTransformTrackVectors = (
+  values: Float64Array,
+  transform: (value: Vec3) => Vec3,
+): Float64Array => {
+  const transformed = new Float64Array(values.length);
+  for (let index = 0; index < values.length / 3; index += 1) {
+    const value = vec3(
+      values[index * 3]!,
+      values[index * 3 + 1]!,
+      values[index * 3 + 2]!,
+    );
+    const result = transform(value);
+    transformed[index * 3] = result[0];
+    transformed[index * 3 + 1] = result[1];
+    transformed[index * 3 + 2] = result[2];
+  }
+  return transformed;
+};
+
+const rigidlyTransformTrack = (
+  track: ReturnType<typeof compileTrack>,
+): CompiledTrackData =>
+  new CompiledTrackData({
+    positions: rigidlyTransformTrackVectors(track.positions, rigidlyTransform),
+    tangents: rigidlyTransformTrackVectors(track.tangents, rigidlyRotate),
+    normals: rigidlyTransformTrackVectors(track.normals, rigidlyRotate),
+    binormals: rigidlyTransformTrackVectors(track.binormals, rigidlyRotate),
+    distances: track.distances,
+    curvature: track.curvature,
+    curvatureVector: rigidlyTransformTrackVectors(
+      track.curvatureVector,
+      rigidlyRotate,
+    ),
+    bank: track.bank,
+    bankDerivative: track.bankDerivative,
+    zoneMasks: track.zoneMasks,
+    zoneNames: track.zoneNames,
+    elementIndices: track.elementIndices,
+    elementBoundaries: track.elementBoundaries,
+    parameters: track.parameters,
+    totalLength: track.totalLength,
+  });
 
 describe("wave 3 deterministic generator", () => {
   it("builds the flagship semantic sequence for automatic modes", () => {
@@ -553,28 +596,43 @@ describe("wave 3 deterministic generator", () => {
     ]);
   });
 
-  it("catches a narrow polynomial self-crossing missed by the initial chord", () => {
+  it("catches an off-grid polynomial crossing missed by sampled boxes", () => {
     const first = {
-      id: "narrow-first",
+      id: "off-grid-first",
       span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
         [0, 10, 0, 0, 0, 0, 0, 0],
-        [1, -4, 4, 0, 0, 0, 0, 0],
-        [1, -4, 4, 0, 0, 0, 0, 0],
+        [0.5, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
       ]),
       bank: { position: () => 0, derivative: () => 0 },
     };
     const second = {
-      id: "narrow-second",
+      id: "off-grid-second",
       span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
-        [5.5, -2, 2, 0, 0, 0, 0, 0],
-        [-2, 4, 0, 0, 0, 0, 0, 0],
-        [2, -8, 8, 0, 0, 0, 0, 0],
+        [5, 0, 0, 0, 0, 0, 0, 0],
+        [14.19, -74, 100, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
       ]),
       bank: { position: () => 0, derivative: () => 0 },
     };
+    const sampledFirst = [0, 0.25, 0.5, 0.75, 1].map((u) =>
+      first.span.position(u),
+    );
+    const sampledSecond = [0, 0.25, 0.5, 0.75, 1].map((u) =>
+      second.span.position(u),
+    );
+    expect(
+      Math.min(
+        ...sampledFirst.flatMap((left) =>
+          sampledSecond.map((right) =>
+            Math.hypot(left[0] - right[0], left[1] - right[1]),
+          ),
+        ),
+      ),
+    ).toBeGreaterThan(0.1);
     const diagnostics = validateClearance([first, second], undefined, {
-      trainEnvelopeRadius: 0.1,
-      samplesPerSpan: 3,
+      trainEnvelopeRadius: 0.01,
+      samplesPerSpan: 5,
     });
     expect(diagnostics.some((item) => item.code === "TRACK_CLEARANCE")).toBe(
       true,
@@ -1098,6 +1156,7 @@ describe("wave 3 deterministic generator", () => {
       ],
       pinnedElementIds: ["station-000", "transition-001"],
     });
+    expect(generated.diagnostics).toEqual([]);
     const solveSpy = vi.spyOn(solver, "solveSemanticChain");
     const result = regenerateLocal(generated, "stall-002", {
       changes: { "stall-002": { height: 19 } },
@@ -1125,7 +1184,42 @@ describe("wave 3 deterministic generator", () => {
       .find((span) => span.id === "transition-001")!
       .bank!.position(1);
     expect(Math.abs(tangent[1])).toBeGreaterThan(0.01);
-    expect(startPose.normal).toEqual(rolledNormal);
+    const compiledBinormal = vec3(
+      generated.track.binormals[boundaryIndex * 3]!,
+      generated.track.binormals[boundaryIndex * 3 + 1]!,
+      generated.track.binormals[boundaryIndex * 3 + 2]!,
+    );
+    const expectedUnrolled = vec3Normalize(
+      vec3(
+        rolledNormal[0] * Math.cos(bank) - compiledBinormal[0] * Math.sin(bank),
+        rolledNormal[1] * Math.cos(bank) - compiledBinormal[1] * Math.sin(bank),
+        rolledNormal[2] * Math.cos(bank) - compiledBinormal[2] * Math.sin(bank),
+      ),
+    );
+    expect(startPose.normal).toEqual(expectedUnrolled);
+    const reappliedNormal = vec3Normalize(
+      vec3(
+        startPose.normal[0] * Math.cos(bank) +
+          vec3Cross(tangent, startPose.normal)[0] * Math.sin(bank),
+        startPose.normal[1] * Math.cos(bank) +
+          vec3Cross(tangent, startPose.normal)[1] * Math.sin(bank),
+        startPose.normal[2] * Math.cos(bank) +
+          vec3Cross(tangent, startPose.normal)[2] * Math.sin(bank),
+      ),
+    );
+    const reappliedBinormal = vec3Normalize(
+      vec3Cross(tangent, reappliedNormal),
+    );
+    for (const component of [0, 1, 2] as const) {
+      expect(reappliedNormal[component]).toBeCloseTo(
+        rolledNormal[component]!,
+        12,
+      );
+      expect(reappliedBinormal[component]).toBeCloseTo(
+        compiledBinormal[component]!,
+        12,
+      );
+    }
     expect(startPose.bank).toBeCloseTo(bank, 10);
   }, 120000);
 
@@ -1140,35 +1234,30 @@ describe("wave 3 deterministic generator", () => {
           parameters: { length: 12, bank: 0, closed: false },
         },
         {
-          id: "turn-001",
-          kind: "overbankedTurn",
-          type: "overbankedTurn",
-          parameters: { radius: 20, angle: Math.PI / 2, bank: 0.4 },
-        },
-        {
-          id: "transition-002",
+          id: "transition-001",
           kind: "transition",
           type: "transition",
           parameters: { length: 24, rise: 8, pitch: 0.25, bank: 0.7 },
         },
         {
-          id: "stall-003",
+          id: "stall-002",
           kind: "stall",
           type: "stall",
           parameters: { length: 32, height: 18, bank: 0.7 },
         },
       ],
-      pinnedElementIds: ["station-000", "turn-001", "transition-002"],
+      pinnedElementIds: ["station-000", "transition-001"],
     });
+    expect(generated.diagnostics).toEqual([]);
     const solveSpy = vi.spyOn(solver, "solveSemanticChain");
-    const original = regenerateLocal(generated, "stall-003", {
-      changes: { "stall-003": { height: 19 } },
-      pinnedElementIds: ["station-000", "turn-001", "transition-002"],
+    const original = regenerateLocal(generated, "stall-002", {
+      changes: { "stall-002": { height: 19 } },
+      pinnedElementIds: ["station-000", "transition-001"],
     });
     const originalCall = solveSpy.mock.calls.find(
       ([, options]) => options?.startPose !== undefined,
     );
-    expect(original.feasible).toBe(true);
+    expect(original.diagnostics).toEqual([]);
     expect(originalCall).toBeDefined();
     const originalPose = originalCall![1]!.startPose!;
 
@@ -1177,11 +1266,11 @@ describe("wave 3 deterministic generator", () => {
     const transformedGenerated = {
       ...generated,
       solvedSpans: Object.freeze(transformedSpans),
-      track: compileTrack(transformedSpans, { samples: 32 }),
+      track: rigidlyTransformTrack(generated.track),
     };
-    const transformed = regenerateLocal(transformedGenerated, "stall-003", {
-      changes: { "stall-003": { height: 19 } },
-      pinnedElementIds: ["station-000", "turn-001", "transition-002"],
+    const transformed = regenerateLocal(transformedGenerated, "stall-002", {
+      changes: { "stall-002": { height: 19 } },
+      pinnedElementIds: ["station-000", "transition-001"],
     });
     const transformedCall = solveSpy.mock.calls.find(
       ([, options]) => options?.startPose !== undefined,
@@ -1286,5 +1375,49 @@ describe("wave 3 deterministic generator", () => {
     );
     expect(result.feasible).toBe(false);
     expect(signedDistanceCalls).toBe(0);
+  });
+
+  it("publishes only finite evidence for extreme hard target, height, and footprint failures", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      targets: [
+        {
+          id: "extreme-target",
+          kind: "end-z",
+          target: -Number.MAX_VALUE,
+          hard: true,
+        },
+      ],
+      footprint: {
+        min: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE] as const,
+        max: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE] as const,
+      },
+      heightRange: { min: Number.MAX_VALUE, max: Number.MAX_VALUE },
+      constraints: [
+        {
+          id: "extreme-height",
+          kind: "min-height",
+          target: Number.MAX_VALUE,
+          hard: true,
+        },
+      ],
+    });
+    expect(result.feasible).toBe(false);
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+    for (const diagnostic of result.diagnostics) {
+      for (const value of [
+        diagnostic.actual,
+        diagnostic.limit,
+        diagnostic.margin,
+      ])
+        expect(value === undefined || Number.isFinite(value)).toBe(true);
+      if (diagnostic.location) {
+        expect(Number.isFinite(diagnostic.location.s)).toBe(true);
+        if (diagnostic.location.position)
+          expect(diagnostic.location.position.every(Number.isFinite)).toBe(
+            true,
+          );
+      }
+    }
   });
 });
