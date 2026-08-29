@@ -107,6 +107,7 @@ const makeTimeline = (): RideTimeline =>
     timeSeconds: new Float64Array([0, 1, 2]),
     headDistanceM: new Float64Array([0, 10, 4]),
     speedMps: new Float64Array([3, -4, 2]),
+    jerkMps3: new Float64Array([0, 0, 0, 0, 1, 0, 0, 2, 0]),
     carCount: 3,
     carPositionsXYZ: new Float64Array(3 * 3 * 3),
     carTangentsXYZ: new Float64Array(3 * 3 * 3),
@@ -116,6 +117,18 @@ const makeTimeline = (): RideTimeline =>
   });
 
 describe("RidePlaybackController", () => {
+  it("accepts the simulator's populated flattened jerk output", () => {
+    const timeline = makeTimeline();
+
+    expect(Array.from(timeline.jerkMps3)).toEqual([0, 0, 0, 0, 1, 0, 0, 2, 0]);
+
+    const controller = createRidePlayback(timeline);
+    expect(controller.getSnapshot().telemetry?.jerkMps3).toEqual([0, 0, 0]);
+
+    controller.scrubIndex(2);
+    expect(controller.getSnapshot().telemetry?.jerkMps3).toEqual([0, 2, 0]);
+  });
+
   it("derives real front/middle/rear seat selections and renderer camera IDs", () => {
     const controller = createRidePlayback(makeTimeline());
 
@@ -335,5 +348,19 @@ describe("RidePlaybackController", () => {
         }),
       ),
     ).toThrow(/orthonormal/);
+
+    for (const invalidLength of [1, 2, 3, 8, 10]) {
+      expect(() =>
+        createRidePlayback(
+          new RideTimeline({
+            sampleRateHz: 1,
+            timeSeconds: new Float64Array([0, 1, 2]),
+            headDistanceM: new Float64Array([0, 1, 2]),
+            speedMps: new Float64Array([0, 1, 2]),
+            jerkMps3: new Float64Array(invalidLength),
+          }),
+        ),
+      ).toThrow(/jerkMps3/);
+    }
   });
 });

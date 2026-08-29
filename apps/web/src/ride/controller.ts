@@ -272,7 +272,6 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
     ["longitudinalG", timeline.longitudinalG],
     ["lateralG", timeline.lateralG],
     ["verticalG", timeline.verticalG],
-    ["jerkMps3", timeline.jerkMps3],
   ] as const) {
     if (values.length !== 0 && values.length !== times.length)
       throw new RangeError(`${name} length must match time length`);
@@ -280,6 +279,14 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
       requireFiniteNumber(value, `${name}[${index}]`),
     );
   }
+  const jerkMps3 = timeline.jerkMps3;
+  if (jerkMps3.length !== 0 && jerkMps3.length !== times.length * 3)
+    throw new RangeError(
+      "jerkMps3 length must contain three components per time sample",
+    );
+  jerkMps3.forEach((value, index) =>
+    requireFiniteNumber(value, `jerkMps3[${index}]`),
+  );
   if (frames.length !== 0 && frames.length !== times.length)
     throw new RangeError("RideTimeline frames length must match time length");
   frames.forEach((frame, index) => {
