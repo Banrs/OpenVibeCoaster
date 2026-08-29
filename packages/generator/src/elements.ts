@@ -713,45 +713,33 @@ export const buildElement = (
     }
     case "airtimeHill": {
       const p = element.parameters as ElementParameterMap["airtimeHill"];
-      const flatForceProfile = (
-        element as AnySemanticElement & { readonly flatForceProfile?: boolean }
-      ).flatForceProfile;
-      if (flatForceProfile) {
-        const line = lineSpan(normalizedPose, p.length, p.bank);
-        span = line.span;
-        endPose = line.endPose;
-      } else {
-        const profile = forceProfileSpan(
-          normalizedPose,
-          p.length,
-          p.targetForceG,
-          p.referenceSpeed,
-        );
-        span = profile.span;
-        endPose = { ...profile.endPose, bank: p.bank };
-      }
+      const profile = forceProfileSpan(
+        normalizedPose,
+        p.length,
+        p.targetForceG,
+        p.referenceSpeed,
+      );
+      span = profile.span;
+      endPose = { ...profile.endPose, bank: p.bank };
       endBank = p.bank;
       break;
     }
     case "overbankedTurn": {
       const p = element.parameters as ElementParameterMap["overbankedTurn"];
-      const curve = circularSpan(
-        normalizedPose,
-        p.radius,
-        Math.abs(p.angle) / (2 * Math.PI),
-        Math.sign(p.angle) || 1,
-      );
-      const smoothEnds = (
-        element as AnySemanticElement & { readonly smoothEnds?: boolean }
-      ).smoothEnds;
-      const generatedCurve = smoothEnds
-        ? transitionedCircularSpan(
-            normalizedPose,
-            p.radius,
-            Math.abs(p.angle) / (2 * Math.PI),
-            Math.sign(p.angle) || 1,
-          )
-        : curve;
+      const generatedCurve =
+        p.bank === 0
+          ? transitionedCircularSpan(
+              normalizedPose,
+              p.radius,
+              Math.abs(p.angle) / (2 * Math.PI),
+              Math.sign(p.angle) || 1,
+            )
+          : circularSpan(
+              normalizedPose,
+              p.radius,
+              Math.abs(p.angle) / (2 * Math.PI),
+              Math.sign(p.angle) || 1,
+            );
       span = generatedCurve.span;
       endPose = { ...generatedCurve.endPose, bank: p.bank };
       endBank = p.bank;

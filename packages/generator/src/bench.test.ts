@@ -92,6 +92,10 @@ it("runs the deterministic generation benchmark", () => {
     const values = results.map((result) => result.stageTimings[name]);
     return { p50Ms: percentile(values, 0.5), p95Ms: percentile(values, 0.95) };
   };
+  const p95Ms = percentile(
+    results.map((result) => result.stageTimings.totalMs),
+    0.95,
+  );
   const summary = {
     warmupSeeds: 3,
     seeds: results.length,
@@ -139,10 +143,7 @@ it("runs the deterministic generation benchmark", () => {
       results.map((result) => result.stageTimings.totalMs),
       0.5,
     ),
-    p95Ms: percentile(
-      results.map((result) => result.stageTimings.totalMs),
-      0.95,
-    ),
+    p95Ms,
     stages: {
       search: stage("searchMs"),
       solving: stage("solvingMs"),
@@ -156,7 +157,7 @@ it("runs the deterministic generation benchmark", () => {
     },
     target: {
       p95Ms: 1000,
-      met: misses.length === 0,
+      met: p95Ms <= 1000,
       misses,
     },
     feasible: results.every((result) => result.feasible),

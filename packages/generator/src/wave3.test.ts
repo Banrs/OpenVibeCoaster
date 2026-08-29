@@ -9,6 +9,7 @@ import {
   HeightfieldEnvironment,
   serializeCoasterFileV1,
   vec3,
+  vec3Normalize,
 } from "@openvibecoaster/core";
 import { SeventhOrderHermiteSpan, type Vec3 } from "@openvibecoaster/core";
 import * as solver from "./solver";
@@ -127,6 +128,39 @@ describe("wave 3 deterministic generator", () => {
     );
     expect(loaded.track.checksum).toBe(result.track.checksum);
     expect(serializeCoasterFileV1(loaded.file)).toBe(result.serializedFile);
+  });
+
+  it("keeps the flagship force-driven geometry schema-clean", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      mode: "full-auto",
+      elements: [],
+    });
+    expect(Object.keys(result.elements[4]!)).not.toContain("flatForceProfile");
+    expect(Object.keys(result.elements[3]!)).not.toContain("smoothEnds");
+    expect(result.serializedFile).not.toContain("flatForceProfile");
+    expect(result.serializedFile).not.toContain("smoothEnds");
+    const airtime = result.solvedSpans.filter((span) =>
+      span.id.startsWith("airtimeHill-004"),
+    );
+    expect(airtime.length).toBeGreaterThan(0);
+    const curvatureResponses = airtime.map((span) =>
+      SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+        span.positionCoefficients!,
+      ).derivative(0.5, 2),
+    );
+    expect(
+      Math.max(
+        ...curvatureResponses.map((response) => Math.hypot(...response)),
+      ),
+    ).toBeGreaterThan(1e-3);
+    expect(
+      airtime.some((span) =>
+        span.positionCoefficients!.some((row) =>
+          row.slice(2).some((coefficient) => Math.abs(coefficient) > 1e-8),
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("keeps candidate search bounded and byte deterministic", () => {
@@ -359,7 +393,7 @@ describe("wave 3 deterministic generator", () => {
     ).toBe(true);
   });
 
-  it("uses actual bounded candidate and LM counts across 50 deterministic seeds", () => {
+  it("uses actual bounded candidate and LM counts across a five-seed unit sample", () => {
     const results = Array.from({ length: 5 }, (_, seed) =>
       generateCoaster(
         { ...directedIntent, seed, mode: "full-auto", elements: [] },
@@ -473,6 +507,34 @@ describe("wave 3 deterministic generator", () => {
       "figure-eight",
       "figure-eight",
     ]);
+  });
+
+  it("catches a narrow polynomial self-crossing missed by the initial chord", () => {
+    const first = {
+      id: "narrow-first",
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        [0, 10, 0, 0, 0, 0, 0, 0],
+        [1, -4, 4, 0, 0, 0, 0, 0],
+        [1, -4, 4, 0, 0, 0, 0, 0],
+      ]),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const second = {
+      id: "narrow-second",
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        [5.5, -2, 2, 0, 0, 0, 0, 0],
+        [-2, 4, 0, 0, 0, 0, 0, 0],
+        [2, -8, 8, 0, 0, 0, 0, 0],
+      ]),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const diagnostics = validateClearance([first, second], undefined, {
+      trainEnvelopeRadius: 0.1,
+      samplesPerSpan: 3,
+    });
+    expect(diagnostics.some((item) => item.code === "TRACK_CLEARANCE")).toBe(
+      true,
+    );
   });
 
   it("does not discard non-adjacent segments merely because their path gap is short", () => {
@@ -659,6 +721,92 @@ describe("wave 3 deterministic generator", () => {
     );
   });
 
+  it("anchors an optimized local window to the solved coefficient boundary", () => {
+    const generated = generateCoaster({
+      ...directedIntent,
+      mode: "full-auto",
+      elements: [],
+      constraints: [
+        { id: "soft-floor", kind: "min-height", target: -1000, hard: false },
+      ],
+    });
+    expect(generated.selectedLmIterations).toBeGreaterThan(0);
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain");
+    const result = regenerateLocal(generated, "launch-001", {
+      changes: { "launch-001": { length: 261 } },
+    });
+    const localCall = solveSpy.mock.calls.find(
+      ([, options]) => options?.startPose !== undefined,
+    );
+    solveSpy.mockRestore();
+    expect(localCall).toBeDefined();
+    const localOptions = localCall![1]!;
+    const boundary = generated.solvedSpans.find((span) =>
+      span.id.startsWith("station-000"),
+    );
+    expect(boundary).toBeDefined();
+    expect(localOptions.startPose?.position).toEqual(
+      boundary?.span.position(1),
+    );
+    expect(localOptions.startPose?.tangent).toEqual(
+      vec3Normalize(boundary!.span.derivative(1, 1)),
+    );
+    const boundaryIndex = generated.track.elementBoundaries[1]!;
+    expect(localOptions.startPose?.normal).toEqual(
+      vec3(
+        generated.track.normals[boundaryIndex * 3]!,
+        generated.track.normals[boundaryIndex * 3 + 1]!,
+        generated.track.normals[boundaryIndex * 3 + 2]!,
+      ),
+    );
+    expect(localOptions.startPose?.bank).toBe(boundary?.bank?.position(1));
+    expect(result.feasible).toBe(true);
+    expect(result.generation.spanBytes["station-000"]).toBe(
+      generated.spanBytes["station-000"],
+    );
+  }, 120000);
+
+  it("rejects a local merge that violates a hard track-clearance intent", () => {
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements: [
+        directedIntent.elements[0]!,
+        {
+          id: "stall-001",
+          kind: "stall",
+          type: "stall",
+          parameters: { length: 4, height: 0, bank: 0 },
+        },
+        {
+          id: "brake-002",
+          kind: "brake",
+          type: "brake",
+          parameters: { length: 20, targetSpeed: 8, bank: 0 },
+        },
+      ],
+      pinnedElementIds: [],
+    });
+    const result = regenerateLocal(generated, "stall-001", {
+      changes: { "stall-001": { height: 1 } },
+      intent: {
+        ...generated.intent,
+        constraints: [
+          {
+            id: "hard-clearance",
+            kind: "track-clearance",
+            target: 10,
+            hard: true,
+          },
+        ],
+      },
+    });
+    expect(result.feasible).toBe(false);
+    const clearanceFailure = result.diagnostics.find(
+      (item) => item.code === "TRACK_CLEARANCE",
+    );
+    expect(clearanceFailure?.relatedIds).toContain("hard-clearance");
+  }, 120000);
+
   it("applies changes on top of an explicit intent and exposes a bounded window", () => {
     const generated = generateCoaster({
       ...directedIntent,
@@ -723,6 +871,68 @@ describe("wave 3 deterministic generator", () => {
     expect(failure?.severity).toBe("fatal");
     expect(failure?.location?.s).toBeDefined();
     expect(failure?.margin).toBeDefined();
+  });
+
+  it("certifies a narrow seventh-order interior terrain dip instead of accepting samples", () => {
+    const a = 0.37;
+    const b = 0.370001;
+    const span = {
+      id: "interior-wiggle",
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        [0, 10, 0, 0, 0, 0, 0, 0],
+        [1e8 * a * b, -1e8 * (a + b), 1e8, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+      ]),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const diagnostics = validateClearance(
+      [span],
+      {
+        signedDistance: (point) => point[1],
+        raycast: () => undefined,
+      },
+      { samplesPerSpan: 2, maxDepth: 40, maxWork: 10000 },
+    );
+    expect(diagnostics.some((item) => item.code === "TERRAIN_CLEARANCE")).toBe(
+      true,
+    );
+  });
+
+  it("excludes the first/last segment seam for an explicitly closed chain", () => {
+    const first = {
+      id: "closed-first",
+      span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(10, 0, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const last = {
+      id: "closed-last",
+      span: SeventhOrderHermiteSpan.line(vec3(10, 0, 0), vec3(0, 0, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    expect(
+      validateClearance([first, last], undefined, {
+        trackClearance: 0,
+        samplesPerSpan: 2,
+        closed: true,
+      }).some((item) => item.code === "TRACK_CLEARANCE"),
+    ).toBe(false);
+  });
+
+  it("returns fatal clearance uncertainty when a configured self-check budget is exhausted", () => {
+    const span = {
+      id: "budget-span",
+      span: SeventhOrderHermiteSpan.line(vec3(0, 1, 0), vec3(1, 1, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const diagnostics = validateClearance(
+      [span],
+      { signedDistance: () => 0.500000000001, raycast: () => undefined },
+      { trainEnvelopeRadius: 0.5, maxDepth: 0, maxWork: 100 },
+    );
+    expect(
+      diagnostics.some((item) => item.code === "CLEARANCE_UNCERTIFIED"),
+    ).toBe(true);
+    expect(diagnostics.some((item) => item.severity === "fatal")).toBe(true);
   });
 
   it("skips clearance queries after every hard candidate failure is known", () => {

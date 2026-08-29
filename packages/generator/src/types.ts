@@ -234,6 +234,9 @@ export interface ClearanceOptions {
   readonly trainEnvelopeRadius?: number;
   readonly samplesPerSpan?: number;
   readonly trackClearance?: number;
+  readonly closed?: boolean;
+  readonly maxDepth?: number;
+  readonly maxWork?: number;
 }
 
 export interface LocalRegenerationOptions {

@@ -548,11 +548,7 @@ const buildChain = (
     const built = buildElement(element, pose, referenceSpeed);
     const solvedSpan = { ...built.solvedSpan, id: element.id };
     solvedSpans.push(solvedSpan);
-    if (
-      element.type === "airtimeHill" &&
-      !(element as AnySemanticElement & { readonly flatForceProfile?: boolean })
-        .flatForceProfile
-    ) {
+    if (element.type === "airtimeHill") {
       const target = element.parameters.height;
       const actual = vec3Dot(
         vec3Sub(built.endPose.position, pose.position),

@@ -15,6 +15,7 @@ import {
   quatRotateVector,
   vec3Distance,
   vec3Dot,
+  vec3Sub,
   vec3Normalize,
   vec3,
   transportFramesAlongPath,
@@ -39,6 +40,7 @@ import type {
   SolveOptions,
   HardTarget,
   GenerationStageTimings,
+  ElementParameterMap,
 } from "./types";
 
 const now = (): number =>
@@ -50,22 +52,41 @@ const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
   const rng = new Xoshiro128ss(seed);
   for (let index = 0; index < candidate; index += 1) rng.nextUint32();
   const variation = rng.nextRange(-2, 2);
-  const elements = [
+  const prefix = [
     createElement("station", "station-000", { length: 120 }),
     createElement("launch", "launch-001", { length: 260, targetSpeed: 44 }),
     createElement("topHat", "topHat-002", { width: 220 }),
     createElement("overbankedTurn", "overbankedTurn-003", {
       radius: 75,
       angle: Math.PI * 0.75,
+      bank: 0,
     }),
-    Object.freeze({
-      ...createElement("airtimeHill", "airtimeHill-004", {
-        length: 130 + variation,
-        height: 0,
-        targetForceG: 1,
-        referenceSpeed: 44,
-      }),
-      flatForceProfile: true,
+  ];
+  const provisionalHill = createElement("airtimeHill", "airtimeHill-004", {
+    length: 130 + variation,
+    height: 0,
+    targetForceG: 1.15,
+    referenceSpeed: 44,
+  });
+  let hillStartPose = defaultPose();
+  for (const element of prefix)
+    hillStartPose = buildElement(element, hillStartPose, 44).endPose;
+  const provisionalHillEnd = buildElement(
+    provisionalHill,
+    hillStartPose,
+    44,
+  ).endPose;
+  const forceDrivenHeight = vec3Dot(
+    vec3Sub(provisionalHillEnd.position, hillStartPose.position),
+    hillStartPose.normal,
+  );
+  const elements = [
+    ...prefix,
+    createElement("airtimeHill", "airtimeHill-004", {
+      length: 130 + variation,
+      height: forceDrivenHeight,
+      targetForceG: 1.15,
+      referenceSpeed: 44,
     }),
     createElement("boost", "boost-005", { length: 220, targetSpeed: 44 }),
     createElement("zeroGRoll", "zeroGRoll-006", { length: 4, roll: 0 }),
@@ -77,11 +98,7 @@ const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
     }),
     createElement("station", "station-010", { length: 160, closed: false }),
   ];
-  return elements.map((element) =>
-    element.type === "overbankedTurn"
-      ? Object.freeze({ ...element, smoothEnds: true })
-      : element,
-  );
+  return elements;
 };
 const canonicalTrackCache = new Map<string, ReturnType<typeof compileTrack>>();
 const spanLengthCache = new Map<string, number>();
@@ -109,6 +126,7 @@ const asElements = (
 
 const childBoundaries = (span: SolvedSpan): readonly number[] => {
   if (span.kind === "topHat") return [0, 0.2, 0.35, 0.4, 0.6, 0.65, 0.8, 1];
+  if (span.kind === "airtimeHill") return [0, 0.15, 0.25, 0.75, 0.85, 1];
   if (span.span instanceof SeventhOrderHermiteSpan) return [0, 1];
   return Array.from({ length: 9 }, (_, index) => index / 8);
 };
@@ -506,6 +524,9 @@ const constraintDiagnostics = (
   }
   return diagnostics;
 };
+const isClosedChain = (elements: readonly AnySemanticElement[]): boolean =>
+  elements[0]?.type === "station" &&
+  (elements[0].parameters as ElementParameterMap["station"]).closed === true;
 const targetError = (
   target: DesignIntentV1["targets"][number],
   position: Vec3,
@@ -648,6 +669,7 @@ const evaluateCandidate = (
     .filter(
       (constraint) =>
         constraint.kind === "track-clearance" &&
+        constraint.hard !== false &&
         typeof (constraint.target ?? constraint.value) === "number",
     )
     .map((constraint) => (constraint.target ?? constraint.value) as number)
@@ -686,6 +708,7 @@ const evaluateCandidate = (
         options.trackClearance ?? 0,
         requiredTrackClearance,
       ),
+      closed: isClosedChain(elements),
     });
     const clearanceConstraintIds = intent.constraints
       .filter((constraint) => constraint.kind === "track-clearance")
@@ -1055,14 +1078,38 @@ const selectedIndexOrMinusOne = (
   id: string,
 ): number => generated.elements.findIndex((element) => element.id === id);
 
-const semanticBoundaryPose = (
+const coefficientBoundaryPose = (
   generated: GenerationResult,
   semanticBoundary: number,
 ): import("./types").Pose => {
-  let pose = defaultPose();
-  for (let index = 0; index < semanticBoundary; index += 1)
-    pose = buildElement(generated.elements[index]!, pose, 44).endPose;
-  return pose;
+  const owner = generated.elements[semanticBoundary - 1]?.id;
+  const first = generated.elements[semanticBoundary]?.id;
+  const ownerSpans = owner
+    ? generated.solvedSpans.filter((span) => spanOwner(span.id) === owner)
+    : [];
+  const firstSpans = first
+    ? generated.solvedSpans.filter((span) => spanOwner(span.id) === first)
+    : [];
+  const source = owner ? ownerSpans.at(-1) : firstSpans[0];
+  if (!source) return defaultPose();
+  const atEnd = owner !== undefined;
+  const u = atEnd ? 1 : 0;
+  const tangent = vec3Normalize(source.span.derivative(u, 1));
+  const bank = source.bank?.position(u) ?? 0;
+  const reference = Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+  const normal = vec3Normalize(
+    vec3(
+      reference[0] - tangent[0] * vec3Dot(reference, tangent),
+      reference[1] - tangent[1] * vec3Dot(reference, tangent),
+      reference[2] - tangent[2] * vec3Dot(reference, tangent),
+    ),
+  );
+  return {
+    position: source.span.position(u),
+    tangent,
+    normal,
+    bank,
+  };
 };
 
 const localSeamDiagnostics = (
@@ -1172,15 +1219,32 @@ const mergedDiagnostics = (
     )
   )
     return diagnostics;
+  const hardTrackClearance = intent.constraints
+    .filter(
+      (constraint) =>
+        constraint.kind === "track-clearance" &&
+        constraint.hard !== false &&
+        typeof (constraint.target ?? constraint.value) === "number",
+    )
+    .map((constraint) => (constraint.target ?? constraint.value) as number)
+    .reduce((maximum, value) => Math.max(maximum, value), 0);
   const clearance = validateClearance(spans, options.environment, {
     ...(options.trainEnvelopeRadius === undefined
       ? {}
       : { trainEnvelopeRadius: options.trainEnvelopeRadius }),
-    ...(options.trackClearance === undefined
-      ? {}
-      : { trackClearance: options.trackClearance }),
+    trackClearance: Math.max(options.trackClearance ?? 0, hardTrackClearance),
+    closed: isClosedChain(elements),
   });
-  diagnostics.push(...clearance);
+  const clearanceIds = intent.constraints
+    .filter((constraint) => constraint.kind === "track-clearance")
+    .map((constraint) => constraint.id);
+  diagnostics.push(
+    ...clearance.map((item) =>
+      item.code === "TRACK_CLEARANCE" && clearanceIds.length > 0
+        ? { ...item, relatedIds: [...(item.relatedIds ?? []), ...clearanceIds] }
+        : item,
+    ),
+  );
   return diagnostics;
 };
 
@@ -1316,10 +1380,10 @@ export const regenerateLocal = (
         {
           ...(localStart === 0
             ? {}
-            : { startPose: semanticBoundaryPose(generated, localStart) }),
+            : { startPose: coefficientBoundaryPose(generated, localStart) }),
           ...(localEnd === generated.elements.length - 1
             ? {}
-            : { endPose: semanticBoundaryPose(generated, localEnd + 1) }),
+            : { endPose: coefficientBoundaryPose(generated, localEnd + 1) }),
           referenceSpeed: 44,
           maxIterations: 32,
         },
