@@ -452,7 +452,7 @@ const gateDiagnostics = (
   return diagnostics;
 };
 
-export const validateGenerationConstraints = (
+const validateGenerationConstraints = (
   elements: readonly AnySemanticElement[],
   spans: readonly SolvedSpan[],
   intent: DesignIntentV1,
@@ -587,55 +587,63 @@ export const validateGenerationConstraints = (
     if (footprint)
       for (const axis of [0, 1, 2] as const) {
         if (bounds.min[axis]! < footprint.min[axis]!)
-          diagnostics.push({
-            ...hardDiagnostic(
-              "FOOTPRINT",
-              `Footprint minimum exceeded by ${span.id}`,
-              [span.id],
-              bounds.min[axis],
-              footprint.min[axis],
-              location,
-            ),
-            margin: bounds.min[axis]! - footprint.min[axis]!,
-          });
+          diagnostics.push(
+            sanitizeDiagnostic({
+              ...hardDiagnostic(
+                "FOOTPRINT",
+                `Footprint minimum exceeded by ${span.id}`,
+                [span.id],
+                bounds.min[axis],
+                footprint.min[axis],
+                location,
+              ),
+              margin: bounds.min[axis]! - footprint.min[axis]!,
+            }),
+          );
         if (bounds.max[axis]! > footprint.max[axis]!)
-          diagnostics.push({
-            ...hardDiagnostic(
-              "FOOTPRINT",
-              `Footprint maximum exceeded by ${span.id}`,
-              [span.id],
-              bounds.max[axis],
-              footprint.max[axis],
-              location,
-            ),
-            margin: footprint.max[axis]! - bounds.max[axis]!,
-          });
+          diagnostics.push(
+            sanitizeDiagnostic({
+              ...hardDiagnostic(
+                "FOOTPRINT",
+                `Footprint maximum exceeded by ${span.id}`,
+                [span.id],
+                bounds.max[axis],
+                footprint.max[axis],
+                location,
+              ),
+              margin: footprint.max[axis]! - bounds.max[axis]!,
+            }),
+          );
       }
     if (intent.heightRange) {
       if (bounds.min[1]! < intent.heightRange.min)
-        diagnostics.push({
-          ...hardDiagnostic(
-            "HEIGHT_RANGE",
-            `Height range minimum exceeded by ${span.id}`,
-            [span.id],
-            bounds.min[1],
-            intent.heightRange.min,
-            location,
-          ),
-          margin: bounds.min[1]! - intent.heightRange.min,
-        });
+        diagnostics.push(
+          sanitizeDiagnostic({
+            ...hardDiagnostic(
+              "HEIGHT_RANGE",
+              `Height range minimum exceeded by ${span.id}`,
+              [span.id],
+              bounds.min[1],
+              intent.heightRange.min,
+              location,
+            ),
+            margin: bounds.min[1]! - intent.heightRange.min,
+          }),
+        );
       if (bounds.max[1]! > intent.heightRange.max)
-        diagnostics.push({
-          ...hardDiagnostic(
-            "HEIGHT_RANGE",
-            `Height range maximum exceeded by ${span.id}`,
-            [span.id],
-            bounds.max[1],
-            intent.heightRange.max,
-            location,
-          ),
-          margin: intent.heightRange.max - bounds.max[1]!,
-        });
+        diagnostics.push(
+          sanitizeDiagnostic({
+            ...hardDiagnostic(
+              "HEIGHT_RANGE",
+              `Height range maximum exceeded by ${span.id}`,
+              [span.id],
+              bounds.max[1],
+              intent.heightRange.max,
+              location,
+            ),
+            margin: intent.heightRange.max - bounds.max[1]!,
+          }),
+        );
     }
     station += arcLength(span.span);
   }
@@ -668,24 +676,26 @@ export const validateGenerationConstraints = (
     }
     if (!failure) continue;
     const hard = constraint.hard !== false;
-    diagnostics.push({
-      ...hardDiagnostic(
-        constraint.kind === "max-height" ? "MAX_HEIGHT" : "MIN_HEIGHT",
-        `${constraint.kind} constraint exceeded by ${failure.span.id}`,
-        [constraint.id, failure.span.id],
-        failure.actual,
-        value,
-        { s: failure.s, position: failure.span.span.position(0) },
-      ),
-      margin:
-        constraint.kind === "min-height"
-          ? failure.actual - value
-          : value - failure.actual,
-      severity: hard ? "error" : "warning",
-      provenance: hard ? "PROJECT_ENGINEERING_LIMIT" : "DESIGN_ASSUMPTION",
-    });
+    diagnostics.push(
+      sanitizeDiagnostic({
+        ...hardDiagnostic(
+          constraint.kind === "max-height" ? "MAX_HEIGHT" : "MIN_HEIGHT",
+          `${constraint.kind} constraint exceeded by ${failure.span.id}`,
+          [constraint.id, failure.span.id],
+          failure.actual,
+          value,
+          { s: failure.s, position: failure.span.span.position(0) },
+        ),
+        margin:
+          constraint.kind === "min-height"
+            ? failure.actual - value
+            : value - failure.actual,
+        severity: hard ? "error" : "warning",
+        provenance: hard ? "PROJECT_ENGINEERING_LIMIT" : "DESIGN_ASSUMPTION",
+      }),
+    );
   }
-  return diagnostics;
+  return sanitizeDiagnostics(diagnostics);
 };
 const isClosedChain = (elements: readonly AnySemanticElement[]): boolean =>
   elements[0]?.type === "station" &&
@@ -1431,24 +1441,33 @@ const mergedDiagnostics = (
     )
     .map((constraint) => (constraint.target ?? constraint.value) as number)
     .reduce((maximum, value) => Math.max(maximum, value), 0);
-  const clearance = validateClearance(spans, options.environment, {
-    ...(options.trainEnvelopeRadius === undefined
-      ? {}
-      : { trainEnvelopeRadius: options.trainEnvelopeRadius }),
-    trackClearance: Math.max(options.trackClearance ?? 0, hardTrackClearance),
-    closed: isClosedChain(elements),
-  });
-  const clearanceIds = intent.constraints
-    .filter((constraint) => constraint.kind === "track-clearance")
-    .map((constraint) => constraint.id);
-  diagnostics.push(
-    ...clearance.map((item) =>
-      item.code === "TRACK_CLEARANCE" && clearanceIds.length > 0
-        ? { ...item, relatedIds: [...(item.relatedIds ?? []), ...clearanceIds] }
-        : item,
-    ),
+  const hasHardFailure = diagnostics.some(
+    (diagnostic) =>
+      diagnostic.severity === "error" || diagnostic.severity === "fatal",
   );
-  return diagnostics;
+  if (!hasHardFailure) {
+    const clearance = validateClearance(spans, options.environment, {
+      ...(options.trainEnvelopeRadius === undefined
+        ? {}
+        : { trainEnvelopeRadius: options.trainEnvelopeRadius }),
+      trackClearance: Math.max(options.trackClearance ?? 0, hardTrackClearance),
+      closed: isClosedChain(elements),
+    });
+    const clearanceIds = intent.constraints
+      .filter((constraint) => constraint.kind === "track-clearance")
+      .map((constraint) => constraint.id);
+    diagnostics.push(
+      ...clearance.map((item) =>
+        item.code === "TRACK_CLEARANCE" && clearanceIds.length > 0
+          ? {
+              ...item,
+              relatedIds: [...(item.relatedIds ?? []), ...clearanceIds],
+            }
+          : item,
+      ),
+    );
+  }
+  return sanitizeDiagnostics(diagnostics);
 };
 
 export const regenerateLocal = (

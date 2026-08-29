@@ -1,15 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   compileCoasterFile,
-  createElement,
   generateCoaster,
   regenerateLocal,
   validateClearance,
 } from "./index";
-import {
-  createGenerationOperationCache,
-  validateGenerationConstraints,
-} from "./pipeline";
+import { createGenerationOperationCache } from "./pipeline";
 import {
   CompiledTrackData,
   aabbFromPoints,
@@ -1331,57 +1327,130 @@ describe("wave 3 deterministic generator", () => {
     expect(transformedPose.bank).toBeCloseTo(originalPose.bank, 10);
   }, 120000);
 
-  it("uses certified interior bounds for hard height and footprint violations", () => {
+  it("reports authoritative off-grid maximum bounds through generation", () => {
     const center = 0.371;
     const curvature = 1500;
     const peak = 1.01;
-    const excursion = Array(8).fill(0) as number[];
-    excursion[0] = peak - curvature * center ** 2;
-    excursion[1] = 2 * curvature * center;
-    excursion[2] = -curvature;
-    excursion[7] = 0.001;
+    const excursion = [
+      peak - curvature * center ** 2,
+      2 * curvature * center,
+      -curvature,
+      0,
+      0,
+      0,
+      0,
+      0.001,
+    ];
     const flat = [0, 0, 0, 0, 0, 0, 0, 0];
     const span = {
-      id: "narrow-max",
+      id: "station-000",
+      kind: "station",
       span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
-        excursion,
+        [0, 10, 0, 0, 0, 0, 0, 0],
         excursion,
         flat,
       ]),
-      positionCoefficients: [excursion, excursion, flat],
+      positionCoefficients: [[0, 10, 0, 0, 0, 0, 0, 0], excursion, flat],
       bank: { position: () => 0, derivative: () => 0 },
-    };
-    const intent = {
-      ...directedIntent,
-      footprint: { min: [-300, -300, -1] as const, max: [1, 1, 1] as const },
-      heightRange: { min: -300, max: 1 },
-      constraints: [{ id: "max", kind: "max-height", target: 1, hard: true }],
     };
     const oldSamples = Array.from({ length: 129 }, (_, index) => index / 128);
     for (const u of oldSamples) {
       const point = span.span.position(u);
-      expect(point[0]).toBeLessThanOrEqual(1);
       expect(point[1]).toBeLessThanOrEqual(1);
     }
-    expect(span.span.position(center)[0]).toBeGreaterThan(1.005);
     expect(span.span.position(center)[1]).toBeGreaterThan(1.005);
-    const diagnostics = validateGenerationConstraints(
-      [createElement("station", "station-000")],
-      [span],
-      intent,
-      undefined,
+
+    const intent = {
+      ...directedIntent,
+      elements: [
+        {
+          id: "station-000",
+          kind: "station",
+          type: "station",
+          parameters: { length: 10, bank: 0, closed: false },
+        },
+      ],
+      footprint: {
+        min: [-100, -1000, -1] as const,
+        max: [100, 1, 1] as const,
+      },
+      heightRange: { min: -300, max: 1 },
+      constraints: [{ id: "max", kind: "max-height", target: 1, hard: true }],
+    };
+    let clearanceCalls = 0;
+    const solve = solver.solveSemanticChain;
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain");
+    solveSpy.mockImplementation((elements, options) => {
+      const result = solve(elements, options);
+      return {
+        ...result,
+        solvedSpans: [span],
+        endPose: {
+          ...result.endPose,
+          position: span.span.position(1),
+          tangent: vec3Normalize(span.span.derivative(1, 1)),
+        },
+      };
+    });
+    let result;
+    try {
+      result = generateCoaster(intent, {
+        environment: {
+          signedDistance: () => {
+            clearanceCalls += 1;
+            throw new Error("clearance must be short-circuited");
+          },
+          sampleSolid: () => {
+            clearanceCalls += 1;
+            throw new Error("solid query must be short-circuited");
+          },
+          bounds: () => {
+            clearanceCalls += 1;
+            throw new Error("environment bounds must be short-circuited");
+          },
+          raycast: () => {
+            clearanceCalls += 1;
+            throw new Error("raycast must be short-circuited");
+          },
+        },
+      });
+    } finally {
+      solveSpy.mockRestore();
+    }
+    expect(result.feasible).toBe(false);
+    expect(result.diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining(["HEIGHT_RANGE", "MAX_HEIGHT", "FOOTPRINT"]),
     );
-    expect(diagnostics.some((item) => item.code === "HEIGHT_RANGE")).toBe(true);
-    expect(diagnostics.some((item) => item.code === "MAX_HEIGHT")).toBe(true);
-    expect(diagnostics.some((item) => item.code === "FOOTPRINT")).toBe(true);
+    expect(
+      result.diagnostics.find(
+        (item) =>
+          item.code === "MAX_HEIGHT" && item.relatedIds?.includes("max"),
+      ),
+    ).toBeDefined();
+    expect(clearanceCalls).toBe(0);
+    for (const diagnostic of result.diagnostics) {
+      for (const value of [
+        diagnostic.actual,
+        diagnostic.limit,
+        diagnostic.margin,
+      ])
+        expect(value === undefined || Number.isFinite(value)).toBe(true);
+      if (diagnostic.location) {
+        expect(Number.isFinite(diagnostic.location.s)).toBe(true);
+        if (diagnostic.location.position)
+          expect(diagnostic.location.position.every(Number.isFinite)).toBe(
+            true,
+          );
+      }
+    }
   });
 
-  it("uses certified interior bounds for hard minimum-height violations", () => {
+  it("reports authoritative off-grid minimum bounds through generation", () => {
     const center = 0.371;
     const floor = -1.01;
     const curvature = 1500;
     const rows = [
-      [0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 10, 0, 0, 0, 0, 0, 0],
       [
         floor + curvature * center ** 2,
         -2 * curvature * center,
@@ -1395,27 +1464,58 @@ describe("wave 3 deterministic generator", () => {
       [0, 0, 0, 0, 0, 0, 0, 0],
     ] as const;
     const span = {
-      id: "narrow-min",
+      id: "station-000",
+      kind: "station",
       span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>(rows),
       positionCoefficients: rows,
       bank: { position: () => 0, derivative: () => 0 },
     };
     const intent = {
       ...directedIntent,
+      elements: [
+        {
+          id: "station-000",
+          kind: "station",
+          type: "station",
+          parameters: { length: 10, bank: 0, closed: false },
+        },
+      ],
       heightRange: { min: -1, max: 300 },
       constraints: [{ id: "min", kind: "min-height", target: -1, hard: true }],
     };
     for (const index of Array.from({ length: 129 }, (_, value) => value))
       expect(span.span.position(index / 128)[1]).toBeGreaterThanOrEqual(-1);
     expect(span.span.position(center)[1]).toBeLessThan(-1.005);
-    const diagnostics = validateGenerationConstraints(
-      [createElement("station", "station-000")],
-      [span],
-      intent,
-      undefined,
+    const solve = solver.solveSemanticChain;
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain");
+    solveSpy.mockImplementation((elements, options) => {
+      const result = solve(elements, options);
+      return {
+        ...result,
+        solvedSpans: [span],
+        endPose: {
+          ...result.endPose,
+          position: span.span.position(1),
+          tangent: vec3Normalize(span.span.derivative(1, 1)),
+        },
+      };
+    });
+    let result;
+    try {
+      result = generateCoaster(intent);
+    } finally {
+      solveSpy.mockRestore();
+    }
+    expect(result.feasible).toBe(false);
+    expect(result.diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining(["MIN_HEIGHT", "HEIGHT_RANGE"]),
     );
-    expect(diagnostics.some((item) => item.code === "MIN_HEIGHT")).toBe(true);
-    expect(diagnostics.some((item) => item.code === "HEIGHT_RANGE")).toBe(true);
+    expect(
+      result.diagnostics.find(
+        (item) =>
+          item.code === "MIN_HEIGHT" && item.relatedIds?.includes("min"),
+      ),
+    ).toBeDefined();
   });
 
   it("skips clearance queries after every hard candidate failure is known", () => {
@@ -1444,46 +1544,140 @@ describe("wave 3 deterministic generator", () => {
     expect(signedDistanceCalls).toBe(0);
   });
 
-  it("publishes only finite evidence for extreme hard target, height, and footprint failures", () => {
-    const result = generateCoaster({
+  it("short-circuits local clearance after a merged hard failure", () => {
+    let queryCalls = 0;
+    const generated = generateCoaster({
       ...directedIntent,
-      targets: [
-        {
-          id: "extreme-target",
-          kind: "end-z",
-          target: -Number.MAX_VALUE,
-          hard: true,
+      targets: [{ id: "impossible-z", kind: "end-z", target: 999, hard: true }],
+    });
+    const generatedWithEnvironment = {
+      ...generated,
+      options: {
+        ...generated.options,
+        environment: {
+          signedDistance: () => {
+            queryCalls += 1;
+            throw new Error("local clearance must be short-circuited");
+          },
+          sampleSolid: () => {
+            queryCalls += 1;
+            throw new Error("local solid query must be short-circuited");
+          },
+          bounds: () => {
+            queryCalls += 1;
+            throw new Error("local environment bounds must be short-circuited");
+          },
+          raycast: () => {
+            queryCalls += 1;
+            throw new Error("local raycast must be short-circuited");
+          },
         },
-      ],
-      footprint: {
-        min: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE] as const,
-        max: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE] as const,
       },
-      heightRange: { min: Number.MAX_VALUE, max: Number.MAX_VALUE },
-      constraints: [
-        {
-          id: "extreme-height",
-          kind: "min-height",
-          target: Number.MAX_VALUE,
-          hard: true,
-        },
-      ],
+    };
+    const result = regenerateLocal(generatedWithEnvironment, "stall-001", {
+      changes: { "stall-001": { height: 19 } },
     });
     expect(result.feasible).toBe(false);
-    expect(result.diagnostics.length).toBeGreaterThan(0);
-    for (const diagnostic of result.diagnostics) {
-      for (const value of [
-        diagnostic.actual,
-        diagnostic.limit,
-        diagnostic.margin,
-      ])
-        expect(value === undefined || Number.isFinite(value)).toBe(true);
-      if (diagnostic.location) {
-        expect(Number.isFinite(diagnostic.location.s)).toBe(true);
-        if (diagnostic.location.position)
-          expect(diagnostic.location.position.every(Number.isFinite)).toBe(
-            true,
-          );
+    expect(
+      result.diagnostics.find(
+        (item) =>
+          item.code === "TARGET" && item.relatedIds?.includes("impossible-z"),
+      ),
+    ).toBeDefined();
+    expect(queryCalls).toBe(0);
+  });
+
+  it("sanitizes both directional extreme finite bound branches", () => {
+    for (const direction of ["min", "max"] as const) {
+      const limit = direction === "min" ? Number.MAX_VALUE : -Number.MAX_VALUE;
+      const coordinate =
+        direction === "min" ? -Number.MAX_VALUE / 2 : Number.MAX_VALUE / 2;
+      const rows = [
+        [0, 10, 0, 0, 0, 0, 0, 0],
+        [coordinate, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+      ] as const;
+      const span = {
+        id: "station-000",
+        kind: "station",
+        span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>(rows),
+        positionCoefficients: rows,
+        bank: { position: () => 0, derivative: () => 0 },
+      };
+      const solve = solver.solveSemanticChain;
+      const solveSpy = vi.spyOn(solver, "solveSemanticChain");
+      solveSpy.mockImplementation((elements, options) => {
+        const result = solve(elements, options);
+        return {
+          ...result,
+          solvedSpans: [span],
+          endPose: {
+            ...result.endPose,
+            position: span.span.position(1),
+            tangent: vec3Normalize(span.span.derivative(1, 1)),
+          },
+        };
+      });
+      let result;
+      try {
+        result = generateCoaster({
+          ...directedIntent,
+          elements: [
+            {
+              id: "station-000",
+              kind: "station",
+              type: "station",
+              parameters: { length: 10, bank: 0, closed: false },
+            },
+          ],
+          footprint: {
+            min: [limit, limit, limit] as const,
+            max: [limit, limit, limit] as const,
+          },
+          heightRange: { min: limit, max: limit },
+          constraints: [
+            {
+              id: `extreme-${direction}-height`,
+              kind: direction === "min" ? "min-height" : "max-height",
+              target: limit,
+              hard: true,
+            },
+          ],
+        });
+      } finally {
+        solveSpy.mockRestore();
+      }
+      expect(result.feasible).toBe(false);
+      expect(result.diagnostics.length).toBeGreaterThan(0);
+      expect(
+        result.diagnostics.some(
+          (item) =>
+            item.code === "NUMERIC_UNCERTIFIED" &&
+            item.relatedIds?.includes("station-000"),
+        ),
+      ).toBe(true);
+      expect(
+        result.diagnostics.some(
+          (item) =>
+            item.severity === "fatal" &&
+            item.code === "NUMERIC_UNCERTIFIED" &&
+            item.relatedIds?.includes(`extreme-${direction}-height`),
+        ),
+      ).toBe(true);
+      for (const diagnostic of result.diagnostics) {
+        for (const value of [
+          diagnostic.actual,
+          diagnostic.limit,
+          diagnostic.margin,
+        ])
+          expect(value === undefined || Number.isFinite(value)).toBe(true);
+        if (diagnostic.location) {
+          expect(Number.isFinite(diagnostic.location.s)).toBe(true);
+          if (diagnostic.location.position)
+            expect(diagnostic.location.position.every(Number.isFinite)).toBe(
+              true,
+            );
+        }
       }
     }
   });
