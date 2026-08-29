@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "profileId": "steel-sitdown-lsm-v1",
   "provenance": "DESIGN_ASSUMPTION",
+  "description": "Default six-car train values for the v1 simulator model; these are design assumptions.",
   "cars": 6,
   "loadedMassPerCarKg": 1500,
   "carPitchM": 3.4,

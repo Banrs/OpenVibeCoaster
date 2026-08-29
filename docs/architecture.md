@@ -8,36 +8,146 @@ DesignIntentV1
   -> SolvedSpan[]
   -> immutable CompiledTrackData
   -> simulation and validation
-  -> worker transfer
+  -> worker transfer (when available)
   -> Three.js rendering, DOM editor, telemetry, and ride cameras
 ```
 
 `@openvibecoaster/core`, `@openvibecoaster/simulator`, and
-`@openvibecoaster/generator` are browser-independent, pure TypeScript. They may
-not import Three.js, DOM APIs, Web Audio, or mutable application state.
+`@openvibecoaster/generator` are browser-independent, pure TypeScript. They
+may not import Three.js, DOM APIs, Web Audio, or mutable application state.
 
 `CompiledTrackData` is the only downstream track representation. Rendering may
 tessellate it but must never maintain an independent spline. Camera smoothing
 and playback interpolation are visual only and do not change simulation data.
 
+## Workspaces
+
+- `core`: units, vector math, analytic spans, frames, arc length, compiled
+  track, environments, diagnostics, and coaster files.
+- `simulator`: train dynamics, operation zones, forces, telemetry, energy, and
+  the transferable `RideTimeline`.
+- `generator`: semantic elements, solving, deterministic search, clearance,
+  local regeneration, and worker message contracts.
+- `web`: browser worker integration (when present), rendering, UI, plots,
+  cameras, audio, and persistence.
+
 ## Numerical conventions
 
 - SI units internally; unit brands at public boundaries.
 - Right-handed world coordinates: X right/east, Y up, Z forward/north.
-- One rotation-minimizing frame transported over the whole track, with authored
-  roll applied about the tangent. Frames never reset at element seams.
+- One rotation-minimizing frame (RMF) transported over the whole track via
+  `transportFramesAlongPath`/`doubleReflectionFrames`, with authored roll
+  applied about the tangent. Frames never reset at element seams.
 - General transitions use seventh-order Hermite position spans; authored roll
-  uses quintic spans.
+  uses quintic scalar spans. The degree-seven coefficients are the certified
+  representation.
 - No sampled-vertex seam smoothing is permitted. Failed hard constraints return
-  diagnostics and suggested relaxations.
+  diagnostics with `actual`, `limit`, `margin`, and `location.s`.
 - Simulation uses signed speed and fixed train spacing. Rollback and reversal
-  are real states.
+  are real states; visual smoothing cannot alter telemetry.
 
-## Packages
+## Generation, compilation, and deterministic bounds
 
-- `core`: units, vector math, analytic spans, frames, arc length, compiled track,
-  environments, diagnostics, and coaster files.
-- `simulator`: train dynamics, operation zones, forces, telemetry, and energy.
-- `generator`: semantic elements, solving, deterministic search, clearance,
-  local regeneration, and worker messages.
-- `web`: browser worker, rendering, UI, plots, cameras, audio, and persistence.
+`DesignIntentV1` (seeded `Xoshiro128ss`) is solved via `solveSemanticChain`
+into `SolvedSpan` values that carry `positionCoefficients` (3x8) and
+`rollCoefficients` (6). `compileTrack` produces immutable `CompiledTrackData`
+with arc-length samples and checksums. The search is deterministic: up to 48
+candidates are evaluated; hard targets/constraints produce up to three
+relaxation reruns with evidence.
+
+Bounds are certified, not sampled. `certifiedPolynomialBounds` computes
+Bernstein-hull intervals with outward rounding (`nextUp`/`nextDown`) and a
+`CertifiedWorkBudget`. `validateGenerationConstraints` checks footprint and
+height range against those bounds; `validateClearance` certifies track
+self-separation and terrain separation using inflated segment bounds,
+directional locality (`sqrt(3)`), and a bounded pair/node heap. Exhaustion or
+non-finite evidence yields `CLEARANCE_UNCERTIFIED` or
+`NUMERIC_UNCERTIFIED` diagnostics, not a silent pass.
+
+## Simulation and environment
+
+The simulator is a constrained point-train model with fixed `dt = 1/240 s`
+(RK4) and timeline sampling at `1/120 s`. Forces per car are gravity,
+rolling resistance, aerodynamic drag, LSM drive (force and power limited), and
+brake. Operation zones (`station`, `block`, `launch`, `boost`, `brake`) are
+half-open intervals. Energy accounting tracks kinetic, potential, drive work,
+loss work, and residual error.
+
+Environments are `HeightfieldEnvironment` heightfields. The environment
+provides `signedDistance`, `sampleSolid`, `bounds`, `heightAt`, `normalAt`,
+and `raycast` with adaptive-exact predicates and finite checks. Clearance
+validation consumes the environment but remains deterministic and budget-bound.
+
+## Worker and transfer
+
+`packages/core/src/contracts.ts` defines `WorkerRequest`
+(`compile | sample | cancel`) and `WorkerResponse`
+(`compiled | diagnostics | error`). Simulator `RideTimeline` is transferable:
+`toTransferable()` exposes 11 `ArrayBuffer` views and `fromTransferable`
+reconstitutes them without copying semantics.
+
+When a browser worker is present, generation, simulation, and validation are
+expected to run off the main thread with `Transferable` promotion and
+explicit cancellation (`cancel` request). The current web shell has no live
+worker integration (`apps/web/src/main.ts` keeps generation data-gated and
+resolves to `error` rather than fabricating a track); the contracts document
+the available mechanism without claiming it is wired.
+
+## Rendering and portable artifact
+
+`apps/web` owns the single WebGL2 `THREE.WebGLRenderer`, lifecycle, and
+`requestAnimationFrame` loop. Track geometry, train meshes, terrain, and
+supports tessellate `CompiledTrackData`; supports are visual-only. Ride
+cameras (front, middle, rear, chase, orbit) smooth visually and respect
+`prefers-reduced-motion`. Telemetry plots and procedural audio consume the
+simulation timeline and do not invent data.
+
+`npm run build` invokes `vite build` and then
+`apps/web/scripts/portable-packager.mjs`, which inlines linked stylesheets and
+scripts into `apps/web/dist/OpenVibeCoaster.html`. The invariant
+`PORTABLE_WORKER_INVARIANT` requires future production workers to be
+Vite-inlined and Blob-backed so the single-file artifact is preserved. The
+portable file opens directly in a current built-in browser with no server,
+CDN, fonts, or media dependency.
+
+## CI and tooling
+
+The baseline is Node.js 24 LTS (Krypton) and npm 11.17.0, enforced with
+shell-native `node -p` assertions per OS in `.github/workflows/ci.yml`.
+
+- `quality` on `ubuntu-latest`: `npm ci`, `typecheck`, `lint`,
+  `format:check`, `test`, `build`, `bench`, Playwright Chromium `test:e2e`.
+- `portable` on `windows-latest` and `macos-latest`: `npm ci`, `build`,
+  artifact existence and non-emptiness checks for
+  `apps/web/dist/OpenVibeCoaster.html`.
+
+Tooling is `npm workspaces`, `TypeScript`, `Vite`, `Three.js`, `Vitest` with
+`fast-check`, `Playwright`, `Oxlint`, and `Prettier`.
+
+## Repository data boundaries
+
+The JSON artifacts under `data/` are inputs and research records, not a second
+track model:
+
+- `data/records/records-2026-08-29.json` stores dated, source-scoped facts and
+  labels the 80 m inversion comparison as a design target plus derived math.
+- `data/profiles/engineering-limits-v1.json` stores editable project
+  diagnostic limits under `PROJECT_ENGINEERING_LIMIT`.
+- `data/profiles/train-lsm-v1.json` stores the default train model under
+  `DESIGN_ASSUMPTION`.
+- `data/standards/f2291-26.json` stores public ASTM catalog metadata with
+  `UNKNOWN_UNCONFIGURED` criteria state. It is not a substitute for a licensed
+  standards profile.
+
+Every external research fact carries its source URL and retrieval date. A
+source fact, a derived comparison, a project limit, and a model assumption
+must not be presented as interchangeable evidence.
+
+## Current integration boundary
+
+The architecture defines the intended worker, persistence, and rendering data
+flow. Until those integrations are live in the web shell, data-dependent
+actions remain disabled and arbitrary loaded JSON or an authored target must
+not be described as a validated generated track. Diagnostics stay hard: they
+identify exact failures and label source-verified facts, project limits,
+assumptions, and unknown criteria.

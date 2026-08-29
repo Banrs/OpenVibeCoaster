@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "profileId": "project-engineering-limits-v1",
   "provenance": "PROJECT_ENGINEERING_LIMIT",
+  "description": "Editable project limits used for diagnostics; these are not a licensed standards profile.",
   "verticalG": { "minimum": -1.2, "maximum": 5.0 },
   "maximumAbsoluteLateralG": 1.5,
   "maximumAbsoluteLongitudinalG": 1.5,

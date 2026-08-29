@@ -1,31 +1,201 @@
 {
   "schemaVersion": 1,
   "capturedAt": "2026-08-29",
+  "provenanceVocabulary": ["SOURCE_VERIFIED", "DERIVED", "DESIGN_TARGET"],
   "records": [
     {
-      "id": "spitfire-tallest-inversion",
+      "id": "spitfire-inverted-top-hat",
       "name": "Spitfire",
-      "facts": { "inversionHeightM": 73, "speedKmh": 127 },
-      "claim": "world tallest inversion",
-      "sources": [
-        "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
-        "https://rcdb.com/21313.htm"
+      "claim": {
+        "text": "world-tallest inverted top hat",
+        "scope": "Retained as the source wording for Intamin's Spitfire project page; not generalized to every inversion record.",
+        "provenance": "SOURCE_VERIFIED",
+        "sourceUrls": [
+          "https://www.intamin.com/project/spitfire-six-flags-qiddiya/"
+        ],
+        "retrievedAt": "2026-08-29"
+      },
+      "relatedSources": [
+        {
+          "url": "https://sixflagsqiddiyacity.com/en/explore/rides/spitfire",
+          "relationship": "CORROBORATING_RELATED",
+          "provenance": "SOURCE_VERIFIED",
+          "note": "Official park ride page recorded as related context; no metric facts are attributed to this page."
+        },
+        {
+          "url": "https://rcdb.com/21313.htm",
+          "relationship": "CORROBORATING_RELATED",
+          "provenance": "SOURCE_VERIFIED",
+          "note": "RCDB entry recorded as related context; no numeric facts are copied into this snapshot."
+        }
+      ],
+      "facts": [
+        {
+          "metric": "inversionHeightM",
+          "value": 73,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
+            "https://www.intamin.com/category/innovation/"
+          ],
+          "retrievedAt": "2026-08-29"
+        },
+        {
+          "metric": "finalLaunchSpeed",
+          "value": 127,
+          "unit": "km/h",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
+            "https://www.intamin.com/category/innovation/"
+          ],
+          "retrievedAt": "2026-08-29"
+        },
+        {
+          "metric": "opened",
+          "value": "2025-12-31",
+          "unit": "date",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.intamin.com/project/spitfire-six-flags-qiddiya/"
+          ],
+          "retrievedAt": "2026-08-29"
+        }
       ]
     },
     {
-      "id": "falcons-flight-overall-records",
+      "id": "falcons-flight-metric-facts",
       "name": "Falcons Flight",
-      "facts": { "heightM": 195, "speedKmh": 250, "trackLengthM": 4325 },
-      "claim": "world tallest, fastest, and longest roller coaster",
-      "sources": [
-        "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
-        "https://rcdb.com/21315.htm"
+      "facts": [
+        {
+          "metric": "rideHeight",
+          "value": 195,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+            "https://www.intamin.com/category/innovation/",
+            "https://www.intamin.com/company/about-us/"
+          ],
+          "retrievedAt": "2026-08-29"
+        },
+        {
+          "metric": "speed",
+          "value": 250,
+          "unit": "km/h",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+            "https://www.intamin.com/category/innovation/",
+            "https://www.intamin.com/company/about-us/"
+          ],
+          "retrievedAt": "2026-08-29"
+        },
+        {
+          "metric": "trackLength",
+          "value": 4325,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+            "https://www.intamin.com/category/innovation/",
+            "https://www.intamin.com/company/about-us/"
+          ],
+          "retrievedAt": "2026-08-29"
+        }
+      ]
+    },
+    {
+      "id": "falcons-flight-rcdb-source-native",
+      "name": "Falcons Flight (RCDB source-native values)",
+      "facts": [
+        {
+          "metric": "trackLength",
+          "value": 13943.6,
+          "unit": "ft",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": ["https://rcdb.com/21315.htm"],
+          "retrievedAt": "2026-08-29",
+          "note": "Stored in the source's native imperial unit; no conversion is asserted here."
+        },
+        {
+          "metric": "rideHeight",
+          "value": 534.8,
+          "unit": "ft",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": ["https://rcdb.com/21315.htm"],
+          "retrievedAt": "2026-08-29",
+          "note": "Stored in the source's native imperial unit; no conversion is asserted here."
+        },
+        {
+          "metric": "speed",
+          "value": 155.3,
+          "unit": "mph",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": ["https://rcdb.com/21315.htm"],
+          "retrievedAt": "2026-08-29",
+          "note": "Stored in the source's native imperial unit; no conversion is asserted here."
+        }
+      ]
+    },
+    {
+      "id": "nodejs-24-krypton",
+      "name": "Node.js 24 Krypton",
+      "facts": [
+        {
+          "metric": "releaseLineStatus",
+          "value": "LTS",
+          "unit": "status",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": ["https://nodejs.org/en/about/previous-releases"],
+          "retrievedAt": "2026-08-29"
+        },
+        {
+          "metric": "productionGuidance",
+          "value": "Use Active or Maintenance LTS releases for production",
+          "unit": "guidance",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": ["https://nodejs.org/en/about/previous-releases"],
+          "retrievedAt": "2026-08-29"
+        }
       ]
     }
   ],
   "defaultTarget": {
     "metric": "inversionHeightM",
     "minimum": 80,
-    "baselineRecordId": "spitfire-tallest-inversion"
+    "unit": "m",
+    "provenance": "DESIGN_TARGET",
+    "baselineRecordId": "spitfire-inverted-top-hat",
+    "validationStatus": "TARGET_ONLY_NOT_VALIDATED"
+  },
+  "projectComparison": {
+    "id": "authored-inversion-target-vs-spitfire",
+    "metric": "inversionHeightM",
+    "target": {
+      "value": 80,
+      "unit": "m",
+      "provenance": "DESIGN_TARGET",
+      "description": "Authored project target; this is not evidence that a generated track achieves 80 m."
+    },
+    "baseline": {
+      "value": 73,
+      "unit": "m",
+      "recordId": "spitfire-inverted-top-hat",
+      "provenance": "SOURCE_VERIFIED",
+      "sourceUrls": [
+        "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
+        "https://www.intamin.com/category/innovation/"
+      ],
+      "retrievedAt": "2026-08-29"
+    },
+    "difference": {
+      "value": 7,
+      "unit": "m",
+      "provenance": "DERIVED",
+      "calculation": "80 m - 73 m"
+    },
+    "statement": "The authored 80 m inversion target exceeds the verified 73 m Spitfire height by 7 m; it remains a design target until a generated result is validated."
   }
 }

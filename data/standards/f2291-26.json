@@ -2,9 +2,15 @@
   "schemaVersion": 1,
   "designation": "ASTM F2291-26",
   "title": "Standard Practice for Design of Amusement Rides and Devices",
+  "status": "ACTIVE",
+  "updatedAt": "2026-07-15",
+  "doi": "10.1520/F2291-26",
   "capturedAt": "2026-08-29",
-  "source": "https://store.astm.org/standards/f2291",
+  "source": "https://store.astm.org/f2291-26.html",
+  "retrievedAt": "2026-08-29",
+  "metadataProvenance": "SOURCE_VERIFIED",
+  "provenance": "UNKNOWN_UNCONFIGURED",
   "licensedProfileConfigured": false,
   "criteria": [],
-  "notice": "Edition metadata is source verified. No copyrighted thresholds are reproduced and no ASTM compliance is claimed."
+  "notice": "Only public catalog metadata is recorded. No copyrighted thresholds are reproduced, and no ASTM compliance or certification is claimed."
 }
