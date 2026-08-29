@@ -9,13 +9,9 @@ test("WebGL fallback visible, camera/metric disabled/hidden, retry operable, no 
   const consoleErrors: string[] = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => {
-    if (m.type() === "error") {
-      const text = m.text();
-      // Three logs expected WebGL context failures when --disable-webgl; not app-attributable page errors
-      if (text.includes("THREE.WebGLRenderer")) return;
-      consoleErrors.push(text);
-    }
+    if (m.type() === "error") consoleErrors.push(m.text());
   });
+
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/");
   await page.waitForLoadState("domcontentloaded");
@@ -36,13 +32,52 @@ test("WebGL fallback visible, camera/metric disabled/hidden, retry operable, no 
       (document.getElementById("metric-select") as HTMLSelectElement)?.disabled,
   );
   expect(metricDisabled).toBe(true);
-  // retry should be clickable through overlay – not intercepted
+  // verify fallback not invoked Three – no handle, snapshot says not ready, hasWebGL false
+  const snap = await page.evaluate(() => {
+    const fn = (window as unknown as Record<string, unknown>)
+      .__vibecoasterSnapshot as unknown as
+      (() => Record<string, unknown>) | undefined;
+    if (!fn) return null;
+    const s = fn() as Record<string, unknown>;
+    return {
+      rendererReady: s.rendererReady,
+      hasWebGL: s.hasWebGL,
+      successfulRenderCount: s.successfulRenderCount,
+      frozen: Object.isFrozen(s),
+    };
+  });
+  expect(snap).not.toBeNull();
+  if (snap) {
+    expect(snap.rendererReady, "rendererReady false in fallback").toBe(false);
+    expect(snap.hasWebGL, "hasWebGL false in fallback").toBe(false);
+    expect(
+      snap.successfulRenderCount,
+      "no successful renders in fallback",
+    ).toBe(0);
+    expect(snap.frozen, "snapshot frozen").toBe(true);
+  }
+  const noHandle = await page.evaluate(() => {
+    const w = window as unknown as Record<string, unknown>;
+    return {
+      hasController:
+        "__vibecoasterController" in w &&
+        w.__vibecoasterController !== undefined,
+      hasHandle:
+        "__vibecoasterRendererHandle" in w &&
+        w.__vibecoasterRendererHandle !== undefined,
+    };
+  });
+  expect(noHandle.hasController, "no controller handle in fallback").toBe(
+    false,
+  );
+  expect(noHandle.hasHandle, "no renderer handle in fallback").toBe(false);
+
   await page.locator("#webgl-retry").click();
   await page.waitForTimeout(300);
   await expect(fallback).toBeVisible();
+  // after retry, still fallback but no errors, listeners were before navigation
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
-  await page.screenshot({ fullPage: false });
 });
 
 test("reduced motion fallback still operable", async ({ page }) => {
@@ -50,18 +85,25 @@ test("reduced motion fallback still operable", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => {
-    if (m.type() === "error") {
-      const text = m.text();
-      if (text.includes("THREE.WebGLRenderer")) return;
-      consoleErrors.push(text);
-    }
+    if (m.type() === "error") consoleErrors.push(m.text());
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
   await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(500);
   await expect(page.locator("#webgl-fallback")).toBeVisible();
+  const snap = await page.evaluate(() => {
+    const fn = (window as unknown as Record<string, unknown>)
+      .__vibecoasterSnapshot as unknown as
+      (() => Record<string, unknown>) | undefined;
+    if (!fn) return null;
+    return fn() as Record<string, unknown>;
+  });
+  expect(snap).not.toBeNull();
+  if (snap) {
+    expect(snap.hasWebGL).toBe(false);
+    expect(snap.reducedMotion).toBe(true);
+  }
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
-  await page.screenshot({ fullPage: false });
 });

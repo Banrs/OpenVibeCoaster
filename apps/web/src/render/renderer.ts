@@ -168,12 +168,7 @@ export function createRendererHandle(
   let renderer: THREE.WebGLRenderer | null = null;
 
   if (options.createRenderer !== undefined) {
-    try {
-      renderer = options.createRenderer(canvas);
-    } catch {
-      onFailure?.();
-      return null;
-    }
+    renderer = options.createRenderer(canvas);
     if (!renderer) {
       onFailure?.();
       return null;
@@ -192,7 +187,7 @@ export function createRendererHandle(
       onFailure?.();
       return null;
     }
-    try {
+    {
       const Ctor = _WebGLRendererForTest ?? THREE.WebGLRenderer;
       renderer = new Ctor({
         canvas,
@@ -201,9 +196,6 @@ export function createRendererHandle(
         alpha: false,
         powerPreference: "high-performance",
       });
-    } catch {
-      onFailure?.();
-      return null;
     }
     if (!renderer) {
       onFailure?.();

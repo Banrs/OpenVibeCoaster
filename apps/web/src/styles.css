@@ -197,14 +197,6 @@ select {
   outline: none;
 }
 
-.seed-field input:focus-visible,
-.btn:focus-visible,
-input:focus-visible,
-select:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
 .status {
   display: inline-flex;
   align-items: center;
@@ -629,6 +621,8 @@ select:focus-visible {
   background: rgba(17, 21, 29, 0.96);
   color: var(--text);
   gap: 12px;
+  z-index: 5;
+  pointer-events: auto;
 }
 
 .webgl-fallback[hidden] {
@@ -649,11 +643,6 @@ select:focus-visible {
 .webgl-fallback ul {
   margin: 0;
   padding-left: 16px;
-}
-
-.webgl-fallback {
-  z-index: 5;
-  pointer-events: auto;
 }
 
 #webgl-retry {
@@ -810,13 +799,7 @@ body.reduced-motion * {
   transition: none !important;
 }
 
-/* Focus visible – clearly visible for primary/secondary/camera/tabs/inputs/retry */
-:focus-visible,
-:focus {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
+/* Focus visible – single intentional cascade for primary/secondary/camera/tabs/inputs/retry */
 .btn:focus-visible,
 .btn:focus,
 .btn-primary:focus-visible,
@@ -836,25 +819,15 @@ body.reduced-motion * {
 #webgl-retry:focus-visible,
 #webgl-retry:focus,
 .mode-option:focus-visible,
-.mode-option:focus {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 4px rgba(138, 180, 255, 0.28);
-}
-
+.mode-option:focus,
 .cam-option:has(input:focus-visible),
-.cam-option:has(input:focus) {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 4px rgba(138, 180, 255, 0.28);
-  border-color: var(--focus);
-}
-
+.cam-option:has(input:focus),
 .mode-option:has(input:focus-visible),
 .mode-option:has(input:focus) {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px rgba(138, 180, 255, 0.28);
+  border-color: var(--focus);
 }
 
 /* Responsive – prevent horizontal overflow and keep header compact */

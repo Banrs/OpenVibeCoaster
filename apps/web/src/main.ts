@@ -494,6 +494,8 @@ window
 // Three renderer lifecycle – terrain/grid only before generation (no fixture coaster)
 // Single RAF and single resize owner via production lifecycle manager
 let metrics = new RenderMetrics();
+let lastSetupError: unknown = null;
+let lastRuntimeError: unknown = null;
 const lifecycle = createAppLifecycle({
   canvas: viewportCanvas,
   getTerrainSeed: () => state.seed || "default-terrain",
@@ -504,6 +506,18 @@ const lifecycle = createAppLifecycle({
   onResize2D: () => resizeCanvases(),
   onWebGLFailure: () => {
     hasWebGL = false;
+    render();
+  },
+  onSetupError: (e) => {
+    lastSetupError = e;
+    hasWebGL = true;
+    state.generationStatus = "error";
+    render();
+  },
+  onRuntimeError: (e) => {
+    lastRuntimeError = e;
+    hasWebGL = true;
+    state.generationStatus = "error";
     render();
   },
 });
@@ -523,8 +537,19 @@ function syncReadyDowngrade(ok: boolean): void {
 }
 
 function initRenderer(): void {
+  lastSetupError = null;
+  lastRuntimeError = null;
   const ok = lifecycle.init();
-  hasWebGL = ok;
+  if (ok) {
+    hasWebGL = true;
+  } else {
+    // if setup/runtime error occurred, hasWebGL stays true (WebGL available) but status is error
+    // if WebGL failure occurred, callback already set hasWebGL false
+    // fallback: if no callback fired and not ok, treat as WebGL unavailable
+    if (lastSetupError === null && lastRuntimeError === null) {
+      hasWebGL = false;
+    }
+  }
   syncReadyDowngrade(ok);
   render();
 }
@@ -533,8 +558,14 @@ initRenderer();
 
 webglRetry.addEventListener("click", () => {
   // No supportsWebGL preflight – let transactional reinitialize determine support and report once
+  lastSetupError = null;
+  lastRuntimeError = null;
   const ok = lifecycle.reinitialize();
-  hasWebGL = ok;
+  if (ok) {
+    hasWebGL = true;
+  } else if (lastSetupError === null && lastRuntimeError === null) {
+    hasWebGL = false;
+  }
   syncReadyDowngrade(ok);
   render();
   if (!ok) {
@@ -596,7 +627,7 @@ function wrappedGenerate(): void {
 generateBtn.removeEventListener("click", handleGenerate);
 generateBtn.addEventListener("click", wrappedGenerate);
 
-// Keep metrics and integration accessible for debugging and Wave 3
+// Keep metrics and integration accessible for debugging and Wave 3 (read-only snapshot handles lifecycle privacy)
 window.__vibecoasterMetrics = metrics;
 (
   window as unknown as { __vibecoasterAttachTrack?: typeof attachCompiledTrack }
@@ -604,15 +635,36 @@ window.__vibecoasterMetrics = metrics;
 (
   window as unknown as { __vibecoasterClearTrack?: typeof clearCompiledTrack }
 ).__vibecoasterClearTrack = clearCompiledTrack;
-// lifecycle manager already maintains window.__vibecoasterController – expose current for initial paint
-(window as unknown as Record<string, unknown>).__vibecoasterController =
-  lifecycle.getController() ?? undefined;
-(window as unknown as Record<string, unknown>).__vibecoasterRendererHandle =
-  lifecycle.getRendererHandle() ?? undefined;
-(window as unknown as Record<string, unknown>).__vibecoasterGetHandle = () =>
-  lifecycle.getRendererHandle();
-(window as unknown as Record<string, unknown>).__vibecoasterGetController =
-  () => lifecycle.getController();
+
+// Minimal read-only dev/test snapshot API returning frozen primitives only – no handle/controller/scene/renderer/state references
+function __vibecoasterSnapshot(): Readonly<{
+  rendererReady: boolean;
+  successfulRenderCount: number;
+  generationStatus: string;
+  hasWebGL: boolean;
+  reducedMotion: boolean;
+  appMode: string;
+  cameraX: number;
+  cameraY: number;
+  cameraZ: number;
+}> {
+  const cam = lifecycle.getCamera();
+  return Object.freeze({
+    rendererReady: lifecycle.isRendererReady(),
+    successfulRenderCount: lifecycle.getSuccessfulRenderCount(),
+    generationStatus: state.generationStatus,
+    hasWebGL,
+    reducedMotion: state.reducedMotion,
+    appMode: state.appMode,
+    cameraX: cam ? cam.position.x : 0,
+    cameraY: cam ? cam.position.y : 0,
+    cameraZ: cam ? cam.position.z : 0,
+  });
+}
+(window as unknown as Record<string, unknown>).__vibecoasterSnapshot =
+  __vibecoasterSnapshot;
+(window as unknown as Record<string, unknown>).__vibecoasterTestSnapshot =
+  __vibecoasterSnapshot;
 
 // Initial paint – lifecycle manager is sole resize owner (no duplicate direct resize)
 render();
@@ -620,11 +672,10 @@ render();
 // Expose for manual inspection in devtools (not used in tests)
 declare global {
   interface Window {
-    __vibecoasterState?: AppState;
     __vibecoasterMetrics?: RenderMetrics;
     __vibecoasterAttachTrack?: typeof attachCompiledTrack;
     __vibecoasterClearTrack?: typeof clearCompiledTrack;
-    __vibecoasterController?: ReturnType<typeof lifecycle.getController>;
+    __vibecoasterSnapshot?: typeof __vibecoasterSnapshot;
+    __vibecoasterTestSnapshot?: typeof __vibecoasterSnapshot;
   }
 }
-window.__vibecoasterState = state;

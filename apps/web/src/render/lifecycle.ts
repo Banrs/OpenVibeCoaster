@@ -50,6 +50,8 @@ export interface AppLifecycle {
   getResizeHandler(): (() => void) | null;
   hasTrack(): boolean;
   getMetricState(): { metric: MetricId; metricAvailable: boolean } | null;
+  getSuccessfulRenderCount(): number;
+  isRendererReady(): boolean;
 }
 
 function resolveWindow(
@@ -79,6 +81,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   let pendingAttachment: AttachmentSnapshot | null = null;
   let pendingPlayback: { distance: number; speed: number } | null = null;
   let lastFrameMs = 0;
+  let successfulRenderCount = 0;
 
   const getWin = (): Window & typeof globalThis =>
     resolveWindow(config.getWindow);
@@ -193,7 +196,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       return false;
     }
     if (!handle) {
-      // expected WebGL unavailability – transactionally clean and clear globals
+      // expected WebGL unavailability – transactionally clean
       disposeHandles();
       clearGlobal();
       return false;
@@ -317,6 +320,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         teardownRafAndResize();
         return;
       }
+      successfulRenderCount++;
       metrics?.endFrame();
       try {
         const info = (
@@ -383,9 +387,10 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     teardownRafAndResize();
     disposeHandles();
     clearGlobal();
+    successfulRenderCount = 0;
     const ok = createHandleAndController();
     if (!ok) {
-      // preserve attachment for retry, but ensure no stale global and no listeners beyond teardown
+      // preserve attachment for retry, but ensure no stale state and no listeners beyond teardown
       // do not register RAF/resize when failed – truthful pending/fallback
       return false;
     }
@@ -397,6 +402,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     teardownRafAndResize();
     disposeHandles();
     clearGlobal();
+    successfulRenderCount = 0;
     attachment = null;
     lastPlayback = null;
     pendingAttachment = null;
@@ -636,5 +642,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     getResizeHandler: () => resizeHandler,
     hasTrack: () => controller?.hasTrack() ?? false,
     getMetricState: () => controller?.getMetricState() ?? null,
+    getSuccessfulRenderCount: () => successfulRenderCount,
+    isRendererReady: () => rendererHandle !== null && controller !== null,
   };
 }
