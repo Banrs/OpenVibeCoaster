@@ -15,10 +15,15 @@ import {
 
 const vec = (x: number, y: number, z: number): Vec3 => [x, y, z];
 
-const sample = (distance: number, x: number): TrackSample => ({
-  position: vec(x, 2, 0),
-  tangent: vec(1, 0, 0),
-  normal: vec(0, 1, 0),
+const sample = (
+  distance: number,
+  x: number,
+  angle = 0,
+  carIndex = 0,
+): TrackSample => ({
+  position: vec(x, 2, carIndex),
+  tangent: vec(Math.cos(angle), Math.sin(angle), 0),
+  normal: vec(-Math.sin(angle), Math.cos(angle), 0),
   binormal: vec(0, 0, 1),
   distance,
   curvature: 0,
@@ -27,37 +32,38 @@ const sample = (distance: number, x: number): TrackSample => ({
   bankDerivative: 0,
 });
 
-const telemetry = (): CarTelemetry => ({
-  longitudinalG: 0,
-  lateralG: 0,
+const telemetry = (timeIndex = 0): CarTelemetry => ({
+  longitudinalG: timeIndex * 2,
+  lateralG: timeIndex,
   verticalG: 1,
-  specificForceMps2: vec(0, 0, 9.80665),
-  jerkMps3: vec(0, 0, 0),
-  bankRad: 0,
-  rollRateRadPerSec: 0,
+  specificForceMps2: vec(timeIndex, 0, 9.80665),
+  jerkMps3: vec(0, timeIndex, 0),
+  bankRad: timeIndex * 0.1,
+  rollRateRadPerSec: timeIndex * 0.2,
 });
 
 const makeCar = (carIndex: number, timeIndex: number): CarState => {
   const distance = timeIndex * 10 - carIndex * 3;
-  const frame = sample(distance, distance);
+  const angle = timeIndex * (Math.PI / 2);
+  const frame = sample(distance, distance, angle, carIndex);
   const seats: SeatState[] = [0, 1].map((seatIndex) => ({
     index: seatIndex,
     distanceM: distance + seatIndex * 0.5,
-    position: vec(distance, 2 + seatIndex, carIndex),
-    frame: sample(distance + seatIndex * 0.5, distance),
-    telemetry: telemetry(),
+    position: vec(distance, 2 + seatIndex + Math.sin(angle) * 0.25, carIndex),
+    frame: sample(distance + seatIndex * 0.5, distance, angle, carIndex),
+    telemetry: telemetry(timeIndex),
   }));
   return {
     index: carIndex,
     distanceM: distance,
     position: vec(distance, 2, carIndex),
-    tangent: vec(1, 0, 0),
-    normal: vec(0, 1, 0),
-    binormal: vec(0, 0, 1),
+    tangent: frame.tangent,
+    normal: frame.normal,
+    binormal: frame.binormal,
     frame,
     seatOffsets: [vec(0, 0, 0), vec(0, 1, 0)],
     seatPositions: seats.map((seat) => seat.position),
-    telemetry: telemetry(),
+    telemetry: telemetry(timeIndex),
     seats,
   };
 };
@@ -77,20 +83,20 @@ const makeFrame = (timeIndex: number, speedMps: number): SimulationFrame => {
     },
     telemetry: {
       perCar: cars.map((car) => car.telemetry),
-      longitudinalG: 0,
-      lateralG: 0,
+      longitudinalG: timeIndex * 2,
+      lateralG: timeIndex,
       verticalG: 1,
-      specificForceMps2: vec(0, 0, 9.80665),
-      bankRad: 0,
-      rollRateRadPerSec: 0,
-      jerkMps3: vec(0, 0, 0),
+      specificForceMps2: vec(timeIndex, 0, 9.80665),
+      bankRad: timeIndex * 0.1,
+      rollRateRadPerSec: timeIndex * 0.2,
+      jerkMps3: vec(0, timeIndex, 0),
       launchActivity: speedMps > 4,
       brakeActivity: speedMps === 0,
-      kineticEnergyJ: 0,
-      potentialEnergyJ: 0,
-      accumulatedDriveWorkJ: 0,
-      accumulatedLossWorkJ: 0,
-      energyErrorJ: 0,
+      kineticEnergyJ: timeIndex * 10,
+      potentialEnergyJ: timeIndex * 20,
+      accumulatedDriveWorkJ: timeIndex * 30,
+      accumulatedLossWorkJ: timeIndex * 4,
+      energyErrorJ: timeIndex * 0.5,
     },
   };
 };
@@ -169,6 +175,48 @@ describe("RidePlaybackController", () => {
     });
   });
 
+  it("interpolates authoritative cars, seats, telemetry, and orthonormal frames at fractional time", () => {
+    const controller = createRidePlayback(makeTimeline());
+
+    controller.scrubTime(0.5);
+
+    const snapshot = controller.getSnapshot();
+    const front = snapshot.selections.front;
+    const seat = front.seat!;
+    const rootTwo = Math.SQRT1_2;
+
+    expect(front.position).toEqual([5, 2.125, 0]);
+    expect(seat.position).toEqual([5, 2.125, 0]);
+    expect(front.car?.seats[1]?.position).toEqual([5, 3.125, 0]);
+    expect(front.tangent?.[0]).toBeCloseTo(rootTwo);
+    expect(front.tangent?.[1]).toBeCloseTo(rootTwo);
+    expect(front.normal?.[0]).toBeCloseTo(-rootTwo);
+    expect(front.normal?.[1]).toBeCloseTo(rootTwo);
+    expect(front.binormal?.[0]).toBeCloseTo(0);
+    expect(front.binormal?.[1]).toBeCloseTo(0);
+    expect(front.binormal?.[2]).toBeCloseTo(1);
+    expect(seat.frame.tangent[0]).toBeCloseTo(rootTwo);
+    expect(seat.frame.tangent[1]).toBeCloseTo(rootTwo);
+    expect(seat.frame.normal[0]).toBeCloseTo(-rootTwo);
+    expect(seat.frame.normal[1]).toBeCloseTo(rootTwo);
+    expect(seat.frame.binormal[0]).toBeCloseTo(0);
+    expect(seat.frame.binormal[1]).toBeCloseTo(0);
+    expect(seat.frame.binormal[2]).toBeCloseTo(1);
+    expect(snapshot.telemetry?.longitudinalG).toBe(1);
+    expect(snapshot.telemetry?.kineticEnergyJ).toBe(5);
+    expect(front.car?.telemetry.longitudinalG).toBe(1);
+    expect(seat.telemetry.bankRad).toBeCloseTo(0.05);
+
+    expect(
+      front.tangent![0]! * front.normal![0]! +
+        front.tangent![1]! * front.normal![1]!,
+    ).toBeCloseTo(0);
+    expect(
+      front.tangent![0]! * front.normal![1]! -
+        front.tangent![1]! * front.normal![0]!,
+    ).toBeCloseTo(front.binormal![2]!);
+  });
+
   it("supports rates, time/index scrubbing, reset, reduced motion, and typed callbacks", () => {
     const controller = createRidePlayback(makeTimeline(), {
       reducedMotion: true,
@@ -234,5 +282,58 @@ describe("RidePlaybackController", () => {
     controller.tick(1);
     expect(controller.getSnapshot().disposed).toBe(true);
     expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-monotonic frame timestamps and inconsistent authoritative dimensions", () => {
+    expect(() =>
+      createRidePlayback(
+        new RideTimeline({
+          sampleRateHz: 1,
+          timeSeconds: new Float64Array([0, 1]),
+          headDistanceM: new Float64Array([0, 1]),
+          speedMps: new Float64Array([0, 1]),
+          carCount: 1,
+          carPositionsXYZ: new Float64Array(3),
+          carTangentsXYZ: new Float64Array(6),
+          carNormalsXYZ: new Float64Array(6),
+          carBinormalsXYZ: new Float64Array(6),
+        }),
+      ),
+    ).toThrow(/carPositionsXYZ/);
+
+    const frames = [makeFrame(0, 0), makeFrame(1, 1)];
+    frames[1] = { ...frames[1]!, timeSeconds: 0.5 };
+    expect(() =>
+      createRidePlayback(
+        new RideTimeline({
+          sampleRateHz: 1,
+          timeSeconds: new Float64Array([0, 1]),
+          headDistanceM: new Float64Array([0, 1]),
+          speedMps: new Float64Array([0, 1]),
+          carCount: 3,
+          carPositionsXYZ: new Float64Array(18),
+          carTangentsXYZ: new Float64Array(18),
+          carNormalsXYZ: new Float64Array(18),
+          carBinormalsXYZ: new Float64Array(18),
+          frames,
+        }),
+      ),
+    ).toThrow(/frame timestamps/);
+
+    expect(() =>
+      createRidePlayback(
+        new RideTimeline({
+          sampleRateHz: 1,
+          timeSeconds: new Float64Array([0]),
+          headDistanceM: new Float64Array([0]),
+          speedMps: new Float64Array([0]),
+          carCount: 1,
+          carPositionsXYZ: new Float64Array([0, 0, 0]),
+          carTangentsXYZ: new Float64Array([1, 0, 0]),
+          carNormalsXYZ: new Float64Array([1, 0, 0]),
+          carBinormalsXYZ: new Float64Array([0, 0, 1]),
+        }),
+      ),
+    ).toThrow(/orthonormal/);
   });
 });

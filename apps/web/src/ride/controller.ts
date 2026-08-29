@@ -1,8 +1,11 @@
 import type { Vec3 } from "@openvibecoaster/core";
 import type {
   CarState,
+  CarTelemetry,
   RideTimeline,
+  RideTelemetry,
   SeatState,
+  SimulationFrame,
 } from "@openvibecoaster/simulator";
 
 export type RideCameraId = "front" | "middle" | "rear" | "chase" | "orbit";
@@ -38,6 +41,7 @@ export interface RidePlaybackSnapshot {
   readonly sampleIndex: number;
   readonly headDistanceM: number;
   readonly speedMps: number;
+  readonly telemetry: RideTelemetry | undefined;
   readonly isPlaying: boolean;
   readonly ended: boolean;
   readonly rate: RidePlaybackRate;
@@ -85,10 +89,7 @@ interface TimelineData {
   readonly tangents: Float64Array;
   readonly normals: Float64Array;
   readonly binormals: Float64Array;
-  readonly frames: readonly {
-    readonly cars: readonly CarState[];
-    readonly selection: Readonly<Record<RideSelectionId, CarState>>;
-  }[];
+  readonly frames: readonly SimulationFrame[];
 }
 
 const selectionIds: readonly RideSelectionId[] = ["front", "middle", "rear"];
@@ -102,7 +103,108 @@ const isCameraId = (value: string): value is RideCameraId =>
 const isPlaybackRate = (value: number): value is RidePlaybackRate =>
   RIDE_PLAYBACK_RATES.includes(value as RidePlaybackRate);
 
-const cloneVec = (x: number, y: number, z: number): Vec3 => [x, y, z];
+const requireFiniteNumber = (value: number, field: string): void => {
+  if (!Number.isFinite(value)) throw new RangeError(`${field} must be finite`);
+};
+
+const requireFiniteVec = (value: Vec3, field: string): void => {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 3 ||
+    value.some((component) => !Number.isFinite(component))
+  )
+    throw new RangeError(`${field} must contain finite 3-vectors`);
+};
+
+const requireFiniteSample = (value: CarState["frame"], field: string): void => {
+  requireFiniteVec(value.position, `${field}.position`);
+  requireFiniteVec(value.tangent, `${field}.tangent`);
+  requireFiniteVec(value.normal, `${field}.normal`);
+  requireFiniteVec(value.binormal, `${field}.binormal`);
+  requireFiniteNumber(value.distance, `${field}.distance`);
+  requireFiniteNumber(value.curvature, `${field}.curvature`);
+  requireFiniteVec(value.curvatureVector, `${field}.curvatureVector`);
+  requireFiniteNumber(value.bank, `${field}.bank`);
+  requireFiniteNumber(value.bankDerivative, `${field}.bankDerivative`);
+};
+
+const requireFiniteTelemetry = (value: CarTelemetry, field: string): void => {
+  requireFiniteNumber(value.longitudinalG, `${field}.longitudinalG`);
+  requireFiniteNumber(value.lateralG, `${field}.lateralG`);
+  requireFiniteNumber(value.verticalG, `${field}.verticalG`);
+  requireFiniteVec(value.specificForceMps2, `${field}.specificForceMps2`);
+  requireFiniteVec(value.jerkMps3, `${field}.jerkMps3`);
+  requireFiniteNumber(value.bankRad, `${field}.bankRad`);
+  requireFiniteNumber(value.rollRateRadPerSec, `${field}.rollRateRadPerSec`);
+};
+
+const requireOrthonormal = (
+  tangent: Vec3,
+  normal: Vec3,
+  binormal: Vec3,
+  field: string,
+): void => {
+  const dot = (a: Vec3, b: Vec3): number =>
+    a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
+  const cross = (a: Vec3, b: Vec3): Vec3 => [
+    a[1]! * b[2]! - a[2]! * b[1]!,
+    a[2]! * b[0]! - a[0]! * b[2]!,
+    a[0]! * b[1]! - a[1]! * b[0]!,
+  ];
+  if (
+    Math.abs(dot(tangent, tangent) - 1) > 1e-7 ||
+    Math.abs(dot(normal, normal) - 1) > 1e-7 ||
+    Math.abs(dot(binormal, binormal) - 1) > 1e-7 ||
+    Math.abs(dot(tangent, normal)) > 1e-7 ||
+    Math.abs(dot(tangent, binormal)) > 1e-7 ||
+    Math.abs(dot(normal, binormal)) > 1e-7 ||
+    Math.abs(dot(cross(tangent, normal), binormal) - 1) > 1e-7
+  )
+    throw new RangeError(`${field} must be orthonormal and right-handed`);
+};
+
+const requireFiniteCar = (car: CarState, field: string): void => {
+  requireFiniteNumber(car.index, `${field}.index`);
+  requireFiniteNumber(car.distanceM, `${field}.distanceM`);
+  requireFiniteVec(car.position, `${field}.position`);
+  requireFiniteVec(car.tangent, `${field}.tangent`);
+  requireFiniteVec(car.normal, `${field}.normal`);
+  requireFiniteVec(car.binormal, `${field}.binormal`);
+  requireOrthonormal(car.tangent, car.normal, car.binormal, `${field}.axes`);
+  requireFiniteSample(car.frame, `${field}.frame`);
+  requireOrthonormal(
+    car.frame.tangent,
+    car.frame.normal,
+    car.frame.binormal,
+    `${field}.frame.axes`,
+  );
+  car.seatOffsets.forEach((value, index) =>
+    requireFiniteVec(value, `${field}.seatOffsets[${index}]`),
+  );
+  car.seatPositions.forEach((value, index) =>
+    requireFiniteVec(value, `${field}.seatPositions[${index}]`),
+  );
+  if (
+    car.seatOffsets.length !== car.seatPositions.length ||
+    car.seats.length !== car.seatPositions.length
+  )
+    throw new RangeError(`${field} seat dimensions must agree`);
+  requireFiniteTelemetry(car.telemetry, `${field}.telemetry`);
+  car.seats.forEach((seat, index) => {
+    const seatField = `${field}.seats[${index}]`;
+    requireFiniteNumber(seat.index, `${seatField}.index`);
+    requireFiniteNumber(seat.distanceM, `${seatField}.distanceM`);
+    requireFiniteVec(seat.position, `${seatField}.position`);
+    requireFiniteSample(seat.frame, `${seatField}.frame`);
+    requireOrthonormal(
+      seat.frame.tangent,
+      seat.frame.normal,
+      seat.frame.binormal,
+      `${seatField}.frame.axes`,
+    );
+    requireFiniteTelemetry(seat.telemetry, `${seatField}.telemetry`);
+  });
+};
 
 const validateTimeline = (timeline: RideTimeline): TimelineData => {
   const times = timeline.timeSeconds;
@@ -115,12 +217,24 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
   const binormals = timeline.carBinormalsXYZ;
   const frames = timeline.frames;
 
+  requireFiniteNumber(timeline.sampleRateHz, "RideTimeline sample rate");
+  if (timeline.sampleRateHz <= 0)
+    throw new RangeError("RideTimeline sample rate must be positive");
   if (times.length !== distances.length || times.length !== speeds.length)
     throw new RangeError("RideTimeline scalar arrays must have equal lengths");
   if (!Number.isInteger(carCount) || carCount < 0)
     throw new RangeError(
       "RideTimeline car count must be a non-negative integer",
     );
+  times.forEach((value, index) =>
+    requireFiniteNumber(value, `timeSeconds[${index}]`),
+  );
+  distances.forEach((value, index) =>
+    requireFiniteNumber(value, `headDistanceM[${index}]`),
+  );
+  speeds.forEach((value, index) =>
+    requireFiniteNumber(value, `speedMps[${index}]`),
+  );
   for (let index = 1; index < times.length; index += 1) {
     if (times[index]! <= times[index - 1]!)
       throw new RangeError(
@@ -137,12 +251,87 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
   ] as const) {
     if (values.length !== expectedCarValues)
       throw new RangeError(`${name} length must match RideTimeline car shape`);
+    values.forEach((value, index) =>
+      requireFiniteNumber(value, `${name}[${index}]`),
+    );
+  }
+  if (frames.length === 0) {
+    for (let sampleIndex = 0; sampleIndex < times.length; sampleIndex += 1) {
+      for (let carIndex = 0; carIndex < carCount; carIndex += 1) {
+        const offset = (sampleIndex * carCount + carIndex) * 3;
+        requireOrthonormal(
+          [tangents[offset]!, tangents[offset + 1]!, tangents[offset + 2]!],
+          [normals[offset]!, normals[offset + 1]!, normals[offset + 2]!],
+          [binormals[offset]!, binormals[offset + 1]!, binormals[offset + 2]!],
+          `frame arrays at sample ${sampleIndex}, car ${carIndex}`,
+        );
+      }
+    }
+  }
+  for (const [name, values] of [
+    ["longitudinalG", timeline.longitudinalG],
+    ["lateralG", timeline.lateralG],
+    ["verticalG", timeline.verticalG],
+    ["jerkMps3", timeline.jerkMps3],
+  ] as const) {
+    if (values.length !== 0 && values.length !== times.length)
+      throw new RangeError(`${name} length must match time length`);
+    values.forEach((value, index) =>
+      requireFiniteNumber(value, `${name}[${index}]`),
+    );
   }
   if (frames.length !== 0 && frames.length !== times.length)
     throw new RangeError("RideTimeline frames length must match time length");
   frames.forEach((frame, index) => {
+    requireFiniteNumber(frame.timeSeconds, `frames[${index}].timeSeconds`);
+    if (frame.timeSeconds !== times[index])
+      throw new RangeError(
+        "RideTimeline frame timestamps must match timeSeconds",
+      );
+    requireFiniteNumber(frame.headDistanceM, `frames[${index}].headDistanceM`);
+    requireFiniteNumber(frame.speedMps, `frames[${index}].speedMps`);
     if (frame.cars.length !== carCount)
       throw new RangeError(`RideTimeline frame ${index} car count mismatch`);
+    if (frame.telemetry.perCar.length !== carCount)
+      throw new RangeError(
+        `RideTimeline frame ${index} telemetry count mismatch`,
+      );
+    requireFiniteTelemetry(frame.telemetry, `frames[${index}].telemetry`);
+    requireFiniteNumber(
+      frame.telemetry.kineticEnergyJ,
+      `frames[${index}].telemetry.kineticEnergyJ`,
+    );
+    requireFiniteNumber(
+      frame.telemetry.potentialEnergyJ,
+      `frames[${index}].telemetry.potentialEnergyJ`,
+    );
+    requireFiniteNumber(
+      frame.telemetry.accumulatedDriveWorkJ,
+      `frames[${index}].telemetry.accumulatedDriveWorkJ`,
+    );
+    requireFiniteNumber(
+      frame.telemetry.accumulatedLossWorkJ,
+      `frames[${index}].telemetry.accumulatedLossWorkJ`,
+    );
+    requireFiniteNumber(
+      frame.telemetry.energyErrorJ,
+      `frames[${index}].telemetry.energyErrorJ`,
+    );
+    frame.telemetry.perCar.forEach((value, carIndex) =>
+      requireFiniteTelemetry(
+        value,
+        `frames[${index}].telemetry.perCar[${carIndex}]`,
+      ),
+    );
+    frame.cars.forEach((car, carIndex) =>
+      requireFiniteCar(car, `frames[${index}].cars[${carIndex}]`),
+    );
+    requireFiniteCar(frame.selection.front, `frames[${index}].selection.front`);
+    requireFiniteCar(
+      frame.selection.middle,
+      `frames[${index}].selection.middle`,
+    );
+    requireFiniteCar(frame.selection.rear, `frames[${index}].selection.rear`);
   });
   return {
     times,
@@ -159,6 +348,224 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
 
 const clamp = (value: number, low: number, high: number): number =>
   Math.max(low, Math.min(high, value));
+
+const lerp = (start: number, end: number, fraction: number): number =>
+  start * (1 - fraction) + end * fraction;
+
+const dot = (a: Vec3, b: Vec3): number =>
+  a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
+
+const cross = (a: Vec3, b: Vec3): Vec3 => [
+  a[1]! * b[2]! - a[2]! * b[1]!,
+  a[2]! * b[0]! - a[0]! * b[2]!,
+  a[0]! * b[1]! - a[1]! * b[0]!,
+];
+
+const length = (value: Vec3): number => Math.sqrt(dot(value, value));
+
+const normalize = (value: Vec3, field: string): Vec3 => {
+  const magnitude = length(value);
+  if (!(magnitude > 1e-12) || !Number.isFinite(magnitude))
+    throw new RangeError(`${field} cannot be interpolated into a frame`);
+  return [value[0]! / magnitude, value[1]! / magnitude, value[2]! / magnitude];
+};
+
+const lerpVec = (start: Vec3, end: Vec3, fraction: number): Vec3 => [
+  lerp(start[0]!, end[0]!, fraction),
+  lerp(start[1]!, end[1]!, fraction),
+  lerp(start[2]!, end[2]!, fraction),
+];
+
+const interpolateAxes = (
+  startTangent: Vec3,
+  startNormal: Vec3,
+  startBinormal: Vec3,
+  endTangent: Vec3,
+  endNormal: Vec3,
+  endBinormal: Vec3,
+  fraction: number,
+  field: string,
+): { tangent: Vec3; normal: Vec3; binormal: Vec3 } => {
+  const tangent = normalize(
+    lerpVec(startTangent, endTangent, fraction),
+    `${field}.tangent`,
+  );
+  const normalCandidate = lerpVec(startNormal, endNormal, fraction);
+  let projectedNormal: Vec3 = [
+    normalCandidate[0]! - tangent[0]! * dot(normalCandidate, tangent),
+    normalCandidate[1]! - tangent[1]! * dot(normalCandidate, tangent),
+    normalCandidate[2]! - tangent[2]! * dot(normalCandidate, tangent),
+  ];
+  if (!(length(projectedNormal) > 1e-12)) {
+    const binormalCandidate = lerpVec(startBinormal, endBinormal, fraction);
+    projectedNormal = cross(binormalCandidate, tangent);
+  }
+  const normal = normalize(projectedNormal, `${field}.normal`);
+  let binormal = normalize(cross(tangent, normal), `${field}.binormal`);
+  const binormalCandidate = lerpVec(startBinormal, endBinormal, fraction);
+  if (
+    length(binormalCandidate) > 1e-12 &&
+    dot(binormal, binormalCandidate) < 0
+  ) {
+    binormal = [-binormal[0]!, -binormal[1]!, -binormal[2]!];
+  }
+  return {
+    tangent,
+    normal:
+      dot(cross(tangent, normal), binormal) < 0
+        ? [-normal[0]!, -normal[1]!, -normal[2]!]
+        : normal,
+    binormal,
+  };
+};
+
+const interpolateTelemetry = (
+  start: CarTelemetry,
+  end: CarTelemetry,
+  fraction: number,
+): CarTelemetry => ({
+  longitudinalG: lerp(start.longitudinalG, end.longitudinalG, fraction),
+  lateralG: lerp(start.lateralG, end.lateralG, fraction),
+  verticalG: lerp(start.verticalG, end.verticalG, fraction),
+  specificForceMps2: lerpVec(
+    start.specificForceMps2,
+    end.specificForceMps2,
+    fraction,
+  ),
+  jerkMps3: lerpVec(start.jerkMps3, end.jerkMps3, fraction),
+  bankRad: lerp(start.bankRad, end.bankRad, fraction),
+  rollRateRadPerSec: lerp(
+    start.rollRateRadPerSec,
+    end.rollRateRadPerSec,
+    fraction,
+  ),
+});
+
+const interpolateSample = (
+  start: CarState["frame"],
+  end: CarState["frame"],
+  fraction: number,
+): CarState["frame"] => {
+  const axes = interpolateAxes(
+    start.tangent,
+    start.normal,
+    start.binormal,
+    end.tangent,
+    end.normal,
+    end.binormal,
+    fraction,
+    "frame",
+  );
+  return {
+    position: lerpVec(start.position, end.position, fraction),
+    ...axes,
+    distance: lerp(start.distance, end.distance, fraction),
+    curvature: lerp(start.curvature, end.curvature, fraction),
+    curvatureVector: lerpVec(
+      start.curvatureVector,
+      end.curvatureVector,
+      fraction,
+    ),
+    bank: lerp(start.bank, end.bank, fraction),
+    bankDerivative: lerp(start.bankDerivative, end.bankDerivative, fraction),
+  };
+};
+
+const interpolateSeat = (
+  start: SeatState,
+  end: SeatState,
+  fraction: number,
+): SeatState => ({
+  index: start.index,
+  distanceM: lerp(start.distanceM, end.distanceM, fraction),
+  position: lerpVec(start.position, end.position, fraction),
+  frame: interpolateSample(start.frame, end.frame, fraction),
+  telemetry: interpolateTelemetry(start.telemetry, end.telemetry, fraction),
+});
+
+const interpolateCar = (
+  start: CarState,
+  end: CarState,
+  fraction: number,
+): CarState => {
+  if (
+    start.seats.length !== end.seats.length ||
+    start.seatOffsets.length !== end.seatOffsets.length ||
+    start.seatPositions.length !== end.seatPositions.length
+  )
+    throw new RangeError("RideTimeline car seat dimensions must be consistent");
+  const axes = interpolateAxes(
+    start.tangent,
+    start.normal,
+    start.binormal,
+    end.tangent,
+    end.normal,
+    end.binormal,
+    fraction,
+    "car",
+  );
+  return {
+    index: start.index,
+    distanceM: lerp(start.distanceM, end.distanceM, fraction),
+    position: lerpVec(start.position, end.position, fraction),
+    ...axes,
+    frame: interpolateSample(start.frame, end.frame, fraction),
+    seatOffsets: start.seatOffsets.map((value, index) =>
+      lerpVec(value, end.seatOffsets[index]!, fraction),
+    ),
+    seatPositions: start.seatPositions.map((value, index) =>
+      lerpVec(value, end.seatPositions[index]!, fraction),
+    ),
+    telemetry: interpolateTelemetry(start.telemetry, end.telemetry, fraction),
+    seats: start.seats.map((seat, index) =>
+      interpolateSeat(seat, end.seats[index]!, fraction),
+    ),
+  };
+};
+
+const interpolateRideTelemetry = (
+  start: RideTelemetry,
+  end: RideTelemetry,
+  fraction: number,
+): RideTelemetry => ({
+  perCar: start.perCar.map((telemetry, index) =>
+    interpolateTelemetry(telemetry, end.perCar[index]!, fraction),
+  ),
+  longitudinalG: lerp(start.longitudinalG, end.longitudinalG, fraction),
+  lateralG: lerp(start.lateralG, end.lateralG, fraction),
+  verticalG: lerp(start.verticalG, end.verticalG, fraction),
+  specificForceMps2: lerpVec(
+    start.specificForceMps2,
+    end.specificForceMps2,
+    fraction,
+  ),
+  bankRad: lerp(start.bankRad, end.bankRad, fraction),
+  rollRateRadPerSec: lerp(
+    start.rollRateRadPerSec,
+    end.rollRateRadPerSec,
+    fraction,
+  ),
+  jerkMps3: lerpVec(start.jerkMps3, end.jerkMps3, fraction),
+  launchActivity: fraction < 0.5 ? start.launchActivity : end.launchActivity,
+  brakeActivity: fraction < 0.5 ? start.brakeActivity : end.brakeActivity,
+  kineticEnergyJ: lerp(start.kineticEnergyJ, end.kineticEnergyJ, fraction),
+  potentialEnergyJ: lerp(
+    start.potentialEnergyJ,
+    end.potentialEnergyJ,
+    fraction,
+  ),
+  accumulatedDriveWorkJ: lerp(
+    start.accumulatedDriveWorkJ,
+    end.accumulatedDriveWorkJ,
+    fraction,
+  ),
+  accumulatedLossWorkJ: lerp(
+    start.accumulatedLossWorkJ,
+    end.accumulatedLossWorkJ,
+    fraction,
+  ),
+  energyErrorJ: lerp(start.energyErrorJ, end.energyErrorJ, fraction),
+});
 
 const removeListener = <T>(listeners: Set<T>, listener: T): void => {
   listeners.delete(listener);
@@ -217,26 +624,83 @@ export function createRidePlayback(
     const nextIndex = Math.min(index + 1, values.length - 1);
     const startTime = data.times[index]!;
     const endTime = data.times[nextIndex] ?? startTime;
-    if (nextIndex === index || endTime === startTime) return values[index] ?? 0;
-    const interpolation = (time - startTime) / (endTime - startTime);
-    return (
-      (values[index] ?? 0) * (1 - interpolation) +
-      (values[nextIndex] ?? 0) * interpolation
+    const interpolation =
+      nextIndex === index ? 0 : (time - startTime) / (endTime - startTime);
+    return lerp(values[index] ?? 0, values[nextIndex] ?? 0, interpolation);
+  };
+
+  const timeBracket = (
+    time: number,
+  ): { index: number; nextIndex: number; fraction: number } => {
+    const index = sampleIndexAtTime(time);
+    const nextIndex = Math.min(index + 1, data.times.length - 1);
+    return {
+      index,
+      nextIndex,
+      fraction:
+        nextIndex === index
+          ? 0
+          : (time - data.times[index]!) /
+            (data.times[nextIndex]! - data.times[index]!),
+    };
+  };
+
+  const vectorAtTime = (
+    values: Float64Array,
+    carIndex: number,
+    bracket: { index: number; nextIndex: number; fraction: number },
+  ): Vec3 | undefined => {
+    if (data.times.length === 0 || data.carCount === 0) return undefined;
+    const startOffset = (bracket.index * data.carCount + carIndex) * 3;
+    const endOffset = (bracket.nextIndex * data.carCount + carIndex) * 3;
+    return lerpVec(
+      [
+        values[startOffset] ?? 0,
+        values[startOffset + 1] ?? 0,
+        values[startOffset + 2] ?? 0,
+      ],
+      [
+        values[endOffset] ?? 0,
+        values[endOffset + 1] ?? 0,
+        values[endOffset + 2] ?? 0,
+      ],
+      bracket.fraction,
     );
+  };
+
+  const frameAtTime = (bracket: {
+    index: number;
+    nextIndex: number;
+    fraction: number;
+  }): { cars: readonly CarState[]; telemetry: RideTelemetry } | undefined => {
+    const start = data.frames[bracket.index];
+    if (!start) return undefined;
+    const end = data.frames[bracket.nextIndex] ?? start;
+    const cars = start.cars.map((car, index) =>
+      interpolateCar(car, end.cars[index] ?? car, bracket.fraction),
+    );
+    return {
+      cars,
+      telemetry: interpolateRideTelemetry(
+        start.telemetry,
+        end.telemetry,
+        bracket.fraction,
+      ),
+    };
   };
 
   const selectionFor = (
     id: RideSelectionId,
-    sampleIndex: number,
+    bracket: { index: number; nextIndex: number; fraction: number },
+    frame: { cars: readonly CarState[]; telemetry: RideTelemetry } | undefined,
   ): RideSelection => {
-    const frame = data.frames[sampleIndex];
     const carIndex =
       id === "front"
         ? 0
         : id === "rear"
           ? Math.max(0, data.carCount - 1)
           : Math.floor(Math.max(0, data.carCount - 1) / 2);
-    const car = frame?.selection[id] ?? frame?.cars[carIndex];
+    const car = frame?.cars[carIndex];
     const seatIndex = seatIndexes[id];
     const seat = car?.seats[seatIndex];
     if (car) {
@@ -252,40 +716,53 @@ export function createRidePlayback(
         binormal: seat?.frame.binormal ?? car.binormal,
       });
     }
-    const offset = (sampleIndex * data.carCount + carIndex) * 3;
     const vector = (values: Float64Array): Vec3 | undefined =>
-      data.carCount === 0
-        ? undefined
-        : cloneVec(
-            values[offset] ?? 0,
-            values[offset + 1] ?? 0,
-            values[offset + 2] ?? 0,
-          );
+      vectorAtTime(values, carIndex, bracket);
+    const position = vector(data.positions);
+    const tangent = vector(data.tangents);
+    const normal = vector(data.normals);
+    const binormal = vector(data.binormals);
+    const axes =
+      tangent && normal && binormal
+        ? interpolateAxes(
+            tangent,
+            normal,
+            binormal,
+            tangent,
+            normal,
+            binormal,
+            0,
+            "timeline",
+          )
+        : undefined;
     return Object.freeze({
       id,
       carIndex,
       car: undefined,
       seatIndex,
       seat: undefined,
-      position: vector(data.positions),
-      tangent: vector(data.tangents),
-      normal: vector(data.normals),
-      binormal: vector(data.binormals),
+      position,
+      tangent: axes?.tangent,
+      normal: axes?.normal,
+      binormal: axes?.binormal,
     });
   };
 
   const getSnapshot = (): RidePlaybackSnapshot => {
     const sampleIndex = sampleIndexAtTime(timeSeconds);
+    const bracket = timeBracket(timeSeconds);
+    const frame = frameAtTime(bracket);
     const selections = Object.freeze({
-      front: selectionFor("front", sampleIndex),
-      middle: selectionFor("middle", sampleIndex),
-      rear: selectionFor("rear", sampleIndex),
+      front: selectionFor("front", bracket, frame),
+      middle: selectionFor("middle", bracket, frame),
+      rear: selectionFor("rear", bracket, frame),
     });
     return Object.freeze({
       timeSeconds,
       sampleIndex,
       headDistanceM: scalarAtTime(data.distances, timeSeconds),
       speedMps: scalarAtTime(data.speeds, timeSeconds),
+      telemetry: frame?.telemetry,
       isPlaying,
       ended,
       rate,

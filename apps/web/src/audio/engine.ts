@@ -103,13 +103,6 @@ interface LayerValues {
 }
 
 const layerIds: readonly RideAudioLayerId[] = ["wind", "rail", "lsm", "brake"];
-const defaultZoneNames = [
-  "station",
-  "block",
-  "launch",
-  "boost",
-  "brake",
-] as const;
 const clamp = (value: number, low: number, high: number): number =>
   Math.max(low, Math.min(high, value));
 
@@ -137,14 +130,57 @@ export function createRideAudioEngine(
 ): RideAudioEngine {
   const contextFactory =
     options.audioContextFactory ?? defaultAudioContextFactory;
-  const zoneNames = options.zoneNames ?? defaultZoneNames;
+  const zoneNames = options.zoneNames;
+  if (zoneNames !== undefined) {
+    if (
+      !Array.isArray(zoneNames) ||
+      zoneNames.length === 0 ||
+      zoneNames.length > 32 ||
+      zoneNames.some((name) => typeof name !== "string" || name.length === 0) ||
+      new Set(zoneNames).size !== zoneNames.length
+    )
+      throw new RangeError(
+        "zoneNames must contain 1 to 32 unique non-empty names",
+      );
+  }
+  const validateMask = (mask: number | undefined, field: string): number => {
+    if (
+      mask === undefined ||
+      !Number.isInteger(mask) ||
+      mask < 0 ||
+      mask > 0xffffffff
+    )
+      throw new RangeError(`${field} must be a uint32 mask`);
+    if (zoneNames && zoneNames.length < 32 && mask >>> zoneNames.length)
+      throw new RangeError(`${field} contains zones outside zoneNames`);
+    return mask;
+  };
+  if (
+    zoneNames === undefined &&
+    (options.lsmZoneMask === undefined || options.brakeZoneMask === undefined)
+  )
+    throw new RangeError(
+      "Ride audio requires zoneNames or both explicit operation masks",
+    );
   const namedMask = (names: readonly string[]): number =>
     names.reduce((mask, name) => {
-      const index = zoneNames.indexOf(name);
-      return index >= 0 && index < 32 ? mask | (1 << index) : mask;
+      const index = zoneNames?.indexOf(name) ?? -1;
+      return index >= 0 && index < 32 ? mask + 2 ** index : mask;
     }, 0);
-  const lsmZoneMask = options.lsmZoneMask ?? namedMask(["launch", "boost"]);
-  const brakeZoneMask = options.brakeZoneMask ?? namedMask(["brake"]);
+  const lsmZoneMask =
+    options.lsmZoneMask !== undefined
+      ? validateMask(options.lsmZoneMask, "lsmZoneMask")
+      : namedMask(["launch", "boost"]);
+  const brakeZoneMask =
+    options.brakeZoneMask !== undefined
+      ? validateMask(options.brakeZoneMask, "brakeZoneMask")
+      : namedMask(["brake"]);
+  const validZoneMask =
+    zoneNames === undefined
+      ? undefined
+      : zoneNames.length === 32
+        ? 0xffffffff
+        : 2 ** zoneNames.length - 1;
   let status: RideAudioEngineStatus = "locked";
   let muted = false;
   let disposed = false;
@@ -152,7 +188,8 @@ export function createRideAudioEngine(
   let unlockPromise: Promise<boolean> | undefined;
   let master: GainLike | undefined;
   let nodes: Partial<Record<RideAudioLayerId, LayerNodes>> = {};
-  let startedSources: (AudioBufferSourceLike | OscillatorLike)[] = [];
+  const ownedNodes = new Set<AudioNodeLike>();
+  const startedSources = new Set<AudioBufferSourceLike | OscillatorLike>();
   let lastUpdate: RideAudioUpdate | null = null;
   let paused = false;
   const layers = emptyLayers();
@@ -197,19 +234,24 @@ export function createRideAudioEngine(
   };
 
   const disconnectAll = (): void => {
-    for (const source of startedSources) source.stop();
-    startedSources = [];
-    const disconnect = (node: AudioNodeLike | undefined): void => {
-      if (node) node.disconnect();
-    };
-    for (const id of layerIds) {
-      const layerNodes = nodes[id];
-      if (!layerNodes) continue;
-      disconnect(layerNodes.source);
-      disconnect(layerNodes.filter);
-      disconnect(layerNodes.gain);
+    const sources = [...startedSources];
+    const createdNodes = [...ownedNodes];
+    startedSources.clear();
+    ownedNodes.clear();
+    for (const source of sources) {
+      try {
+        source.stop();
+      } catch {
+        // Cleanup must continue when one source is already stopped or broken.
+      }
     }
-    disconnect(master);
+    for (const node of createdNodes) {
+      try {
+        node.disconnect();
+      } catch {
+        // Cleanup must attempt every owned node even when one disconnect fails.
+      }
+    }
     nodes = {};
     master = undefined;
   };
@@ -218,7 +260,16 @@ export function createRideAudioEngine(
     if (!context) return;
     const ownedContext = context;
     context = undefined;
-    void ownedContext.close().catch(() => undefined);
+    try {
+      void Promise.resolve(ownedContext.close()).catch(() => undefined);
+    } catch {
+      // A synchronous close failure is contained just like a rejected close.
+    }
+  };
+
+  const ownNode = <T extends AudioNodeLike>(node: T): T => {
+    ownedNodes.add(node);
+    return node;
   };
 
   const makeNoiseBuffer = (audioContext: AudioContextLike): AudioBufferLike => {
@@ -234,13 +285,13 @@ export function createRideAudioEngine(
     audioContext: AudioContextLike,
     masterNode: GainLike,
   ): LayerNodes => {
-    const filter = audioContext.createBiquadFilter();
-    const gain = audioContext.createGain();
+    const filter = ownNode(audioContext.createBiquadFilter());
+    const gain = ownNode(audioContext.createGain());
     filter.type = id === "wind" ? "bandpass" : "lowpass";
     const source: AudioBufferSourceLike | OscillatorLike =
       id === "wind"
-        ? audioContext.createBufferSource()
-        : audioContext.createOscillator();
+        ? ownNode(audioContext.createBufferSource())
+        : ownNode(audioContext.createOscillator());
     if (id === "wind") {
       const noise = source as AudioBufferSourceLike;
       noise.buffer = makeNoiseBuffer(audioContext);
@@ -255,12 +306,12 @@ export function createRideAudioEngine(
     filter.connect(gain);
     gain.connect(masterNode);
     source.start();
-    startedSources.push(source);
+    startedSources.add(source);
     return { source, filter, gain };
   };
 
   const createGraph = (audioContext: AudioContextLike): void => {
-    const masterNode = audioContext.createGain();
+    const masterNode = ownNode(audioContext.createGain());
     masterNode.connect(audioContext.destination);
     master = masterNode;
     for (const id of layerIds)
@@ -320,8 +371,9 @@ export function createRideAudioEngine(
       } catch (error) {
         disconnectAll();
         closeContext();
-        status =
-          error instanceof AudioUnavailableError ? "unsupported" : "failed";
+        if (!disposed)
+          status =
+            error instanceof AudioUnavailableError ? "unsupported" : "failed";
         return false;
       } finally {
         unlockPromise = undefined;
@@ -336,7 +388,15 @@ export function createRideAudioEngine(
     setMuted: (nextMuted) => {
       if (disposed) return;
       muted = nextMuted;
-      applyNodeValues();
+      try {
+        applyNodeValues();
+      } catch {
+        if (!disposed) {
+          status = "failed";
+          disconnectAll();
+          closeContext();
+        }
+      }
     },
     update: (update) => {
       if (disposed) return false;
@@ -345,6 +405,8 @@ export function createRideAudioEngine(
         !Number.isInteger(update.zoneMask) ||
         update.zoneMask < 0 ||
         update.zoneMask > 0xffffffff ||
+        (validZoneMask !== undefined &&
+          (update.zoneMask & ~validZoneMask) !== 0) ||
         (update.paused !== undefined && typeof update.paused !== "boolean")
       )
         return false;
@@ -354,8 +416,15 @@ export function createRideAudioEngine(
         ...(update.paused === undefined ? {} : { paused: update.paused }),
       });
       if (status !== "ready") return false;
-      applyUpdate(lastUpdate);
-      return true;
+      try {
+        applyUpdate(lastUpdate);
+        return true;
+      } catch {
+        status = "failed";
+        disconnectAll();
+        closeContext();
+        return false;
+      }
     },
     dispose: () => {
       if (disposed) return;
