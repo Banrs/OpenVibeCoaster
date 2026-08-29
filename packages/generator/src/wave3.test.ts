@@ -540,59 +540,34 @@ describe("wave 3 deterministic generator", () => {
     ).toBe(false);
   });
 
-  it("returns one exact fatal diagnostic for every gate without a position", () => {
-    const legacyGate = (id: string, at: number) =>
-      ({
-        id,
-        at,
-        get position(): Vec3 {
-          const stack = new Error().stack ?? "";
-          if (stack.includes("gateDiagnostics")) {
-            return undefined as unknown as Vec3;
-          }
-          return [0, 0, 6] as unknown as Vec3;
-        },
-      }) as unknown as GateV1;
-    const result = generateCoaster({
-      ...directedIntent,
-      gates: [
-        legacyGate("legacy-at-near", 1),
-        legacyGate("legacy-at-far", 999),
-      ],
-    });
-    const failures = result.diagnostics.filter(
-      (item) => item.code === "GATE_POSITION_REQUIRED",
-    );
-
-    expect(result.feasible).toBe(false);
-    expect(failures).toHaveLength(2);
-    expect(failures.map((item) => item.relatedIds)).toEqual([
-      ["legacy-at-near"],
-      ["legacy-at-far"],
-    ]);
-    expect(failures.every((item) => item.severity === "fatal")).toBe(true);
+  it("rejects gates missing required position at the input boundary", () => {
+    const legacyGates = [
+      { id: "legacy-at-near", at: 1 } as unknown as GateV1,
+      { id: "legacy-at-far", at: 999 } as unknown as GateV1,
+    ];
+    for (const gate of legacyGates) {
+      expect(() =>
+        generateCoaster({
+          ...directedIntent,
+          gates: [gate],
+        }),
+      ).toThrow("gates[0].position: expected 3-vector");
+    }
   });
 
   it("fails zero, non-finite, and malformed gate quaternions", () => {
-    const zero = generateCoaster({
-      ...directedIntent,
-      gates: [
-        {
-          id: "zero-quaternion",
-          position: [0, 0, 6] as const,
-          orientation: [1e-16, 0, 0, 0] as const,
-        },
-      ],
-    });
-    expect(zero.feasible).toBe(false);
-    expect(
-      zero.diagnostics.some(
-        (item) =>
-          item.code === "GATE_ORIENTATION_INVALID" &&
-          item.severity === "fatal" &&
-          item.relatedIds?.[0] === "zero-quaternion",
-      ),
-    ).toBe(true);
+    expect(() =>
+      generateCoaster({
+        ...directedIntent,
+        gates: [
+          {
+            id: "zero-quaternion",
+            position: [0, 0, 6] as const,
+            orientation: [0, 0, 0, 0] as const,
+          },
+        ],
+      }),
+    ).toThrow("gates[0].orientation: expected non-zero quaternion");
 
     expect(() =>
       generateCoaster({
