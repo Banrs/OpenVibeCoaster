@@ -32,6 +32,7 @@
           <input
             id="seed-input"
             type="text"
+            value="1337"
             placeholder="e.g. 1337"
             autocomplete="off"
             spellcheck="false"
@@ -39,6 +40,14 @@
         </label>
         <button id="generate-btn" type="button" class="btn btn-primary">
           Insta Generate
+        </button>
+        <button
+          id="cancel-generation-btn"
+          type="button"
+          class="btn btn-ghost"
+          disabled
+        >
+          Cancel
         </button>
       </div>
 
@@ -72,10 +81,17 @@
         >
           Mute
         </button>
+        <button
+          id="audio-unlock-btn"
+          type="button"
+          class="btn btn-ghost"
+          aria-label="Unlock audio"
+        >
+          Unlock audio
+        </button>
       </div>
     </header>
 
-    <!-- Mobile drawer toggles (disclosure pattern) -->
     <div class="mobile-tabs" role="group" aria-label="Panels">
       <button
         type="button"
@@ -110,60 +126,275 @@
       <aside
         id="generation-rail"
         class="panel panel-left"
-        aria-label="Generation"
+        aria-label="Generation intent"
       >
-        <h2 class="panel-title">Generation</h2>
+        <h2 class="panel-title">Generation intent</h2>
+
+        <fieldset class="control-group" aria-label="Generation mode">
+          <legend>Generation mode</legend>
+          <label class="radio"
+            ><input
+              type="radio"
+              name="generation-mode"
+              id="generation-insta"
+              value="insta"
+              checked
+            />
+            Insta</label
+          >
+          <label class="radio"
+            ><input
+              type="radio"
+              name="generation-mode"
+              id="generation-full-auto"
+              value="full-auto"
+            />
+            Full auto</label
+          >
+          <label class="radio"
+            ><input
+              type="radio"
+              name="generation-mode"
+              id="generation-directed"
+              value="directed"
+            />
+            Directed</label
+          >
+        </fieldset>
 
         <fieldset class="control-group">
           <legend>Required elements</legend>
+          <p class="field-note">
+            Select authoritative elements for the next generation. Stall is
+            enabled by default. Lift and Drop are station operations, not
+            selectable library elements.
+          </p>
           <label class="check"
-            ><input type="checkbox" checked disabled /> Station</label
+            ><input type="checkbox" id="required-top-hat" value="top-hat" /> Top
+            hat</label
           >
           <label class="check"
-            ><input type="checkbox" checked disabled /> Lift</label
+            ><input type="checkbox" id="required-overbank" value="overbank" />
+            Overbank</label
           >
-          <label class="check"><input type="checkbox" /> Drop</label>
-          <label class="check"><input type="checkbox" /> Turn</label>
-          <label class="check"><input type="checkbox" /> Brake</label>
+          <label class="check"
+            ><input
+              type="checkbox"
+              id="required-airtime-hill"
+              value="airtime-hill"
+            />
+            Airtime hill</label
+          >
+          <label class="check"
+            ><input
+              type="checkbox"
+              id="required-zero-g-roll"
+              value="zero-g-roll"
+            />
+            Zero-G roll</label
+          >
+          <label class="check"
+            ><input type="checkbox" id="required-stall" value="stall" checked />
+            Stall</label
+          >
+          <label class="check"
+            ><input
+              type="checkbox"
+              id="required-braked-turn"
+              value="braked-turn"
+            />
+            Braked turn</label
+          >
         </fieldset>
 
         <fieldset class="control-group">
-          <legend>Gates</legend>
-          <label class="check"
-            ><input type="checkbox" checked /> Clearance</label
-          >
-          <label class="check"
-            ><input type="checkbox" checked /> Curvature</label
-          >
-          <label class="check"><input type="checkbox" /> Energy</label>
+          <legend>Footprint and height</legend>
+          <div class="grid-2">
+            <label class="field">
+              <span>Footprint min X (m)</span>
+              <input
+                id="footprint-min-x"
+                type="number"
+                value="-260"
+                step="10"
+              />
+            </label>
+            <label class="field">
+              <span>Footprint max X (m)</span>
+              <input id="footprint-max-x" type="number" value="260" step="10" />
+            </label>
+            <label class="field">
+              <span>Footprint min Z (m)</span>
+              <input
+                id="footprint-min-z"
+                type="number"
+                value="-180"
+                step="10"
+              />
+            </label>
+            <label class="field">
+              <span>Footprint max Z (m)</span>
+              <input id="footprint-max-z" type="number" value="180" step="10" />
+            </label>
+          </div>
+          <div class="grid-2">
+            <label class="field">
+              <span>Height min (m)</span>
+              <input id="height-min" type="number" value="0" step="1" />
+            </label>
+            <label class="field">
+              <span>Height max (m)</span>
+              <input id="height-max" type="number" value="100" step="1" />
+            </label>
+          </div>
+          <p class="field-note">
+            Envelope: approx. 520 x 360 m, height 0–100 m supports the 80 m top
+            hat.
+          </p>
+          <label class="field">
+            <span>Terrain profile</span>
+            <select id="terrain-profile">
+              <option value="rolling-highlands-v1" selected>
+                rolling-highlands-v1
+              </option>
+              <option value="flat-plains-v1">flat-plains-v1</option>
+              <option value="alpine-ridge-v1">alpine-ridge-v1</option>
+            </select>
+          </label>
         </fieldset>
 
         <fieldset class="control-group">
-          <legend>Footprint &amp; height</legend>
-          <label class="field">
-            <span>Footprint X (m)</span>
-            <input type="number" value="220" min="50" max="1000" step="10" />
-          </label>
-          <label class="field">
-            <span>Footprint Z (m)</span>
-            <input type="number" value="160" min="50" max="1000" step="10" />
-          </label>
-          <label class="field">
-            <span>Max height (m)</span>
-            <input type="number" value="42" min="5" max="120" step="1" />
-          </label>
+          <legend>
+            Directed gates — positions in metres, orientation in degrees
+          </legend>
+          <div class="gate-block">
+            <label class="check"
+              ><input type="checkbox" id="gate-0-enabled" /> Gate 0
+              enabled</label
+            >
+            <div class="grid-3">
+              <label class="field"
+                ><span>X (m)</span
+                ><input id="gate-0-x" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Y (m)</span
+                ><input id="gate-0-y" type="number" step="1" value="10"
+              /></label>
+              <label class="field"
+                ><span>Z (m)</span
+                ><input id="gate-0-z" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Yaw (deg)</span
+                ><input id="gate-0-yaw" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Pitch (deg)</span
+                ><input id="gate-0-pitch" type="number" step="1" value="0"
+              /></label>
+            </div>
+          </div>
+          <div class="gate-block">
+            <label class="check"
+              ><input type="checkbox" id="gate-1-enabled" /> Gate 1
+              enabled</label
+            >
+            <div class="grid-3">
+              <label class="field"
+                ><span>X (m)</span
+                ><input id="gate-1-x" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Y (m)</span
+                ><input id="gate-1-y" type="number" step="1" value="10"
+              /></label>
+              <label class="field"
+                ><span>Z (m)</span
+                ><input id="gate-1-z" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Yaw (deg)</span
+                ><input id="gate-1-yaw" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Pitch (deg)</span
+                ><input id="gate-1-pitch" type="number" step="1" value="0"
+              /></label>
+            </div>
+          </div>
+          <div class="gate-block">
+            <label class="check"
+              ><input type="checkbox" id="gate-2-enabled" /> Gate 2
+              enabled</label
+            >
+            <div class="grid-3">
+              <label class="field"
+                ><span>X (m)</span
+                ><input id="gate-2-x" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Y (m)</span
+                ><input id="gate-2-y" type="number" step="1" value="10"
+              /></label>
+              <label class="field"
+                ><span>Z (m)</span
+                ><input id="gate-2-z" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Yaw (deg)</span
+                ><input id="gate-2-yaw" type="number" step="1" value="0"
+              /></label>
+              <label class="field"
+                ><span>Pitch (deg)</span
+                ><input id="gate-2-pitch" type="number" step="1" value="0"
+              /></label>
+            </div>
+          </div>
         </fieldset>
 
         <fieldset class="control-group">
           <legend>Targets</legend>
           <label class="field">
-            <span>Hard: speed cap (m/s)</span>
-            <input type="number" value="28" min="1" max="40" step="0.5" />
+            <span>Target speed (m/s)</span>
+            <div class="inline-pair">
+              <input
+                id="target-speed-value"
+                type="number"
+                step="0.5"
+                placeholder="e.g. 22"
+              />
+              <select
+                id="target-speed-class"
+                aria-label="Speed constraint class"
+              >
+                <option value="hard">Hard</option>
+                <option value="soft" selected>Soft</option>
+              </select>
+            </div>
           </label>
           <label class="field">
-            <span>Soft: airtime target (g)</span>
-            <input type="number" value="0.2" min="-1" max="1" step="0.1" />
+            <span>Target airtime (g)</span>
+            <div class="inline-pair">
+              <input
+                id="target-airtime-value"
+                type="number"
+                step="0.1"
+                placeholder="e.g. 0.0"
+              />
+              <select
+                id="target-airtime-class"
+                aria-label="Airtime constraint class"
+              >
+                <option value="hard">Hard</option>
+                <option value="soft" selected>Soft</option>
+              </select>
+            </div>
           </label>
+          <p class="field-note">
+            Hard gates are project limits; soft gates are optimization
+            preferences. No ASTM thresholds are claimed.
+          </p>
         </fieldset>
       </aside>
 
@@ -176,7 +407,8 @@
         <div id="viewport-overlay" class="viewport-overlay" aria-hidden="true">
           <span class="overlay-status">Generation pending</span>
           <span class="overlay-hint"
-            >Configure left rail and press Insta Generate</span
+            >Configure generation intent and press Insta Generate — no preview
+            until authoritative track data is available</span
           >
         </div>
 
@@ -190,6 +422,12 @@
           >
           <span class="legend-item" data-metric="gForce"
             ><span class="legend-swatch swatch-gforce"></span>G-force</span
+          >
+          <span class="legend-item" data-metric="rollRate"
+            ><span class="legend-swatch swatch-rollrate"></span>Roll rate</span
+          >
+          <span class="legend-item" data-metric="clearance"
+            ><span class="legend-swatch swatch-clearance"></span>Clearance</span
           >
           <span class="legend-item" data-metric="height"
             ><span class="legend-swatch swatch-height"></span>Height</span
@@ -233,17 +471,17 @@
         </fieldset>
 
         <div id="webgl-fallback" class="webgl-fallback" hidden>
-          <h2>WebGL unavailable</h2>
+          <h2>3D view unavailable</h2>
           <p>
-            Your browser or device does not support WebGL. The viewport requires
-            WebGL to display the track.
+            WebGL is unavailable — 3D and ride visualization are disabled.
+            Design, generation, diagnostics, save and load continue to work.
           </p>
           <ul>
             <li>
-              Try updating your browser or enabling hardware acceleration.
+              All generation intent and authoritative diagnostics remain usable.
             </li>
             <li>
-              On mobile, ensure low-power mode is not blocking GPU access.
+              Telemetry metrics show neutral state until data is generated.
             </li>
           </ul>
           <button id="webgl-retry" type="button" class="btn btn-primary">
@@ -269,9 +507,26 @@
             Pin
           </button>
         </div>
-        <p class="panel-hint">
-          Select an element to edit. Changes stay local until regeneration.
-        </p>
+
+        <section class="inspector-section" aria-label="Authoritative elements">
+          <h3 class="section-title">Elements</h3>
+          <p class="panel-hint">
+            No generated elements — generate to see authoritative station and
+            track elements.
+          </p>
+          <ul
+            id="element-list"
+            class="data-list"
+            aria-label="Element list"
+          ></ul>
+          <div
+            id="selection-readout"
+            class="selection-readout"
+            aria-live="polite"
+          >
+            No selection.
+          </div>
+        </section>
 
         <fieldset class="control-group">
           <legend>Selected element</legend>
@@ -334,6 +589,28 @@
           Local regenerate
         </button>
         <p class="field-note">Disabled until track data is ready.</p>
+
+        <section class="inspector-section" aria-label="Diagnostics">
+          <h3 class="section-title">Diagnostics</h3>
+          <p class="panel-hint">
+            No diagnostics — generate to validate hard constraints.
+          </p>
+          <ul
+            id="diagnostics-list"
+            class="data-list"
+            aria-label="Diagnostics list"
+          ></ul>
+        </section>
+
+        <section class="inspector-section" aria-label="Relaxations">
+          <h3 class="section-title">Relaxations</h3>
+          <p class="panel-hint">No relaxations — soft targets are satisfied.</p>
+          <ul
+            id="relaxations-list"
+            class="data-list"
+            aria-label="Relaxations list"
+          ></ul>
+        </section>
       </aside>
     </div>
 
@@ -344,6 +621,8 @@
           <select id="metric-select" disabled>
             <option value="speed">Speed</option>
             <option value="gForce">G-force</option>
+            <option value="rollRate">Roll rate</option>
+            <option value="clearance">Clearance</option>
             <option value="height">Height</option>
             <option value="energy">Energy</option>
           </select>
@@ -352,10 +631,10 @@
         <label class="field inline" for="seat-select">
           <span>Seat</span>
           <select id="seat-select" disabled>
-            <option value="0">Front car — Seat 1</option>
-            <option value="1">Seat 2</option>
-            <option value="2">Seat 3</option>
-            <option value="3">Rear car — Seat 4</option>
+            <option value="0">Front — rider eye, lead car</option>
+            <option value="1">Middle — car 2</option>
+            <option value="2">Middle — car 3</option>
+            <option value="3">Rear — last car</option>
           </select>
         </label>
 
@@ -375,11 +654,10 @@
           <label class="field inline" for="playback-speed">
             <span>Speed</span>
             <select id="playback-speed" disabled>
-              <option value="0.25">0.25×</option>
-              <option value="0.5">0.5×</option>
-              <option value="1" selected>1×</option>
-              <option value="1.5">1.5×</option>
-              <option value="2">2×</option>
+              <option value="0.25">0.25x</option>
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1x</option>
+              <option value="2">2x</option>
             </select>
           </label>
           <button
@@ -399,7 +677,8 @@
           aria-label="Telemetry graph — no data, generate to populate"
         ></canvas>
         <div id="telemetry-empty" class="telemetry-empty">
-          No telemetry — generate to populate
+          No telemetry — generate to populate. Graph shows neutral baseline only
+          when data is available.
         </div>
       </div>
 
