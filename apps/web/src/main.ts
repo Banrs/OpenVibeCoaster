@@ -20,17 +20,6 @@ import { RenderMetrics } from "./render/metrics.js";
 import { createAppLifecycle } from "./render/lifecycle.js";
 import type { CompiledTrackData } from "@openvibecoaster/core";
 
-function supportsWebGL(): boolean {
-  try {
-    const canvas = document.createElement("canvas");
-    return Boolean(
-      canvas.getContext("webgl") ?? canvas.getContext("experimental-webgl"),
-    );
-  } catch {
-    return false;
-  }
-}
-
 function el<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
   if (!found) {
@@ -41,7 +30,9 @@ function el<T extends HTMLElement>(id: string): T {
 
 const state: AppState = createInitialState();
 
-let hasWebGL = supportsWebGL();
+// WebGL support is determined transactionally by THREE.WebGLRenderer creation via lifecycle.
+// No preflight canvas.getContext("webgl") to avoid binding WebGL1 before Three.
+let hasWebGL = true;
 const prefersReducedMotion = window.matchMedia(
   "(prefers-reduced-motion: reduce)",
 ).matches;
@@ -104,6 +95,7 @@ function syncBodyClasses(): void {
   body.classList.toggle("mode-ride", state.appMode === "ride");
   body.classList.toggle("mode-edit", state.appMode === "edit");
   body.classList.toggle("reduced-motion", state.reducedMotion);
+  body.classList.toggle("no-webgl", !hasWebGL);
   body.dataset.status = state.generationStatus;
 }
 
@@ -141,17 +133,22 @@ function render(): void {
   scrubber.disabled = !canScrub;
   pauseBtn.disabled = !canPlayback;
   resetBtn.disabled = !canPlayback;
-  playbackSelect.disabled = !canPlayback;
+  playbackSelect.disabled = !canPlayback || !hasWebGL;
   seamInspectBtn.disabled = !canSeam;
   localRegenerateBtn.disabled = !canLocal;
-  metricSelect.disabled = !canPlayback;
-  seatSelect.disabled = !canPlayback;
+  metricSelect.disabled = !canPlayback || !hasWebGL;
+  seatSelect.disabled = !canPlayback || !hasWebGL;
   generateBtn.disabled = !canGenerate;
   generateBtn.textContent =
     state.generationStatus === "generating" ? "Generating…" : "Insta Generate";
 
   for (const input of inspectInputs) {
     input.disabled = !canLocal;
+  }
+
+  // When WebGL fallback is visible, camera/metric controls are unavailable – disable and ensure not interceptable
+  for (const input of cameraInputs) {
+    input.disabled = !hasWebGL;
   }
 
   // Panel visibility via class — getPanelVisibility used for logic verification
@@ -456,30 +453,29 @@ document.addEventListener("keydown", (event) => {
 });
 
 // Resize canvas to device pixels without drawing fake coaster
+// Telemetry 2D path touches only telemetry canvas — never viewportCanvas (WebGL)
 function resizeCanvases(): void {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  for (const canvas of [viewportCanvas, telemetryGraph]) {
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.round(rect.width * dpr));
-    const h = Math.max(1, Math.round(rect.height * dpr));
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-    }
-    const ctx = canvas.getContext("2d");
-    if (ctx && canvas === telemetryGraph) {
-      ctx.clearRect(0, 0, w, h);
-      // Keep telemetry graph empty — no fake data; subtle grid only when ready
-      if (state.generationStatus === "ready") {
-        ctx.strokeStyle = "rgba(255,255,255,0.06)";
-        ctx.lineWidth = 1;
-        for (let i = 1; i < 4; i += 1) {
-          const y = (h / 4) * i;
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(w, y);
-          ctx.stroke();
-        }
+  const rect = telemetryGraph.getBoundingClientRect();
+  const w = Math.max(1, Math.round(rect.width * dpr));
+  const h = Math.max(1, Math.round(rect.height * dpr));
+  if (telemetryGraph.width !== w || telemetryGraph.height !== h) {
+    telemetryGraph.width = w;
+    telemetryGraph.height = h;
+  }
+  const ctx = telemetryGraph.getContext("2d");
+  if (ctx) {
+    ctx.clearRect(0, 0, w, h);
+    // Keep telemetry graph empty — no fake data; subtle grid only when ready
+    if (state.generationStatus === "ready") {
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 4; i += 1) {
+        const y = (h / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
       }
     }
   }
@@ -536,22 +532,12 @@ function initRenderer(): void {
 initRenderer();
 
 webglRetry.addEventListener("click", () => {
-  hasWebGL = supportsWebGL();
-  if (hasWebGL) {
-    const ok = lifecycle.reinitialize();
-    hasWebGL = ok;
-    syncReadyDowngrade(ok);
-    render();
-    if (!ok) {
-      const p = webglFallback.querySelector("p");
-      if (p) {
-        p.textContent =
-          "Still unavailable — try restarting the browser with hardware acceleration enabled.";
-      }
-    }
-  } else {
-    truthfulDowngrade();
-    render();
+  // No supportsWebGL preflight – let transactional reinitialize determine support and report once
+  const ok = lifecycle.reinitialize();
+  hasWebGL = ok;
+  syncReadyDowngrade(ok);
+  render();
+  if (!ok) {
     const p = webglFallback.querySelector("p");
     if (p) {
       p.textContent =

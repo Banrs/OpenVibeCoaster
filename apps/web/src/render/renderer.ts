@@ -21,16 +21,6 @@ export interface CreateRendererOptions {
     ((canvas: HTMLCanvasElement) => THREE.WebGLRenderer) | undefined;
 }
 
-function supportsWebGL(canvas: HTMLCanvasElement): boolean {
-  try {
-    const ctx =
-      canvas.getContext("webgl") ?? canvas.getContext("experimental-webgl");
-    return Boolean(ctx);
-  } catch {
-    return false;
-  }
-}
-
 function buildScene(terrainSeed: string): THREE.Scene {
   const scene = new THREE.Scene();
   let terrainMesh: THREE.Mesh | null = null;
@@ -168,13 +158,26 @@ export function createRendererHandle(
   const dprCap = options.dprCap ?? 2;
   const onFailure = options.onWebGLFailure;
 
-  if (!supportsWebGL(canvas)) {
-    onFailure?.();
-    return null;
-  }
-
+  // No preflight context request – let transactional THREE.WebGLRenderer creation determine support.
+  // Any early binding before Three would lock the canvas to WebGL1 and conflict with Three.
   let renderer: THREE.WebGLRenderer | null = null;
+  const originalConsoleError = console.error;
+  let suppressActive = false;
+  const suppressWebGLError = (...args: unknown[]): void => {
+    const first = String(args[0] ?? "");
+    if (
+      first.includes("WebGL context could not be created") ||
+      first.includes("Error creating WebGL context")
+    ) {
+      return;
+    }
+    originalConsoleError.apply(console, args as never);
+  };
   try {
+    // Suppress Three's synchronous console.error spam when WebGL is unavailable;
+    // the transactional catch/report path still handles the failure exactly once.
+    console.error = suppressWebGLError as typeof console.error;
+    suppressActive = true;
     renderer =
       options.createRenderer !== undefined
         ? options.createRenderer(canvas)
@@ -187,6 +190,8 @@ export function createRendererHandle(
   } catch {
     onFailure?.();
     return null;
+  } finally {
+    if (suppressActive) console.error = originalConsoleError;
   }
 
   if (!renderer) {
