@@ -10,6 +10,7 @@ import {
   vec3Normalize,
   vec3Scale,
   type ParametricSpan,
+  type SolvedSpan,
   type Vec3,
 } from "@openvibecoaster/core";
 import {
@@ -421,70 +422,83 @@ const forceProfileSpan = (
   };
 };
 
-const topHatSpan = (
+const topHatSpans = (
   pose: Pose,
   width: number,
   endBank: number,
-): {
-  span: ParametricSpan<Vec3>;
-  positionCoefficients: readonly (readonly number[])[];
-  rollCoefficients: readonly number[];
-  endPose: Pose;
-  bank: ParametricSpan<number>;
-} => {
+  elementId: string,
+): ElementBuildResult => {
   const basis = basisFor(pose);
-  const heightCoefficients = [
-    0,
-    0,
-    0,
-    64 * 80,
-    -192 * 80,
-    192 * 80,
-    -64 * 80,
-    0,
-  ];
-  const positionCoefficients = [0, 1, 2].map((component) =>
-    Array.from(
-      { length: 8 },
-      (_, power) =>
-        (power === 0 ? pose.position[component]! : 0) +
-        basis.tangent[component]! * (power === 1 ? width : 0) +
-        basis.normal[component]! * (heightCoefficients[power] ?? 0),
+  const halfWidth = width / 2;
+  const riseCoefficients = smoothRampCoefficients.map(
+    (coefficient) => coefficient * 80,
+  );
+  const positionCoefficients = (
+    origin: Vec3,
+    verticalCoefficients: readonly number[],
+  ): readonly (readonly number[])[] =>
+    [0, 1, 2].map((component) =>
+      Array.from(
+        { length: 8 },
+        (_, power) =>
+          (power === 0 ? origin[component]! : 0) +
+          basis.tangent[component]! * (power === 1 ? halfWidth : 0) +
+          basis.normal[component]! * (verticalCoefficients[power] ?? 0),
+      ),
+    );
+  const apex = worldPoint(pose, basis, vec3(halfWidth, 80, 0));
+  const rows = [
+    positionCoefficients(pose.position, riseCoefficients),
+    positionCoefficients(
+      apex,
+      riseCoefficients.map((coefficient) => -coefficient),
     ),
-  );
-  const span =
-    SeventhOrderHermiteSpan.fromCoefficients<Vec3>(positionCoefficients);
-  const base = new QuinticScalarSpan({
-    v0: pose.bank,
-    d10: 0,
-    d20: 0,
-    v1: endBank,
-    d11: 0,
-    d21: 0,
-  }).coefficients;
-  const bumpAmplitude =
-    pose.bank +
-    Math.PI -
-    QuinticScalarSpan.fromCoefficients(base).position(0.5);
-  const bump = [
-    0,
-    0,
-    16 * bumpAmplitude,
-    -32 * bumpAmplitude,
-    16 * bumpAmplitude,
-    0,
-  ];
-  const canonicalBank = QuinticScalarSpan.fromCoefficients(
-    base.map((value, index) => value + (bump[index] ?? 0)),
-  );
+  ] as const;
+  const apexBank = pose.bank + Math.PI;
+  const banks = [
+    QuinticScalarSpan.fromCoefficients(
+      new QuinticScalarSpan({
+        v0: pose.bank,
+        d10: 0,
+        d20: 0,
+        v1: apexBank,
+        d11: 0,
+        d21: 0,
+      }).coefficients,
+    ),
+    QuinticScalarSpan.fromCoefficients(
+      new QuinticScalarSpan({
+        v0: apexBank,
+        d10: 0,
+        d20: 0,
+        v1: endBank,
+        d11: 0,
+        d21: 0,
+      }).coefficients,
+    ),
+  ] as const;
+  const solvedSpans: readonly SolvedSpan[] = rows.map((coefficients, index) => {
+    const span = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(coefficients);
+    const bank = banks[index]!;
+    return {
+      id: `${elementId}#${index}`,
+      kind: "topHat",
+      span,
+      bank,
+      zones: ["topHat"],
+      bounds: aabbFromPoints(
+        Array.from({ length: 33 }, (_, sample) => span.position(sample / 32)),
+      ),
+      positionCoefficients: span.coefficients,
+      rollCoefficients: bank.coefficients,
+    };
+  });
+  const last = solvedSpans[1]!;
   return {
-    span,
-    positionCoefficients,
-    rollCoefficients: canonicalBank.coefficients,
-    bank: canonicalBank,
+    solvedSpans,
     endPose: orthonormalizePose({
-      position: span.position(1),
-      tangent: vec3Normalize(span.derivative(1, 1)),
+      position: last.span.position(1),
+      tangent: vec3Normalize(last.span.derivative(1, 1)),
       normal: basis.normal,
       bank: endBank,
     }),
@@ -566,13 +580,19 @@ const transitionedCircularSpan = (
   };
 };
 
+interface SingleSpanBuild {
+  readonly span: ParametricSpan<Vec3>;
+  readonly bank: ParametricSpan<number>;
+  readonly endPose: Pose;
+}
+
 const bankLaw = (from: number, to: number): ParametricSpan<number> =>
   new QuinticScalarSpan({ v0: from, d10: 0, d20: 0, v1: to, d11: 0, d21: 0 });
 const lineSpan = (
   pose: Pose,
   length: number,
   endBank: number,
-): ElementBuildResult => {
+): SingleSpanBuild => {
   const basis = basisFor(pose);
   const span = SeventhOrderHermiteSpan.line(
     pose.position,
@@ -585,7 +605,7 @@ const lineSpan = (
     normal: basis.normal,
     bank: endBank,
   });
-  return { span, bank, endPose, solvedSpan: { id: "", span, bank } };
+  return { span, bank, endPose };
 };
 
 export const buildElement = (
@@ -594,12 +614,14 @@ export const buildElement = (
   referenceSpeed = 25,
 ): ElementBuildResult => {
   const normalizedPose = orthonormalizePose(pose);
+  if (element.type === "topHat") {
+    const p = element.parameters as ElementParameterMap["topHat"];
+    return topHatSpans(normalizedPose, p.width, p.bank, element.id);
+  }
   let span: ParametricSpan<Vec3>;
   let endPose: Pose;
   let endBank = normalizedPose.bank;
   let bank: ParametricSpan<number> | undefined;
-  let positionCoefficients: readonly (readonly number[])[] | undefined;
-  let rollCoefficients: readonly number[] | undefined;
   switch (element.type) {
     case "station": {
       const p = element.parameters as ElementParameterMap["station"];
@@ -654,17 +676,6 @@ export const buildElement = (
         normal: basis.normal,
         bank: p.bank,
       });
-      endBank = p.bank;
-      break;
-    }
-    case "topHat": {
-      const p = element.parameters as ElementParameterMap["topHat"];
-      const profile = topHatSpan(normalizedPose, p.width, p.bank);
-      span = profile.span;
-      positionCoefficients = profile.positionCoefficients;
-      rollCoefficients = profile.rollCoefficients;
-      endPose = { ...profile.endPose, bank: p.bank };
-      bank = profile.bank;
       endBank = p.bank;
       break;
     }
@@ -730,18 +741,16 @@ export const buildElement = (
   bank ??= bankLaw(normalizedPose.bank, endBank);
   const points = Array.from({ length: 33 }, (_, i) => span.position(i / 32));
   return {
-    span,
-    bank,
     endPose,
-    solvedSpan: {
-      id: element.id,
-      kind: element.type,
-      span,
-      bank,
-      zones: [element.type],
-      bounds: aabbFromPoints(points),
-      ...(positionCoefficients ? { positionCoefficients } : {}),
-      ...(rollCoefficients ? { rollCoefficients } : {}),
-    },
+    solvedSpans: [
+      {
+        id: element.id,
+        kind: element.type,
+        span,
+        bank,
+        zones: [element.type],
+        bounds: aabbFromPoints(points),
+      },
+    ],
   };
 };

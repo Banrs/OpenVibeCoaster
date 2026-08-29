@@ -17,7 +17,11 @@ import {
   vec3Normalize,
   type SolvedSpan,
 } from "@openvibecoaster/core";
-import { SeventhOrderHermiteSpan, type Vec3 } from "@openvibecoaster/core";
+import {
+  QuinticScalarSpan,
+  SeventhOrderHermiteSpan,
+  type Vec3,
+} from "@openvibecoaster/core";
 import * as solver from "./solver";
 
 const directedIntent = {
@@ -172,33 +176,27 @@ describe("wave 3 deterministic generator", () => {
     const topHatSpans = result.file.solvedSpans.filter((span) =>
       span.id.startsWith("topHat-002#"),
     );
-    expect(topHatSpans.length).toBeGreaterThan(1);
-    const topHatHeights = topHatSpans.map(
-      (span) =>
-        SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
-          span.positionCoefficients,
-        ).position(0.5)[1],
+    expect(topHatSpans.map((span) => span.id)).toEqual([
+      "topHat-002#0",
+      "topHat-002#1",
+    ]);
+    const runtimeTopHatSpans = result.solvedSpans.filter((span) =>
+      span.id.startsWith("topHat-002#"),
     );
-    expect(Math.max(...topHatHeights)).toBeGreaterThan(79);
-    expect(
-      Math.max(...topHatHeights) - Math.min(...topHatHeights),
-    ).toBeGreaterThan(1);
-    expect(
-      topHatSpans.some((span) =>
-        span.rollCoefficients.some((value) => value !== 0),
-      ),
-    ).toBe(true);
+    runtimeTopHatSpans.forEach((span, index) => {
+      expect(span.span).toBeInstanceOf(SeventhOrderHermiteSpan);
+      expect(span.bank).toBeInstanceOf(QuinticScalarSpan);
+      expect(span.positionCoefficients).toEqual(
+        topHatSpans[index]!.positionCoefficients,
+      );
+      expect(span.rollCoefficients).toEqual(
+        topHatSpans[index]!.rollCoefficients,
+      );
+    });
     const loaded = compileCoasterFile(result.serializedFile);
     const sampleTopHat = (spans: typeof topHatSpans, u: number) => {
-      const boundaries = [0, 0.2, 0.35, 0.4, 0.6, 0.65, 0.8, 1];
-      const child = Math.min(
-        boundaries.length - 2,
-        boundaries.findIndex((boundary) => u <= boundary) - 1,
-      );
-      const index = child < 0 ? 0 : child;
-      const local =
-        (u - boundaries[index]!) /
-        (boundaries[index + 1]! - boundaries[index]!);
+      const index = u <= 0.5 ? 0 : 1;
+      const local = index === 0 ? u * 2 : u * 2 - 1;
       const span = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
         spans[index]!.positionCoefficients,
       );
@@ -211,18 +209,28 @@ describe("wave 3 deterministic generator", () => {
         ),
       };
     };
-    for (const u of [0.35, 0.5, 0.65]) {
+    const apex = sampleTopHat(topHatSpans, 0.5);
+    const offApexHeights = Array.from(
+      { length: 2001 },
+      (_, index) => index / 2000,
+    )
+      .filter((u) => u !== 0.5)
+      .map((u) => sampleTopHat(topHatSpans, u).height);
+    expect(apex.height).toBeCloseTo(80, 10);
+    expect(Math.max(...offApexHeights)).toBeLessThan(apex.height);
+    expect(apex.bank - sampleTopHat(topHatSpans, 0).bank).toBeCloseTo(
+      Math.PI,
+      12,
+    );
+    const loadedTopHatSpans = loaded.file.solvedSpans.filter((span) =>
+      span.id.startsWith("topHat-002#"),
+    );
+    expect(loadedTopHatSpans).toEqual(topHatSpans);
+    for (const u of [0, 0.17, 0.35, 0.5, 0.65, 0.83, 1]) {
       const sample = sampleTopHat(topHatSpans, u);
-      const loadedSample = sampleTopHat(
-        loaded.file.solvedSpans.filter((span) =>
-          span.id.startsWith("topHat-002#"),
-        ),
-        u,
-      );
-      expect(sample.height).toBeCloseTo(80, 8);
+      const loadedSample = sampleTopHat(loadedTopHatSpans, u);
       expect(loadedSample).toEqual(sample);
     }
-    expect(sampleTopHat(topHatSpans, 0.5).bank).toBeCloseTo(Math.PI, 8);
     expect(compileCoasterFile(result.serializedFile).track.positions).toEqual(
       result.track.positions,
     );
@@ -887,6 +895,17 @@ describe("wave 3 deterministic generator", () => {
     );
     expect(localOptions.startPose?.bank).toBe(boundary?.bank?.position(1));
     expect(result.feasible).toBe(true);
+    expect(
+      result.generation.solvedSpans
+        .filter((span) => span.id.startsWith("topHat-002#"))
+        .map((span) => span.id),
+    ).toEqual(["topHat-002#0", "topHat-002#1"]);
+    expect(result.generation.spanHashes["topHat-002"]).toBe(
+      result.generation.spanHashes["topHat-002#0"],
+    );
+    expect(result.generation.spanBytes["topHat-002"]).toBe(
+      result.generation.spanBytes["topHat-002#0"],
+    );
     expect(result.generation.spanBytes["station-000"]).toBe(
       generated.spanBytes["station-000"],
     );

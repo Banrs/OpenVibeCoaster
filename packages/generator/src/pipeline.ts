@@ -138,7 +138,6 @@ const asElements = (
 };
 
 const childBoundaries = (span: SolvedSpan): readonly number[] => {
-  if (span.kind === "topHat") return [0, 0.2, 0.35, 0.4, 0.6, 0.65, 0.8, 1];
   if (span.kind === "airtimeHill") return [0, 0.15, 0.25, 0.75, 0.85, 1];
   if (span.span instanceof SeventhOrderHermiteSpan) return [0, 1];
   return Array.from({ length: 9 }, (_, index) => index / 8);
@@ -165,6 +164,7 @@ const subspan = <T extends number | Vec3>(
 };
 
 const coefficientSpan = (span: SolvedSpan): SolvedSpan[] => {
+  if (span.positionCoefficients && span.rollCoefficients) return [span];
   const boundaries = childBoundaries(span);
   return boundaries.slice(0, -1).map((start, childIndex) => {
     const end = boundaries[childIndex + 1]!;

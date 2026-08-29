@@ -147,22 +147,29 @@ describe("semantic chain geometry", () => {
       createElement("topHat", "hat", { height: 80, width: 40 }),
     ]);
     expect(result.feasible).toBe(true);
-    const span = result.solvedSpans[0]?.span;
-    expect(span).toBeDefined();
-    const heights = Array.from(
-      { length: 101 },
-      (_, i) => span!.position(i / 100)[1],
+    expect(result.solvedSpans.map((span) => span.id)).toEqual([
+      "hat#0",
+      "hat#1",
+    ]);
+    const first = result.solvedSpans[0]!;
+    const second = result.solvedSpans[1]!;
+    const heights = result.solvedSpans.flatMap((span) =>
+      Array.from({ length: 101 }, (_, i) => span.span.position(i / 100)[1]),
     );
     expect(Math.max(...heights) - Math.min(...heights)).toBeCloseTo(80, 6);
-    expect(vec3Length(span!.derivative(0, 1))).toBeGreaterThan(0);
-    expect(span!.derivative(0, 3)[1]).toBeCloseTo(30720, 8);
-    expect(span!.derivative(1, 3)[1]).toBeCloseTo(-30720, 8);
+    expect(vec3Length(first.span.derivative(0, 1))).toBeGreaterThan(0);
+    expect(first.span.derivative(0, 3)[1]).toBeCloseTo(0, 8);
+    expect(second.span.derivative(1, 3)[1]).toBeCloseTo(0, 8);
+    for (const order of [0, 1, 2, 3])
+      expect(first.span.derivative(1, order)).toEqual(
+        second.span.derivative(0, order),
+      );
     expect(() =>
       createElement("topHat", "wrong-height", { height: 81 }),
     ).toThrow("height must be exactly 80 m");
-    expect(span!.position(0.5)[1]).toBeCloseTo(80, 6);
-    expect(span!.position(0.15)[1]).toBeLessThan(80);
-    expect(result.solvedSpans[0]?.bank?.position(0.5)).toBeCloseTo(Math.PI, 6);
+    expect(first.span.position(1)[1]).toBeCloseTo(80, 6);
+    expect(first.span.position(0.7)[1]).toBeLessThan(80);
+    expect(first.bank?.position(1)).toBeCloseTo(Math.PI, 6);
   });
 
   it("keeps the top-hat descent tangent and inverted frame continuous", () => {
@@ -170,20 +177,21 @@ describe("semantic chain geometry", () => {
       [createElement("topHat", "hat", { height: 80, width: 40 })],
       { samples: 64 },
     );
-    const solvedSpan = result.solvedSpans[0]!;
-    const span = solvedSpan.span;
-    const startTangent = vec3Normalize(span.derivative(0, 1));
-    const endTangent = vec3Normalize(span.derivative(1, 1));
+    const first = result.solvedSpans[0]!;
+    const last = result.solvedSpans.at(-1)!;
+    const startTangent = vec3Normalize(first.span.derivative(0, 1));
+    const endTangent = vec3Normalize(last.span.derivative(1, 1));
     expect(vec3Dot(startTangent, endTangent)).toBeCloseTo(1, 10);
-    expect(span.position(1)[1]).toBeCloseTo(span.position(0)[1], 8);
-    const parameters = result.track!.parameters;
+    expect(last.span.position(1)[1]).toBeCloseTo(first.span.position(0)[1], 8);
     let apexIndex = 0;
-    for (let index = 1; index < parameters.length; index += 1)
+    for (let index = 1; index < result.track!.positions.length / 3; index += 1)
       if (
-        Math.abs(parameters[index]! - 0.5) <
-        Math.abs(parameters[apexIndex]! - 0.5)
+        result.track!.positions[index * 3 + 1]! >
+        result.track!.positions[apexIndex * 3 + 1]!
       )
         apexIndex = index;
+    const solvedSpan =
+      result.solvedSpans[result.track!.elementIndices[apexIndex]!]!;
     expect(result.track!.bank[apexIndex]).toBeCloseTo(
       solvedSpan.bank!.position(result.track!.parameters[apexIndex]!),
       10,

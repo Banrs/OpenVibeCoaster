@@ -76,22 +76,39 @@ const curvatureVector = (span: ParametricSpan<Vec3>, u: number): Vec3 => {
       )
     : vec3(0, 0, 0);
 };
-const curvatureGradient = (span: ParametricSpan<Vec3>, u: number): number => {
-  if ((u === 0 || u === 1) && vec3Length(span.derivative(u, 2)) < 1e-10)
-    return 0;
-  const epsilon = 1e-4;
-  const low = Math.max(0, u - epsilon);
-  const high = Math.min(1, u + epsilon);
-  if (high === low) return 0;
-  return (
-    (curvature(span, high) - curvature(span, low)) /
-    ((high - low) * vec3Length(span.derivative(u, 1)))
+const curvatureGradientVector = (
+  span: ParametricSpan<Vec3>,
+  u: number,
+): Vec3 => {
+  const d1 = span.derivative(u, 1);
+  const d2 = span.derivative(u, 2);
+  const d3 = span.derivative(u, 3);
+  const speedSquared = vec3Dot(d1, d1);
+  if (speedSquared <= 1e-24) return vec3(0, 0, 0);
+  const projection = vec3Dot(d1, d2);
+  const projectionDerivative = vec3Dot(d2, d2) + vec3Dot(d1, d3);
+  const derivative = vec3Add(
+    vec3Scale(d3, 1 / speedSquared),
+    vec3Add(
+      vec3Scale(d2, (-3 * projection) / speedSquared ** 2),
+      vec3Scale(
+        d1,
+        -projectionDerivative / speedSquared ** 2 +
+          (4 * projection ** 2) / speedSquared ** 3,
+      ),
+    ),
   );
+  return vec3Scale(derivative, 1 / Math.sqrt(speedSquared));
 };
 const bankValue = (span: SolvedSpan, u: number): number =>
   span.bank?.position(u) ?? 0;
 const bankDerivative = (span: SolvedSpan, u: number): number =>
   span.bank?.derivative(u, 1) ?? 0;
+const finiteTangent = (span: ParametricSpan<Vec3>, u: number): Vec3 => {
+  const derivative = span.derivative(u, 1);
+  const speed = vec3Length(derivative);
+  return speed > 1e-12 ? vec3Scale(derivative, 1 / speed) : vec3(0, 0, 0);
+};
 
 interface ForceFrame {
   readonly tangent: Vec3;
@@ -149,6 +166,7 @@ const specificForceNormalG = (
   u: number,
   speed: number,
 ): number => {
+  if (vec3Length(span.span.derivative(u, 1)) <= 1e-12) return 0;
   const frame = forceFrame(span, u, speed);
   return vec3Dot(frame.specificForce, frame.normal) / gravity;
 };
@@ -158,6 +176,7 @@ const specificForceResidualG = (
   speed: number,
   target: number,
 ): number => {
+  if (vec3Length(span.span.derivative(u, 1)) <= 1e-12) return Math.abs(target);
   const frame = forceFrame(span, u, speed);
   return Math.max(
     Math.abs(vec3Dot(frame.specificForce, frame.normal) / gravity - target),
@@ -295,16 +314,19 @@ export const diagnoseSeams = (
   return seamPairs.map(({ left, right, seamId }) => {
     const leftPosition = left.span.position(1);
     const rightPosition = right.span.position(0);
-    const leftTangent = vec3Normalize(left.span.derivative(1, 1));
-    const rightTangent = vec3Normalize(right.span.derivative(0, 1));
+    const leftTangent = finiteTangent(left.span, 1);
+    const rightTangent = finiteTangent(right.span, 0);
     const residual: ResidualSet = {
       positionM: vec3Distance(leftPosition, rightPosition),
       tangentRad: Math.acos(clamp(vec3Dot(leftTangent, rightTangent), -1, 1)),
       curvaturePerM: Math.abs(
         curvature(left.span, 1) - curvature(right.span, 0),
       ),
-      curvatureGradientPerM2: Math.abs(
-        curvatureGradient(left.span, 1) - curvatureGradient(right.span, 0),
+      curvatureGradientPerM2: vec3Length(
+        vec3Sub(
+          curvatureGradientVector(left.span, 1),
+          curvatureGradientVector(right.span, 0),
+        ),
       ),
       curvatureVectorJumpPerM: vec3Length(
         vec3Sub(curvatureVector(left.span, 1), curvatureVector(right.span, 0)),
@@ -546,9 +568,9 @@ const buildChain = (
   let pose = startPose;
   for (const element of elements) {
     const built = buildElement(element, pose, referenceSpeed);
-    const solvedSpan = { ...built.solvedSpan, id: element.id };
-    solvedSpans.push(solvedSpan);
+    solvedSpans.push(...built.solvedSpans);
     if (element.type === "airtimeHill") {
+      const solvedSpan = built.solvedSpans[0]!;
       const target = element.parameters.height;
       const actual = vec3Dot(
         vec3Sub(built.endPose.position, pose.position),
@@ -619,34 +641,40 @@ const applyAuthoredStartFrame = (
     vec3Scale(tangent, vec3Dot(reference, tangent)),
   );
   const defaultNormal = vec3Normalize(projected);
-  const baseBank = canonicalBankSpan(first);
-  if (!baseBank) return spans;
   const correction = Math.atan2(
     vec3Dot(tangent, vec3Cross(defaultNormal, startPose.normal)),
     vec3Dot(defaultNormal, startPose.normal),
   );
-  const correctionSpan = new QuinticScalarSpan({
-    v0: correction,
-    d10: 0,
-    d20: 0,
-    v1: 0,
-    d11: 0,
-    d21: 0,
+  const owner = first.id.split("#", 1)[0]!;
+  const ownedSpans = spans.filter((span) => span.id.split("#", 1)[0] === owner);
+  const ownedIndex = new Map(
+    ownedSpans.map((span, index) => [span.id, index] as const),
+  );
+  return spans.map((span) => {
+    const childIndex = ownedIndex.get(span.id);
+    if (childIndex === undefined) return span;
+    const baseBank = canonicalBankSpan(span);
+    if (!baseBank) return span;
+    const correctionSpan = new QuinticScalarSpan({
+      v0: correction,
+      d10: 0,
+      d20: 0,
+      v1: childIndex === ownedSpans.length - 1 ? 0 : correction,
+      d11: 0,
+      d21: 0,
+    });
+    const canonicalBank = QuinticScalarSpan.fromCoefficients(
+      baseBank.coefficients.map(
+        (coefficient, index) =>
+          coefficient + correctionSpan.coefficients[index]!,
+      ),
+    );
+    return {
+      ...span,
+      bank: canonicalBank,
+      rollCoefficients: canonicalBank.coefficients,
+    };
   });
-  const canonicalBank = QuinticScalarSpan.fromCoefficients(
-    baseBank.coefficients.map(
-      (coefficient, index) => coefficient + correctionSpan.coefficients[index]!,
-    ),
-  );
-  return spans.map((span, index) =>
-    index === 0
-      ? {
-          ...span,
-          bank: canonicalBank,
-          rollCoefficients: canonicalBank.coefficients,
-        }
-      : span,
-  );
 };
 
 const appendEndpointResiduals = (

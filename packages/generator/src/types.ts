@@ -4,7 +4,6 @@ import type {
   Diagnostic,
   EnvironmentQuery,
   DesignIntentV1,
-  ParametricSpan,
   SolvedSpan,
   Vec3,
 } from "@openvibecoaster/core";
@@ -106,10 +105,8 @@ export interface Pose {
 }
 
 export interface ElementBuildResult {
-  readonly span: ParametricSpan<Vec3>;
-  readonly bank: ParametricSpan<number>;
   readonly endPose: Pose;
-  readonly solvedSpan: SolvedSpan;
+  readonly solvedSpans: readonly SolvedSpan[];
 }
 
 export interface SeamTolerances {
