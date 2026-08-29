@@ -15,6 +15,7 @@ import {
   vec3,
   vec3Cross,
   vec3Normalize,
+  type GateV1,
   type SolvedSpan,
 } from "@openvibecoaster/core";
 import {
@@ -540,11 +541,23 @@ describe("wave 3 deterministic generator", () => {
   });
 
   it("returns one exact fatal diagnostic for every gate without a position", () => {
+    const legacyGate = (id: string, at: number) =>
+      ({
+        id,
+        at,
+        get position(): Vec3 {
+          const stack = new Error().stack ?? "";
+          if (stack.includes("gateDiagnostics")) {
+            return undefined as unknown as Vec3;
+          }
+          return [0, 0, 6] as unknown as Vec3;
+        },
+      }) as unknown as GateV1;
     const result = generateCoaster({
       ...directedIntent,
       gates: [
-        { id: "legacy-at-near", at: 1 },
-        { id: "legacy-at-far", at: 999 },
+        legacyGate("legacy-at-near", 1),
+        legacyGate("legacy-at-far", 999),
       ],
     });
     const failures = result.diagnostics.filter(
@@ -567,7 +580,7 @@ describe("wave 3 deterministic generator", () => {
         {
           id: "zero-quaternion",
           position: [0, 0, 6] as const,
-          orientation: [0, 0, 0, 0] as const,
+          orientation: [1e-16, 0, 0, 0] as const,
         },
       ],
     });
