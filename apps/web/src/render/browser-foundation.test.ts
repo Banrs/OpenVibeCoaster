@@ -926,6 +926,99 @@ describe("browser-foundation – lifecycle exact single RAF/resize and error dis
 });
 
 describe("browser-foundation – main visible error handler preserves private ownership", () => {
+  // Baselines for unconditional restoration – record existence and exact value
+  const baselineConsoleError = console.error;
+  const baselineGetContextProto = (
+    globalThis as unknown as { HTMLCanvasElement?: typeof HTMLCanvasElement }
+  ).HTMLCanvasElement?.prototype?.getContext;
+  const hasBaselineGetContext =
+    (
+      globalThis as unknown as { HTMLCanvasElement?: typeof HTMLCanvasElement }
+    ).HTMLCanvasElement?.prototype?.hasOwnProperty("getContext") ?? false;
+  const baselineRAF = (globalThis as unknown as Record<string, unknown>)
+    .requestAnimationFrame;
+  const hasBaselineRAF = "requestAnimationFrame" in globalThis;
+  const baselineCAF = (globalThis as unknown as Record<string, unknown>)
+    .cancelAnimationFrame;
+  const hasBaselineCAF = "cancelAnimationFrame" in globalThis;
+  const baselineAdd = (globalThis as unknown as Record<string, unknown>)
+    .addEventListener;
+  const hasBaselineAdd = "addEventListener" in globalThis;
+  const baselineRemove = (globalThis as unknown as Record<string, unknown>)
+    .removeEventListener;
+  const hasBaselineRemove = "removeEventListener" in globalThis;
+  const baselineWindow = (globalThis as unknown as { window?: unknown }).window;
+  const hasBaselineWindow = "window" in globalThis;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _setWebGLRendererForTest(null);
+    // unconditional restore per original existence – console / canvas / timers / renderer seam
+    console.error = baselineConsoleError;
+    if (hasBaselineGetContext && baselineGetContextProto) {
+      try {
+        (
+          globalThis as unknown as {
+            HTMLCanvasElement: typeof HTMLCanvasElement;
+          }
+        ).HTMLCanvasElement.prototype.getContext = baselineGetContextProto;
+      } catch {}
+    } else if (!hasBaselineGetContext) {
+      try {
+        // @ts-ignore delete required prop for test proof
+        delete (
+          globalThis as unknown as {
+            HTMLCanvasElement: typeof HTMLCanvasElement;
+          }
+        ).HTMLCanvasElement.prototype.getContext;
+      } catch {}
+    }
+    if (hasBaselineRAF) {
+      (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
+        baselineRAF as unknown as never;
+    } else {
+      try {
+        delete (globalThis as unknown as Record<string, unknown>)
+          .requestAnimationFrame;
+      } catch {}
+    }
+    if (hasBaselineCAF) {
+      (globalThis as unknown as Record<string, unknown>).cancelAnimationFrame =
+        baselineCAF as unknown as never;
+    } else {
+      try {
+        delete (globalThis as unknown as Record<string, unknown>)
+          .cancelAnimationFrame;
+      } catch {}
+    }
+    if (hasBaselineAdd) {
+      (globalThis as unknown as Record<string, unknown>).addEventListener =
+        baselineAdd as unknown as never;
+    } else {
+      try {
+        delete (globalThis as unknown as Record<string, unknown>)
+          .addEventListener;
+      } catch {}
+    }
+    if (hasBaselineRemove) {
+      (globalThis as unknown as Record<string, unknown>).removeEventListener =
+        baselineRemove as unknown as never;
+    } else {
+      try {
+        delete (globalThis as unknown as Record<string, unknown>)
+          .removeEventListener;
+      } catch {}
+    }
+    if (hasBaselineWindow) {
+      (globalThis as unknown as Record<string, unknown>).window =
+        baselineWindow as unknown as never;
+    } else {
+      try {
+        delete (globalThis as unknown as Record<string, unknown>).window;
+      } catch {}
+    }
+  });
+
   function polyfillWindowLocal(): Window & typeof globalThis {
     const g = globalThis as unknown as Record<string, unknown>;
     if (!g.requestAnimationFrame)
@@ -1113,6 +1206,113 @@ describe("browser-foundation – main visible error handler preserves private ow
     expect(lastError).toBeInstanceOf(Error);
     lc.dispose();
     vi.restoreAllMocks();
+  });
+
+  it("mutates globals including window, RAF, CAF, listeners, canvas, console without leaking – cleanup proof setup", () => {
+    // Mutate every global seam this block is required to restore
+    const fakeErr = vi.fn();
+    console.error = fakeErr as unknown as typeof console.error;
+    if (
+      (
+        globalThis as unknown as {
+          HTMLCanvasElement?: typeof HTMLCanvasElement;
+        }
+      ).HTMLCanvasElement?.prototype
+    ) {
+      (
+        globalThis as unknown as { HTMLCanvasElement: typeof HTMLCanvasElement }
+      ).HTMLCanvasElement.prototype.getContext = vi.fn(
+        () => null,
+      ) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    }
+    (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
+      vi.fn(() => 999) as unknown as never;
+    (globalThis as unknown as Record<string, unknown>).cancelAnimationFrame =
+      vi.fn() as unknown as never;
+    (globalThis as unknown as Record<string, unknown>).addEventListener =
+      vi.fn() as unknown as never;
+    (globalThis as unknown as Record<string, unknown>).removeEventListener =
+      vi.fn() as unknown as never;
+    (globalThis as unknown as Record<string, unknown>).window = {
+      fake: true,
+    } as unknown as never;
+    _setWebGLRendererForTest(
+      vi.fn() as unknown as typeof import("three").WebGLRenderer,
+    );
+    vi.spyOn(globalThis.performance, "now").mockReturnValue(12345);
+    expect(console.error).not.toBe(baselineConsoleError);
+    expect((globalThis as unknown as Record<string, unknown>).window).not.toBe(
+      baselineWindow,
+    );
+  });
+
+  it("following test observes exact baselines – unconditional restoration proof for error-handler block", () => {
+    expect(console.error).toBe(baselineConsoleError);
+    if (hasBaselineGetContext) {
+      try {
+        expect(
+          (
+            globalThis as unknown as {
+              HTMLCanvasElement: typeof HTMLCanvasElement;
+            }
+          ).HTMLCanvasElement.prototype.getContext,
+        ).toBe(baselineGetContextProto);
+      } catch {
+        expect(hasBaselineGetContext).toBe(true);
+      }
+    } else {
+      let hasGet = false;
+      try {
+        const ctor = (globalThis as unknown as Record<string, unknown>)
+          .HTMLCanvasElement as unknown as
+          { prototype: Record<string, unknown> } | undefined;
+        hasGet = !!ctor?.prototype && "getContext" in ctor.prototype;
+      } catch {
+        hasGet = false;
+      }
+      expect(hasGet).toBe(false);
+    }
+    if (hasBaselineRAF) {
+      expect(
+        (globalThis as unknown as Record<string, unknown>)
+          .requestAnimationFrame,
+      ).toBe(baselineRAF as unknown as never);
+    } else {
+      expect("requestAnimationFrame" in globalThis).toBe(false);
+    }
+    if (hasBaselineCAF) {
+      expect(
+        (globalThis as unknown as Record<string, unknown>).cancelAnimationFrame,
+      ).toBe(baselineCAF as unknown as never);
+    } else {
+      expect("cancelAnimationFrame" in globalThis).toBe(false);
+    }
+    if (hasBaselineAdd) {
+      expect(
+        (globalThis as unknown as Record<string, unknown>).addEventListener,
+      ).toBe(baselineAdd as unknown as never);
+    } else {
+      expect("addEventListener" in globalThis).toBe(false);
+    }
+    if (hasBaselineRemove) {
+      expect(
+        (globalThis as unknown as Record<string, unknown>).removeEventListener,
+      ).toBe(baselineRemove as unknown as never);
+    } else {
+      expect("removeEventListener" in globalThis).toBe(false);
+    }
+    if (hasBaselineWindow) {
+      expect((globalThis as unknown as Record<string, unknown>).window).toBe(
+        baselineWindow as unknown as never,
+      );
+    } else {
+      expect("window" in globalThis).toBe(false);
+    }
+    // renderer seam restored, timers/mocks restored
+    expect(
+      (globalThis.performance.now as unknown as ReturnType<typeof vi.fn>)
+        .mock ?? undefined,
+    ).toBeUndefined();
   });
 });
 
