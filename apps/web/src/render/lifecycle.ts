@@ -11,6 +11,44 @@ import type { MetricId } from "./metricContract.js";
 import type { CameraId } from "../viewState.js";
 import { RenderMetrics } from "./metrics.js";
 
+let frameSeq = 0;
+function emitFrameMeasure(startTime: number, endTime: number): void {
+  const dur = endTime - startTime;
+  const safe = Number.isFinite(dur) && dur >= 0 ? dur : 0;
+  try {
+    performance.measure("ovc:frame", { start: startTime, duration: safe });
+    return;
+  } catch {
+    // ignore
+  }
+  try {
+    performance.measure("ovc:frame", { start: startTime, end: endTime });
+    return;
+  } catch {
+    // ignore
+  }
+  const s = `ovc:frame:s:${frameSeq++}:${Math.random().toString(36).slice(2)}`;
+  const e = `ovc:frame:e:${frameSeq++}:${Math.random().toString(36).slice(2)}`;
+  try {
+    performance.mark(s);
+    performance.mark(e);
+    performance.measure("ovc:frame", { start: s, end: e });
+  } catch {
+    // ignore
+  } finally {
+    try {
+      performance.clearMarks(s);
+    } catch {
+      // ignore
+    }
+    try {
+      performance.clearMarks(e);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export interface AttachmentSnapshot {
   data: CompiledTrackData;
   options: AttachOptions;
@@ -339,6 +377,12 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         rafId = null;
         return;
       }
+      const frameStartMark = `ovc:frame:start:${frameSeq++}`;
+      try {
+        performance.mark(frameStartMark);
+      } catch {
+        // ignore
+      }
       const now = globalThis.performance.now();
       const deltaMs = hasLastFrame ? now - lastFrameMs : 0;
       hasLastFrame = true;
@@ -356,6 +400,11 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         } catch (e) {
           config.onRuntimeError?.(e);
           metrics?.endFrame();
+          try {
+            performance.clearMarks(frameStartMark);
+          } catch {
+            // ignore
+          }
           teardownRafAndResize();
           return;
         }
@@ -381,11 +430,48 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       if (runtimeError !== null) {
         config.onRuntimeError?.(runtimeError);
         metrics?.endFrame();
+        try {
+          performance.clearMarks(frameStartMark);
+        } catch {
+          // ignore
+        }
         teardownRafAndResize();
         return;
       }
       successfulRenderCount++;
       metrics?.endFrame();
+      const frameEndMark = `ovc:frame:end:${frameSeq++}`;
+      try {
+        performance.mark(frameEndMark);
+      } catch {
+        // ignore
+      }
+      try {
+        performance.measure("ovc:frame", {
+          start: frameStartMark,
+          end: frameEndMark,
+        });
+      } catch {
+        // ignore – fallback via emit helper not needed
+        try {
+          const s = globalThis.performance.now();
+          const e = globalThis.performance.now();
+          emitFrameMeasure(s, e);
+        } catch {
+          // ignore
+        }
+      } finally {
+        try {
+          performance.clearMarks(frameStartMark);
+        } catch {
+          // ignore
+        }
+        try {
+          performance.clearMarks(frameEndMark);
+        } catch {
+          // ignore
+        }
+      }
       try {
         const info = (
           rendererHandle.renderer as unknown as {

@@ -22,6 +22,50 @@ import type { MetricId, MetricData } from "./metricContract.js";
 
 export type { MetricData } from "./metricContract.js";
 
+let meshCreateSeq = 0;
+function emitMeshCreateMeasure(startTime: number, endTime: number): void {
+  const dur = endTime - startTime;
+  const safe = Number.isFinite(dur) && dur >= 0 ? dur : 0;
+  try {
+    performance.measure("ovc:mesh-create", {
+      start: startTime,
+      duration: safe,
+    });
+    return;
+  } catch {
+    // ignore
+  }
+  try {
+    performance.measure("ovc:mesh-create", {
+      start: startTime,
+      end: endTime,
+    });
+    return;
+  } catch {
+    // ignore
+  }
+  const s = `ovc:mesh-create:s:${meshCreateSeq++}:${Math.random().toString(36).slice(2)}`;
+  const e = `ovc:mesh-create:e:${meshCreateSeq++}:${Math.random().toString(36).slice(2)}`;
+  try {
+    performance.mark(s);
+    performance.mark(e);
+    performance.measure("ovc:mesh-create", { start: s, end: e });
+  } catch {
+    // ignore
+  } finally {
+    try {
+      performance.clearMarks(s);
+    } catch {
+      // ignore
+    }
+    try {
+      performance.clearMarks(e);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export interface AttachOptions {
   metric?: MetricId | undefined;
   metricData?: MetricData | undefined;
@@ -346,6 +390,7 @@ export function createRendererController(
       newPlaybackDistance = options.timeline.distances[0] ?? 0;
       newPlaybackSpeed = options.timeline.speeds[0] ?? 0;
     }
+    const ovcMeshStart = globalThis.performance.now();
     try {
       built = buildTrackGeometries(data, {
         metric: newMetric,
@@ -473,6 +518,8 @@ export function createRendererController(
           closedTrackFlag,
         );
       }
+      const ovcMeshEnd = globalThis.performance.now();
+      emitMeshCreateMeasure(ovcMeshStart, ovcMeshEnd);
     } catch (e) {
       for (const g of [leftGeom, rightGeom, spineGeom, tiesGeom]) {
         if (g) {
