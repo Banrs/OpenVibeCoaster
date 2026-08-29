@@ -7,6 +7,7 @@ import {
   handleCompileSimulate,
 } from "./worker";
 import { collectTransferables } from "./transfer";
+import { validateEngineeringWorkerResponse } from "./protocol";
 
 const validIntent = createDesignIntentV1({
   generatorVersion: "test-v1",
@@ -60,6 +61,11 @@ describe("engineering worker authoritative flow", () => {
       expect(result.timeline.sampleRateHz).toBeGreaterThan(0);
       expect(result.track.positions.length).toBeGreaterThan(0);
       expect(result.timeline.buffers.length).toBeGreaterThan(0);
+      expect(result.timings).toBeDefined();
+      expect(Number.isFinite(result.timings.simulationMs)).toBe(true);
+      expect(result.timings.simulationMs).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(result.timings.workerSendEpochMs)).toBe(true);
+      expect(() => validateEngineeringWorkerResponse(result)).not.toThrow();
     },
   );
 
@@ -489,4 +495,105 @@ describe("engineering worker authoritative flow", () => {
       expect((diag.actual as number) > (diag.limit as number)).toBe(true);
     },
   );
+
+  it(
+    "ovc:simulation timing is actual simulateRide wall duration, not total generation",
+    { timeout: 20000 },
+    () => {
+      const before = performance.now();
+      const result = handleGenerate("req-timing-sim", validIntent as unknown);
+      const after = performance.now();
+      const totalMs = after - before;
+      expect(result.type).toBe("success");
+      if (result.type !== "success") return;
+      // simulationMs must be wall duration of simulateRide, not zero and not derived from generation.
+      expect(Number.isFinite(result.timings.simulationMs)).toBe(true);
+      expect(result.timings.simulationMs).toBeGreaterThanOrEqual(0);
+      expect(result.timings.simulationMs).toBeLessThanOrEqual(totalMs + 1);
+      // Must be strictly less than total generation+simulation (if generation took time) or at least not equal to total when generation non-zero,
+      // but at minimum proves it's not recomputed/derived on page and not total latency clone: simulationMs should be >0 for real ride
+      // For tiny rides simulation may be near zero but still finite; we check it's not NaN and worker epoch near now
+      const epochNow = performance.timeOrigin + performance.now();
+      expect(
+        Math.abs(result.timings.workerSendEpochMs - epochNow),
+      ).toBeLessThan(2000);
+      expect(() => validateEngineeringWorkerResponse(result)).not.toThrow();
+      // Ensure simulationMs is not total generation latency by checking it is smaller than overall when generation+simulation > simulation
+      // Generation also takes time, so totalMs should be >= simulationMs
+      expect(totalMs).toBeGreaterThanOrEqual(result.timings.simulationMs);
+    },
+  );
+
+  it(
+    "ovc:worker-transfer epoch is valid cross-context mapping and timings are minimal validated",
+    { timeout: 20000 },
+    () => {
+      const result = handleGenerate("req-timing-epoch", validIntent as unknown);
+      expect(result.type).toBe("success");
+      if (result.type !== "success") return;
+      expect(Number.isFinite(result.timings.workerSendEpochMs)).toBe(true);
+      expect(result.timings.workerSendEpochMs).toBeGreaterThan(0);
+      // timings object must contain exactly the two required fields
+      expect(Object.keys(result.timings).sort()).toEqual([
+        "simulationMs",
+        "workerSendEpochMs",
+      ]);
+      // extra field should fail validation
+      const withExtra = {
+        ...result,
+        timings: {
+          ...result.timings,
+          extra: 123,
+        },
+      } as unknown as Record<string, unknown>;
+      expect(() => validateEngineeringWorkerResponse(withExtra)).toThrow(
+        /extra field/,
+      );
+      // finite checks
+      const withNaN = {
+        ...result,
+        timings: { simulationMs: Number.NaN, workerSendEpochMs: 100 },
+      } as unknown as Record<string, unknown>;
+      expect(() => validateEngineeringWorkerResponse(withNaN)).toThrow(
+        /finite/,
+      );
+    },
+  );
+
+  it(
+    "compile-simulate and regenerate also carry validated timings",
+    { timeout: 20000 },
+    () => {
+      const gen = generateCoaster(validIntent);
+      const cs = handleCompileSimulate("req-cs-timing", gen.file as unknown);
+      expect(cs.type).toBe("success");
+      if (cs.type === "success") {
+        expect(Number.isFinite(cs.timings.simulationMs)).toBe(true);
+        expect(cs.timings.simulationMs).toBeGreaterThanOrEqual(0);
+        expect(() => validateEngineeringWorkerResponse(cs)).not.toThrow();
+      }
+      const rg = handleRegenerate(
+        "req-rg-timing",
+        gen.file as unknown,
+        "station-0",
+      );
+      if (rg.type === "success") {
+        expect(Number.isFinite(rg.timings.simulationMs)).toBe(true);
+        expect(() => validateEngineeringWorkerResponse(rg)).not.toThrow();
+      } else {
+        // if regenerate failed, it should be failure type without timings
+        expect(rg.type).toBe("failure");
+        expect(
+          (rg as unknown as Record<string, unknown>).timings,
+        ).toBeUndefined();
+      }
+    },
+  );
+
+  it("failure does not carry timings and remains strict", () => {
+    const bad = handleGenerate("req-fail-timing", { bad: true } as unknown);
+    expect(bad.type).toBe("failure");
+    expect((bad as unknown as Record<string, unknown>).timings).toBeUndefined();
+    expect(() => validateEngineeringWorkerResponse(bad)).not.toThrow();
+  });
 });

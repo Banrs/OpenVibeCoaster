@@ -3,8 +3,12 @@ import type {
   EngineeringWorkerRequest,
   EngineeringWorkerResponse,
   EngineeringWorkerSuccess,
+  EngineeringWorkerTimings,
 } from "./protocol";
-import { validateEngineeringWorkerRequest } from "./protocol";
+import {
+  validateEngineeringWorkerRequest,
+  validateEngineeringWorkerResponse,
+} from "./protocol";
 
 export interface WorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -80,6 +84,42 @@ export class EngineeringWorkerClient {
     return w;
   }
 
+  private recordTimingMeasures(timings: EngineeringWorkerTimings): void {
+    const clientNow =
+      typeof performance !== "undefined" &&
+      typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    const clientOrigin =
+      typeof performance !== "undefined" &&
+      typeof performance.timeOrigin === "number" &&
+      Number.isFinite(performance.timeOrigin)
+        ? performance.timeOrigin
+        : Date.now() - clientNow;
+    const clientEpoch = clientOrigin + clientNow;
+    const raw = clientEpoch - timings.workerSendEpochMs;
+    const transferMs = raw < 0 ? 0 : raw;
+    if (
+      typeof performance !== "undefined" &&
+      typeof performance.measure === "function"
+    ) {
+      try {
+        performance.measure("ovc:simulation", {
+          duration: timings.simulationMs,
+        });
+      } catch {
+        // ignore measure errors
+      }
+      try {
+        performance.measure("ovc:worker-transfer", {
+          duration: transferMs,
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   private handleMessage(ev: MessageEvent): void {
     try {
       const data = (ev as MessageEvent).data ?? (ev as unknown);
@@ -95,33 +135,47 @@ export class EngineeringWorkerClient {
         this.pending.delete(response.requestId);
         return; // old epoch
       }
+      let validated: EngineeringWorkerResponse;
+      try {
+        validateEngineeringWorkerResponse(response);
+        validated = response;
+      } catch (err) {
+        this.pending.delete(response.requestId);
+        entry.reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
       this.pending.delete(response.requestId);
-      if (response.type === "success") {
-        entry.resolve(response);
-      } else if (response.type === "failure") {
+      if (validated.type === "success") {
+        try {
+          this.recordTimingMeasures(validated.timings);
+        } catch {
+          // never throw from timing
+        }
+        entry.resolve(validated);
+      } else if (validated.type === "failure") {
         const err = Object.assign(
-          new Error(response.diagnostics[0]?.message ?? "Engineering failure"),
+          new Error(validated.diagnostics[0]?.message ?? "Engineering failure"),
           {
-            diagnostics: response.diagnostics,
-            relaxations: response.relaxations,
-            requestId: response.requestId,
+            diagnostics: validated.diagnostics,
+            relaxations: validated.relaxations,
+            requestId: validated.requestId,
             code: "failure",
           },
         );
         entry.reject(err);
-      } else if (response.type === "cancelled") {
+      } else if (validated.type === "cancelled") {
         const err = Object.assign(
-          new Error(`Request ${response.requestId} cancelled`),
+          new Error(`Request ${validated.requestId} cancelled`),
           {
             code: "cancelled",
-            requestId: response.requestId,
+            requestId: validated.requestId,
           },
         );
         entry.reject(err);
       } else {
         entry.reject(
           new Error(
-            `Unknown response type ${(response as { type: unknown }).type}`,
+            `Unknown response type ${(validated as { type: unknown }).type}`,
           ),
         );
       }

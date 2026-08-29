@@ -48,6 +48,11 @@ export type EngineeringWorkerRequest =
     }
   | { readonly type: "cancel"; readonly requestId: string };
 
+export type EngineeringWorkerTimings = {
+  readonly simulationMs: number;
+  readonly workerSendEpochMs: number;
+};
+
 export type EngineeringWorkerSuccess = {
   readonly type: "success";
   readonly requestId: string;
@@ -57,6 +62,7 @@ export type EngineeringWorkerSuccess = {
   readonly diagnostics: readonly Diagnostic[];
   readonly relaxations: readonly string[];
   readonly spanHashes: Readonly<Record<string, string>>;
+  readonly timings: EngineeringWorkerTimings;
 };
 
 export type EngineeringWorkerFailure = {
@@ -194,6 +200,24 @@ export function validateEngineeringWorkerResponse(
       if (typeof value !== "string" || !/^[0-9a-f]{8}$/i.test(value))
         fail(`response.spanHashes[${key}]`, "8-char hex");
     }
+    if (!isRecord(rec.timings)) fail("response.timings", "object");
+    const timings = rec.timings as Record<string, unknown>;
+    const allowedTimings = new Set(["simulationMs", "workerSendEpochMs"]);
+    for (const key of Object.keys(timings))
+      if (!allowedTimings.has(key))
+        fail(`response.timings.${key}`, "no extra field");
+    if (
+      typeof timings.simulationMs !== "number" ||
+      !Number.isFinite(timings.simulationMs) ||
+      timings.simulationMs < 0
+    )
+      fail("response.timings.simulationMs", "finite non-negative number");
+    if (
+      typeof timings.workerSendEpochMs !== "number" ||
+      !Number.isFinite(timings.workerSendEpochMs) ||
+      timings.workerSendEpochMs < 0
+    )
+      fail("response.timings.workerSendEpochMs", "finite non-negative number");
     // strict: no extra fields
     const allowed = new Set([
       "type",
@@ -204,6 +228,7 @@ export function validateEngineeringWorkerResponse(
       "diagnostics",
       "relaxations",
       "spanHashes",
+      "timings",
     ]);
     for (const key of Object.keys(rec))
       if (!allowed.has(key)) fail(`response.${key}`, "no extra field");

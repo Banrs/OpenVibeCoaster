@@ -22,10 +22,36 @@ import type {
   EngineeringWorkerFailure,
   EngineeringWorkerRequest,
   EngineeringWorkerSuccess,
+  EngineeringWorkerTimings,
 } from "./protocol";
 import { validateEngineeringWorkerRequest } from "./protocol";
 import { collectTransferables } from "./transfer";
 import type { CompiledTrackData } from "@openvibecoaster/core";
+
+function getNowMs(): number {
+  return typeof performance !== "undefined" &&
+    typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function getWorkerEpochMs(): number {
+  const now = getNowMs();
+  const origin =
+    typeof performance !== "undefined" &&
+    typeof performance.timeOrigin === "number" &&
+    Number.isFinite(performance.timeOrigin)
+      ? performance.timeOrigin
+      : Date.now() - now;
+  return origin + now;
+}
+
+function createTimings(simulationMs: number): EngineeringWorkerTimings {
+  return {
+    simulationMs,
+    workerSendEpochMs: getWorkerEpochMs(),
+  };
+}
 
 function failure(
   requestId: string,
@@ -278,10 +304,13 @@ function selectHeadDistance(
   return { ok: true, headDistanceM };
 }
 
-function simulateForTrack(
-  track: CompiledTrackData,
-):
-  | { ok: true; timeline: RideTimeline; diagnostics: readonly Diagnostic[] }
+function simulateForTrack(track: CompiledTrackData):
+  | {
+      ok: true;
+      timeline: RideTimeline;
+      diagnostics: readonly Diagnostic[];
+      simulationMs: number;
+    }
   | { ok: false; diagnostic: Diagnostic } {
   const baseConfig = createDefaultSimulatorConfig();
   const headSelection = selectHeadDistance(
@@ -301,14 +330,17 @@ function simulateForTrack(
     fixedStepSeconds: 1 / 240,
     closedTrack: false as const,
   };
+  const start = getNowMs();
   const result = simulateRide(track, {
     durationSeconds,
     config,
     initial: { headDistanceM: headSelection.headDistanceM, speedMps: 5 },
   });
+  const end = getNowMs();
+  const simulationMs = Math.max(0, end - start);
   const diagnostics: Diagnostic[] =
     (result.diagnostics as unknown as Diagnostic[]) ?? [];
-  return { ok: true, timeline: result.timeline, diagnostics };
+  return { ok: true, timeline: result.timeline, diagnostics, simulationMs };
 }
 
 export function handleGenerate(
@@ -397,6 +429,7 @@ export function handleGenerate(
     ],
     relaxations: [...generation.relaxations],
     spanHashes: generation.spanHashes,
+    timings: createTimings(sim.simulationMs),
   };
 }
 
@@ -493,6 +526,7 @@ export function handleRegenerate(
     ],
     relaxations: [...generation.relaxations],
     spanHashes: generation.spanHashes,
+    timings: createTimings(sim.simulationMs),
   };
 }
 
@@ -550,6 +584,7 @@ export function handleCompileSimulate(
     diagnostics: sim.diagnostics as Diagnostic[],
     relaxations: [],
     spanHashes,
+    timings: createTimings(sim.simulationMs),
   };
 }
 
@@ -590,11 +625,19 @@ if (
       else response = handleCompileSimulate(req.requestId, req.file);
 
       if (response.type === "success") {
+        // Refresh workerSendEpochMs immediately before postMessage to include clone/delivery latency basis
+        const refreshed: EngineeringWorkerSuccess = {
+          ...response,
+          timings: {
+            simulationMs: response.timings.simulationMs,
+            workerSendEpochMs: getWorkerEpochMs(),
+          },
+        };
         const transfers = collectTransferables({
-          track: response.track,
-          timeline: response.timeline,
+          track: refreshed.track,
+          timeline: refreshed.timeline,
         });
-        g.postMessage(response, transfers);
+        g.postMessage(refreshed, transfers);
         void transfers;
       } else {
         g.postMessage(response);

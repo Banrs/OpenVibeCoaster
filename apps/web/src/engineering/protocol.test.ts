@@ -4,6 +4,7 @@ import { generateCoaster } from "@openvibecoaster/generator";
 import {
   isEngineeringWorkerRequest,
   validateEngineeringWorkerRequest,
+  validateEngineeringWorkerResponse,
 } from "./protocol";
 
 const validIntent = createDesignIntentV1({
@@ -306,6 +307,129 @@ describe("EngineeringWorkerRequest validation", () => {
         requestId: "r-extra-file",
         file: extraTopFile,
       }),
+    ).toThrow(/extra field/);
+  });
+});
+
+describe("EngineeringWorkerResponse timings validation", () => {
+  function validSuccessBase() {
+    const g = generateCoaster(validIntent);
+    // Use real file/track/timeline via generator to satisfy strict track checks
+    return {
+      type: "success" as const,
+      requestId: "resp-1",
+      file: g.file,
+      track: {
+        positions: g.track.positions,
+        tangents: g.track.tangents,
+        normals: g.track.normals,
+        binormals: g.track.binormals,
+        distances: g.track.distances,
+        curvature: g.track.curvature,
+        curvatureVector: g.track.curvatureVector,
+        bank: g.track.bank,
+        bankDerivative: g.track.bankDerivative,
+        zoneMasks: g.track.zoneMasks,
+        zoneNames: [...g.track.zoneNames],
+        elementIndices: g.track.elementIndices,
+        elementBoundaries: g.track.elementBoundaries,
+        parameters: g.track.parameters,
+        totalLength: g.track.totalLength,
+        checksum: g.track.checksum,
+      },
+      timeline: {
+        sampleRateHz: 120,
+        length: 10,
+        buffers: [new ArrayBuffer(8)],
+        carCount: 1,
+      } as unknown as import("./protocol").EngineeringWorkerSuccess["timeline"],
+      diagnostics: [],
+      relaxations: [],
+      spanHashes: { a: "00000000" },
+      timings: {
+        simulationMs: 15.2,
+        workerSendEpochMs: performance.timeOrigin + performance.now(),
+      },
+    } as unknown as Record<string, unknown>;
+  }
+
+  it("accepts success with valid timings", () => {
+    const s = validSuccessBase();
+    expect(() => validateEngineeringWorkerResponse(s)).not.toThrow();
+  });
+
+  it("rejects success missing timings", () => {
+    const s = validSuccessBase();
+    delete (s as { timings?: unknown }).timings;
+    expect(() => validateEngineeringWorkerResponse(s)).toThrow(/timings/);
+  });
+
+  it("rejects timings with NaN, Infinity, negative", () => {
+    const s = validSuccessBase();
+    expect(() =>
+      validateEngineeringWorkerResponse({
+        ...s,
+        timings: { simulationMs: Number.NaN, workerSendEpochMs: 100 },
+      }),
+    ).toThrow(/finite/);
+    expect(() =>
+      validateEngineeringWorkerResponse({
+        ...s,
+        timings: {
+          simulationMs: Number.POSITIVE_INFINITY,
+          workerSendEpochMs: 100,
+        },
+      }),
+    ).toThrow(/finite/);
+    expect(() =>
+      validateEngineeringWorkerResponse({
+        ...s,
+        timings: { simulationMs: -1, workerSendEpochMs: 100 },
+      }),
+    ).toThrow(/non-negative/);
+    expect(() =>
+      validateEngineeringWorkerResponse({
+        ...s,
+        timings: { simulationMs: 5, workerSendEpochMs: Number.NaN },
+      }),
+    ).toThrow(/finite/);
+    expect(() =>
+      validateEngineeringWorkerResponse({
+        ...s,
+        timings: { simulationMs: 5, workerSendEpochMs: -10 },
+      }),
+    ).toThrow(/non-negative/);
+  });
+
+  it("rejects success with extra field in timings or top level", () => {
+    const s = validSuccessBase();
+    expect(() =>
+      validateEngineeringWorkerResponse({
+        ...s,
+        timings: {
+          simulationMs: 1,
+          workerSendEpochMs: 100,
+          extra: 123,
+        },
+      } as unknown as Record<string, unknown>),
+    ).toThrow(/extra field/);
+    expect(() =>
+      validateEngineeringWorkerResponse({
+        ...s,
+        extraTop: 1,
+      } as unknown as Record<string, unknown>),
+    ).toThrow(/extra field/);
+  });
+
+  it("rejects success with no timings extra malformed still fails when other fields valid", () => {
+    const s = validSuccessBase();
+    // ensure strict extra field rejection not loosened
+    expect(() =>
+      validateEngineeringWorkerResponse({
+        ...s,
+        timings: { simulationMs: 5, workerSendEpochMs: 100 },
+        timings_extra: 1,
+      } as unknown as Record<string, unknown>),
     ).toThrow(/extra field/);
   });
 });
