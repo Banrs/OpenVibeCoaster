@@ -7,7 +7,7 @@ import {
   type RendererController,
 } from "./controller.js";
 import type { CompiledTrackData } from "@openvibecoaster/core";
-import type { MetricId } from "./trackGeometry.js";
+import type { MetricId } from "./metricContract.js";
 import type { CameraId } from "../viewState.js";
 import { RenderMetrics } from "./metrics.js";
 
@@ -76,6 +76,58 @@ function resolveWindow(
   return (g.window ?? globalThis) as unknown as Window & typeof globalThis;
 }
 
+function mergeSelectionIntoOptions(
+  base: AttachOptions,
+  updates: {
+    selectedElementIndex?: number | null | undefined;
+    seamInspectionEnabled?: boolean | undefined;
+    seamIndices?: number[] | undefined;
+  },
+): AttachOptions {
+  const next: AttachOptions = {};
+  if (base.metric !== undefined) next.metric = base.metric;
+  if (base.metricData !== undefined) next.metricData = base.metricData;
+  if (base.closedTrack !== undefined) next.closedTrack = base.closedTrack;
+  if (base.timeline !== undefined) next.timeline = base.timeline;
+  if (updates.selectedElementIndex !== undefined) {
+    if (updates.selectedElementIndex !== null)
+      next.selectedElementIndex = updates.selectedElementIndex;
+  } else if (base.selectedElementIndex !== undefined) {
+    next.selectedElementIndex = base.selectedElementIndex;
+  }
+  if (updates.seamInspectionEnabled !== undefined)
+    next.seamInspectionEnabled = updates.seamInspectionEnabled;
+  else if (base.seamInspectionEnabled !== undefined)
+    next.seamInspectionEnabled = base.seamInspectionEnabled;
+  if (updates.seamIndices !== undefined) next.seamIndices = updates.seamIndices;
+  else if (base.seamIndices !== undefined) next.seamIndices = base.seamIndices;
+  return next;
+}
+
+function mergeMetricIntoOptions(
+  base: AttachOptions,
+  metric: MetricId,
+  metricData: MetricData | undefined,
+  hasData: boolean,
+): AttachOptions {
+  const next: AttachOptions = {};
+  next.metric = metric;
+  if (hasData) {
+    if (metricData !== undefined) next.metricData = metricData;
+    else if (base.metricData !== undefined) next.metricData = base.metricData;
+  } else if (base.metricData !== undefined) {
+    next.metricData = base.metricData;
+  }
+  if (base.selectedElementIndex !== undefined)
+    next.selectedElementIndex = base.selectedElementIndex;
+  if (base.seamIndices !== undefined) next.seamIndices = base.seamIndices;
+  if (base.seamInspectionEnabled !== undefined)
+    next.seamInspectionEnabled = base.seamInspectionEnabled;
+  if (base.closedTrack !== undefined) next.closedTrack = base.closedTrack;
+  if (base.timeline !== undefined) next.timeline = base.timeline;
+  return next;
+}
+
 export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   let rendererHandle: RendererHandle | null = null;
   let camera: THREE.PerspectiveCamera | null = null;
@@ -84,8 +136,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   let resizeHandler: (() => void) | null = null;
   let attachment: AttachmentSnapshot | null = null;
   let lastPlayback: { distance: number; speed: number } | null = null;
-  // pending retry semantics: when no controller exists, attachTrack stores pending
-  // and does NOT overwrite last-known-good attachment until a controller successfully builds it
   let pendingAttachment: AttachmentSnapshot | null = null;
   let pendingPlayback: { distance: number; speed: number } | null = null;
   let pendingHighlight: number | null | undefined = undefined;
@@ -171,11 +221,9 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       return false;
     }
     if (!handle) {
-      // expected WebGL unavailability – transactionally clean
       disposeHandles();
       return false;
     }
-    // handle succeeded – now try to create camera + controller transactionally
     let localCamera: THREE.PerspectiveCamera | null = null;
     let localController: RendererController | null = null;
     try {
@@ -193,11 +241,9 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       disposeHandles();
       return false;
     }
-    // commit
     rendererHandle = handle;
     camera = localCamera;
     controller = localController;
-    // reattach authoritative attachment – pending takes precedence, transactional
     const targetAttachment = pendingAttachment ?? attachment;
     const targetPlayback = pendingAttachment ? pendingPlayback : lastPlayback;
     const highlightToApply =
@@ -211,7 +257,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
             targetPlayback.speed,
           );
         }
-        // reapply highlight if any (must not rebuild track)
         if (highlightToApply !== undefined) {
           controller.setHighlight(highlightToApply);
         }
@@ -220,7 +265,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         disposeHandles();
         return false;
       }
-      // success – if pending was used, promote it to last-known-good
       if (pendingAttachment) {
         attachment = pendingAttachment;
         lastPlayback = pendingPlayback;
@@ -228,11 +272,8 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         pendingPlayback = null;
       }
       if (pendingHighlight !== undefined) {
-        // highlight applied – clear pending and sync stored
         storedHighlight = pendingHighlight;
         pendingHighlight = undefined;
-      } else if (storedHighlight !== undefined) {
-        // keep storedHighlight as is (already applied)
       }
     } else if (highlightToApply !== undefined && controller) {
       try {
@@ -242,7 +283,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
           pendingHighlight = undefined;
         }
       } catch {
-        // ignore – highlight failed but not fatal
+        // ignore
       }
     }
     return true;
@@ -385,8 +426,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     successfulRenderCount = 0;
     const ok = createHandleAndController();
     if (!ok) {
-      // preserve attachment for retry, but ensure no stale state and no listeners beyond teardown
-      // do not register RAF/resize when failed – truthful pending/fallback
       return false;
     }
     registerLifecycle();
@@ -406,7 +445,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   };
 
   const reinitialize = (): boolean => {
-    // alias to init but preserves attachment – init already preserves
     return init();
   };
 
@@ -441,12 +479,10 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     data: CompiledTrackData,
     options: AttachOptions = {},
   ): void => {
-    // two-phase: validate and apply through controller first, then commit snapshot
     const snapshot: AttachmentSnapshot = {
       data,
       options: { ...options },
     };
-    // Determine next playback snapshot to commit only after success
     let nextPlayback: { distance: number; speed: number } | null = null;
     if (options.timeline && options.timeline.distances.length > 0) {
       nextPlayback = {
@@ -465,14 +501,12 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         : null;
       const prevPlayback = lastPlayback ? { ...lastPlayback } : null;
       try {
-        // validate timeline shape early to avoid partial clearTrack side effects
         validateTimelineSnapshot(options.timeline);
         controller.attachTrack(data, options);
         if (nextPlayback) {
           controller.updatePlayback(nextPlayback.distance, nextPlayback.speed);
         }
       } catch (e) {
-        // attempt to restore previous last-known-good attachment when feasible
         if (prevAttachment) {
           try {
             controller.attachTrack(prevAttachment.data, prevAttachment.options);
@@ -483,8 +517,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
               );
             }
           } catch {
-            // restore failed – leave controller in truthfully cleared state
-            // ensure controller has no track if restore also failed
             try {
               controller.clearTrack();
             } catch {
@@ -492,7 +524,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
             }
           }
         } else {
-          // no previous attachment – ensure controller cleared
           try {
             controller.clearTrack();
           } catch {
@@ -501,12 +532,9 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         }
         throw e;
       }
-      // success – commit snapshot and playback
       attachment = snapshot;
       lastPlayback = nextPlayback;
     } else {
-      // No controller yet (pending lifecycle) – validate but do NOT overwrite last-known-good
-      // Store as pending so prior snapshot is preserved until a controller successfully builds the replacement
       validateTimelineSnapshot(options.timeline);
       pendingAttachment = snapshot;
       pendingPlayback = nextPlayback;
@@ -533,7 +561,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       lastPlayback = { distance, speed };
       controller.updatePlayback(distance, speed);
     } else {
-      // no controller – update pending playback if pending exists, else lastPlayback for next pending
       if (pendingAttachment) {
         pendingPlayback = { distance, speed };
       } else {
@@ -544,84 +571,57 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
 
   const setMetric = (metric: MetricId, metricData?: MetricData): void => {
     const hasData = metricData !== undefined;
-    // lifecycle snapshot update is two-phase with controller success
-    const prevAttachment = attachment
-      ? { data: attachment.data, options: { ...attachment.options } }
-      : null;
-    const prevPlayback = lastPlayback ? { ...lastPlayback } : null;
     if (attachment) {
-      const prevMetricData = attachment.options.metricData;
-      const nextMetricData = hasData ? metricData : prevMetricData;
-      const nextOptions: AttachOptions = {
-        ...attachment.options,
-        metric,
-        ...(nextMetricData !== undefined ? { metricData: nextMetricData } : {}),
+      const prevAttachment = {
+        data: attachment.data,
+        options: { ...attachment.options },
       };
-      // store tentative next snapshot for commit after controller success
-      // do not mutate attachment yet – wait for controller.setMetric success
-      const tentativeAttachment: AttachmentSnapshot = {
+      const prevPlayback = lastPlayback ? { ...lastPlayback } : null;
+      const nextOptions = mergeMetricIntoOptions(
+        attachment.options,
+        metric,
+        metricData,
+        hasData,
+      );
+      const tentative: AttachmentSnapshot = {
         data: attachment.data,
         options: nextOptions,
       };
-      if (!hasData && prevMetricData === undefined) {
-        const { metricData: _omit2, ...rest2 } =
-          nextOptions as unknown as Record<string, unknown>;
-        tentativeAttachment.options = rest2 as AttachOptions;
-      }
       try {
         controller?.setMetric(metric, metricData);
       } catch (e) {
-        // restore both metadata and controller last-known-good track/playback
-        if (prevAttachment) {
-          if (controller) {
-            try {
-              controller.attachTrack(
-                prevAttachment.data,
-                prevAttachment.options,
-              );
-              if (prevPlayback) {
-                controller.updatePlayback(
-                  prevPlayback.distance,
-                  prevPlayback.speed,
-                );
-              }
-              attachment = prevAttachment;
-              lastPlayback = prevPlayback;
-            } catch {
-              // restoration itself failed – clear both truthfully and propagate original failure
-              attachment = null;
-              lastPlayback = null;
-              try {
-                controller.clearTrack();
-              } catch {
-                // ignore
-              }
-            }
-          } else {
-            attachment = prevAttachment;
-            lastPlayback = prevPlayback;
-          }
+        if (controller?.hasTrack()) {
+          attachment = prevAttachment;
+          lastPlayback = prevPlayback;
+        } else if (controller) {
+          attachment = null;
+          lastPlayback = null;
+        } else {
+          attachment = prevAttachment;
+          lastPlayback = prevPlayback;
         }
         throw e;
       }
-      // success – commit tentative
-      attachment = tentativeAttachment;
-      // if metricData was omitted and previous was undefined, ensure omitted
-      if (!hasData && prevMetricData === undefined) {
-        const { metricData: _omit3, ...rest3 } =
-          attachment.options as unknown as Record<string, unknown>;
-        attachment.options = rest3 as AttachOptions;
-      }
-      // controller.setMetric already preserves playback
+      attachment = tentative;
       return;
     }
-    // no attachment – just delegate
+    if (pendingAttachment) {
+      pendingAttachment = {
+        data: pendingAttachment.data,
+        options: mergeMetricIntoOptions(
+          pendingAttachment.options,
+          metric,
+          metricData,
+          hasData,
+        ),
+      };
+      return;
+    }
     controller?.setMetric(metric, metricData);
   };
 
   const setHighlight = (distance: number | null): void => {
     if (distance !== null && !Number.isFinite(distance)) {
-      // normalize non-finite to null
       distance = null;
     }
     storedHighlight = distance;
@@ -629,7 +629,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       controller.setHighlight(distance);
       pendingHighlight = undefined;
     } else {
-      // No controller – store pending to apply on next successful reinit
       pendingHighlight = distance;
     }
   };
@@ -639,116 +638,47 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     seamInspectionEnabled?: boolean | undefined;
     seamIndices?: number[] | undefined;
   }): void => {
-    // transactional: if controller exists, try to apply; on failure restore attachment
     if (controller && attachment) {
       const prevAttachment = {
         data: attachment.data,
         options: { ...attachment.options },
       };
       const prevPlayback = lastPlayback ? { ...lastPlayback } : null;
-      // build next options
-      const nextOpts: AttachOptions = { ...attachment.options };
-      if (options.selectedElementIndex !== undefined) {
-        if (options.selectedElementIndex === null) {
-          const { selectedElementIndex: _omit, ...rest } =
-            nextOpts as unknown as Record<string, unknown>;
-          Object.assign(nextOpts, rest);
-          delete (nextOpts as unknown as Record<string, unknown>)
-            .selectedElementIndex;
-        } else {
-          nextOpts.selectedElementIndex = options.selectedElementIndex;
-        }
-      }
-      if (options.seamInspectionEnabled !== undefined) {
-        nextOpts.seamInspectionEnabled = options.seamInspectionEnabled;
-      }
-      if (options.seamIndices !== undefined) {
-        nextOpts.seamIndices = options.seamIndices;
-      }
+      const nextOptions = mergeSelectionIntoOptions(
+        attachment.options,
+        options,
+      );
       const tentative: AttachmentSnapshot = {
         data: attachment.data,
-        options: nextOpts,
+        options: nextOptions,
       };
-      if (
-        options.selectedElementIndex === null &&
-        !("selectedElementIndex" in nextOpts)
-      ) {
-        const { selectedElementIndex: _omit2, ...rest2 } =
-          tentative.options as unknown as Record<string, unknown>;
-        tentative.options = rest2 as AttachOptions;
-      }
       try {
         controller.updateSelection(options);
       } catch (e) {
-        // restore previous attachment
-        try {
-          controller.attachTrack(prevAttachment.data, prevAttachment.options);
-          if (prevPlayback) {
-            controller.updatePlayback(
-              prevPlayback.distance,
-              prevPlayback.speed,
-            );
-          }
+        if (controller?.hasTrack()) {
           attachment = prevAttachment;
           lastPlayback = prevPlayback;
-        } catch {
-          try {
-            controller.clearTrack();
-          } catch {
-            // ignore
-          }
+        } else {
           attachment = null;
           lastPlayback = null;
         }
         throw e;
       }
       attachment = tentative;
-      if (options.selectedElementIndex === null) {
-        const { selectedElementIndex: _omit3, ...rest3 } =
-          attachment.options as unknown as Record<string, unknown>;
-        attachment.options = rest3 as AttachOptions;
-      }
       return;
     }
-    // no controller – store as pending or direct if no attachment
     if (attachment) {
-      const nextOpts: AttachOptions = { ...attachment.options };
-      if (options.selectedElementIndex !== undefined) {
-        if (options.selectedElementIndex === null) {
-          delete (nextOpts as unknown as Record<string, unknown>)
-            .selectedElementIndex;
-        } else {
-          nextOpts.selectedElementIndex = options.selectedElementIndex;
-        }
-      }
-      if (options.seamInspectionEnabled !== undefined)
-        nextOpts.seamInspectionEnabled = options.seamInspectionEnabled;
-      if (options.seamIndices !== undefined)
-        nextOpts.seamIndices = options.seamIndices;
-      attachment = { data: attachment.data, options: nextOpts };
-      if (options.selectedElementIndex === null) {
-        const { selectedElementIndex: _omit4, ...rest4 } =
-          attachment.options as unknown as Record<string, unknown>;
-        attachment.options = rest4 as AttachOptions;
-      }
+      attachment = {
+        data: attachment.data,
+        options: mergeSelectionIntoOptions(attachment.options, options),
+      };
       return;
     }
-    // pending path – update pendingAttachment selection
     if (pendingAttachment) {
-      const nextOpts: AttachOptions = { ...pendingAttachment.options };
-      if (options.selectedElementIndex !== undefined) {
-        if (options.selectedElementIndex === null) {
-          delete (nextOpts as unknown as Record<string, unknown>)
-            .selectedElementIndex;
-        } else {
-          nextOpts.selectedElementIndex = options.selectedElementIndex;
-        }
-      }
-      if (options.seamInspectionEnabled !== undefined)
-        nextOpts.seamInspectionEnabled = options.seamInspectionEnabled;
-      if (options.seamIndices !== undefined)
-        nextOpts.seamIndices = options.seamIndices;
-      pendingAttachment = { data: pendingAttachment.data, options: nextOpts };
+      pendingAttachment = {
+        data: pendingAttachment.data,
+        options: mergeSelectionIntoOptions(pendingAttachment.options, options),
+      };
       return;
     }
     controller?.updateSelection(options);

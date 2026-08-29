@@ -1,16 +1,8 @@
 import * as THREE from "three";
 import type { CompiledTrackData } from "@openvibecoaster/core";
+import type { MetricId, MetricData } from "./metricContract.js";
 
-export type MetricId =
-  "speed" | "gForce" | "rollRate" | "clearance" | "height" | "energy";
-
-export interface MetricData {
-  speed?: Float64Array | undefined;
-  gForce?: Float64Array | undefined;
-  rollRate?: Float64Array | undefined;
-  clearance?: Float64Array | undefined;
-  energy?: Float64Array | undefined;
-}
+export type { MetricId, MetricData };
 
 export interface BuildTrackOptions {
   metric?: MetricId | undefined;

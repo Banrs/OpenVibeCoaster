@@ -1,8 +1,12 @@
 export type GenerationStatus = "pending" | "ready" | "generating" | "error";
 export type AppMode = "edit" | "ride";
 export type CameraId = "front" | "middle" | "rear" | "chase" | "orbit";
-export type MetricId =
-  "speed" | "gForce" | "rollRate" | "clearance" | "height" | "energy";
+import {
+  METRIC_IDS as METRIC_IDS_CONTRACT,
+  type MetricId as MetricIdContract,
+} from "./render/metricContract.js";
+
+export type MetricId = MetricIdContract;
 export type DataAction =
   | "generate"
   | "save"
@@ -21,14 +25,7 @@ export const CAMERA_IDS: readonly CameraId[] = [
   "orbit",
 ] as const;
 
-export const METRIC_IDS: readonly MetricId[] = [
-  "speed",
-  "gForce",
-  "rollRate",
-  "clearance",
-  "height",
-  "energy",
-] as const;
+export const METRIC_IDS: readonly MetricId[] = METRIC_IDS_CONTRACT;
 
 export const PLAYBACK_SPEED_MIN = 0.25;
 export const PLAYBACK_SPEED_MAX = 2;

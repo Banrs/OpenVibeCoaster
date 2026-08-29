@@ -11,38 +11,18 @@ export interface HighlightMarker {
   material: THREE.Material;
 }
 
-function isClosedTrack(data: CompiledTrackData): boolean {
-  const count = data.distances.length;
-  if (count < 2) return false;
-  const pos = data.positions;
-  const firstX = pos[0] ?? 0;
-  const firstY = pos[1] ?? 0;
-  const firstZ = pos[2] ?? 0;
-  const lastX = pos[(count - 1) * 3] ?? 0;
-  const lastY = pos[(count - 1) * 3 + 1] ?? 0;
-  const lastZ = pos[(count - 1) * 3 + 2] ?? 0;
-  const dx = lastX - firstX;
-  const dy = lastY - firstY;
-  const dz = lastZ - firstZ;
-  const dist = Math.hypot(dx, dy, dz);
-  // Closed loop if endpoints coincide within tight tolerance relative to total length
-  // Use 0.001 * maybe 1e-4 absolute for small tracks
-  if (dist < 1e-3) return true;
-  if (data.totalLength > 1e-6 && dist / data.totalLength < 1e-4) return true;
-  return false;
-}
-
 export function normalizeHighlightDistance(
   data: CompiledTrackData,
   distance: number,
+  closedTrack = false,
 ): number {
   const total = data.totalLength;
   if (total <= 1e-9) return 0;
   if (!Number.isFinite(distance)) return 0;
-  if (isClosedTrack(data)) {
+  if (closedTrack) {
     let wrapped = distance % total;
     if (wrapped < 0) wrapped += total;
-    // Handle floating point edge where wrapped ~ total
+    // Handle floating point edge where wrapped ~ total and exact endpoint consistently maps to 0
     if (wrapped >= total - 1e-9) wrapped = 0;
     if (wrapped < 0) wrapped = 0;
     if (wrapped > total) wrapped = total;
@@ -125,6 +105,7 @@ export function updateHighlightMarker(
   marker: HighlightMarker,
   data: CompiledTrackData | null,
   distance: number | null,
+  closedTrack = false,
 ): void {
   if (distance === null || data === null) {
     marker.group.visible = false;
@@ -139,7 +120,7 @@ export function updateHighlightMarker(
     marker.group.visible = false;
     return;
   }
-  const normalized = normalizeHighlightDistance(data, distance);
+  const normalized = normalizeHighlightDistance(data, distance, closedTrack);
   const t = total === 0 ? 0 : normalized / total;
   // Use canonical sampling – no second spline
   const sample = sampleCompiledTrack(data, t);
@@ -175,8 +156,4 @@ export function disposeHighlightMarker(marker: HighlightMarker): void {
     // ignore
   }
   // group itself has no disposable resources beyond children already handled
-}
-
-export function isClosedTrackForTest(data: CompiledTrackData): boolean {
-  return isClosedTrack(data);
 }
