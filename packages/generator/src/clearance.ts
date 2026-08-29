@@ -48,8 +48,14 @@ interface PairNode {
   readonly depth: number;
 }
 
+interface SelfSubdivision {
+  readonly segments: readonly Segment[];
+  readonly unresolvedSpanIds: readonly string[];
+}
+
 const DEFAULT_MAX_DEPTH = 40;
 const DEFAULT_MAX_WORK = 1_000_000;
+const DEFAULT_TERRAIN_MAX_WORK = 100_000;
 const PARAMETER_TOLERANCE = 1e-12;
 
 const origin = vec3(0, 0, 0);
@@ -402,6 +408,258 @@ const makeSegments = (
   return segments;
 };
 
+interface Interval {
+  readonly lo: number;
+  readonly hi: number;
+}
+
+type DerivativeHull = readonly (readonly Interval[])[];
+
+const BINOMIAL = [
+  [1],
+  [1, 1],
+  [1, 2, 1],
+  [1, 3, 3, 1],
+  [1, 4, 6, 4, 1],
+  [1, 5, 10, 10, 5, 1],
+  [1, 6, 15, 20, 15, 6, 1],
+] as const;
+
+const intervalProduct = (
+  left: Interval,
+  right: Interval,
+  budget: CertifiedWorkBudget,
+): Interval => {
+  budget.charge(6);
+  const products = [
+    left.lo * right.lo,
+    left.lo * right.hi,
+    left.hi * right.lo,
+    left.hi * right.hi,
+  ].map((value) => finite(value, "Derivative interval product"));
+  return {
+    lo: finite(nextDown(Math.min(...products)), "Derivative interval lower"),
+    hi: finite(nextUp(Math.max(...products)), "Derivative interval upper"),
+  };
+};
+
+const intervalSum = (
+  left: Interval,
+  right: Interval,
+  budget: CertifiedWorkBudget,
+): Interval => {
+  budget.charge(4);
+  return {
+    lo: finite(
+      nextDown(finite(left.lo + right.lo, "Derivative interval sum")),
+      "Derivative interval lower",
+    ),
+    hi: finite(
+      nextUp(finite(left.hi + right.hi, "Derivative interval sum")),
+      "Derivative interval upper",
+    ),
+  };
+};
+
+const derivativeHull = (
+  span: CertifiedSpan,
+  budget: CertifiedWorkBudget,
+): DerivativeHull =>
+  polynomialRows(span).map((row) => {
+    const powerCoefficients = Array.from({ length: 7 }, (_, power) => {
+      budget.charge(3);
+      const value = finite(
+        row[power + 1]! * (power + 1),
+        `Span ${span.id} derivative coefficient`,
+      );
+      return {
+        lo: finite(
+          nextDown(value),
+          `Span ${span.id} derivative coefficient lower`,
+        ),
+        hi: finite(
+          nextUp(value),
+          `Span ${span.id} derivative coefficient upper`,
+        ),
+      };
+    });
+    return Array.from({ length: 7 }, (_, controlIndex) => {
+      let sum: Interval | undefined;
+      for (let power = 0; power <= controlIndex; power += 1) {
+        budget.charge(3);
+        const ratio = finite(
+          BINOMIAL[controlIndex]![power]! / BINOMIAL[6]![power]!,
+          `Span ${span.id} derivative Bernstein ratio`,
+        );
+        const term = intervalProduct(
+          powerCoefficients[power]!,
+          {
+            lo: finite(nextDown(ratio), "Derivative ratio lower"),
+            hi: finite(nextUp(ratio), "Derivative ratio upper"),
+          },
+          budget,
+        );
+        sum = sum === undefined ? term : intervalSum(sum, term, budget);
+      }
+      return sum!;
+    });
+  });
+
+const derivativeHullBounds = (
+  hull: DerivativeHull,
+  budget: CertifiedWorkBudget,
+): Bounds => {
+  budget.charge(21);
+  const ranges = hull.map((row) => ({
+    lo: finite(
+      Math.min(...row.map((value) => value.lo)),
+      "Derivative hull lower",
+    ),
+    hi: finite(
+      Math.max(...row.map((value) => value.hi)),
+      "Derivative hull upper",
+    ),
+  }));
+  return {
+    min: vec3(ranges[0]!.lo, ranges[1]!.lo, ranges[2]!.lo),
+    max: vec3(ranges[0]!.hi, ranges[1]!.hi, ranges[2]!.hi),
+  };
+};
+
+const splitDerivativeHull = (
+  hull: DerivativeHull,
+  budget: CertifiedWorkBudget,
+): readonly [DerivativeHull, DerivativeHull] => {
+  const leftRows: Interval[][] = [];
+  const rightRows: Interval[][] = [];
+  for (const row of hull) {
+    let level = [...row];
+    const left = [level[0]!];
+    const right = [level[level.length - 1]!];
+    while (level.length > 1) {
+      const next: Interval[] = [];
+      for (let index = 0; index < level.length - 1; index += 1) {
+        budget.charge(4);
+        const lower = finite(
+          level[index]!.lo / 2 + level[index + 1]!.lo / 2,
+          "Derivative subdivision lower",
+        );
+        const upper = finite(
+          level[index]!.hi / 2 + level[index + 1]!.hi / 2,
+          "Derivative subdivision upper",
+        );
+        next.push({
+          lo: finite(nextDown(lower), "Derivative subdivision lower"),
+          hi: finite(nextUp(upper), "Derivative subdivision upper"),
+        });
+      }
+      level = next;
+      left.push(level[0]!);
+      right.push(level[level.length - 1]!);
+    }
+    leftRows.push(left);
+    rightRows.push(right.reverse());
+  }
+  return [leftRows, rightRows];
+};
+
+const makeSelfSegments = (
+  spans: readonly CertifiedSpan[],
+  firstSegmentId: number,
+  clearanceLimit: number,
+  broadAmount: number,
+  maxDepth: number,
+  budget: CertifiedWorkBudget,
+  getBounds: (span: CertifiedSpan, start: number, end: number) => Bounds,
+): SelfSubdivision => {
+  const segments: Segment[] = [];
+  const unresolvedSpanIds = new Set<string>();
+  let station = 0;
+  let segmentId = firstSegmentId;
+  for (let spanIndex = 0; spanIndex < spans.length; spanIndex += 1) {
+    const span = spans[spanIndex]!;
+    const spanLength = safeArcLength(span, 0, 1, budget);
+    const wholeDerivativeHull = derivativeHull(span, budget);
+    const wholeDerivativeBounds = derivativeHullBounds(
+      wholeDerivativeHull,
+      budget,
+    );
+    const globallyMonotonic = ([0, 1, 2] as const).some(
+      (axis) =>
+        wholeDerivativeBounds.min[axis] > 0 ||
+        wholeDerivativeBounds.max[axis] < 0,
+    );
+    if (clearanceLimit === 0 && globallyMonotonic) {
+      station = finite(station + spanLength, "Track arc location");
+      continue;
+    }
+    const intervals: { readonly start: number; readonly end: number }[] = [];
+    const refine = (
+      start: number,
+      end: number,
+      depth: number,
+      hull: DerivativeHull,
+    ): void => {
+      budget.charge();
+      const bounds = derivativeHullBounds(hull, budget);
+      const monotonic = ([0, 1, 2] as const).some(
+        (axis) => bounds.min[axis] > 0 || bounds.max[axis] < 0,
+      );
+      if (monotonic) {
+        intervals.push({ start, end });
+        return;
+      }
+      if (end - start <= PARAMETER_TOLERANCE) {
+        unresolvedSpanIds.add(span.id);
+        intervals.push({ start, end });
+        return;
+      }
+      if (depth >= maxDepth) {
+        unresolvedSpanIds.add(span.id);
+        intervals.push({ start, end });
+        return;
+      }
+      const midpoint = (start + end) / 2;
+      if (midpoint === start || midpoint === end) {
+        unresolvedSpanIds.add(span.id);
+        intervals.push({ start, end });
+        return;
+      }
+      const [leftHull, rightHull] = splitDerivativeHull(hull, budget);
+      refine(start, midpoint, depth + 1, leftHull);
+      refine(midpoint, end, depth + 1, rightHull);
+    };
+    refine(0, 1, 0, wholeDerivativeHull);
+    for (let index = 0; index < intervals.length; index += 1) {
+      budget.charge();
+      const interval = intervals[index]!;
+      const centerBounds = getBounds(span, interval.start, interval.end);
+      const bounds = inflate(centerBounds, broadAmount, budget);
+      const startS = station + safeArcLength(span, 0, interval.start, budget);
+      const endS = station + safeArcLength(span, 0, interval.end, budget);
+      finite(startS, "Same-span segment start arc location");
+      finite(endS, "Same-span segment end arc location");
+      segments.push({
+        segmentId,
+        spanIndex,
+        segmentIndex: index,
+        startU: interval.start,
+        endU: interval.end,
+        startS,
+        endS,
+        centerBounds,
+        bounds,
+      });
+      segmentId += 1;
+    }
+    station = finite(station + spanLength, "Track arc location");
+  }
+  return {
+    segments,
+    unresolvedSpanIds: [...unresolvedSpanIds],
+  };
+};
+
 const safeBucketCoordinate = (
   value: number,
   cellSize: number,
@@ -451,7 +709,8 @@ export const validateClearance = (
   const initialCount = options.samplesPerSpan ?? 2;
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   const maxWork =
-    options.maxWork ?? (environment === undefined ? DEFAULT_MAX_WORK : 100_000);
+    options.maxWork ??
+    (environment === undefined ? DEFAULT_MAX_WORK : DEFAULT_TERRAIN_MAX_WORK);
   if (!Number.isFinite(radius) || radius < 0)
     throw new RangeError(
       "Train envelope radius must be non-negative and finite",
@@ -727,15 +986,39 @@ export const validateClearance = (
     }
     if (stopped) return Object.freeze(diagnostics);
 
-    const buckets = new Map<string, Segment[]>();
+    let selfSubdivision: SelfSubdivision;
+    try {
+      selfSubdivision = makeSelfSegments(
+        certifiedSpans,
+        segments.length,
+        limit,
+        limit / 2,
+        maxDepth,
+        budget,
+        getBounds,
+      );
+    } catch (error) {
+      if (error instanceof WorkBudgetExceeded)
+        throw new CertificationError(
+          `Certified polynomial work budget exhausted during same-span subdivision (${budget.used}/${budget.maxWork})`,
+        );
+      throw error;
+    }
+    const selfSegments = selfSubdivision.segments;
+
     const seenPairs = new Set<string>();
     const pairRoots: PairNode[] = [];
     const cellSize = Math.max(limit, 1);
     const closed = options.closed ?? false;
-    const addCandidate = (other: Segment, segment: Segment): void => {
+    const addCandidate = (
+      other: Segment,
+      segment: Segment,
+      sameSpan: boolean,
+    ): void => {
       budget.charge();
       if (
         other === segment ||
+        (other.spanIndex === segment.spanIndex) !== sameSpan ||
         adjacent(other, segment, closed, certifiedSpans.length) ||
         !overlaps(other.bounds, segment.bounds)
       )
@@ -754,41 +1037,84 @@ export const validateClearance = (
         depth: 0,
       });
     };
-    for (const segment of segments) {
-      if (stopped) break;
-      const ranges = bucketRanges(segment.bounds, cellSize, budget);
-      const bucketCount = CertifiedWorkBudget.checkedProduct(
-        CertifiedWorkBudget.checkedProduct(
-          rangeCount(ranges[0]!),
-          rangeCount(ranges[1]!),
-        ),
-        rangeCount(ranges[2]!),
+    const collectCandidates = (
+      candidatesToIndex: readonly Segment[],
+      sameSpan: boolean,
+    ): void => {
+      let sweepAxis: 0 | 1 | 2 = 0;
+      let sweepExtent = Number.NEGATIVE_INFINITY;
+      for (const axis of [0, 1, 2] as const) {
+        budget.charge(candidatesToIndex.length);
+        let minimum = Number.POSITIVE_INFINITY;
+        let maximum = Number.NEGATIVE_INFINITY;
+        for (const segment of candidatesToIndex) {
+          minimum = Math.min(minimum, segment.bounds.min[axis]);
+          maximum = Math.max(maximum, segment.bounds.max[axis]);
+        }
+        const extent = finite(maximum - minimum, "Sweep-axis extent");
+        if (extent > sweepExtent) {
+          sweepAxis = axis;
+          sweepExtent = extent;
+        }
+      }
+      const sortCost =
+        candidatesToIndex.length <= 1
+          ? 0
+          : CertifiedWorkBudget.checkedProduct(
+              candidatesToIndex.length,
+              Math.ceil(Math.log2(candidatesToIndex.length)) + 1,
+            );
+      budget.charge(sortCost);
+      const ordered = [...candidatesToIndex].sort(
+        (left, right) =>
+          left.bounds.min[sweepAxis] - right.bounds.min[sweepAxis] ||
+          left.segmentId - right.segmentId,
       );
-      budget.charge(bucketCount);
-      for (let x = ranges[0]![0]; x <= ranges[0]![1]; x += 1)
-        for (let y = ranges[1]![0]; y <= ranges[1]![1]; y += 1)
-          for (let z = ranges[2]![0]; z <= ranges[2]![1]; z += 1) {
-            const key = `${x},${y},${z}`;
-            const candidates = buckets.get(key) ?? [];
-            budget.charge(candidates.length);
-            for (const other of candidates) addCandidate(other, segment);
-            candidates.push(segment);
-            buckets.set(key, candidates);
-          }
-    }
-    const sortCost =
-      pairRoots.length <= 1
-        ? 0
-        : CertifiedWorkBudget.checkedProduct(
-            pairRoots.length,
-            Math.ceil(Math.log2(pairRoots.length)) + 1,
+      let active: Segment[] = [];
+      for (const segment of ordered) {
+        budget.charge(active.length);
+        active = active.filter(
+          (candidate) =>
+            candidate.bounds.max[sweepAxis] >= segment.bounds.min[sweepAxis],
+        );
+        for (const other of active) addCandidate(other, segment, sameSpan);
+        active.push(segment);
+      }
+    };
+    try {
+      if (certifiedSpans.length === 1 && selfSegments.length === 0)
+        for (const segment of segments) {
+          const ranges = bucketRanges(segment.bounds, cellSize, budget);
+          const bucketCount = CertifiedWorkBudget.checkedProduct(
+            CertifiedWorkBudget.checkedProduct(
+              rangeCount(ranges[0]!),
+              rangeCount(ranges[1]!),
+            ),
+            rangeCount(ranges[2]!),
           );
-    budget.charge(sortCost);
-    pairRoots.sort(
-      (left, right) =>
-        left.first.segmentId - right.first.segmentId ||
-        left.second.segmentId - right.second.segmentId,
-    );
+          budget.charge(bucketCount);
+        }
+      if (certifiedSpans.length > 1) collectCandidates(segments, false);
+      let groupStart = 0;
+      while (groupStart < selfSegments.length) {
+        let groupEnd = groupStart + 1;
+        while (
+          groupEnd < selfSegments.length &&
+          selfSegments[groupEnd]!.spanIndex ===
+            selfSegments[groupStart]!.spanIndex
+        )
+          groupEnd += 1;
+        if (groupEnd - groupStart > 1)
+          collectCandidates(selfSegments.slice(groupStart, groupEnd), true);
+        groupStart = groupEnd;
+      }
+    } catch (error) {
+      if (error instanceof WorkBudgetExceeded)
+        throw new CertificationError(
+          `Certified polynomial work budget exhausted during spatial broad phase (${budget.used}/${budget.maxWork})`,
+        );
+      throw error;
+    }
     const processPair = (root: PairNode): void => {
       const stack: PairNode[] = [root];
       while (stack.length > 0) {
@@ -841,6 +1167,7 @@ export const validateClearance = (
               [firstSpan.id, secondSpan.id],
             ),
           );
+          stopped = true;
           return;
         }
         if (node.depth >= maxDepth)
@@ -880,6 +1207,13 @@ export const validateClearance = (
         ]);
       }
     }
+    if (selfSubdivision.unresolvedSpanIds.length > 0)
+      diagnostics.push(
+        uncertain(
+          "Same-span clearance subdivision exhausted its deterministic depth budget",
+          selfSubdivision.unresolvedSpanIds,
+        ),
+      );
     return Object.freeze(diagnostics);
   } catch (error) {
     return Object.freeze([failureDiagnostic(error, ids)]);
