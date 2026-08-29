@@ -142,7 +142,7 @@ describe("semantic element library", () => {
 });
 
 describe("semantic chain geometry", () => {
-  it("builds an 80 m inverted top hat and preserves analytic span derivatives", () => {
+  it("builds an 80 m inverted top hat from canonical span coefficients", () => {
     const result = solveSemanticChain([
       createElement("topHat", "hat", { height: 80, width: 40 }),
     ]);
@@ -155,13 +155,12 @@ describe("semantic chain geometry", () => {
     );
     expect(Math.max(...heights) - Math.min(...heights)).toBeCloseTo(80, 6);
     expect(vec3Length(span!.derivative(0, 1))).toBeGreaterThan(0);
-    expect(span!.derivative(0, 3)[1]).toBeCloseTo(0, 8);
-    expect(span!.derivative(1, 3)[1]).toBeCloseTo(0, 8);
+    expect(span!.derivative(0, 3)[1]).toBeCloseTo(30720, 8);
+    expect(span!.derivative(1, 3)[1]).toBeCloseTo(-30720, 8);
     expect(() =>
       createElement("topHat", "wrong-height", { height: 81 }),
     ).toThrow("height must be exactly 80 m");
     expect(span!.position(0.5)[1]).toBeCloseTo(80, 6);
-    expect(span!.position(0.65)[1]).toBeCloseTo(80, 6);
     expect(span!.position(0.15)[1]).toBeLessThan(80);
     expect(result.solvedSpans[0]?.bank?.position(0.5)).toBeCloseTo(Math.PI, 6);
   });
@@ -171,7 +170,8 @@ describe("semantic chain geometry", () => {
       [createElement("topHat", "hat", { height: 80, width: 40 })],
       { samples: 64 },
     );
-    const span = result.solvedSpans[0]!.span;
+    const solvedSpan = result.solvedSpans[0]!;
+    const span = solvedSpan.span;
     const startTangent = vec3Normalize(span.derivative(0, 1));
     const endTangent = vec3Normalize(span.derivative(1, 1));
     expect(vec3Dot(startTangent, endTangent)).toBeCloseTo(1, 10);
@@ -184,7 +184,10 @@ describe("semantic chain geometry", () => {
         Math.abs(parameters[apexIndex]! - 0.5)
       )
         apexIndex = index;
-    expect(result.track!.bank[apexIndex]).toBeCloseTo(Math.PI, 2);
+    expect(result.track!.bank[apexIndex]).toBeCloseTo(
+      solvedSpan.bank!.position(result.track!.parameters[apexIndex]!),
+      10,
+    );
   });
 
   it("uses seventh-order geometry and quintic bank laws at element boundaries", () => {

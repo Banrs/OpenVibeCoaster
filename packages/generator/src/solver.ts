@@ -591,12 +591,27 @@ const buildChain = (
   return { elements, solvedSpans, endPose: pose, hardGeometryFailures };
 };
 
+const canonicalBankSpan = (span: SolvedSpan): QuinticScalarSpan | undefined => {
+  if (span.rollCoefficients !== undefined)
+    return QuinticScalarSpan.fromCoefficients(span.rollCoefficients);
+  if (span.bank instanceof QuinticScalarSpan) return span.bank;
+  if (!span.bank) return undefined;
+  return new QuinticScalarSpan({
+    v0: span.bank.position(0),
+    d10: span.bank.derivative(0, 1),
+    d20: span.bank.derivative(0, 2),
+    v1: span.bank.position(1),
+    d11: span.bank.derivative(1, 1),
+    d21: span.bank.derivative(1, 2),
+  });
+};
+
 const applyAuthoredStartFrame = (
   spans: readonly SolvedSpan[],
   startPose: Pose,
 ): readonly SolvedSpan[] => {
   const first = spans[0];
-  if (!first?.bank) return spans;
+  if (!first) return spans;
   const tangent = vec3Normalize(first.span.derivative(0, 1));
   const reference = Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
   const projected = vec3Sub(
@@ -604,24 +619,12 @@ const applyAuthoredStartFrame = (
     vec3Scale(tangent, vec3Dot(reference, tangent)),
   );
   const defaultNormal = vec3Normalize(projected);
-  const baseBank =
-    first.rollCoefficients !== undefined
-      ? QuinticScalarSpan.fromCoefficients(first.rollCoefficients)
-      : first.bank instanceof QuinticScalarSpan
-        ? first.bank
-        : new QuinticScalarSpan({
-            v0: first.bank.position(0),
-            d10: first.bank.derivative(0, 1),
-            d20: first.bank.derivative(0, 2),
-            v1: first.bank.position(1),
-            d11: first.bank.derivative(1, 1),
-            d21: first.bank.derivative(1, 2),
-          });
+  const baseBank = canonicalBankSpan(first);
+  if (!baseBank) return spans;
   const correction = Math.atan2(
     vec3Dot(tangent, vec3Cross(defaultNormal, startPose.normal)),
     vec3Dot(defaultNormal, startPose.normal),
   );
-  if (Math.abs(correction) < 1e-12) return spans;
   const correctionSpan = new QuinticScalarSpan({
     v0: correction,
     d10: 0,

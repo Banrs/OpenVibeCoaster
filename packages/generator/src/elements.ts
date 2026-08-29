@@ -260,16 +260,6 @@ const polynomialDerivative = (
 };
 const bumpCoefficients = [0, 0, 0, 0, 256, -1024, 1536, -1024, 256] as const;
 const smoothRampCoefficients = [0, 0, 0, 0, 35, -84, 70, -20] as const;
-const quinticRampCoefficients = [0, 0, 0, 10, -15, 6] as const;
-
-const plateau = (u: number, order = 0): number => {
-  const ramp = (value: number, derivativeOrder: number): number =>
-    polynomialDerivative(smoothRampCoefficients, value, derivativeOrder);
-  if (u < 0.2 || u > 0.8) return 0;
-  if (u < 0.35) return ramp((u - 0.2) / 0.15, order) / 0.15 ** order;
-  if (u <= 0.65) return order === 0 ? 1 : 0;
-  return (order === 0 ? 1 : -ramp((u - 0.65) / 0.15, order)) / 0.15 ** order;
-};
 
 const sustainedForceProfile = (u: number, order = 0): number => {
   const ramp = (value: number, derivativeOrder: number): number =>
@@ -443,8 +433,6 @@ const topHatSpan = (
   bank: ParametricSpan<number>;
 } => {
   const basis = basisFor(pose);
-  // Keep the authored analytic view for solver diagnostics, and carry a
-  // canonical coefficient view for serialization/runtime compilation.
   const heightCoefficients = [
     0,
     0,
@@ -464,21 +452,8 @@ const topHatSpan = (
         basis.normal[component]! * (heightCoefficients[power] ?? 0),
     ),
   );
-  const localDerivative = (u: number, order: number): Vec3 =>
-    order === 0
-      ? vec3(width * u, 80 * plateau(u), 0)
-      : order === 1
-        ? vec3(width, 80 * plateau(u, 1), 0)
-        : order === 2
-          ? vec3(0, 80 * plateau(u, 2), 0)
-          : order === 3
-            ? vec3(0, 80 * plateau(u, 3), 0)
-            : vec3(0, 0, 0);
-  const span: ParametricSpan<Vec3> = {
-    position: (u) => worldPoint(pose, basis, localDerivative(u, 0)),
-    derivative: (u, order = 1) => worldVector(basis, localDerivative(u, order)),
-  };
-  const bump = [0, 0, 16 * Math.PI, -32 * Math.PI, 16 * Math.PI, 0];
+  const span =
+    SeventhOrderHermiteSpan.fromCoefficients<Vec3>(positionCoefficients);
   const base = new QuinticScalarSpan({
     v0: pose.bank,
     d10: 0,
@@ -487,44 +462,26 @@ const topHatSpan = (
     d11: 0,
     d21: 0,
   }).coefficients;
+  const bumpAmplitude =
+    pose.bank +
+    Math.PI -
+    QuinticScalarSpan.fromCoefficients(base).position(0.5);
+  const bump = [
+    0,
+    0,
+    16 * bumpAmplitude,
+    -32 * bumpAmplitude,
+    16 * bumpAmplitude,
+    0,
+  ];
   const canonicalBank = QuinticScalarSpan.fromCoefficients(
     base.map((value, index) => value + (bump[index] ?? 0)),
   );
-  const invertedBank = pose.bank + Math.PI;
-  const bank: ParametricSpan<number> = {
-    position: (u) => {
-      if (u < 0.2) return pose.bank;
-      if (u < 0.4)
-        return (
-          pose.bank +
-          (invertedBank - pose.bank) *
-            polynomialDerivative(quinticRampCoefficients, (u - 0.2) / 0.2, 0)
-        );
-      if (u <= 0.6) return invertedBank;
-      if (u < 0.8)
-        return (
-          invertedBank +
-          (endBank - invertedBank) *
-            polynomialDerivative(quinticRampCoefficients, (u - 0.6) / 0.2, 0)
-        );
-      return endBank;
-    },
-    derivative: (u, order = 1) => {
-      if (u <= 0.2 || u >= 0.8 || (u >= 0.4 && u <= 0.6)) return 0;
-      const rising = u < 0.4;
-      const t = rising ? (u - 0.2) / 0.2 : (u - 0.6) / 0.2;
-      const delta = rising ? invertedBank - pose.bank : endBank - invertedBank;
-      return (
-        (delta * polynomialDerivative(quinticRampCoefficients, t, order)) /
-        0.2 ** order
-      );
-    },
-  };
   return {
     span,
     positionCoefficients,
     rollCoefficients: canonicalBank.coefficients,
-    bank,
+    bank: canonicalBank,
     endPose: orthonormalizePose({
       position: span.position(1),
       tangent: vec3Normalize(span.derivative(1, 1)),
