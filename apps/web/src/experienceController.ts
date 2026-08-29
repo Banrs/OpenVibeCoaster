@@ -145,159 +145,37 @@ const normalizeSpanHashes = (
 // they are transferred by reference without duplication. Caller retains its original objects unfrozen;
 // we freeze only owned small copies on the smallest coherent boundary.
 const cloneFile = (file: CoasterFileV1): CoasterFileV1 => {
-  // Canonical round trip gives validated, fully owned copy of intent, gates, targets/constraints, pins, footprint/height,
-  // solved-span coefficients, research IDs, and nested values without freezing caller.
-  try {
-    const serialized = serializeCoasterFileV1(file);
-    const owned = deserializeCoasterFileV1(serialized);
-    // Layer minimal separately owned editable design copy needed by draft editor (shallow copy of elements for editing)
-    const designElements = owned.design.elements.map((element) =>
-      Object.freeze({
-        ...element,
-        ...(element.parameters
-          ? { parameters: Object.freeze({ ...element.parameters }) }
-          : {}),
-      }),
-    );
-    const designGates = owned.design.gates?.map((gate) =>
-      Object.freeze({ ...gate }),
-    );
-    const designConstraints = owned.design.constraints?.map((c) =>
-      Object.freeze({ ...c }),
-    );
-    const design = Object.freeze({
-      elements: Object.freeze(designElements),
-      ...(designGates ? { gates: Object.freeze(designGates) } : {}),
-      ...(designConstraints
-        ? { constraints: Object.freeze(designConstraints) }
+  const serialized = serializeCoasterFileV1(file);
+  const owned = deserializeCoasterFileV1(serialized);
+  const designElements = owned.design.elements.map((element) =>
+    Object.freeze({
+      ...element,
+      ...(element.parameters
+        ? { parameters: Object.freeze({ ...element.parameters }) }
         : {}),
-    }) as CoasterFileV1["design"];
-    return Object.freeze({ ...owned, design });
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("file.design")) {
-      const elements = file.design.elements.map((element) =>
-        Object.freeze({
-          ...element,
-          ...(element.parameters
-            ? { parameters: Object.freeze({ ...element.parameters }) }
-            : {}),
-        }),
-      );
-      const gates = file.design.gates?.map((gate) =>
-        Object.freeze({ ...gate }),
-      );
-      const constraints = file.design.constraints?.map((c) =>
-        Object.freeze({ ...c }),
-      );
-      const designFallback = Object.freeze({
-        elements: Object.freeze(elements),
-        ...(gates ? { gates: Object.freeze(gates) } : {}),
-        ...(constraints ? { constraints: Object.freeze(constraints) } : {}),
-      }) as CoasterFileV1["design"];
-      const intentCopy = (() => {
-        const cloned = JSON.parse(
-          JSON.stringify(file.intent),
-        ) as CoasterFileV1["intent"];
-        return Object.freeze({
-          ...cloned,
-          elements: Object.freeze(
-            cloned.elements.map((e) =>
-              Object.freeze({
-                ...e,
-                ...(e.parameters
-                  ? { parameters: Object.freeze({ ...e.parameters }) }
-                  : {}),
-              }),
-            ),
-          ),
-          gates: Object.freeze(
-            cloned.gates.map((g) =>
-              Object.freeze({
-                ...g,
-                position: Object.freeze([
-                  ...g.position,
-                ] as unknown as typeof g.position),
-                ...(g.orientation
-                  ? {
-                      orientation: Object.freeze([
-                        ...g.orientation,
-                      ] as unknown as typeof g.orientation),
-                    }
-                  : {}),
-              }),
-            ),
-          ),
-          targets: Object.freeze(
-            cloned.targets.map((t) =>
-              Object.freeze({
-                ...t,
-                target: Array.isArray(t.target)
-                  ? Object.freeze([...t.target] as unknown as typeof t.target)
-                  : t.target,
-              }),
-            ),
-          ),
-          constraints: Object.freeze(
-            cloned.constraints.map((c) =>
-              Object.freeze({
-                ...c,
-                target: Array.isArray(c.target)
-                  ? Object.freeze([...c.target] as unknown as typeof c.target)
-                  : c.target,
-                value: Array.isArray(c.value)
-                  ? Object.freeze([...c.value] as unknown as typeof c.value)
-                  : c.value,
-              }),
-            ),
-          ),
-          pinnedElementIds: Object.freeze([...cloned.pinnedElementIds]),
-          ...(cloned.footprint
-            ? {
-                footprint: Object.freeze({
-                  min: Object.freeze([
-                    ...cloned.footprint.min,
-                  ] as unknown as typeof cloned.footprint.min),
-                  max: Object.freeze([
-                    ...cloned.footprint.max,
-                  ] as unknown as typeof cloned.footprint.max),
-                }),
-              }
-            : {}),
-          ...(cloned.heightRange
-            ? { heightRange: Object.freeze({ ...cloned.heightRange }) }
-            : {}),
-        });
-      })() as CoasterFileV1["intent"];
-      const solvedSpansCopy = Object.freeze(
-        [...file.solvedSpans].map((span) =>
-          Object.freeze({
-            ...span,
-            positionCoefficients: Object.freeze(
-              [...span.positionCoefficients].map((row) =>
-                Object.freeze([...row]),
-              ),
-            ),
-            rollCoefficients: Object.freeze([...span.rollCoefficients]),
-          }),
-        ),
-      ) as CoasterFileV1["solvedSpans"];
-      const researchCopy = Object.freeze([...file.researchSnapshotIds]);
-      const fallback = {
-        schemaVersion: 1 as const,
-        name: file.name,
-        intent: intentCopy,
-        design: designFallback,
-        solvedSpans: solvedSpansCopy,
-        seed: file.seed,
-        generatorVersion: file.generatorVersion,
-        profileVersion: file.profileVersion,
-        researchSnapshotIds: researchCopy,
-        compiledDataChecksum: file.compiledDataChecksum,
-      } as unknown as CoasterFileV1;
-      return Object.freeze(fallback);
-    }
-    throw error;
-  }
+    }),
+  );
+  const designGates = owned.design.gates?.map((gate) =>
+    Object.freeze({ ...gate }),
+  );
+  const designConstraints = owned.design.constraints?.map((c) =>
+    Object.freeze({ ...c }),
+  );
+  const design = Object.freeze({
+    elements: Object.freeze(designElements),
+    ...(designGates ? { gates: Object.freeze(designGates) } : {}),
+    ...(designConstraints
+      ? { constraints: Object.freeze(designConstraints) }
+      : {}),
+  }) as CoasterFileV1["design"];
+  const base = { ...owned } as unknown as Record<string, unknown>;
+  Object.defineProperty(base, "design", {
+    value: design,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  return Object.freeze(base as unknown as CoasterFileV1);
 };
 
 const copyDiagnostics = (diags: readonly Diagnostic[]): readonly Diagnostic[] =>
@@ -658,8 +536,15 @@ export function createExperienceController(
         ownedClearance = new Float64Array(result.clearanceM);
 
       // Freeze owned result graph without mutating caller's object
+      let ownedFile: CoasterFileV1;
+      try {
+        ownedFile = cloneFile(result.file);
+      } catch (error) {
+        failure(error, incomingRequestId ?? requestId);
+        return false;
+      }
       const ownedResult: AuthoritativeExperienceResult = Object.freeze({
-        file: cloneFile(result.file),
+        file: ownedFile,
         track: result.track,
         timeline: result.timeline, // RideTimeline/CompiledTrackData huge arrays are immutable/copying getters
         diagnostics: copyDiagnostics(result.diagnostics),
@@ -678,7 +563,7 @@ export function createExperienceController(
         result: ownedResult,
         lastGoodResult: ownedResult,
         error: null,
-        draftFile: cloneFile(result.file),
+        draftFile: ownedFile,
         selectedElementId,
         timelineSelection:
           state.timelineSelection &&

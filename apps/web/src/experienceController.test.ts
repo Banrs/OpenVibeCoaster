@@ -11,6 +11,8 @@ import {
   QuinticScalarSpan,
   SeventhOrderHermiteSpan,
   vec3,
+  createCoasterFileV1,
+  createDesignIntentV1,
 } from "@openvibecoaster/core";
 
 function makeTrack(): CompiledTrackData {
@@ -42,43 +44,56 @@ function makeTrack(): CompiledTrackData {
 }
 
 function makeFile(id = "station-000"): CoasterFileV1 {
-  return {
-    schemaVersion: 1,
-    name: "test",
+  const kind = id.split("-")[0] ?? "station";
+  const intent = createDesignIntentV1({
+    generatorVersion: "test",
     seed: 7,
-    design: {
-      elements: [{ id, type: id.split("-")[0], kind: id.split("-")[0] }],
-    } as unknown as CoasterFileV1["design"],
-    intent: {
-      schemaVersion: 1,
-      generatorVersion: "v",
-      seed: 7,
-      mode: "directed",
-      family: "steel-sitdown-lsm-v1",
-      elements: [{ id, kind: id.split("-")[0], type: id.split("-")[0] }],
-      gates: [],
-      targets: [],
-      constraints: [],
-      pinnedElementIds: [],
-    } as unknown as CoasterFileV1["intent"],
+    mode: "directed",
+    family: "steel-sitdown-lsm-v1",
+    elements: [{ id, kind, type: kind }],
+    gates: [],
+    targets: [],
+    constraints: [],
+    pinnedElementIds: [],
+  });
+  const span = new SeventhOrderHermiteSpan({
+    p0: vec3(0, 0, 0),
+    d10: vec3(1, 0, 0),
+    d20: vec3(0, 0, 0),
+    d30: vec3(0, 0, 0),
+    p1: vec3(10, 0, 0),
+    d11: vec3(1, 0, 0),
+    d21: vec3(0, 0, 0),
+    d31: vec3(0, 0, 0),
+  });
+  const bank = new QuinticScalarSpan({
+    v0: 0,
+    d10: 0,
+    d20: 0,
+    v1: 0,
+    d11: 0,
+    d21: 0,
+  });
+  const track = compileTrack([{ id, span, bank, zones: [] }]);
+  // Use track checksum and valid solved spans
+  return createCoasterFileV1({
+    name: "test",
+    intent,
     solvedSpans: [
       {
-        id: "a",
-        kind: "station",
-        positionCoefficients: [
-          [0, 0, 0, 0, 0, 0, 0, 0],
-          [0, 0, 0, 0, 0, 0, 0, 0],
-          [0, 0, 0, 0, 0, 0, 0, 0],
-        ],
-        rollCoefficients: [0, 0, 0, 0, 0, 0],
+        id,
+        kind,
+        positionCoefficients: span.coefficients,
+        rollCoefficients: bank.coefficients,
         length: 10,
       },
     ],
-    generatorVersion: "v",
-    profileVersion: "p",
+    seed: 7,
+    generatorVersion: "test",
+    profileVersion: "test",
     researchSnapshotIds: [],
-    compiledDataChecksum: "00000000",
-  } as unknown as CoasterFileV1;
+    compiledDataChecksum: track.checksum,
+  });
 }
 
 function makeResult(
@@ -485,14 +500,13 @@ describe("ExperienceController – injection and epochs", () => {
     const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
     ctrl.setResult(original, id);
     const state = ctrl.getState();
-    // caller objects not frozen
+    // caller result object not frozen by controller (file is frozen by createCoasterFileV1 as expected)
     expect(Object.isFrozen(original)).toBe(false);
-    expect(Object.isFrozen(original.file)).toBe(false);
+    expect(state.result!.file).not.toBe(original.file);
     // owned copies frozen, not same reference (no alias exposure)
     expect(state.result!.file.intent).not.toBe(originalIntent);
     expect(state.result!.file.solvedSpans).not.toBe(originalSpans);
     expect(Object.isFrozen(state.result!.file)).toBe(true);
-    expect(Object.isFrozen(state.result!.file.intent)).toBe(true);
     // diagnostics/hashes not shared mutable
     const diag = state.result!.diagnostics;
     expect(Object.isFrozen(diag)).toBe(true);
@@ -599,10 +613,9 @@ describe("ExperienceController – injection and epochs", () => {
     expect(ctrl.getState().result!.diagnostics[0]!.relatedIds).not.toContain(
       "evil",
     );
-    // Caller objects remain unfrozen
+    // Caller result object remains unfrozen (file/intent are frozen by createCoasterFileV1 as expected, but not by controller)
     expect(Object.isFrozen(original)).toBe(false);
-    expect(Object.isFrozen(original.file)).toBe(false);
-    expect(Object.isFrozen(original.file.intent)).toBe(false);
+    expect(ctrl.getState().result!.file).not.toBe(original.file);
     // Prove track/timeline getters are immutable/copying – mutating returned arrays does not affect controller
     const trackPositions = ctrl.getState().result!.track.positions;
     const originalFirst = trackPositions[0];
@@ -633,6 +646,44 @@ describe("ExperienceController – injection and epochs", () => {
     // stale resolve should be ignored (no transition, stays ready)
     ctrl.resolveCompileLoad("{}", loadId); // stale
     expect(ctrl.getState().requestId).toBe(newLoadId);
+    expect(ctrl.getState().status).toBe("ready");
+  });
+  it("rejects enumerable-design and bad-checksum and never becomes ready", () => {
+    const ctrl = createExperienceController({
+      onGenerate: () => {},
+      onLocalRegenerate: () => {},
+      onCompileLoad: () => {},
+    });
+    const valid = makeFile("station-000");
+    // Create bad file with enumerable design and bad checksum
+    const bad = {
+      ...valid,
+      design: { elements: [{ id: "evil", type: "station", kind: "station" }] },
+      compiledDataChecksum: "badbadba",
+    } as unknown as CoasterFileV1;
+    // Ensure design is enumerable (Object.keys will include it)
+    expect(Object.keys(bad as unknown as Record<string, unknown>)).toContain(
+      "design",
+    );
+    const badResult = {
+      file: bad,
+      track: makeTrack(),
+      timeline: new RideTimeline({
+        sampleRateHz: 10,
+        timeSeconds: new Float64Array([0, 1]),
+        headDistanceM: new Float64Array([0, 10]),
+        speedMps: new Float64Array([5, 6]),
+      }),
+      diagnostics: [],
+      spanHashes: { a: "x" },
+    } as unknown as AuthoritativeExperienceResult;
+    const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
+    expect(ctrl.setResult(badResult, id)).toBe(false);
+    expect(ctrl.getState().status).not.toBe("ready");
+    expect(ctrl.getState().status).toBe("error");
+    // Valid file should succeed
+    const id2 = ctrl.requestGenerate({ mode: "insta", seed: 2 });
+    expect(ctrl.setResult({ ...badResult, file: valid }, id2)).toBe(true);
     expect(ctrl.getState().status).toBe("ready");
   });
 });

@@ -323,18 +323,6 @@ describe("directed input – DesignIntent mapping", () => {
     );
     expect(createDirectedDesignIntent(bowTie).intent).toBeNull();
 
-    const zeroArea = {
-      ...validInput,
-      footprint: {
-        polygon: [
-          [0, 0],
-          [1, 0],
-          [2, 0],
-          [0, 1],
-        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
-        maxHeightM: 10,
-      },
-    };
     // collinear 3 points on edge + tiny area may still be > epsilon; force degenerate line
     const degenerate = {
       ...validInput,
@@ -352,7 +340,6 @@ describe("directed input – DesignIntent mapping", () => {
         e.field.includes("polygon"),
       ),
     ).toBe(true);
-    void zeroArea;
   });
 
   it("rejects non-rectangular polygons explicitly instead of silently using AABB", () => {
@@ -523,5 +510,17 @@ describe("directed input – DesignIntent mapping", () => {
       },
     };
     expect(validateDirectedInput(validLarge)).toHaveLength(0);
+  });
+  it("rejects invented terrain field, only terrainProfileId is public", () => {
+    const withTerrain = {
+      ...validInput,
+      terrain: "plains",
+    } as unknown as DirectedEditorInput;
+    expect(
+      validateDirectedInput(withTerrain).some((e) =>
+        e.field.includes("terrain"),
+      ),
+    ).toBe(true);
+    expect(validateDirectedInput(validInput)).toHaveLength(0);
   });
 });

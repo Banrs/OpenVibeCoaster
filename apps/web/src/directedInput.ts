@@ -285,9 +285,8 @@ function validatePolygon(
     addError(errors, field, "polygon must have non-zero area");
   }
 
-  // Self-intersections (including bow-tie) – use labeled break, no i=n hack
+  // Self-intersections (including bow-tie) – labeled break, no i=n hack
   const n = result.length;
-  let selfIntersected = false;
   outer: for (let i = 0; i < n; i += 1) {
     const p1 = result[i]!;
     const p2 = result[(i + 1) % n]!;
@@ -304,12 +303,10 @@ function validatePolygon(
         continue;
       if (segmentsIntersect(p1, p2, q1, q2)) {
         addError(errors, field, "polygon self-intersects");
-        selfIntersected = true;
         break outer;
       }
     }
   }
-  void selfIntersected;
 
   if (errors.some((e) => e.field.startsWith(field))) return null;
 
@@ -488,7 +485,6 @@ export function validateDirectedInput(input: unknown): readonly FieldError[] {
       "gates",
       "footprint",
       "terrainProfileId",
-      "terrain",
       "requiredElements",
       "requiresStall",
       "hardTargets",
@@ -558,8 +554,8 @@ export function validateDirectedInput(input: unknown): readonly FieldError[] {
     }
   }
 
-  // terrain
-  const terrain = record.terrainProfileId ?? record.terrain;
+  // terrain - only terrainProfileId is public
+  const terrain = record.terrainProfileId;
   if (typeof terrain !== "string" || terrain.trim().length === 0) {
     addError(errors, "terrainProfileId", "expected non-empty string");
   }
@@ -735,11 +731,7 @@ export function createDirectedDesignIntent(input: DirectedEditorInput): {
         ? { minHeightM: input.footprint.minHeightM }
         : {}),
     },
-    terrainProfileId: String(
-      input.terrainProfileId ??
-        (input as unknown as Record<string, unknown>).terrain ??
-        "",
-    ),
+    terrainProfileId: String(input.terrainProfileId ?? ""),
     requiredElements: [...input.requiredElements],
     ...(input.requiresStall !== undefined
       ? { requiresStall: Boolean(input.requiresStall) }
