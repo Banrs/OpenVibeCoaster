@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RideTimeline } from "@openvibecoaster/simulator";
-import type { CompiledTrackData } from "@openvibecoaster/core";
+import type { CompiledTrackData, Diagnostic } from "@openvibecoaster/core";
 import type { CoasterFileV1 } from "@openvibecoaster/core";
 import {
   createExperienceController,
@@ -521,6 +521,97 @@ describe("ExperienceController – injection and epochs", () => {
       (sel1 as unknown as Record<string, unknown>).index = 999;
     } catch {}
     expect(ctrl.getState().timelineSelection!.index).toBe(0);
+  });
+
+  it("mutating caller intent/gates/targets/constraints/pins/coefficients/diagnostics after setResult does not affect controller", () => {
+    const ctrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const original = makeResult("hash1");
+    // Create diagnostic with nested mutable fields
+    const diag = {
+      code: "TEST",
+      severity: "info" as const,
+      message: "original",
+      location: {
+        s: 1,
+        position: [1, 2, 3] as unknown as [number, number, number],
+      },
+      relatedIds: ["a", "b"],
+      actual: 1,
+      limit: 2,
+      margin: 1,
+    } as unknown as Diagnostic;
+    const withDiag = {
+      ...original,
+      diagnostics: [diag],
+    } as AuthoritativeExperienceResult;
+    const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
+    ctrl.setResult(withDiag, id);
+    const beforeIntentId = ctrl.getState().result!.file.intent.elements[0]!.id;
+    const beforeDiagMessage = ctrl.getState().result!.diagnostics[0]!.message;
+    // Mutate caller objects
+    (
+      original.file.intent.elements[0] as unknown as Record<string, unknown>
+    ).id = "mutated";
+    (
+      original.file.intent.elements[0] as unknown as Record<string, unknown>
+    ).parameters = { mutated: true };
+    (original.file.intent.gates as unknown as unknown[]).push({
+      id: "evil",
+      position: [0, 0, 0],
+    } as never);
+    (original.file.intent.targets as unknown as unknown[]).push({
+      id: "evil",
+      kind: "end-y",
+      target: 999,
+      hard: true,
+    } as never);
+    (original.file.intent.constraints as unknown as unknown[]).push({
+      id: "evil",
+      kind: "x",
+      hard: true,
+    } as never);
+    (original.file.intent.pinnedElementIds as unknown as unknown[]).push(
+      "evil",
+    );
+    (
+      original.file.solvedSpans[0] as unknown as Record<string, unknown>
+    ).positionCoefficients = [[999]] as never;
+    (diag as unknown as Record<string, unknown>).message = "mutated";
+    (
+      (diag.location as unknown as Record<string, unknown>)
+        .position as unknown as number[]
+    )[0] = 999;
+    (diag.relatedIds as unknown as string[]).push("evil");
+    // Verify controller state unchanged
+    expect(ctrl.getState().result!.file.intent.elements[0]!.id).toBe(
+      beforeIntentId,
+    );
+    expect(ctrl.getState().result!.diagnostics[0]!.message).toBe(
+      beforeDiagMessage,
+    );
+    expect(ctrl.getState().result!.diagnostics[0]!.location!.position![0]).toBe(
+      1,
+    );
+    expect(ctrl.getState().result!.diagnostics[0]!.relatedIds).not.toContain(
+      "evil",
+    );
+    // Caller objects remain unfrozen
+    expect(Object.isFrozen(original)).toBe(false);
+    expect(Object.isFrozen(original.file)).toBe(false);
+    expect(Object.isFrozen(original.file.intent)).toBe(false);
+    // Prove track/timeline getters are immutable/copying – mutating returned arrays does not affect controller
+    const trackPositions = ctrl.getState().result!.track.positions;
+    const originalFirst = trackPositions[0];
+    trackPositions[0] = 9999;
+    expect(ctrl.getState().result!.track.positions[0]).toBe(originalFirst);
+    const timelineDistances = ctrl.getState().result!.timeline.headDistanceM;
+    const origDist = timelineDistances[0];
+    timelineDistances[0] = 9999;
+    expect(ctrl.getState().result!.timeline.headDistanceM[0]).toBe(origDist);
   });
 
   it("compile-load remains generating until authoritative result, no misleading success", () => {

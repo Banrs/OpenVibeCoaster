@@ -85,6 +85,20 @@ function addError(errors: FieldError[], field: string, message: string): void {
   errors.push(Object.freeze({ field, message }));
 }
 
+function exactKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string,
+  errors: FieldError[],
+): void {
+  for (const key of Object.keys(record)) {
+    if (!allowed.includes(key)) {
+      const field = path ? `${path}.${key}` : key;
+      addError(errors, field, "expected no extra field");
+    }
+  }
+}
+
 function shoelaceArea(points: readonly (readonly [number, number])[]): number {
   let sum = 0;
   const n = points.length;
@@ -148,10 +162,13 @@ function segmentsIntersect(
   return false;
 }
 
-function isAxisAlignedRectangle(
-  points: readonly (readonly [number, number])[],
-): boolean {
-  if (points.length !== 4) return false;
+function getBounds(points: readonly (readonly [number, number])[]): {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  extent: number;
+} {
   let minX = Infinity,
     maxX = -Infinity,
     minZ = Infinity,
@@ -162,25 +179,43 @@ function isAxisAlignedRectangle(
     minZ = Math.min(minZ, z);
     maxZ = Math.max(maxZ, z);
   }
-  if (!(maxX > minX && maxZ > minZ)) return false;
-  const corners: [number, number][] = [
-    [minX, minZ],
-    [maxX, minZ],
-    [maxX, maxZ],
-    [minX, maxZ],
+  const extent = Math.max(maxX - minX, maxZ - minZ);
+  return { minX, maxX, minZ, maxZ, extent };
+}
+
+function isAxisAlignedRectangle(
+  points: readonly (readonly [number, number])[],
+  bounds?: ReturnType<typeof getBounds>,
+): boolean {
+  if (points.length !== 4) return false;
+  const b = bounds ?? getBounds(points);
+  if (!(b.maxX > b.minX && b.maxZ > b.minZ)) return false;
+  // No repeated closing vertex already checked via duplicate, but ensure first != last
+  // Only four unique corners in CW or CCW order, no bow-tie (already checked), no rotated
+  const cornersCCW: [number, number][] = [
+    [b.minX, b.minZ],
+    [b.maxX, b.minZ],
+    [b.maxX, b.maxZ],
+    [b.minX, b.maxZ],
   ];
-  const sort = (a: readonly [number, number], b: readonly [number, number]) =>
-    a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1];
-  const sortedPoints = [...points].sort(sort);
-  const sortedCorners = [...corners].sort(sort);
-  for (let i = 0; i < 4; i += 1) {
-    if (
-      sortedPoints[i]![0] !== sortedCorners[i]![0] ||
-      sortedPoints[i]![1] !== sortedCorners[i]![1]
-    )
-      return false;
-  }
-  return true;
+  const cornersCW = [...cornersCCW].reverse();
+  // Check rotational equality for both directions (allow any starting offset)
+  const matches = (expected: [number, number][]): boolean => {
+    for (let offset = 0; offset < 4; offset += 1) {
+      let ok = true;
+      for (let i = 0; i < 4; i += 1) {
+        const p = points[i]!;
+        const e = expected[(offset + i) % 4]!;
+        if (p[0] !== e[0] || p[1] !== e[1]) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return true;
+    }
+    return false;
+  };
+  return matches(cornersCCW) || matches(cornersCW);
 }
 
 function validatePolygon(
@@ -240,23 +275,26 @@ function validatePolygon(
     }
   }
 
-  // Zero-area (true zero-area via shoelace)
+  // Zero-area with scale-aware tolerance (covers large and near-collinear)
+  const bounds = getBounds(result);
   const area = shoelaceArea(result);
-  if (Math.abs(area) < 1e-12) {
+  const tolerance =
+    bounds.extent * bounds.extent * Number.EPSILON * result.length * 4;
+  const effectiveTolerance = Math.max(tolerance, Number.EPSILON * 8);
+  if (Math.abs(area) <= effectiveTolerance) {
     addError(errors, field, "polygon must have non-zero area");
   }
 
-  // Self-intersections (including bow-tie)
+  // Self-intersections (including bow-tie) – use labeled break, no i=n hack
   const n = result.length;
-  for (let i = 0; i < n; i += 1) {
+  let selfIntersected = false;
+  outer: for (let i = 0; i < n; i += 1) {
     const p1 = result[i]!;
     const p2 = result[(i + 1) % n]!;
     for (let j = i + 1; j < n; j += 1) {
       const q1 = result[j]!;
       const q2 = result[(j + 1) % n]!;
-      // Skip adjacent edges and shared vertices
       if (i === j || (i + 1) % n === j || i === (j + 1) % n) continue;
-      // Skip if they share a vertex exactly (duplicate already reported, but avoid false positive)
       if (
         (p1[0] === q1[0] && p1[1] === q1[1]) ||
         (p1[0] === q2[0] && p1[1] === q2[1]) ||
@@ -266,17 +304,17 @@ function validatePolygon(
         continue;
       if (segmentsIntersect(p1, p2, q1, q2)) {
         addError(errors, field, "polygon self-intersects");
-        // Break after first detection to keep deterministic single error, but could continue
-        i = n; // outer break
-        break;
+        selfIntersected = true;
+        break outer;
       }
     }
   }
+  void selfIntersected;
 
   if (errors.some((e) => e.field.startsWith(field))) return null;
 
-  // Preserve core contract: only axis-aligned rectangles are representable as AABB
-  if (!isAxisAlignedRectangle(result)) {
+  // Preserve core contract: only four unique axis-aligned corners in CW/CCW order
+  if (!isAxisAlignedRectangle(result, bounds)) {
     addError(
       errors,
       field,
@@ -299,6 +337,7 @@ function validateGate(
     return null;
   }
   const record = gate as Record<string, unknown>;
+  exactKeys(record, ["position", "orientation"], field, errors);
   const position = record.position;
   if (!vec3Finite(position)) {
     addError(errors, `${field}.position`, "expected finite [x, y, z]");
@@ -376,6 +415,7 @@ function validateTargetInput(
     return null;
   }
   const record = target as Record<string, unknown>;
+  exactKeys(record, ["id", "kind", "value", "hard"], field, errors);
   const id = record.id;
   const kind = record.kind;
   const value = record.value;
@@ -441,6 +481,23 @@ export function validateDirectedInput(input: unknown): readonly FieldError[] {
     return Object.freeze([...errors]);
   }
   const record = input as Record<string, unknown>;
+  exactKeys(
+    record,
+    [
+      "seed",
+      "gates",
+      "footprint",
+      "terrainProfileId",
+      "terrain",
+      "requiredElements",
+      "requiresStall",
+      "hardTargets",
+      "softTargets",
+      "pinnedElementIds",
+    ],
+    "",
+    errors,
+  );
 
   // seed
   const seed = record.seed;
@@ -479,6 +536,7 @@ export function validateDirectedInput(input: unknown): readonly FieldError[] {
     addError(errors, "footprint", "expected object");
   } else {
     const fp = footprint as Record<string, unknown>;
+    exactKeys(fp, ["polygon", "maxHeightM", "minHeightM"], "footprint", errors);
     if (fp.polygon !== undefined) {
       validatePolygon(fp.polygon, "footprint.polygon", errors);
     } else {
@@ -528,6 +586,23 @@ export function validateDirectedInput(input: unknown): readonly FieldError[] {
           `requiredElements[${i}]`,
           `unknown element kind ${String(kind)}`,
         );
+      }
+    }
+    const seenKinds = new Set<string>();
+    for (let i = 0; i < requiredElements.length; i += 1) {
+      const kind = requiredElements[i] as unknown;
+      if (
+        typeof kind === "string" &&
+        (ELEMENT_KINDS as readonly string[]).includes(kind)
+      ) {
+        if (seenKinds.has(kind)) {
+          addError(
+            errors,
+            `requiredElements[${i}]`,
+            `duplicate required element ${kind}`,
+          );
+        }
+        seenKinds.add(kind);
       }
     }
   }

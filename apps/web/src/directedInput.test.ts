@@ -403,4 +403,125 @@ describe("directed input – DesignIntent mapping", () => {
     expect(errors).toHaveLength(0);
     expect(intent!.pinnedElementIds).toEqual(["stall-001", "station-000"]);
   });
+
+  it("rejects extra fields with deterministic exact-key errors", () => {
+    const withExtraInput = {
+      ...validInput,
+      extra: 1,
+    } as unknown as DirectedEditorInput;
+    expect(
+      validateDirectedInput(withExtraInput).some((e) =>
+        e.field.includes("extra"),
+      ),
+    ).toBe(true);
+    const withGateExtra = {
+      ...validInput,
+      gates: [
+        {
+          position: [0, 0, 0],
+          extra: 1,
+        } as unknown as DirectedEditorInput["gates"][number],
+      ],
+    };
+    expect(
+      validateDirectedInput(withGateExtra).some(
+        (e) => e.field === "gates[0].extra",
+      ),
+    ).toBe(true);
+    const withFootprintExtra = {
+      ...validInput,
+      footprint: {
+        ...validInput.footprint,
+        extra: 1,
+      } as unknown as DirectedEditorInput["footprint"],
+    };
+    expect(
+      validateDirectedInput(withFootprintExtra).some(
+        (e) => e.field === "footprint.extra",
+      ),
+    ).toBe(true);
+    const withTargetExtra = {
+      ...validInput,
+      hardTargets: [
+        {
+          id: "t",
+          kind: "end-y",
+          value: 1,
+          extra: 1,
+        } as unknown as DirectedEditorInput["hardTargets"][number],
+      ],
+    };
+    expect(
+      validateDirectedInput(withTargetExtra).some(
+        (e) => e.field === "hardTargets[0].extra",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects duplicate requiredElements field-specifically", () => {
+    const dup = {
+      ...validInput,
+      requiredElements: [
+        "station",
+        "station",
+      ] as unknown as DirectedEditorInput["requiredElements"],
+    };
+    expect(
+      validateDirectedInput(dup).some((e) => e.field === "requiredElements[1]"),
+    ).toBe(true);
+    expect(
+      validateDirectedInput(dup).some((e) => e.message.includes("duplicate")),
+    ).toBe(true);
+    expect(createDirectedDesignIntent(dup).intent).toBeNull();
+  });
+
+  it("handles large-coordinate degenerate and near-degenerate polygons", () => {
+    const large = 1e7;
+    const degenerateLarge = {
+      ...validInput,
+      footprint: {
+        polygon: [
+          [large, large],
+          [large + 10, large],
+          [large + 20, large],
+        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
+        maxHeightM: 10,
+      },
+    };
+    expect(
+      validateDirectedInput(degenerateLarge).some((e) =>
+        e.field.includes("polygon"),
+      ),
+    ).toBe(true);
+    const nearCollinear = {
+      ...validInput,
+      footprint: {
+        polygon: [
+          [large, large],
+          [large + 50, large + 50.0000001],
+          [large + 100, large + 100.0000002],
+        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
+        maxHeightM: 10,
+      },
+    };
+    expect(
+      validateDirectedInput(nearCollinear).some((e) =>
+        e.field.includes("polygon"),
+      ),
+    ).toBe(true);
+    // Valid large rectangle should still pass
+    const validLarge = {
+      ...validInput,
+      footprint: {
+        polygon: [
+          [large, large],
+          [large + 100, large],
+          [large + 100, large + 80],
+          [large, large + 80],
+        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
+        maxHeightM: 10,
+      },
+    };
+    expect(validateDirectedInput(validLarge)).toHaveLength(0);
+  });
 });
