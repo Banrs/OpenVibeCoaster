@@ -3,7 +3,6 @@ import type {
   EngineeringWorkerRequest,
   EngineeringWorkerResponse,
   EngineeringWorkerSuccess,
-  EngineeringWorkerTimings,
 } from "./protocol";
 import {
   validateEngineeringWorkerRequest,
@@ -92,46 +91,6 @@ export class EngineeringWorkerClient {
     return w;
   }
 
-  private recordTimingMeasures(timings: EngineeringWorkerTimings): void {
-    const clientNow =
-      typeof performance !== "undefined" &&
-      typeof performance.now === "function"
-        ? performance.now()
-        : Date.now();
-    const clientOrigin =
-      typeof performance !== "undefined" &&
-      typeof performance.timeOrigin === "number" &&
-      Number.isFinite(performance.timeOrigin)
-        ? performance.timeOrigin
-        : Date.now() - clientNow;
-    const clientEpoch = clientOrigin + clientNow;
-    const raw = clientEpoch - timings.workerSendEpochMs;
-    // Clamp only tiny negative skew within documented tolerance; larger
-    // future timestamps are handled as validation errors by the caller.
-    let transferMs: number;
-    if (raw < 0 && raw >= -CLOCK_SKEW_TOLERANCE_MS) transferMs = 0;
-    else transferMs = raw;
-    if (
-      typeof performance !== "undefined" &&
-      typeof performance.measure === "function"
-    ) {
-      try {
-        performance.measure("ovc:simulation", {
-          duration: timings.simulationMs,
-        });
-      } catch {
-        // ignore measure errors — success must still settle
-      }
-      try {
-        performance.measure("ovc:worker-transfer", {
-          duration: transferMs,
-        });
-      } catch {
-        // ignore — non-fatal to engineering success
-      }
-    }
-  }
-
   private getClientEpochMs(): number {
     const now =
       typeof performance !== "undefined" &&
@@ -147,8 +106,31 @@ export class EngineeringWorkerClient {
     return origin + now;
   }
 
+  private recordTimingMeasures(simulationMs: number, transferMs: number): void {
+    if (
+      typeof performance !== "undefined" &&
+      typeof performance.measure === "function"
+    ) {
+      try {
+        performance.measure("ovc:simulation", {
+          duration: simulationMs,
+        });
+      } catch {
+        // ignore measure errors — success must still settle
+      }
+      try {
+        performance.measure("ovc:worker-transfer", {
+          duration: transferMs,
+        });
+      } catch {
+        // ignore — non-fatal to engineering success
+      }
+    }
+  }
+
   private handleMessage(ev: MessageEvent): void {
     try {
+      const receiptEpochMs = this.getClientEpochMs();
       const data = (ev as MessageEvent).data ?? (ev as unknown);
       const response = data as EngineeringWorkerResponse;
       if (
@@ -173,8 +155,7 @@ export class EngineeringWorkerClient {
       }
       this.pending.delete(response.requestId);
       if (validated.type === "success") {
-        const clientEpoch = this.getClientEpochMs();
-        const raw = clientEpoch - validated.timings.workerSendEpochMs;
+        const raw = receiptEpochMs - validated.timings.workerSendEpochMs;
         if (raw < -CLOCK_SKEW_TOLERANCE_MS) {
           const err = Object.assign(
             new Error(
@@ -189,8 +170,9 @@ export class EngineeringWorkerClient {
           entry.reject(err);
           return;
         }
+        const transferMs = raw < 0 ? 0 : raw;
         try {
-          this.recordTimingMeasures(validated.timings);
+          this.recordTimingMeasures(validated.timings.simulationMs, transferMs);
         } catch {
           // never throw from timing
         }

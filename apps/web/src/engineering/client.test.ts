@@ -803,4 +803,40 @@ describe("EngineeringWorkerClient User Timing", () => {
       /timings/,
     );
   });
+
+  it("transfer duration is defined by entry receipt epoch, not later clock", async () => {
+    const client = new EngineeringWorkerClient(factory);
+    const measureSpy = vi
+      .spyOn(performance, "measure")
+      .mockImplementation(() => ({}) as PerformanceMeasure);
+    const clientOrigin = 10000;
+    Object.defineProperty(performance, "timeOrigin", {
+      value: clientOrigin,
+      configurable: true,
+    });
+    const workerEpoch = clientOrigin + 900; // receipt raw 100, late raw would be 4100
+    const success = makeSuccess("receipt-boundary", {
+      simulationMs: 7,
+      workerSendEpochMs: workerEpoch,
+    });
+    const nowMock = vi.spyOn(performance, "now");
+    let call = 0;
+    nowMock.mockImplementation(() => {
+      call++;
+      if (call === 1) return 1000; // receipt entry
+      return 5000; // any later sampling would be much later
+    });
+    const p = client.generate("receipt-boundary", validIntent);
+    workers[0]!.emitMessage(success);
+    await p;
+    const transferCall = measureSpy.mock.calls.find(
+      (c) => c[0] === "ovc:worker-transfer",
+    );
+    expect(transferCall).toBeDefined();
+    expect((transferCall![1] as { duration: number }).duration).toBe(100);
+    expect((transferCall![1] as { duration: number }).duration).not.toBe(4100);
+    // Exactly one epoch sample should have been taken for this delivery
+    expect(call).toBe(1);
+    expect(measureSpy).toHaveBeenCalledTimes(2);
+  });
 });
