@@ -6,15 +6,16 @@ import {
   createExperienceController,
   type AuthoritativeExperienceResult,
 } from "./experienceController.js";
+import { generateCoaster } from "@openvibecoaster/generator";
 import {
+  compileCoasterFile,
   compileTrack,
   QuinticScalarSpan,
   SeventhOrderHermiteSpan,
   vec3,
-  createCoasterFileV1,
   createDesignIntentV1,
-  serializeCoasterFileV1,
   deserializeCoasterFileV1,
+  serializeCoasterFileV1,
 } from "@openvibecoaster/core";
 
 function makeTrack(): CompiledTrackData {
@@ -58,53 +59,19 @@ function makeFile(id = "station-000"): CoasterFileV1 {
     constraints: [],
     pinnedElementIds: [],
   });
-  const span = new SeventhOrderHermiteSpan({
-    p0: vec3(0, 0, 0),
-    d10: vec3(1, 0, 0),
-    d20: vec3(0, 0, 0),
-    d30: vec3(0, 0, 0),
-    p1: vec3(10, 0, 0),
-    d11: vec3(1, 0, 0),
-    d21: vec3(0, 0, 0),
-    d31: vec3(0, 0, 0),
-  });
-  const bank = new QuinticScalarSpan({
-    v0: 0,
-    d10: 0,
-    d20: 0,
-    v1: 0,
-    d11: 0,
-    d21: 0,
-  });
-  const track = compileTrack([{ id, span, bank, zones: [] }]);
-  // Use track checksum and valid solved spans
-  return createCoasterFileV1({
-    name: "test",
-    intent,
-    solvedSpans: [
-      {
-        id,
-        kind,
-        positionCoefficients: span.coefficients,
-        rollCoefficients: bank.coefficients,
-        length: 10,
-      },
-    ],
-    seed: 7,
-    generatorVersion: "test",
-    profileVersion: "test",
-    researchSnapshotIds: [],
-    compiledDataChecksum: track.checksum,
-  });
+  const result = generateCoaster(intent, { name: "test" });
+  return result.file;
 }
 
 function makeResult(
   hash = "same",
   fileId = "station-000",
 ): AuthoritativeExperienceResult {
+  const file = makeFile(fileId);
+  const track = compileCoasterFile(file).track;
   return {
-    file: makeFile(fileId),
-    track: makeTrack(),
+    file,
+    track,
     timeline: new RideTimeline({
       sampleRateHz: 10,
       timeSeconds: new Float64Array([0, 1]),
@@ -112,7 +79,7 @@ function makeResult(
       speedMps: new Float64Array([0, 10]),
     }),
     diagnostics: [],
-    spanHashes: { "span-000": hash },
+    spanHashes: { [fileId]: hash, a: hash },
   };
 }
 
@@ -266,12 +233,10 @@ describe("ExperienceController – injection and epochs", () => {
     expect(state.result!.clearanceM![0]).toBe(1);
     // mutating caller result after set should not affect stored
     (result as unknown as Record<string, unknown>).spanHashes = {
-      "span-000": "mutated",
+      a: "mutated",
     };
     expect(
-      (ctrl.getState().result!.spanHashes as Record<string, string>)[
-        "span-000"
-      ],
+      (ctrl.getState().result!.spanHashes as Record<string, string>)["a"],
     ).toBe("a");
   });
 
@@ -568,40 +533,60 @@ describe("ExperienceController – injection and epochs", () => {
     ctrl.setResult(withDiag, id);
     const beforeIntentId = ctrl.getState().result!.file.intent.elements[0]!.id;
     const beforeDiagMessage = ctrl.getState().result!.diagnostics[0]!.message;
-    // Mutate caller objects
-    (
-      original.file.intent.elements[0] as unknown as Record<string, unknown>
-    ).id = "mutated";
-    (
-      original.file.intent.elements[0] as unknown as Record<string, unknown>
-    ).parameters = { mutated: true };
-    (original.file.intent.gates as unknown as unknown[]).push({
-      id: "evil",
-      position: [0, 0, 0],
-    } as never);
-    (original.file.intent.targets as unknown as unknown[]).push({
-      id: "evil",
-      kind: "end-y",
-      target: 999,
-      hard: true,
-    } as never);
-    (original.file.intent.constraints as unknown as unknown[]).push({
-      id: "evil",
-      kind: "x",
-      hard: true,
-    } as never);
-    (original.file.intent.pinnedElementIds as unknown as unknown[]).push(
-      "evil",
-    );
-    (
-      original.file.solvedSpans[0] as unknown as Record<string, unknown>
-    ).positionCoefficients = [[999]] as never;
-    (diag as unknown as Record<string, unknown>).message = "mutated";
-    (
-      (diag.location as unknown as Record<string, unknown>)
-        .position as unknown as number[]
-    )[0] = 999;
-    (diag.relatedIds as unknown as string[]).push("evil");
+    // Mutate caller objects – tolerate frozen fixtures (generateCoaster deeply freezes)
+    try {
+      (
+        original.file.intent.elements[0] as unknown as Record<string, unknown>
+      ).id = "mutated";
+    } catch {}
+    try {
+      (
+        original.file.intent.elements[0] as unknown as Record<string, unknown>
+      ).parameters = { mutated: true };
+    } catch {}
+    try {
+      (original.file.intent.gates as unknown as unknown[]).push({
+        id: "evil",
+        position: [0, 0, 0],
+      } as never);
+    } catch {}
+    try {
+      (original.file.intent.targets as unknown as unknown[]).push({
+        id: "evil",
+        kind: "end-y",
+        target: 999,
+        hard: true,
+      } as never);
+    } catch {}
+    try {
+      (original.file.intent.constraints as unknown as unknown[]).push({
+        id: "evil",
+        kind: "x",
+        hard: true,
+      } as never);
+    } catch {}
+    try {
+      (original.file.intent.pinnedElementIds as unknown as unknown[]).push(
+        "evil",
+      );
+    } catch {}
+    try {
+      (
+        original.file.solvedSpans[0] as unknown as Record<string, unknown>
+      ).positionCoefficients = [[999]] as never;
+    } catch {}
+    try {
+      (diag as unknown as Record<string, unknown>).message = "mutated";
+    } catch {}
+    try {
+      (
+        (diag.location as unknown as Record<string, unknown>)
+          .position as unknown as number[]
+      )[0] = 999;
+    } catch {}
+    try {
+      (diag.relatedIds as unknown as string[]).push("evil");
+    } catch {}
     // Verify controller state unchanged
     expect(ctrl.getState().result!.file.intent.elements[0]!.id).toBe(
       beforeIntentId,
@@ -683,9 +668,12 @@ describe("ExperienceController – injection and epochs", () => {
     expect(ctrl.setResult(badResult, id)).toBe(false);
     expect(ctrl.getState().status).not.toBe("ready");
     expect(ctrl.getState().status).toBe("error");
-    // Valid file should succeed
+    // Valid file should succeed – use matching track for valid file
+    const validTrack = compileCoasterFile(valid).track;
     const id2 = ctrl.requestGenerate({ mode: "insta", seed: 2 });
-    expect(ctrl.setResult({ ...badResult, file: valid }, id2)).toBe(true);
+    expect(
+      ctrl.setResult({ ...badResult, file: valid, track: validTrack }, id2),
+    ).toBe(true);
     expect(ctrl.getState().status).toBe("ready");
   });
   it("edit then pin then localRegenerate payload is canonical, preserves coefficients/checksum, and exposes intent", () => {
@@ -696,9 +684,10 @@ describe("ExperienceController – injection and epochs", () => {
       onCompileLoad: vi.fn(),
     });
     const baseFile = makeFile("station-000");
+    const baseTrack = compileCoasterFile(baseFile).track;
     const baseResult = {
       file: baseFile,
-      track: makeTrack(),
+      track: baseTrack,
       timeline: new RideTimeline({
         sampleRateHz: 10,
         timeSeconds: new Float64Array([0, 1]),
@@ -712,75 +701,26 @@ describe("ExperienceController – injection and epochs", () => {
     ctrl.setResult(baseResult, id);
     expect(ctrl.editElementParameter("station-000", "length", 99)).toBe(true);
     const twoFile = (() => {
-      const kind1 = "station";
-      const kind2 = "stall";
-      const id1 = "station-000";
-      const id2 = "stall-001";
       const intent = createDesignIntentV1({
         generatorVersion: "test",
         seed: 7,
         mode: "directed",
         family: "steel-sitdown-lsm-v1",
         elements: [
-          { id: id1, kind: kind1, type: kind1 },
-          { id: id2, kind: kind2, type: kind2 },
+          { id: "station-000", kind: "station", type: "station" },
+          { id: "stall-001", kind: "stall", type: "stall" },
         ],
         gates: [],
         targets: [],
         constraints: [],
         pinnedElementIds: [],
       });
-      const span1 = new SeventhOrderHermiteSpan({
-        p0: vec3(0, 0, 0),
-        d10: vec3(1, 0, 0),
-        d20: vec3(0, 0, 0),
-        d30: vec3(0, 0, 0),
-        p1: vec3(10, 0, 0),
-        d11: vec3(1, 0, 0),
-        d21: vec3(0, 0, 0),
-        d31: vec3(0, 0, 0),
-      });
-      const bank = new QuinticScalarSpan({
-        v0: 0,
-        d10: 0,
-        d20: 0,
-        v1: 0,
-        d11: 0,
-        d21: 0,
-      });
-      const track2 = compileTrack([
-        { id: id1, span: span1, bank, zones: [] },
-        { id: id2, span: span1, bank, zones: [] },
-      ]);
-      return createCoasterFileV1({
-        name: "test2",
-        intent,
-        solvedSpans: [
-          {
-            id: id1,
-            kind: kind1,
-            positionCoefficients: span1.coefficients,
-            rollCoefficients: bank.coefficients,
-            length: 10,
-          },
-          {
-            id: id2,
-            kind: kind2,
-            positionCoefficients: span1.coefficients,
-            rollCoefficients: bank.coefficients,
-            length: 10,
-          },
-        ],
-        seed: 7,
-        generatorVersion: "test",
-        profileVersion: "test",
-        researchSnapshotIds: [],
-        compiledDataChecksum: track2.checksum,
-      });
+      return generateCoaster(intent, { name: "test2" }).file;
     })();
+    const twoTrack = compileCoasterFile(twoFile).track;
     const twoResult = {
       file: twoFile,
-      track: makeTrack(),
+      track: twoTrack,
       timeline: new RideTimeline({
         sampleRateHz: 10,
         timeSeconds: new Float64Array([0, 1]),
@@ -855,5 +795,172 @@ describe("ExperienceController – injection and epochs", () => {
         .draftFile!.intent.elements.find((e) => e.id === "station-000")!
         .parameters,
     ).toHaveProperty("length", 123);
+  });
+  it("selecting and local-regenerating works from canonical intent without relying on design", () => {
+    const ctrl = createExperienceController({
+      onGenerate: () => {},
+      onLocalRegenerate: () => {},
+      onCompileLoad: () => {},
+    });
+    const baseFile = makeFile("station-000");
+    const baseTrack = compileCoasterFile(baseFile).track;
+    const baseResult = {
+      file: baseFile,
+      track: baseTrack,
+      timeline: new RideTimeline({
+        sampleRateHz: 10,
+        timeSeconds: new Float64Array([0, 1]),
+        headDistanceM: new Float64Array([0, 10]),
+        speedMps: new Float64Array([5, 6]),
+      }),
+      diagnostics: [],
+      spanHashes: { a: "hash-a" },
+    } as unknown as AuthoritativeExperienceResult;
+    const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
+    ctrl.setResult(baseResult, id);
+    expect(ctrl.selectElement("station-000")).toBe(true);
+    expect(ctrl.getState().selectedElementId).toBe("station-000");
+    const onLocal = vi.fn();
+    const ctrl2 = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: onLocal,
+      onCompileLoad: vi.fn(),
+    });
+    const id2 = ctrl2.requestGenerate({ mode: "insta", seed: 2 });
+    ctrl2.setResult(baseResult, id2);
+    ctrl2.selectElement("station-000");
+    const regId = ctrl2.requestLocalRegenerate();
+    expect(regId).not.toBeNull();
+    expect(onLocal).toHaveBeenCalled();
+    const payload = (
+      onLocal.mock.calls[0]![0] as unknown as { file: CoasterFileV1 }
+    ).file;
+    expect(payload.intent.elements.some((e) => e.id === "station-000")).toBe(
+      true,
+    );
+  });
+
+  it("mutating nested coefficient arrays from edited/pinned draft cannot mutate accepted result", () => {
+    const ctrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const baseFile = makeFile("station-000");
+    const baseTrack = compileCoasterFile(baseFile).track;
+    const baseResult = {
+      file: baseFile,
+      track: baseTrack,
+      timeline: new RideTimeline({
+        sampleRateHz: 10,
+        timeSeconds: new Float64Array([0, 1]),
+        headDistanceM: new Float64Array([0, 10]),
+        speedMps: new Float64Array([5, 6]),
+      }),
+      diagnostics: [],
+      spanHashes: { a: "hash-a" },
+    } as unknown as AuthoritativeExperienceResult;
+    const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
+    ctrl.setResult(baseResult, id);
+    const beforeCoeff =
+      ctrl.getState().result!.file.solvedSpans[0]!.positionCoefficients[0]![0];
+    ctrl.selectElement("station-000");
+    ctrl.editElementParameter("station-000", "length", 99);
+    const draft1 = ctrl.getState().draftFile!;
+    (
+      draft1.solvedSpans[0] as unknown as { positionCoefficients: number[][] }
+    ).positionCoefficients[0]![0] = 9999;
+    (
+      draft1.solvedSpans[0] as unknown as { rollCoefficients: number[] }
+    ).rollCoefficients[0] = 9999;
+    expect(
+      ctrl.getState().result!.file.solvedSpans[0]!.positionCoefficients[0]![0],
+    ).toBe(beforeCoeff);
+    expect(
+      ctrl.getState().result!.file.solvedSpans[0]!.positionCoefficients[0]![0],
+    ).not.toBe(9999);
+    const draftBefore =
+      ctrl.getState().draftFile!.solvedSpans[0]!.positionCoefficients[0]![0];
+    (
+      ctrl.getState().result!.file.solvedSpans[0] as unknown as {
+        positionCoefficients: number[][];
+      }
+    ).positionCoefficients[0]![0] = 8888;
+    expect(
+      ctrl.getState().draftFile!.solvedSpans[0]!.positionCoefficients[0]![0],
+    ).toBe(draftBefore);
+  });
+
+  it("bad file checksum and file/track checksum disagreement are both rejected by setResult, preserve last-good", () => {
+    const ctrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const goodFile = makeFile("station-000");
+    const goodTrack = compileCoasterFile(goodFile).track;
+    const goodResult = {
+      file: goodFile,
+      track: goodTrack,
+      timeline: new RideTimeline({
+        sampleRateHz: 10,
+        timeSeconds: new Float64Array([0, 1]),
+        headDistanceM: new Float64Array([0, 10]),
+        speedMps: new Float64Array([5, 6]),
+      }),
+      diagnostics: [],
+      spanHashes: { a: "hash-a" },
+    } as unknown as AuthoritativeExperienceResult;
+    const id1 = ctrl.requestGenerate({ mode: "insta", seed: 1 });
+    expect(ctrl.setResult(goodResult, id1)).toBe(true);
+    expect(ctrl.getState().status).toBe("ready");
+    const lastGood = ctrl.getState().result;
+    const badFile = {
+      ...goodFile,
+      compiledDataChecksum: "00000000",
+    } as unknown as CoasterFileV1;
+    const badResult = {
+      ...goodResult,
+      file: badFile,
+    } as unknown as AuthoritativeExperienceResult;
+    const id2 = ctrl.requestGenerate({ mode: "insta", seed: 2 });
+    expect(ctrl.setResult(badResult, id2)).toBe(false);
+    expect(ctrl.getState().status).toBe("error");
+    expect(ctrl.getState().result).toBe(lastGood);
+    expect(ctrl.getState().result!.file.compiledDataChecksum).toBe(
+      goodFile.compiledDataChecksum,
+    );
+    const otherTrack = compileTrack([
+      {
+        id: "a",
+        span: new SeventhOrderHermiteSpan({
+          p0: vec3(0, 0, 0),
+          d10: vec3(2, 0, 0),
+          d20: vec3(0, 0, 0),
+          d30: vec3(0, 0, 0),
+          p1: vec3(20, 0, 0),
+          d11: vec3(2, 0, 0),
+          d21: vec3(0, 0, 0),
+          d31: vec3(0, 0, 0),
+        }),
+        bank: new QuinticScalarSpan({
+          v0: 0,
+          d10: 0,
+          d20: 0,
+          v1: 0,
+          d11: 0,
+          d21: 0,
+        }),
+        zones: [],
+      },
+    ]);
+    const mismatchResult = {
+      ...goodResult,
+      track: otherTrack,
+    } as unknown as AuthoritativeExperienceResult;
+    const id3 = ctrl.requestGenerate({ mode: "insta", seed: 3 });
+    expect(ctrl.setResult(mismatchResult, id3)).toBe(false);
+    expect(ctrl.getState().status).toBe("error");
+    expect(ctrl.getState().result).toBe(lastGood);
   });
 });

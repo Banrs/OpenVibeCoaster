@@ -5,7 +5,7 @@ import {
   createDefaultSimulatorConfig,
 } from "@openvibecoaster/simulator";
 import { compileTrack } from "@openvibecoaster/core";
-import type { CompiledTrackData } from "@openvibecoaster/core";
+import type { CompiledTrackData, Diagnostic } from "@openvibecoaster/core";
 import {
   getGraphSelection,
   getMetricColorData,
@@ -262,7 +262,7 @@ describe("telemetry – graph sync and seam", () => {
     ];
     const enabled = getSeamInspection(track, diagnostics, true);
     expect(enabled.boundaries).toEqual(Array.from(track.elementBoundaries));
-    expect(enabled.seamDiagnostics).toEqual(diagnostics);
+    expect(enabled.seamDiagnostics).toEqual([diagnostics[0]]);
     // toggle off
     const off = getSeamInspection(track, diagnostics, false);
     expect(off.seamDiagnostics).toEqual([]);
@@ -377,5 +377,51 @@ describe("telemetry – graph sync and seam", () => {
     const second = getTimelineSeries(timeline, "speed", track);
     expect(series.values).toEqual(second.values);
     expect(Object.isFrozen(series)).toBe(true);
+  });
+  it("seam inspection includes in-window and explicit seam evidence, excludes far diagnostics, preserves originals", () => {
+    const track = straightTrack();
+    const distances = track.distances;
+    const boundaries = Array.from(track.elementBoundaries);
+    const firstBoundaryDist = distances[boundaries[0]!] ?? 0;
+    // Use first boundary for in-window
+    const inWindow: Diagnostic = {
+      code: "OTHER",
+      severity: "info",
+      message: "near seam",
+      location: { s: firstBoundaryDist + 2 },
+    } as unknown as Diagnostic;
+    const far: Diagnostic = {
+      code: "OTHER",
+      severity: "info",
+      message: "far away",
+      location: { s: firstBoundaryDist + 20 },
+    } as unknown as Diagnostic;
+    const explicitSeam: Diagnostic = {
+      code: "SEAM_GAP",
+      severity: "error",
+      message: "seam continuity issue",
+    } as unknown as Diagnostic;
+    const explicitMsg: Diagnostic = {
+      code: "OTHER",
+      severity: "warning",
+      message: "continuity break at seam",
+    } as unknown as Diagnostic;
+    const diagnostics = [inWindow, far, explicitSeam, explicitMsg];
+    const enabled = getSeamInspection(track, diagnostics, true);
+    expect(enabled.boundaries).toEqual(boundaries);
+    expect(enabled.seamDiagnostics).toContain(inWindow);
+    expect(enabled.seamDiagnostics).toContain(explicitSeam);
+    expect(enabled.seamDiagnostics).toContain(explicitMsg);
+    expect(enabled.seamDiagnostics).not.toContain(far);
+    // Preserves original objects/values (not altered)
+    expect(enabled.seamDiagnostics[0]).toBe(inWindow);
+    expect(enabled.seamDiagnostics[0]!.location!.s).toBe(firstBoundaryDist + 2);
+    // Disabled -> empty
+    const disabled = getSeamInspection(track, diagnostics, false);
+    expect(disabled.seamDiagnostics).toEqual([]);
+    expect(disabled.boundaries).toEqual([]);
+    // No track -> empty
+    const noTrack = getSeamInspection(null, diagnostics, true);
+    expect(noTrack.seamDiagnostics).toEqual([]);
   });
 });

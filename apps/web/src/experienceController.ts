@@ -1,9 +1,6 @@
-import type {
-  CoasterFileV1,
-  CompiledTrackData,
-  Diagnostic,
-} from "@openvibecoaster/core";
+import type { CoasterFileV1, Diagnostic } from "@openvibecoaster/core";
 import {
+  CompiledTrackData,
   compileCoasterFile,
   createCoasterFileV1,
   createDesignIntentV1,
@@ -153,16 +150,18 @@ const rebuildFileWithIntent = (
   baseFile: CoasterFileV1,
   newIntent: DesignIntentV1,
 ): CoasterFileV1 =>
-  createCoasterFileV1({
-    name: baseFile.name,
-    intent: newIntent,
-    solvedSpans: [...baseFile.solvedSpans],
-    seed: baseFile.seed,
-    generatorVersion: baseFile.generatorVersion,
-    profileVersion: baseFile.profileVersion,
-    researchSnapshotIds: [...baseFile.researchSnapshotIds],
-    compiledDataChecksum: baseFile.compiledDataChecksum,
-  });
+  cloneFile(
+    createCoasterFileV1({
+      name: baseFile.name,
+      intent: newIntent,
+      solvedSpans: [...baseFile.solvedSpans],
+      seed: baseFile.seed,
+      generatorVersion: baseFile.generatorVersion,
+      profileVersion: baseFile.profileVersion,
+      researchSnapshotIds: [...baseFile.researchSnapshotIds],
+      compiledDataChecksum: baseFile.compiledDataChecksum,
+    }),
+  );
 
 const copyDiagnostics = (diags: readonly Diagnostic[]): readonly Diagnostic[] =>
   Object.freeze(
@@ -194,19 +193,13 @@ const validateResult = (
   if (!result || typeof result !== "object") return "result must be an object";
   if (!result.file || !result.track || !result.timeline)
     return "result must contain file, track, and timeline";
-  // Validate file compiles and checksum matches? At minimum check file has elements
   try {
-    // Use core compilation validation where possible – will throw if invalid
-    // But we don't want to recompile heavy; just ensure file is structurally valid via compile check
-    // The authoritative result's file should be a valid CoasterFileV1; we verify by attempting lightweight checks
+    if (!(result.track instanceof CompiledTrackData)) {
+      return "track must be CompiledTrackData instance";
+    }
     if (
-      !(result.track instanceof Object) ||
-      typeof (result.track as CompiledTrackData).totalLength !== "number"
-    )
-      return "track must be CompiledTrackData";
-    if (
-      !Number.isFinite((result.track as CompiledTrackData).totalLength) ||
-      (result.track as CompiledTrackData).totalLength <= 0
+      !Number.isFinite(result.track.totalLength) ||
+      result.track.totalLength <= 0
     )
       return "track totalLength must be finite positive";
     const timeline = result.timeline;
@@ -246,6 +239,17 @@ const validateResult = (
     if (Object.keys(hashes).length === 0) return "spanHashes must not be empty";
     // Diagnostics must be array
     if (!Array.isArray(result.diagnostics)) return "diagnostics must be array";
+    try {
+      const compiled = compileCoasterFile(result.file);
+      if (
+        compiled.track.checksum.toLowerCase() !==
+        result.track.checksum.toLowerCase()
+      ) {
+        return "file/track checksum mismatch";
+      }
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -361,7 +365,7 @@ export function createExperienceController(
   };
 
   const selectedElementExists = (elementId: string): boolean =>
-    (state.result ?? lastGoodResult)?.file.design.elements.some(
+    (state.result ?? lastGoodResult)?.file.intent.elements.some(
       (element) => element.id === elementId,
     ) ?? false;
 
@@ -509,8 +513,8 @@ export function createExperienceController(
           previousHashes[id] === nextHashes[id],
       );
 
-      // Validate pinned selection still exists
-      const selectedElementId = result.file.design.elements.some(
+      // Validate pinned selection still exists – authoritative intent, not design alias
+      const selectedElementId = result.file.intent.elements.some(
         (element) => element.id === state.selectedElementId,
       )
         ? state.selectedElementId

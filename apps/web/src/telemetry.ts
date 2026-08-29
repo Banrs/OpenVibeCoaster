@@ -500,8 +500,26 @@ export function getSeamInspection(
     });
   }
   const boundaries = Object.freeze(Array.from(track.elementBoundaries));
-  // Return authoritative boundary and all relevant seam evidence without inventing diagnostics
-  const seamDiagnostics = Object.freeze([...diagnostics]);
+  const distances = track.distances;
+  const boundaryDistances = boundaries.map((idx) =>
+    Number.isFinite(distances[idx]!) ? distances[idx]! : Number.NaN,
+  );
+  const seamDiagnostics = Object.freeze(
+    diagnostics.filter((d) => {
+      const codeSeam =
+        typeof d.code === "string" && /SEAM|CONTINUITY/i.test(d.code);
+      const msgSeam =
+        typeof d.message === "string" && /seam|continuity/i.test(d.message);
+      if (codeSeam || msgSeam) return true;
+      if (d.location && Number.isFinite(d.location.s)) {
+        const s = d.location.s!;
+        return boundaryDistances.some(
+          (bd) => Number.isFinite(bd) && Math.abs(s - bd) <= 5,
+        );
+      }
+      return false;
+    }),
+  );
   return Object.freeze({ enabled: true, boundaries, seamDiagnostics });
 }
 

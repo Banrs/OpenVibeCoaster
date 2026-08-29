@@ -523,4 +523,41 @@ describe("directed input – DesignIntent mapping", () => {
     ).toBe(true);
     expect(validateDirectedInput(validInput)).toHaveLength(0);
   });
+
+  it("rejects contradictory hard flags in hardTargets/softTargets", () => {
+    const hardWithFalse = {
+      ...validInput,
+      hardTargets: [
+        {
+          id: "t",
+          kind: "end-y",
+          value: 1,
+          hard: false,
+        } as unknown as DirectedEditorInput["hardTargets"][number],
+      ],
+    };
+    expect(
+      validateDirectedInput(hardWithFalse).some(
+        (e) => e.field === "hardTargets[0].hard",
+      ),
+    ).toBe(true);
+    expect(createDirectedDesignIntent(hardWithFalse).intent).toBeNull();
+    const softWithTrue = {
+      ...validInput,
+      softTargets: [
+        {
+          id: "t",
+          kind: "end-y",
+          value: 1,
+          hard: true,
+        } as unknown as DirectedEditorInput["softTargets"][number],
+      ],
+    };
+    expect(
+      validateDirectedInput(softWithTrue).some(
+        (e) => e.field === "softTargets[0].hard",
+      ),
+    ).toBe(true);
+    expect(createDirectedDesignIntent(softWithTrue).intent).toBeNull();
+  });
 });

@@ -429,11 +429,24 @@ function validateTargetInput(
     return null;
   }
   const hard = record.hard;
-  const hardBoolean =
-    hard === undefined ? prefix === "hardTargets" : Boolean(hard);
-  if (hard !== undefined && typeof hard !== "boolean") {
-    addError(errors, `${field}.hard`, "expected boolean");
-    return null;
+  let hardBoolean: boolean;
+  if (hard === undefined) {
+    hardBoolean = prefix === "hardTargets";
+  } else {
+    if (typeof hard !== "boolean") {
+      addError(errors, `${field}.hard`, "expected boolean");
+      return null;
+    }
+    const expected = prefix === "hardTargets";
+    if (hard !== expected) {
+      addError(
+        errors,
+        `${field}.hard`,
+        `hard must be ${expected} for ${prefix}`,
+      );
+      return null;
+    }
+    hardBoolean = hard;
   }
   // Validate value finiteness field-specific
   if (kind === "end-position" || kind === "end-tangent") {
