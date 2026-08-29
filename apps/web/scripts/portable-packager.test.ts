@@ -63,6 +63,8 @@ describe("portable HTML packager", () => {
     ["missing asset", "./assets/missing.css", /does not exist/],
     ["traversal asset", "../outside.css", /outside dist/],
     ["absolute asset", "file:///outside.css", /local relative/],
+    ["browser-root asset", "/assets/app.js", /local relative/],
+    ["encoded browser-root asset", "%2Fassets/app.js", /local relative/],
   ])("rejects %s references", (_label, reference, error) => {
     const root = createFixture();
     try {

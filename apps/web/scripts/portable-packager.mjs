@@ -34,7 +34,7 @@ function resolveAsset(distDir, reference) {
   const rawPath = reference.split(/[?#]/, 1)[0];
   if (
     !rawPath ||
-    rawPath.startsWith("//") ||
+    rawPath.startsWith("/") ||
     /^[a-z][a-z\d+.-]*:/i.test(reference) ||
     rawPath.includes("\\")
   ) {
@@ -49,12 +49,17 @@ function resolveAsset(distDir, reference) {
   } catch {
     throw new Error(`Portable asset reference is not valid: ${reference}`);
   }
+  if (decodedPath.startsWith("/")) {
+    throw new Error(
+      `Portable asset reference must be local relative path: ${reference}`,
+    );
+  }
   if (decodedPath.split("/").includes("..")) {
     throw new Error(`Portable asset reference is outside dist: ${reference}`);
   }
 
   const distRealPath = realpathSync(distDir);
-  const candidate = resolve(distRealPath, decodedPath.replace(/^\/+/, ""));
+  const candidate = resolve(distRealPath, decodedPath);
   let assetRealPath;
   try {
     assetRealPath = realpathSync(candidate);
