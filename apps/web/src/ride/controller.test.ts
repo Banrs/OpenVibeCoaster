@@ -101,13 +101,15 @@ const makeFrame = (timeIndex: number, speedMps: number): SimulationFrame => {
   };
 };
 
-const makeTimeline = (): RideTimeline =>
+const makeTimeline = (
+  jerkMps3 = new Float64Array([10, 20, 30, 40, 50, 60, 70, 80, 90]),
+): RideTimeline =>
   new RideTimeline({
     sampleRateHz: 1,
     timeSeconds: new Float64Array([0, 1, 2]),
     headDistanceM: new Float64Array([0, 10, 4]),
     speedMps: new Float64Array([3, -4, 2]),
-    jerkMps3: new Float64Array([0, 0, 0, 0, 1, 0, 0, 2, 0]),
+    jerkMps3,
     carCount: 3,
     carPositionsXYZ: new Float64Array(3 * 3 * 3),
     carTangentsXYZ: new Float64Array(3 * 3 * 3),
@@ -117,16 +119,31 @@ const makeTimeline = (): RideTimeline =>
   });
 
 describe("RidePlaybackController", () => {
-  it("accepts the simulator's populated flattened jerk output", () => {
+  it("uses exact and interpolated jerk triplets from populated flattened output", () => {
     const timeline = makeTimeline();
 
-    expect(Array.from(timeline.jerkMps3)).toEqual([0, 0, 0, 0, 1, 0, 0, 2, 0]);
+    expect(Array.from(timeline.jerkMps3)).toEqual([
+      10, 20, 30, 40, 50, 60, 70, 80, 90,
+    ]);
 
     const controller = createRidePlayback(timeline);
-    expect(controller.getSnapshot().telemetry?.jerkMps3).toEqual([0, 0, 0]);
+    expect(controller.getSnapshot().telemetry?.jerkMps3).toEqual([10, 20, 30]);
+    expect(controller.getSnapshot().telemetry?.longitudinalG).toBe(0);
+
+    controller.scrubTime(0.5);
+    expect(controller.getSnapshot().telemetry?.jerkMps3).toEqual([25, 35, 45]);
+    expect(controller.getSnapshot().telemetry?.longitudinalG).toBe(1);
 
     controller.scrubIndex(2);
-    expect(controller.getSnapshot().telemetry?.jerkMps3).toEqual([0, 2, 0]);
+    expect(controller.getSnapshot().telemetry?.jerkMps3).toEqual([70, 80, 90]);
+  });
+
+  it("falls back to frame jerk telemetry when flattened jerk output is empty", () => {
+    const controller = createRidePlayback(makeTimeline(new Float64Array()));
+
+    controller.scrubTime(0.5);
+
+    expect(controller.getSnapshot().telemetry?.jerkMps3).toEqual([0, 0.5, 0]);
   });
 
   it("derives real front/middle/rear seat selections and renderer camera IDs", () => {

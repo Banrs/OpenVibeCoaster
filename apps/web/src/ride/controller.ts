@@ -84,6 +84,7 @@ interface TimelineData {
   readonly times: Float64Array;
   readonly distances: Float64Array;
   readonly speeds: Float64Array;
+  readonly jerkMps3: Float64Array;
   readonly carCount: number;
   readonly positions: Float64Array;
   readonly tangents: Float64Array;
@@ -344,6 +345,7 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
     times,
     distances,
     speeds,
+    jerkMps3,
     carCount,
     positions,
     tangents,
@@ -675,6 +677,28 @@ export function createRidePlayback(
     );
   };
 
+  const jerkAtTime = (bracket: {
+    index: number;
+    nextIndex: number;
+    fraction: number;
+  }): Vec3 => {
+    const startOffset = bracket.index * 3;
+    const endOffset = bracket.nextIndex * 3;
+    return lerpVec(
+      [
+        data.jerkMps3[startOffset]!,
+        data.jerkMps3[startOffset + 1]!,
+        data.jerkMps3[startOffset + 2]!,
+      ],
+      [
+        data.jerkMps3[endOffset]!,
+        data.jerkMps3[endOffset + 1]!,
+        data.jerkMps3[endOffset + 2]!,
+      ],
+      bracket.fraction,
+    );
+  };
+
   const frameAtTime = (bracket: {
     index: number;
     nextIndex: number;
@@ -759,6 +783,11 @@ export function createRidePlayback(
     const sampleIndex = sampleIndexAtTime(timeSeconds);
     const bracket = timeBracket(timeSeconds);
     const frame = frameAtTime(bracket);
+    const telemetry = frame?.telemetry;
+    const snapshotTelemetry =
+      telemetry && data.jerkMps3.length > 0
+        ? { ...telemetry, jerkMps3: jerkAtTime(bracket) }
+        : telemetry;
     const selections = Object.freeze({
       front: selectionFor("front", bracket, frame),
       middle: selectionFor("middle", bracket, frame),
@@ -769,7 +798,7 @@ export function createRidePlayback(
       sampleIndex,
       headDistanceM: scalarAtTime(data.distances, timeSeconds),
       speedMps: scalarAtTime(data.speeds, timeSeconds),
-      telemetry: frame?.telemetry,
+      telemetry: snapshotTelemetry,
       isPlaying,
       ended,
       rate,
