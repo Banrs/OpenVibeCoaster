@@ -30,8 +30,7 @@ jobs:
         run: |
           node --version
           npm --version
-          node -e "const m=parseInt(process.versions.node.split('.')[0],10);if(m!==24){console.error('Expected Node 24, got '+process.versions.node);process.exit(1)}else console.log('Node major verified: '+m)"
-          node -e "const v=require('child_process').execSync('npm --version',{encoding:'utf8'}).trim();if(v!=='11.17.0'){console.error('Expected npm 11.17.0, got '+v);process.exit(1)}else console.log('npm verified: '+v)"
+          node -e "const m=parseInt(process.versions.node.split('.')[0],10);const v=require('child_process').execFileSync(process.platform==='win32'?'npm.cmd':'npm',['--version'],{encoding:'utf8'}).trim();if(m!==24||v!=='11.17.0'){console.error('Expected Node 24 and npm 11.17.0, got Node '+process.versions.node+' npm '+v);process.exit(1)}else console.log('Verified Node '+process.versions.node+' npm '+v)"
       - name: Install dependencies (exact lockfile)
         run: npm ci
       - name: Typecheck
@@ -87,8 +86,7 @@ jobs:
         run: |
           node --version
           npm --version
-          node -e "const m=parseInt(process.versions.node.split('.')[0],10);if(m!==24){console.error('Expected Node 24, got '+process.versions.node);process.exit(1)}else console.log('Node major verified: '+m)"
-          node -e "const v=require('child_process').execSync('npm --version',{encoding:'utf8'}).trim();if(v!=='11.17.0'){console.error('Expected npm 11.17.0, got '+v);process.exit(1)}else console.log('npm verified: '+v)"
+          node -e "const m=parseInt(process.versions.node.split('.')[0],10);const v=require('child_process').execFileSync(process.platform==='win32'?'npm.cmd':'npm',['--version'],{encoding:'utf8'}).trim();if(m!==24||v!=='11.17.0'){console.error('Expected Node 24 and npm 11.17.0, got Node '+process.versions.node+' npm '+v);process.exit(1)}else console.log('Verified Node '+process.versions.node+' npm '+v)"
       - name: Install dependencies (exact lockfile)
         run: npm ci
       - name: Build portable artifact
