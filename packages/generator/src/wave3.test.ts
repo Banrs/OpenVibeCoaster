@@ -6,10 +6,13 @@ import {
   validateClearance,
 } from "./index";
 import {
+  aabbFromPoints,
+  compileTrack,
   HeightfieldEnvironment,
   serializeCoasterFileV1,
   vec3,
   vec3Normalize,
+  type SolvedSpan,
 } from "@openvibecoaster/core";
 import { SeventhOrderHermiteSpan, type Vec3 } from "@openvibecoaster/core";
 import * as solver from "./solver";
@@ -38,6 +41,59 @@ const directedIntent = {
   targets: [],
   constraints: [],
   pinnedElementIds: ["station-000"],
+};
+
+const rigidlyRotate = (value: Vec3): Vec3 => {
+  const [x, y, z] = value;
+  const zAngle = 0.61;
+  const xAngle = -0.47;
+  const cosZ = Math.cos(zAngle);
+  const sinZ = Math.sin(zAngle);
+  const rotatedZ = vec3(
+    cosZ * x - sinZ * y,
+    sinZ * x + cosZ * y,
+    z,
+  );
+  const cosX = Math.cos(xAngle);
+  const sinX = Math.sin(xAngle);
+  return vec3(
+    rotatedZ[0],
+    cosX * rotatedZ[1] - sinX * rotatedZ[2],
+    sinX * rotatedZ[1] + cosX * rotatedZ[2],
+  );
+};
+
+const rigidlyTransform = (value: Vec3): Vec3 => {
+  const rotated = rigidlyRotate(value);
+  return vec3(rotated[0] + 31, rotated[1] - 17, rotated[2] + 23);
+};
+
+const rigidlyTransformSpan = (span: SolvedSpan): SolvedSpan => {
+  const rows = span.positionCoefficients;
+  const positionCoefficients = [0, 1, 2].map((component) =>
+    Array.from({ length: 8 }, (_, power) => {
+      const rotated = rigidlyRotate(
+        vec3(rows[0]![power]!, rows[1]![power]!, rows[2]![power]!),
+      );
+      return rotated[component]! +
+        (power === 0 ? [31, -17, 23][component]! : 0);
+    }),
+  );
+  const transformed = {
+    ...span,
+    span: {
+      position: (u: number) => rigidlyTransform(span.span.position(u)),
+      derivative: (u: number, order = 1) =>
+        rigidlyRotate(span.span.derivative(u, order)),
+    },
+    positionCoefficients,
+    bounds: aabbFromPoints(
+      Array.from({ length: 17 }, (_, index) =>
+        rigidlyTransform(span.span.position(index / 16)),
+      ),
+    ),
+  };
+  return transformed;
 };
 
 describe("wave 3 deterministic generator", () => {
@@ -474,26 +530,14 @@ describe("wave 3 deterministic generator", () => {
     expect(environment.sampleSolid(vec3(0.5, 1, 0.5))).toBeGreaterThan(0);
   });
 
-  it("detects a self-intersection within one span", () => {
+  it("detects a polynomial self-intersection within one span", () => {
     const circle = {
       id: "figure-eight",
-      span: {
-        position: (u: number) =>
-          vec3(
-            10 * Math.cos(2 * Math.PI * u),
-            4,
-            10 * Math.sin(2 * Math.PI * u),
-          ),
-        derivative: (u: number, order = 1) => {
-          if (order === 1)
-            return vec3(
-              -20 * Math.PI * Math.sin(2 * Math.PI * u),
-              0,
-              20 * Math.PI * Math.cos(2 * Math.PI * u),
-            );
-          return vec3(0, 0, 0);
-        },
-      },
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        [0.1875, -1, 1, 0, 0, 0, 0, 0],
+        [4, 0, 0, 0, 0, 0, 0, 0],
+        [-0.09375, -0.3125, -0.5, 1, 0, 0, 0, 0],
+      ]),
       bank: { position: () => 0, derivative: () => 0 },
     };
     const diagnostics = validateClearance([circle], undefined, {
@@ -540,15 +584,11 @@ describe("wave 3 deterministic generator", () => {
   it("does not discard non-adjacent segments merely because their path gap is short", () => {
     const folded = {
       id: "folded",
-      span: {
-        position: (u: number) => {
-          if (u <= 1 / 3) return vec3(u * 3, 0, 0);
-          if (u <= 2 / 3) return vec3(2 - (u - 1 / 3) * 3, 0, 0);
-          return vec3(1 - (u - 2 / 3) * 3, 0, 0);
-        },
-        derivative: (u: number) =>
-          u < 1 / 3 || u > 2 / 3 ? vec3(3, 0, 0) : vec3(-3, 0, 0),
-      },
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        [0.1875, -1, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [-0.09375, -0.3125, -0.5, 1, 0, 0, 0, 0],
+      ]),
       bank: { position: () => 0, derivative: () => 0 },
     };
     const diagnostics = validateClearance([folded], undefined, {
@@ -918,6 +958,63 @@ describe("wave 3 deterministic generator", () => {
     ).toBe(false);
   });
 
+  it("detects interior collisions between adjacent spans", () => {
+    const first = {
+      id: "adjacent-first",
+      span: SeventhOrderHermiteSpan.line<Vec3>(vec3(0, 0, 0), vec3(10, 0, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const second = {
+      id: "adjacent-second",
+      span: SeventhOrderHermiteSpan.line<Vec3>(vec3(10, 0, 0), vec3(0, 0, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const diagnostics = validateClearance([first, second], undefined, {
+      trainEnvelopeRadius: 0.1,
+      samplesPerSpan: 4,
+    });
+    expect(
+      diagnostics.some(
+        (item) =>
+          item.code === "TRACK_CLEARANCE" &&
+          item.relatedIds?.includes("adjacent-first") &&
+          item.relatedIds.includes("adjacent-second"),
+      ),
+    ).toBe(true);
+  });
+
+  it("detects first/last interior collisions while excluding only a closed seam", () => {
+    const first = {
+      id: "closure-first",
+      span: SeventhOrderHermiteSpan.line<Vec3>(vec3(0, 0, 0), vec3(10, 0, 0)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const middle = {
+      id: "closure-middle",
+      span: SeventhOrderHermiteSpan.line<Vec3>(vec3(10, 0, 0), vec3(10, 0, 10)),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const last = {
+      id: "closure-last",
+      span: SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
+        [10, -10, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [10, -50, 80, -40, 0, 0, 0, 0],
+      ]),
+      bank: { position: () => 0, derivative: () => 0 },
+    };
+    const diagnostics = validateClearance([first, middle, last], undefined, {
+      closed: true,
+      samplesPerSpan: 4,
+    });
+    const collision = diagnostics.find(
+      (item) => item.code === "TRACK_CLEARANCE",
+    );
+    expect(collision?.relatedIds).toEqual(
+      expect.arrayContaining(["closure-first", "closure-last"]),
+    );
+  });
+
   it("returns fatal clearance uncertainty when a configured self-check budget is exhausted", () => {
     const span = {
       id: "budget-span",
@@ -933,6 +1030,236 @@ describe("wave 3 deterministic generator", () => {
       diagnostics.some((item) => item.code === "CLEARANCE_UNCERTIFIED"),
     ).toBe(true);
     expect(diagnostics.some((item) => item.severity === "fatal")).toBe(true);
+  });
+
+  it("revalidates a local edit against the global closure seam", () => {
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements: [
+        {
+          id: "station-000",
+          kind: "station",
+          type: "station",
+          parameters: { length: 12, bank: 0, closed: true },
+        },
+        {
+          id: "stall-001",
+          kind: "stall",
+          type: "stall",
+          parameters: { length: 32, height: 18, bank: 0 },
+        },
+        {
+          id: "brake-002",
+          kind: "brake",
+          type: "brake",
+          parameters: { length: 20, targetSpeed: 8, bank: 0 },
+        },
+      ],
+      pinnedElementIds: [],
+    });
+    const result = regenerateLocal(generated, "stall-001", {
+      changes: { "stall-001": { height: 19 } },
+    });
+    const closure = result.diagnostics.find(
+      (item) =>
+        item.code === "LOCAL_REGENERATION" &&
+        item.message.includes("->station-000"),
+    );
+    expect(result.feasible).toBe(false);
+    expect(closure?.message).toContain("brake-002->station-000");
+    expect(closure?.relatedIds).toEqual(
+      expect.arrayContaining(["brake-002", "station-000#0"]),
+    );
+    expect(closure?.location?.s).toBeDefined();
+  }, 120000);
+
+  it("anchors a non-horizontal banked local solve to the transported global frame", () => {
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements: [
+        {
+          id: "station-000",
+          kind: "station",
+          type: "station",
+          parameters: { length: 12, bank: 0, closed: false },
+        },
+        {
+          id: "transition-001",
+          kind: "transition",
+          type: "transition",
+          parameters: { length: 24, rise: 8, pitch: 0.25, bank: 0.7 },
+        },
+        {
+          id: "stall-002",
+          kind: "stall",
+          type: "stall",
+          parameters: { length: 32, height: 18, bank: 0.7 },
+        },
+      ],
+      pinnedElementIds: ["station-000", "transition-001"],
+    });
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain");
+    const result = regenerateLocal(generated, "stall-002", {
+      changes: { "stall-002": { height: 19 } },
+      pinnedElementIds: ["station-000", "transition-001"],
+    });
+    const localCall = solveSpy.mock.calls.find(
+      ([, options]) => options?.startPose !== undefined,
+    );
+    solveSpy.mockRestore();
+    expect(result.feasible).toBe(true);
+    expect(localCall).toBeDefined();
+    const startPose = localCall![1]!.startPose!;
+    const boundaryIndex = generated.track.elementBoundaries[3]!;
+    const tangent = vec3(
+      generated.track.tangents[boundaryIndex * 3]!,
+      generated.track.tangents[boundaryIndex * 3 + 1]!,
+      generated.track.tangents[boundaryIndex * 3 + 2]!,
+    );
+    const rolledNormal = vec3(
+      generated.track.normals[boundaryIndex * 3]!,
+      generated.track.normals[boundaryIndex * 3 + 1]!,
+      generated.track.normals[boundaryIndex * 3 + 2]!,
+    );
+    const bank = generated.solvedSpans
+      .find((span) => span.id === "transition-001")!
+      .bank!.position(1);
+    expect(Math.abs(tangent[1])).toBeGreaterThan(0.01);
+    expect(startPose.normal).toEqual(rolledNormal);
+    expect(startPose.bank).toBeCloseTo(bank, 10);
+  }, 120000);
+
+  it("rigidly transforms local anchors with a rotated and translated solved file", () => {
+    const generated = generateCoaster({
+      ...directedIntent,
+      elements: [
+        {
+          id: "station-000",
+          kind: "station",
+          type: "station",
+          parameters: { length: 12, bank: 0, closed: false },
+        },
+        {
+          id: "turn-001",
+          kind: "overbankedTurn",
+          type: "overbankedTurn",
+          parameters: { radius: 20, angle: Math.PI / 2, bank: 0.4 },
+        },
+        {
+          id: "transition-002",
+          kind: "transition",
+          type: "transition",
+          parameters: { length: 24, rise: 8, pitch: 0.25, bank: 0.7 },
+        },
+        {
+          id: "stall-003",
+          kind: "stall",
+          type: "stall",
+          parameters: { length: 32, height: 18, bank: 0.7 },
+        },
+      ],
+      pinnedElementIds: ["station-000", "turn-001", "transition-002"],
+    });
+    const solveSpy = vi.spyOn(solver, "solveSemanticChain");
+    const original = regenerateLocal(generated, "stall-003", {
+      changes: { "stall-003": { height: 19 } },
+      pinnedElementIds: ["station-000", "turn-001", "transition-002"],
+    });
+    const originalCall = solveSpy.mock.calls.find(
+      ([, options]) => options?.startPose !== undefined,
+    );
+    expect(original.feasible).toBe(true);
+    expect(originalCall).toBeDefined();
+    const originalPose = originalCall![1]!.startPose!;
+
+    solveSpy.mockClear();
+    const transformedSpans = generated.solvedSpans.map(rigidlyTransformSpan);
+    const transformedGenerated = {
+      ...generated,
+      solvedSpans: Object.freeze(transformedSpans),
+      track: compileTrack(transformedSpans, { samples: 32 }),
+    };
+    const transformed = regenerateLocal(transformedGenerated, "stall-003", {
+      changes: { "stall-003": { height: 19 } },
+      pinnedElementIds: ["station-000", "turn-001", "transition-002"],
+    });
+    const transformedCall = solveSpy.mock.calls.find(
+      ([, options]) => options?.startPose !== undefined,
+    );
+    solveSpy.mockRestore();
+    expect(transformed.feasible).toBe(true);
+    expect(transformedCall).toBeDefined();
+    const transformedPose = transformedCall![1]!.startPose!;
+    const expectedPosition = rigidlyTransform(originalPose.position);
+    const expectedTangent = rigidlyRotate(originalPose.tangent);
+    const expectedNormal = rigidlyRotate(originalPose.normal);
+    for (const component of [0, 1, 2] as const) {
+      expect(transformedPose.position[component]).toBeCloseTo(
+        expectedPosition[component]!,
+        10,
+      );
+      expect(transformedPose.tangent[component]).toBeCloseTo(
+        expectedTangent[component]!,
+        10,
+      );
+      expect(transformedPose.normal[component]).toBeCloseTo(
+        expectedNormal[component]!,
+        10,
+      );
+    }
+    expect(transformedPose.bank).toBeCloseTo(originalPose.bank, 10);
+  }, 120000);
+
+  it("uses certified interior bounds for hard height and footprint violations", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      elements: [
+        directedIntent.elements[0]!,
+        {
+          id: "stall-001",
+          kind: "stall",
+          type: "stall",
+          parameters: { length: 32, height: 18, bank: 0 },
+        },
+      ],
+      footprint: { min: [-1, -1, -1] as const, max: [100, 1, 100] as const },
+      heightRange: { min: -1, max: 1 },
+      constraints: [{ id: "max", kind: "max-height", target: 1, hard: true }],
+    });
+    expect(result.feasible).toBe(false);
+    expect(
+      result.diagnostics.some((item) => item.code === "HEIGHT_RANGE"),
+    ).toBe(true);
+    expect(result.diagnostics.some((item) => item.code === "MAX_HEIGHT")).toBe(
+      true,
+    );
+    expect(result.diagnostics.some((item) => item.code === "FOOTPRINT")).toBe(
+      true,
+    );
+  });
+
+  it("uses certified interior bounds for hard minimum-height violations", () => {
+    const result = generateCoaster({
+      ...directedIntent,
+      elements: [
+        directedIntent.elements[0]!,
+        {
+          id: "stall-001",
+          kind: "stall",
+          type: "stall",
+          parameters: { length: 32, height: -18, bank: 0 },
+        },
+      ],
+      heightRange: { min: -1, max: 100 },
+      constraints: [{ id: "min", kind: "min-height", target: -1, hard: true }],
+    });
+    expect(result.feasible).toBe(false);
+    expect(result.diagnostics.some((item) => item.code === "MIN_HEIGHT")).toBe(
+      true,
+    );
+    expect(
+      result.diagnostics.some((item) => item.code === "HEIGHT_RANGE"),
+    ).toBe(true);
   });
 
   it("skips clearance queries after every hard candidate failure is known", () => {

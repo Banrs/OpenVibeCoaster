@@ -27,6 +27,11 @@ import {
   type Vec3,
 } from "@openvibecoaster/core";
 import { validateClearance } from "./clearance";
+import {
+  CertifiedWorkBudget,
+  CertificationError,
+  certifiedPolynomialBounds,
+} from "./polynomial-bounds";
 import { buildElement, createElement, defaultPose } from "./elements";
 import { ELEMENT_KINDS } from "./types";
 import * as solver from "./solver";
@@ -456,53 +461,119 @@ const constraintDiagnostics = (
         provenance: hard ? "PROJECT_ENGINEERING_LIMIT" : "DESIGN_ASSUMPTION",
       });
   }
-  const samples = pathSamples(spans);
-  const footprint = intent.footprint;
-  if (footprint)
-    for (const sample of samples) {
-      const outside = sample.point.some(
-        (value, index) =>
-          value < footprint.min[index]! || value > footprint.max[index]!,
+  const boundBudget = new CertifiedWorkBudget(1_000_000);
+  const boundsAt = (span: SolvedSpan) => {
+    const rows =
+      span.positionCoefficients ??
+      (span.span instanceof SeventhOrderHermiteSpan
+        ? span.span.coefficients
+        : undefined);
+    if (!rows)
+      throw new CertificationError(
+        `Span ${span.id} has no position polynomial`,
       );
-      if (outside)
-        diagnostics.push(
-          hardDiagnostic(
-            "FOOTPRINT",
-            `Footprint exceeded by ${sample.span.id}`,
-            [sample.span.id],
-            1,
-            0,
-            { s: sample.s, position: sample.point },
-          ),
-        );
+    return certifiedPolynomialBounds(rows, 0, 1, boundBudget);
+  };
+  let station = 0;
+  const footprint = intent.footprint;
+  for (const span of spans) {
+    let bounds;
+    try {
+      bounds = boundsAt(span);
+    } catch (error) {
+      diagnostics.push({
+        code: "CLEARANCE_UNCERTIFIED",
+        severity: "fatal",
+        provenance: "PROJECT_ENGINEERING_LIMIT",
+        message: error instanceof Error ? error.message : String(error),
+        relatedIds: [span.id],
+      });
+      continue;
     }
-  if (intent.heightRange)
-    for (const sample of samples) {
-      const y = sample.point[1];
-      if (y < intent.heightRange.min || y > intent.heightRange.max)
-        diagnostics.push(
-          hardDiagnostic(
+    const spanStart = station;
+    const location = { s: spanStart, position: span.span.position(0) };
+    if (footprint)
+      for (const axis of [0, 1, 2] as const) {
+        if (bounds.min[axis]! < footprint.min[axis]!)
+          diagnostics.push({
+            ...hardDiagnostic(
+              "FOOTPRINT",
+              `Footprint minimum exceeded by ${span.id}`,
+              [span.id],
+              bounds.min[axis],
+              footprint.min[axis],
+              location,
+            ),
+            margin: bounds.min[axis]! - footprint.min[axis]!,
+          });
+        if (bounds.max[axis]! > footprint.max[axis]!)
+          diagnostics.push({
+            ...hardDiagnostic(
+              "FOOTPRINT",
+              `Footprint maximum exceeded by ${span.id}`,
+              [span.id],
+              bounds.max[axis],
+              footprint.max[axis],
+              location,
+            ),
+            margin: footprint.max[axis]! - bounds.max[axis]!,
+          });
+      }
+    if (intent.heightRange) {
+      if (bounds.min[1]! < intent.heightRange.min)
+        diagnostics.push({
+          ...hardDiagnostic(
             "HEIGHT_RANGE",
-            `Height range exceeded by ${sample.span.id}`,
-            [sample.span.id],
-            y,
-            y < intent.heightRange.min
-              ? intent.heightRange.min
-              : intent.heightRange.max,
-            { s: sample.s, position: sample.point },
+            `Height range minimum exceeded by ${span.id}`,
+            [span.id],
+            bounds.min[1],
+            intent.heightRange.min,
+            location,
           ),
-        );
+          margin: bounds.min[1]! - intent.heightRange.min,
+        });
+      if (bounds.max[1]! > intent.heightRange.max)
+        diagnostics.push({
+          ...hardDiagnostic(
+            "HEIGHT_RANGE",
+            `Height range maximum exceeded by ${span.id}`,
+            [span.id],
+            bounds.max[1],
+            intent.heightRange.max,
+            location,
+          ),
+          margin: intent.heightRange.max - bounds.max[1]!,
+        });
     }
+    station += arcLength(span.span);
+  }
   for (const constraint of intent.constraints) {
     if (constraint.kind !== "max-height" && constraint.kind !== "min-height")
       continue;
     const value = constraint.target ?? constraint.value;
     if (typeof value !== "number") continue;
-    const failure = samples.find((sample) =>
-      constraint.kind === "max-height"
-        ? sample.point[1] > value
-        : sample.point[1] < value,
-    );
+    let failure:
+      | {
+          readonly span: SolvedSpan;
+          readonly actual: number;
+          readonly s: number;
+        }
+      | undefined;
+    let distance = 0;
+    for (const span of spans) {
+      try {
+        const bounds = boundsAt(span);
+        const actual =
+          constraint.kind === "max-height" ? bounds.max[1] : bounds.min[1];
+        const exceeded =
+          constraint.kind === "max-height" ? actual > value : actual < value;
+        if (exceeded && !failure) failure = { span, actual, s: distance };
+      } catch {
+        failure = undefined;
+        break;
+      }
+      distance += arcLength(span.span);
+    }
     if (!failure) continue;
     const hard = constraint.hard !== false;
     diagnostics.push({
@@ -510,14 +581,14 @@ const constraintDiagnostics = (
         constraint.kind === "max-height" ? "MAX_HEIGHT" : "MIN_HEIGHT",
         `${constraint.kind} constraint exceeded by ${failure.span.id}`,
         [constraint.id, failure.span.id],
-        failure.point[1],
+        failure.actual,
         value,
-        { s: failure.s, position: failure.point },
+        { s: failure.s, position: failure.span.span.position(0) },
       ),
       margin:
         constraint.kind === "min-height"
-          ? failure.point[1] - value
-          : value - failure.point[1],
+          ? failure.actual - value
+          : value - failure.actual,
       severity: hard ? "error" : "warning",
       provenance: hard ? "PROJECT_ENGINEERING_LIMIT" : "DESIGN_ASSUMPTION",
     });
@@ -1094,29 +1165,38 @@ const coefficientBoundaryPose = (
   if (!source) return defaultPose();
   const atEnd = owner !== undefined;
   const u = atEnd ? 1 : 0;
-  const tangent = vec3Normalize(source.span.derivative(u, 1));
+  const sourceIndex = generated.solvedSpans.findIndex(
+    (span) => span.id === source.id,
+  );
+  if (sourceIndex < 0) return defaultPose();
+  const boundaryIndex = atEnd
+    ? generated.track.elementBoundaries[sourceIndex * 2 + 1]!
+    : generated.track.elementBoundaries[sourceIndex * 2]!;
+  const tangent = vec3(
+    generated.track.tangents[boundaryIndex * 3]!,
+    generated.track.tangents[boundaryIndex * 3 + 1]!,
+    generated.track.tangents[boundaryIndex * 3 + 2]!,
+  );
   const bank = source.bank?.position(u) ?? 0;
-  const reference = Math.abs(tangent[1]) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
-  const normal = vec3Normalize(
-    vec3(
-      reference[0] - tangent[0] * vec3Dot(reference, tangent),
-      reference[1] - tangent[1] * vec3Dot(reference, tangent),
-      reference[2] - tangent[2] * vec3Dot(reference, tangent),
-    ),
+  const rolledNormal = vec3(
+    generated.track.normals[boundaryIndex * 3]!,
+    generated.track.normals[boundaryIndex * 3 + 1]!,
+    generated.track.normals[boundaryIndex * 3 + 2]!,
   );
   return {
     position: source.span.position(u),
     tangent,
-    normal,
+    normal: rolledNormal,
     bank,
   };
 };
 
 const localSeamDiagnostics = (
   spans: readonly SolvedSpan[],
+  closed: boolean,
 ): readonly Diagnostic[] => {
   const diagnostics: Diagnostic[] = [];
-  for (const seam of solver.diagnoseSeams(spans)) {
+  for (const seam of solver.diagnoseSeams(spans, { closed })) {
     const [leftId, rightId] = seam.seamId.split("->");
     if (spanOwner(leftId!) === spanOwner(rightId!)) continue;
     const failure =
@@ -1145,6 +1225,14 @@ const localSeamDiagnostics = (
             seam.specificForceJumpG,
           ),
           1e-4,
+          {
+            s: spans
+              .slice(0, spans.findIndex((span) => span.id === leftId) + 1)
+              .reduce((sum, span) => sum + arcLength(span.span), 0),
+            position: spans
+              .find((span) => span.id === leftId)!
+              .span.position(1),
+          },
         ),
       );
   }
@@ -1160,7 +1248,7 @@ const mergedDiagnostics = (
 ): readonly Diagnostic[] => {
   const diagnostics = [
     ...localDiagnostics,
-    ...localSeamDiagnostics(spans),
+    ...localSeamDiagnostics(spans, isClosedChain(elements)),
     ...gateDiagnostics(spans, intent),
     ...constraintDiagnostics(elements, spans, intent, options.environment),
   ];
@@ -1212,13 +1300,6 @@ const mergedDiagnostics = (
         ),
       );
   }
-  if (
-    diagnostics.some(
-      (diagnostic) =>
-        diagnostic.severity === "error" || diagnostic.severity === "fatal",
-    )
-  )
-    return diagnostics;
   const hardTrackClearance = intent.constraints
     .filter(
       (constraint) =>
