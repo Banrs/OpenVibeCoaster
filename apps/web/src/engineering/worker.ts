@@ -36,12 +36,14 @@ function toDiagnostic(
   code: string,
   message: string,
   severity: Diagnostic["severity"] = "error",
+  extra?: Partial<Pick<Diagnostic, "actual" | "limit" | "margin">>,
 ): Diagnostic {
   return {
     code,
     severity,
     provenance: "PROJECT_ENGINEERING_LIMIT",
     message,
+    ...extra,
   };
 }
 
@@ -66,33 +68,129 @@ function trackToTransfer(track: CompiledTrackData): CompiledTrackTransfer {
   };
 }
 
-export function selectHeadDistance(
+type HeadSelection =
+  { ok: true; headDistanceM: number } | { ok: false; diagnostic: Diagnostic };
+
+function selectHeadDistance(
   totalLength: number,
   carCount: number,
   spacing: number,
-): number {
-  const minHead = spacing * (carCount - 1) + 0.5;
-  if (totalLength <= minHead + 0.1) return totalLength / 2;
+): HeadSelection {
+  if (
+    !Number.isFinite(totalLength) ||
+    !Number.isFinite(spacing) ||
+    !Number.isFinite(carCount)
+  ) {
+    return {
+      ok: false,
+      diagnostic: toDiagnostic(
+        "TRAIN_LENGTH_EXCEEDS_TRACK",
+        "Invalid numeric train fit inputs",
+        "fatal",
+        {
+          actual:
+            Number.isFinite(spacing) && Number.isFinite(carCount)
+              ? spacing * Math.max(0, carCount - 1)
+              : Number.NaN,
+          limit: totalLength,
+          margin:
+            Number.isFinite(totalLength) &&
+            Number.isFinite(spacing) &&
+            Number.isFinite(carCount)
+              ? totalLength - spacing * Math.max(0, carCount - 1)
+              : Number.NaN,
+        },
+      ),
+    };
+  }
+  if (!Number.isInteger(carCount) || carCount <= 0) {
+    return {
+      ok: false,
+      diagnostic: toDiagnostic(
+        "TRAIN_LENGTH_EXCEEDS_TRACK",
+        `Invalid car count ${String(carCount)}`,
+        "fatal",
+        { actual: carCount, limit: 1, margin: 1 - carCount },
+      ),
+    };
+  }
+  if (spacing <= 0) {
+    return {
+      ok: false,
+      diagnostic: toDiagnostic(
+        "TRAIN_LENGTH_EXCEEDS_TRACK",
+        `Invalid spacing ${String(spacing)}`,
+        "fatal",
+        { actual: spacing, limit: 0, margin: -spacing },
+      ),
+    };
+  }
+  if (totalLength <= 0) {
+    return {
+      ok: false,
+      diagnostic: toDiagnostic(
+        "TRAIN_LENGTH_EXCEEDS_TRACK",
+        `Invalid totalLength ${String(totalLength)}`,
+        "fatal",
+        { actual: 0, limit: totalLength, margin: totalLength },
+      ),
+    };
+  }
+  const trainLength = spacing * (carCount - 1);
+  if (trainLength > totalLength) {
+    return {
+      ok: false,
+      diagnostic: toDiagnostic(
+        "TRAIN_LENGTH_EXCEEDS_TRACK",
+        `Train length ${trainLength.toFixed(2)} exceeds usable track ${totalLength.toFixed(2)}`,
+        "fatal",
+        {
+          actual: trainLength,
+          limit: totalLength,
+          margin: totalLength - trainLength,
+        },
+      ),
+    };
+  }
+  const minHead = trainLength + 0.5;
+  let headDistanceM: number;
   if (totalLength < minHead + 1) {
     const half = Math.max(0, totalLength * 0.5);
-    return Math.max(
-      spacing * (carCount - 1),
-      Math.min(half, totalLength - 0.1),
-    );
+    headDistanceM = Math.max(trainLength, Math.min(half, totalLength - 0.1));
+  } else {
+    headDistanceM = Math.max(trainLength, Math.min(minHead, totalLength - 1));
   }
-  return Math.max(spacing * (carCount - 1), Math.min(minHead, totalLength - 1));
+  if (!Number.isFinite(headDistanceM)) {
+    return {
+      ok: false,
+      diagnostic: toDiagnostic(
+        "TRAIN_LENGTH_EXCEEDS_TRACK",
+        "Non-finite head distance",
+        "fatal",
+        {
+          actual: headDistanceM,
+          limit: totalLength,
+          margin: totalLength - headDistanceM,
+        },
+      ),
+    };
+  }
+  return { ok: true, headDistanceM };
 }
 
-function simulateForTrack(track: CompiledTrackData): {
-  timeline: RideTimeline;
-  diagnostics: readonly Diagnostic[];
-} {
+function simulateForTrack(
+  track: CompiledTrackData,
+):
+  | { ok: true; timeline: RideTimeline; diagnostics: readonly Diagnostic[] }
+  | { ok: false; diagnostic: Diagnostic } {
   const baseConfig = createDefaultSimulatorConfig();
-  const headDistanceM = selectHeadDistance(
+  const headSelection = selectHeadDistance(
     track.totalLength,
     baseConfig.train.cars.length,
     baseConfig.train.spacingM,
   );
+  if (!headSelection.ok)
+    return { ok: false, diagnostic: headSelection.diagnostic };
   const config = {
     ...baseConfig,
     durationSeconds: 5,
@@ -103,11 +201,11 @@ function simulateForTrack(track: CompiledTrackData): {
   const result = simulateRide(track, {
     durationSeconds: 5,
     config,
-    initial: { headDistanceM, speedMps: 5 },
+    initial: { headDistanceM: headSelection.headDistanceM, speedMps: 5 },
   });
   const diagnostics: Diagnostic[] =
     (result.diagnostics as unknown as Diagnostic[]) ?? [];
-  return { timeline: result.timeline, diagnostics };
+  return { ok: true, timeline: result.timeline, diagnostics };
 }
 
 export function handleGenerate(
@@ -145,50 +243,34 @@ export function handleGenerate(
     ]);
   }
   const track = generation.track;
-  let timeline: RideTimeline;
-  let simDiagnostics: readonly Diagnostic[] = [];
-  try {
-    const sim = simulateForTrack(track);
-    timeline = sim.timeline;
-    simDiagnostics = sim.diagnostics;
-    const simHasError = simDiagnostics.some(
+  const sim = simulateForTrack(track);
+  if (!sim.ok) return failure(requestId, [sim.diagnostic]);
+  if (
+    sim.diagnostics.some(
       (d) =>
         (d as Diagnostic).severity === "error" ||
         (d as Diagnostic).severity === "fatal",
+    )
+  ) {
+    return failure(
+      requestId,
+      [
+        ...(generation.diagnostics as Diagnostic[]),
+        ...(sim.diagnostics as Diagnostic[]),
+      ],
+      [...generation.relaxations],
     );
-    if (simHasError) {
-      return failure(
-        requestId,
-        [
-          ...(generation.diagnostics as Diagnostic[]),
-          ...(simDiagnostics as Diagnostic[]),
-        ],
-        [...generation.relaxations],
-      );
-    }
-  } catch (err) {
-    return failure(requestId, [
-      toDiagnostic(
-        "SIMULATION_ERROR",
-        err instanceof Error ? err.message : String(err),
-        "fatal",
-      ),
-    ]);
   }
-
-  const trackTransfer = trackToTransfer(track);
-  const timelineTransfer = (timeline as RideTimeline).toTransferable();
-  const diagnostics: Diagnostic[] = [
-    ...(generation.diagnostics as Diagnostic[]),
-    ...(simDiagnostics as Diagnostic[]),
-  ];
   return {
     type: "success",
     requestId,
     file: generation.file,
-    track: trackTransfer,
-    timeline: timelineTransfer,
-    diagnostics,
+    track: trackToTransfer(track),
+    timeline: sim.timeline.toTransferable(),
+    diagnostics: [
+      ...(generation.diagnostics as Diagnostic[]),
+      ...(sim.diagnostics as Diagnostic[]),
+    ],
     relaxations: [...generation.relaxations],
   };
 }
@@ -234,10 +316,8 @@ export function handleRegenerate(
   }
   const track = generation.track;
   const sim = simulateForTrack(track);
-  const simHasError = sim.diagnostics.some(
-    (d) => (d as Diagnostic).severity === "error",
-  );
-  if (simHasError) {
+  if (!sim.ok) return failure(requestId, [sim.diagnostic]);
+  if (sim.diagnostics.some((d) => (d as Diagnostic).severity === "error")) {
     return failure(
       requestId,
       [
@@ -267,7 +347,9 @@ export function handleCompileSimulate(
 ): EngineeringWorkerSuccess | EngineeringWorkerFailure {
   let loaded: ReturnType<typeof compileCoasterFile>;
   try {
-    loaded = compileCoasterFile(fileInput as CoasterFileV1 | string);
+    loaded = compileCoasterFile(
+      fileInput as CoasterFileV1 | string | Uint8Array,
+    );
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(
@@ -277,24 +359,15 @@ export function handleCompileSimulate(
     ]);
   }
   const track = loaded.track;
-  let sim: { timeline: RideTimeline; diagnostics: readonly Diagnostic[] };
-  try {
-    sim = simulateForTrack(track);
-  } catch (err) {
-    return failure(requestId, [
-      toDiagnostic(
-        "SIMULATION_ERROR",
-        err instanceof Error ? err.message : String(err),
-        "fatal",
-      ),
-    ]);
-  }
-  const simHasError = sim.diagnostics.some(
-    (d) =>
-      (d as Diagnostic).severity === "error" ||
-      (d as Diagnostic).severity === "fatal",
-  );
-  if (simHasError) {
+  const sim = simulateForTrack(track);
+  if (!sim.ok) return failure(requestId, [sim.diagnostic]);
+  if (
+    sim.diagnostics.some(
+      (d) =>
+        (d as Diagnostic).severity === "error" ||
+        (d as Diagnostic).severity === "fatal",
+    )
+  ) {
     return failure(requestId, sim.diagnostics as Diagnostic[], []);
   }
   return {

@@ -43,7 +43,11 @@ export class EngineeringWorkerClient {
     if (typeof factory !== "function")
       throw new Error("factory: expected function");
     this.factory = factory;
-    this.worker = this.createWorker();
+    try {
+      this.worker = this.createWorker();
+    } catch {
+      this.worker = null;
+    }
   }
 
   private createWorker(): WorkerLike {

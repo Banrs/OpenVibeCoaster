@@ -5,7 +5,6 @@ import {
   handleGenerate,
   handleRegenerate,
   handleCompileSimulate,
-  selectHeadDistance,
 } from "./worker";
 import { collectTransferables } from "./transfer";
 
@@ -397,19 +396,44 @@ describe("engineering worker authoritative flow", () => {
     expect(Array.isArray(result.relaxations)).toBe(true);
   });
 
-  it("selectHeadDistance is deterministic and keeps all cars inside track", () => {
-    const spacing = 3.4;
-    const cars = 6;
-    const minHead = spacing * (cars - 1) + 0.5;
-    expect(selectHeadDistance(10, cars, spacing)).toBe(5);
-    const exact = selectHeadDistance(minHead, cars, spacing);
-    expect(exact).toBeGreaterThan(0);
-    expect(exact).toBeLessThan(minHead);
-    const a = selectHeadDistance(100, cars, spacing);
-    const b = selectHeadDistance(100, cars, spacing);
-    expect(a).toBe(b);
-    expect(a).toBeGreaterThanOrEqual(spacing * (cars - 1));
-    expect(a).toBeLessThanOrEqual(100 - 0.1);
-    expect(selectHeadDistance(500, cars, spacing)).toBe(minHead);
+  it("propagates TRAIN_LENGTH_EXCEEDS_TRACK via compile-simulate for short valid file", () => {
+    const shortIntent = createDesignIntentV1({
+      generatorVersion: "test-v1",
+      seed: 7,
+      mode: "directed",
+      family: "steel-sitdown-lsm-v1",
+      elements: [
+        {
+          id: "station-0",
+          kind: "station",
+          type: "station",
+          parameters: { length: 4, bank: 0, closed: false },
+        },
+        {
+          id: "station-1",
+          kind: "station",
+          type: "station",
+          parameters: { length: 4, bank: 0, closed: false },
+        },
+      ],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    });
+    const gen = generateCoaster(shortIntent);
+    expect(gen.feasible).toBe(true);
+    expect(gen.track.totalLength).toBeLessThan(17);
+    const result = handleCompileSimulate("req-short-file", gen.file as unknown);
+    expect(result.type).toBe("failure");
+    if (result.type !== "failure") return;
+    const diag = result.diagnostics[0]!;
+    expect(diag.code).toBe("TRAIN_LENGTH_EXCEEDS_TRACK");
+    expect(diag.severity).toBe("fatal");
+    expect(diag.actual).toBe(17);
+    expect(diag.limit).toBe(gen.track.totalLength);
+    expect(diag.margin).toBe((gen.track.totalLength as number) - 17);
+    expect((diag.margin as number) < 0).toBe(true);
+    expect((diag.actual as number) > (diag.limit as number)).toBe(true);
   });
 });
