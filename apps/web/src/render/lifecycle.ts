@@ -86,40 +86,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   const getWin = (): Window & typeof globalThis =>
     resolveWindow(config.getWindow);
 
-  const clearGlobal = (): void => {
-    const win = getWin();
-    try {
-      (win as unknown as Record<string, unknown>).__vibecoasterController =
-        undefined;
-    } catch {
-      // ignore
-    }
-    try {
-      (
-        globalThis as unknown as Record<string, unknown>
-      ).__vibecoasterController = undefined;
-    } catch {
-      // ignore
-    }
-  };
-
-  const setGlobal = (ctrl: RendererController | null): void => {
-    const win = getWin();
-    try {
-      (win as unknown as Record<string, unknown>).__vibecoasterController =
-        ctrl ?? undefined;
-    } catch {
-      // ignore
-    }
-    try {
-      (
-        globalThis as unknown as Record<string, unknown>
-      ).__vibecoasterController = ctrl ?? undefined;
-    } catch {
-      // ignore
-    }
-  };
-
   const teardownRafAndResize = (): void => {
     const win = getWin();
     if (rafId !== null) {
@@ -192,13 +158,11 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     } catch (e) {
       config.onSetupError?.(e);
       disposeHandles();
-      clearGlobal();
       return false;
     }
     if (!handle) {
       // expected WebGL unavailability – transactionally clean
       disposeHandles();
-      clearGlobal();
       return false;
     }
     // handle succeeded – now try to create camera + controller transactionally
@@ -217,14 +181,12 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
         // ignore
       }
       disposeHandles();
-      clearGlobal();
       return false;
     }
     // commit
     rendererHandle = handle;
     camera = localCamera;
     controller = localController;
-    setGlobal(controller);
     // reattach authoritative attachment – pending takes precedence, transactional
     const targetAttachment = pendingAttachment ?? attachment;
     const targetPlayback = pendingAttachment ? pendingPlayback : lastPlayback;
@@ -240,7 +202,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       } catch (e) {
         config.onSetupError?.(e);
         disposeHandles();
-        clearGlobal();
         return false;
       }
       // success – if pending was used, promote it to last-known-good
@@ -309,7 +270,9 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       if (runtimeError === null) {
         try {
           camera.updateProjectionMatrix();
-          rendererHandle.renderer?.render(rendererHandle.scene, camera);
+          const r = rendererHandle.renderer;
+          if (!r) throw new Error("renderer missing");
+          r.render(rendererHandle.scene, camera);
         } catch (e) {
           runtimeError = e;
         }
@@ -386,7 +349,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   const init = (): boolean => {
     teardownRafAndResize();
     disposeHandles();
-    clearGlobal();
     successfulRenderCount = 0;
     const ok = createHandleAndController();
     if (!ok) {
@@ -401,7 +363,6 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
   const dispose = (): void => {
     teardownRafAndResize();
     disposeHandles();
-    clearGlobal();
     successfulRenderCount = 0;
     attachment = null;
     lastPlayback = null;

@@ -6,10 +6,10 @@ test("WebGL fallback visible, camera/metric disabled/hidden, retry operable, no 
   page,
 }) => {
   const pageErrors: string[] = [];
-  const consoleErrors: string[] = [];
+  const consoleEvents: { type: string; text: string }[] = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
+    consoleEvents.push({ type: m.type(), text: m.text() });
   });
 
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -77,15 +77,15 @@ test("WebGL fallback visible, camera/metric disabled/hidden, retry operable, no 
   await expect(fallback).toBeVisible();
   // after retry, still fallback but no errors, listeners were before navigation
   expect(pageErrors).toEqual([]);
-  expect(consoleErrors).toEqual([]);
+  expect(consoleEvents).toEqual([]);
 });
 
 test("reduced motion fallback still operable", async ({ page }) => {
   const pageErrors: string[] = [];
-  const consoleErrors: string[] = [];
+  const consoleEvents: { type: string; text: string }[] = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
+    consoleEvents.push({ type: m.type(), text: m.text() });
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
@@ -105,5 +105,5 @@ test("reduced motion fallback still operable", async ({ page }) => {
     expect(snap.reducedMotion).toBe(true);
   }
   expect(pageErrors).toEqual([]);
-  expect(consoleErrors).toEqual([]);
+  expect(consoleEvents).toEqual([]);
 });

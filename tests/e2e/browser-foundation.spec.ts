@@ -22,10 +22,10 @@ test.describe("browser-foundation – normal WebGL proof", () => {
   test("real Three renderer initialized, canvas visible, no fallback, at least one successful render, no console/page errors", async ({
     page,
   }) => {
-    const consoleErrors: string[] = [];
+    const consoleEvents: { type: string; text: string }[] = [];
     const pageErrors: string[] = [];
     page.on("console", (m) => {
-      if (m.type() === "error") consoleErrors.push(m.text());
+      consoleEvents.push({ type: m.type(), text: m.text() });
     });
     page.on("pageerror", (e) => pageErrors.push(e.message));
 
@@ -169,8 +169,8 @@ test.describe("browser-foundation – normal WebGL proof", () => {
 
     expect(pageErrors, `page errors: ${pageErrors.join("; ")}`).toEqual([]);
     expect(
-      consoleErrors,
-      `console errors: ${consoleErrors.join("; ")}`,
+      consoleEvents,
+      `console errors: ${JSON.stringify(consoleEvents)}`,
     ).toEqual([]);
   });
 });
@@ -178,10 +178,10 @@ test.describe("browser-foundation – normal WebGL proof", () => {
 test.describe("browser-foundation – responsive overflow and header", () => {
   for (const vp of viewports) {
     test(`no horizontal overflow at ${vp.name}`, async ({ page }) => {
-      const consoleErrors: string[] = [];
+      const consoleEvents: { type: string; text: string }[] = [];
       const pageErrors: string[] = [];
       page.on("console", (m) => {
-        if (m.type() === "error") consoleErrors.push(m.text());
+        consoleEvents.push({ type: m.type(), text: m.text() });
       });
       page.on("pageerror", (e) => pageErrors.push(e.message));
       await page.setViewportSize({ width: vp.width, height: vp.height });
@@ -222,8 +222,8 @@ test.describe("browser-foundation – responsive overflow and header", () => {
 
       expect(pageErrors, "no page errors").toEqual([]);
       expect(
-        consoleErrors,
-        `console errors: ${consoleErrors.join("; ")}`,
+        consoleEvents,
+        `console errors: ${JSON.stringify(consoleEvents)}`,
       ).toEqual([]);
     });
   }
@@ -231,10 +231,10 @@ test.describe("browser-foundation – responsive overflow and header", () => {
   test("at 1024 top bar does not overlap/clip and all controls discoverable", async ({
     page,
   }) => {
-    const consoleErrors: string[] = [];
+    const consoleEvents: { type: string; text: string }[] = [];
     const pageErrors: string[] = [];
     page.on("console", (m) => {
-      if (m.type() === "error") consoleErrors.push(m.text());
+      consoleEvents.push({ type: m.type(), text: m.text() });
     });
     page.on("pageerror", (e) => pageErrors.push(e.message));
     await page.setViewportSize({ width: 1024, height: 768 });
@@ -274,16 +274,16 @@ test.describe("browser-foundation – responsive overflow and header", () => {
     expect(overflow.docScroll).toBeLessThanOrEqual(overflow.inner + 1);
     expect(overflow.topScroll).toBeLessThanOrEqual(overflow.topClient + 1);
     expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
+    expect(consoleEvents).toEqual([]);
   });
 
   test("at 390 header compact <=96 and drawers single-open with contained scroll, no horizontal overflow", async ({
     page,
   }) => {
-    const consoleErrors: string[] = [];
+    const consoleEvents: { type: string; text: string }[] = [];
     const pageErrors: string[] = [];
     page.on("console", (m) => {
-      if (m.type() === "error") consoleErrors.push(m.text());
+      consoleEvents.push({ type: m.type(), text: m.text() });
     });
     page.on("pageerror", (e) => pageErrors.push(e.message));
     await page.setViewportSize({ width: 390, height: 844 });
@@ -347,7 +347,7 @@ test.describe("browser-foundation – responsive overflow and header", () => {
     expect(overflow.docScroll).toBeLessThanOrEqual(overflow.inner + 1);
     expect(overflow.topScroll).toBeLessThanOrEqual(overflow.topClient + 1);
     expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
+    expect(consoleEvents).toEqual([]);
   });
 });
 
@@ -355,10 +355,10 @@ test.describe("browser-foundation – touch targets, focus, contrast", () => {
   test("primary controls and tabs have >=44px touch height on coarse/mobile", async ({
     page,
   }) => {
-    const consoleErrors: string[] = [];
+    const consoleEvents: { type: string; text: string }[] = [];
     const pageErrors: string[] = [];
     page.on("console", (m) => {
-      if (m.type() === "error") consoleErrors.push(m.text());
+      consoleEvents.push({ type: m.type(), text: m.text() });
     });
     page.on("pageerror", (e) => pageErrors.push(e.message));
     await page.setViewportSize({ width: 390, height: 844 });
@@ -383,16 +383,16 @@ test.describe("browser-foundation – touch targets, focus, contrast", () => {
     expect(retryBox).not.toBeNull();
     if (retryBox) expect(retryBox.height).toBeGreaterThanOrEqual(44);
     expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
+    expect(consoleEvents).toEqual([]);
   });
 
   test("focus-visible treatment visible for every control, camera label, and mobile tab", async ({
     page,
   }) => {
-    const consoleErrors: string[] = [];
+    const consoleEvents: { type: string; text: string }[] = [];
     const pageErrors: string[] = [];
     page.on("console", (m) => {
-      if (m.type() === "error") consoleErrors.push(m.text());
+      consoleEvents.push({ type: m.type(), text: m.text() });
     });
     page.on("pageerror", (e) => pageErrors.push(e.message));
 
@@ -543,16 +543,16 @@ test.describe("browser-foundation – touch targets, focus, contrast", () => {
     }
 
     expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
+    expect(consoleEvents).toEqual([]);
   });
 
   test("muted/legend small-text contrast >=4.5:1 via effective rendered background compositing", async ({
     page,
   }) => {
-    const consoleErrors: string[] = [];
+    const consoleEvents: { type: string; text: string }[] = [];
     const pageErrors: string[] = [];
     page.on("console", (m) => {
-      if (m.type() === "error") consoleErrors.push(m.text());
+      consoleEvents.push({ type: m.type(), text: m.text() });
     });
     page.on("pageerror", (e) => pageErrors.push(e.message));
     await page.goto("/");
@@ -678,14 +678,14 @@ test.describe("browser-foundation – touch targets, focus, contrast", () => {
       ).toBeGreaterThanOrEqual(4.5);
     }
     expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
+    expect(consoleEvents).toEqual([]);
   });
 
   test("disabled state has non-color cue", async ({ page }) => {
-    const consoleErrors: string[] = [];
+    const consoleEvents: { type: string; text: string }[] = [];
     const pageErrors: string[] = [];
     page.on("console", (m) => {
-      if (m.type() === "error") consoleErrors.push(m.text());
+      consoleEvents.push({ type: m.type(), text: m.text() });
     });
     page.on("pageerror", (e) => pageErrors.push(e.message));
     await page.goto("/");
@@ -713,17 +713,17 @@ test.describe("browser-foundation – touch targets, focus, contrast", () => {
       `disabled cue should be non-color, got ${JSON.stringify(cue)}`,
     ).toBe(true);
     expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
+    expect(consoleEvents).toEqual([]);
   });
 });
 
 test.describe("browser-foundation – screenshots and preview", () => {
   for (const vp of viewports) {
     test(`screenshot smoke at ${vp.name}`, async ({ page }) => {
-      const consoleErrors: string[] = [];
+      const consoleEvents: { type: string; text: string }[] = [];
       const pageErrors: string[] = [];
       page.on("console", (m) => {
-        if (m.type() === "error") consoleErrors.push(m.text());
+        consoleEvents.push({ type: m.type(), text: m.text() });
       });
       page.on("pageerror", (e) => pageErrors.push(e.message));
       await page.setViewportSize({ width: vp.width, height: vp.height });
@@ -733,16 +733,16 @@ test.describe("browser-foundation – screenshots and preview", () => {
       const buf = await page.screenshot({ fullPage: false });
       expect(buf.length).toBeGreaterThan(1000);
       expect(pageErrors).toEqual([]);
-      expect(consoleErrors).toEqual([]);
+      expect(consoleEvents).toEqual([]);
     });
   }
   test("reduced motion disables animation/transition and keeps idle camera stable with zero errors", async ({
     page,
   }) => {
-    const consoleErrors: string[] = [];
+    const consoleEvents: { type: string; text: string }[] = [];
     const pageErrors: string[] = [];
     page.on("console", (m) => {
-      if (m.type() === "error") consoleErrors.push(m.text());
+      consoleEvents.push({ type: m.type(), text: m.text() });
     });
     page.on("pageerror", (e) => pageErrors.push(e.message));
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -816,8 +816,8 @@ test.describe("browser-foundation – screenshots and preview", () => {
 
     expect(pageErrors, `page errors: ${pageErrors.join("; ")}`).toEqual([]);
     expect(
-      consoleErrors,
-      `console errors: ${consoleErrors.join("; ")}`,
+      consoleEvents,
+      `console errors: ${JSON.stringify(consoleEvents)}`,
     ).toEqual([]);
   });
 });

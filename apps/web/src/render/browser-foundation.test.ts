@@ -538,7 +538,9 @@ describe("browser-foundation – lifecycle exact single RAF/resize and error dis
     const callsBefore = rafSpy.mock.calls.length;
     rafCallback!(0);
     expect(onRuntimeError).toHaveBeenCalledTimes(1);
-    expect(onRuntimeError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    const call0 = onRuntimeError.mock.calls[0];
+    expect(call0).toBeDefined();
+    expect(call0![0]).toBeInstanceOf(Error);
     expect(cafSpy).toHaveBeenCalled();
     expect(lc.getRafId()).toBeNull();
     expect(rafSpy.mock.calls.length).toBe(callsBefore);
@@ -651,81 +653,60 @@ describe("browser-foundation – lifecycle exact single RAF/resize and error dis
     const pendingData = {
       totalLength: 77,
     } as unknown as import("@openvibecoaster/core").CompiledTrackData;
-    // first lifecycle: pending attachment stored
+
+    let shouldThrowOnAttach = true;
+    const throwingCtrlFactory = vi.fn(
+      () =>
+        ({
+          attachTrack: vi.fn(() => {
+            if (shouldThrowOnAttach) throw new Error("attach boom");
+          }),
+          clearTrack: vi.fn(),
+          updatePlayback: vi.fn(),
+          setMetric: vi.fn(),
+          hasTrack: () => false,
+          getMetricState: () => null,
+          getTrackData: () => null,
+          applyCamera: vi.fn(),
+          dispose: vi.fn(),
+        }) as unknown as ReturnType<
+          typeof import("./controller.js").createRendererController
+        >,
+    ) as unknown as typeof import("./controller.js").createRendererController;
+
     const lc = createAppLifecycle({
       canvas,
-      createHandle: () => null,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      createController: throwingCtrlFactory,
       getWindow: () => win,
       onWebGLFailure: onFailure,
       onSetupError,
     });
     lc.attachTrack(pendingData, {});
     expect(lc.getPendingAttachment()).not.toBeNull();
+    expect(lc.getAttachment()).toBeNull();
     expect(lc.init()).toBe(false);
-    expect(onSetupError).not.toHaveBeenCalled();
-    // now handle succeeds but controller attach throws
-    const attachThrowCtrl = vi.fn(() => ({
-      attachTrack: vi.fn(() => {
-        throw new Error("attach boom");
-      }),
-      clearTrack: vi.fn(),
-      updatePlayback: vi.fn(),
-      setMetric: vi.fn(),
-      hasTrack: () => false,
-      getMetricState: () => null,
-      getTrackData: () => null,
-      applyCamera: vi.fn(),
-      dispose: vi.fn(),
-    })) as unknown as typeof import("./controller.js").createRendererController;
-    const lc2 = createAppLifecycle({
-      canvas,
-      createHandle: (c) =>
-        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
-      createController: attachThrowCtrl,
-      getWindow: () => win,
-      onWebGLFailure: onFailure,
-      onSetupError,
-    });
-    // manually transfer pending? Simulate pending via attachTrack before init? For this lifecycle pending is empty, so directly test createHandleAndController attach path
-    // Instead test attachTrack throw after init
-    const goodCtrlForInit = vi.fn(() => ({
-      attachTrack: vi.fn(),
-      clearTrack: vi.fn(),
-      updatePlayback: vi.fn(),
-      setMetric: vi.fn(),
-      hasTrack: () => true,
-      getMetricState: () => null,
-      getTrackData: () => ({ totalLength: 77 }),
-      applyCamera: vi.fn(),
-      dispose: vi.fn(),
-    })) as unknown as typeof import("./controller.js").createRendererController;
-    const lc3 = createAppLifecycle({
-      canvas,
-      createHandle: (c) =>
-        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
-      createController: goodCtrlForInit,
-      getWindow: () => win,
-      onWebGLFailure: onFailure,
-      onSetupError,
-    });
-    expect(lc3.init()).toBe(true);
-    // now attach that throws
-    const badData = {
-      totalLength: 99,
-    } as unknown as import("@openvibecoaster/core").CompiledTrackData;
-    // make controller attach throw by replacing controller
-    const ctrl = lc3.getController() as unknown as {
-      attachTrack: ReturnType<typeof vi.fn>;
-    };
-    ctrl.attachTrack.mockImplementation(() => {
-      throw new Error("attach throw");
-    });
-    expect(() => lc3.attachTrack(badData, {})).toThrow();
-    // after throw, attachment should still be previous or null? No previous, so should be null and controller cleared
-    expect(lc3.getAttachment()).toBeNull();
+    expect(onSetupError).toHaveBeenCalledTimes(1);
+    const setupCall0 = onSetupError.mock.calls[0];
+    expect(setupCall0).toBeDefined();
+    expect(setupCall0![0]).toBeInstanceOf(Error);
+    expect((setupCall0![0] as Error).message).toBe("attach boom");
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(lc.getController()).toBeNull();
+    expect(lc.getRendererHandle()).toBeNull();
+    expect(lc.getRafId()).toBeNull();
+    expect(lc.getPendingAttachment()).not.toBeNull();
+    expect(lc.getAttachment()).toBeNull();
+
+    // retry succeeds when controller no longer throws
+    shouldThrowOnAttach = false;
+    expect(lc.reinitialize()).toBe(true);
+    expect(lc.getController()).not.toBeNull();
+    expect(lc.getAttachment()).not.toBeNull();
+    expect(lc.getPendingAttachment()).toBeNull();
+    expect(onSetupError).toHaveBeenCalledTimes(1);
     lc.dispose();
-    lc2.dispose();
-    lc3.dispose();
   });
 
   it("render throw (renderer.render) routes to onRuntimeError once, stops loop, honest status", async () => {
@@ -782,11 +763,16 @@ describe("browser-foundation – lifecycle exact single RAF/resize and error dis
   it("successful renders increment counter only after render returns", () => {
     const win = polyfillWindow();
     const canvas = fakeCanvas();
-    const rafSpy = vi.fn((_cb: FrameRequestCallback) => {
+    let rafCallback: FrameRequestCallback | null = null;
+    const rafSpy = vi.fn((cb: FrameRequestCallback) => {
+      rafCallback = cb;
       return 1;
     });
+    const cafSpy = vi.fn();
     (win as unknown as Record<string, unknown>).requestAnimationFrame =
       rafSpy as unknown as typeof requestAnimationFrame;
+    (win as unknown as Record<string, unknown>).cancelAnimationFrame =
+      cafSpy as unknown as typeof cancelAnimationFrame;
     (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
       rafSpy as unknown as typeof requestAnimationFrame;
     vi.spyOn(globalThis.performance, "now")
@@ -796,6 +782,7 @@ describe("browser-foundation – lifecycle exact single RAF/resize and error dis
     const goodRenderer = mockRenderer(canvas);
     const renderSpy = vi.fn();
     goodRenderer.render = renderSpy as unknown as typeof goodRenderer.render;
+    const onRuntimeError = vi.fn();
     const lc = createAppLifecycle({
       canvas,
       createHandle: () =>
@@ -812,15 +799,319 @@ describe("browser-foundation – lifecycle exact single RAF/resize and error dis
         dispose: vi.fn(),
       })) as unknown as typeof import("./controller.js").createRendererController,
       getWindow: () => win,
+      onRuntimeError,
     });
     expect(lc.init()).toBe(true);
     expect(lc.getSuccessfulRenderCount()).toBe(0);
-    // manually invoke tick once by retrieving raf callback
-    // we need to capture raf callback from registerLifecycle – rafSpy captured last call
-    // Instead simulate tick via private? For this test we directly check that counter increments only after successful render
-    // Since we cannot easily trigger tick without capturing, we assert initial 0 and after dispose still 0
+    expect(rafCallback).not.toBeNull();
+    const callsBefore = rafSpy.mock.calls.length;
+    rafCallback!(0);
+    expect(renderSpy).toHaveBeenCalledTimes(1);
+    expect(lc.getSuccessfulRenderCount()).toBe(1);
+    expect(onRuntimeError).not.toHaveBeenCalled();
+    expect(cafSpy).not.toHaveBeenCalled();
+    expect(rafSpy.mock.calls.length).toBe(callsBefore + 1);
     lc.dispose();
     expect(lc.getSuccessfulRenderCount()).toBe(0);
+    vi.restoreAllMocks();
+  });
+
+  it("null or throwing renderer does not increment count, surfaces runtime error and stops reschedule", () => {
+    const win = polyfillWindow();
+    const canvas = fakeCanvas();
+    // null renderer case
+    let rafCallbackNull: FrameRequestCallback | null = null;
+    const rafSpyNull = vi.fn((cb: FrameRequestCallback) => {
+      rafCallbackNull = cb;
+      return 10;
+    });
+    const cafSpyNull = vi.fn();
+    (win as unknown as Record<string, unknown>).requestAnimationFrame =
+      rafSpyNull as unknown as typeof requestAnimationFrame;
+    (win as unknown as Record<string, unknown>).cancelAnimationFrame =
+      cafSpyNull as unknown as typeof cancelAnimationFrame;
+    (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
+      rafSpyNull as unknown as typeof requestAnimationFrame;
+    vi.spyOn(globalThis.performance, "now").mockReturnValue(2000);
+    const onRuntimeErrorNull = vi.fn();
+    const nullHandle = {
+      scene: new THREE.Scene(),
+      renderer: null,
+      dispose: vi.fn(),
+      resize: vi.fn(),
+      getDpr: () => 1,
+    } as unknown as RendererHandle;
+    const lcNull = createAppLifecycle({
+      canvas,
+      createHandle: () => nullHandle,
+      createController: (() => ({
+        attachTrack: vi.fn(),
+        clearTrack: vi.fn(),
+        updatePlayback: vi.fn(),
+        setMetric: vi.fn(),
+        hasTrack: () => false,
+        getMetricState: () => null,
+        getTrackData: () => null,
+        applyCamera: vi.fn(),
+        dispose: vi.fn(),
+      })) as unknown as typeof import("./controller.js").createRendererController,
+      getWindow: () => win,
+      onRuntimeError: onRuntimeErrorNull,
+    });
+    expect(lcNull.init()).toBe(true);
+    const beforeNull = rafSpyNull.mock.calls.length;
+    rafCallbackNull!(0);
+    expect(onRuntimeErrorNull).toHaveBeenCalledTimes(1);
+    const nullCall0 = onRuntimeErrorNull.mock.calls[0];
+    expect(nullCall0).toBeDefined();
+    expect(nullCall0![0]).toBeInstanceOf(Error);
+    expect(lcNull.getSuccessfulRenderCount()).toBe(0);
+    expect(cafSpyNull).toHaveBeenCalled();
+    expect(lcNull.getRafId()).toBeNull();
+    expect(rafSpyNull.mock.calls.length).toBe(beforeNull);
+    lcNull.dispose();
+    vi.restoreAllMocks();
+
+    // throwing renderer case
+    const win2 = polyfillWindow();
+    let rafCbThrow: FrameRequestCallback | null = null;
+    const rafSpyThrow = vi.fn((cb: FrameRequestCallback) => {
+      rafCbThrow = cb;
+      return 11;
+    });
+    const cafSpyThrow = vi.fn();
+    (win2 as unknown as Record<string, unknown>).requestAnimationFrame =
+      rafSpyThrow as unknown as typeof requestAnimationFrame;
+    (win2 as unknown as Record<string, unknown>).cancelAnimationFrame =
+      cafSpyThrow as unknown as typeof cancelAnimationFrame;
+    (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
+      rafSpyThrow as unknown as typeof requestAnimationFrame;
+    vi.spyOn(globalThis.performance, "now").mockReturnValue(3000);
+    const onRuntimeErrorThrow = vi.fn();
+    const throwingRenderer = mockRenderer(canvas);
+    throwingRenderer.render = vi.fn(() => {
+      throw new Error("render throw");
+    }) as unknown as typeof throwingRenderer.render;
+    const lcThrow = createAppLifecycle({
+      canvas,
+      createHandle: () =>
+        createRendererHandle(canvas, {
+          createRenderer: () => throwingRenderer,
+        }),
+      createController: (() => ({
+        attachTrack: vi.fn(),
+        clearTrack: vi.fn(),
+        updatePlayback: vi.fn(),
+        setMetric: vi.fn(),
+        hasTrack: () => false,
+        getMetricState: () => null,
+        getTrackData: () => null,
+        applyCamera: vi.fn(),
+        dispose: vi.fn(),
+      })) as unknown as typeof import("./controller.js").createRendererController,
+      getWindow: () => win2,
+      onRuntimeError: onRuntimeErrorThrow,
+    });
+    expect(lcThrow.init()).toBe(true);
+    const beforeThrow = rafSpyThrow.mock.calls.length;
+    rafCbThrow!(0);
+    expect(onRuntimeErrorThrow).toHaveBeenCalledTimes(1);
+    expect(lcThrow.getSuccessfulRenderCount()).toBe(0);
+    expect(cafSpyThrow).toHaveBeenCalled();
+    expect(lcThrow.getRafId()).toBeNull();
+    expect(rafSpyThrow.mock.calls.length).toBe(beforeThrow);
+    lcThrow.dispose();
+    vi.restoreAllMocks();
+  });
+});
+
+describe("browser-foundation – main visible error handler preserves private ownership", () => {
+  function polyfillWindowLocal(): Window & typeof globalThis {
+    const g = globalThis as unknown as Record<string, unknown>;
+    if (!g.requestAnimationFrame)
+      g.requestAnimationFrame = (() =>
+        1) as unknown as typeof requestAnimationFrame;
+    if (!g.cancelAnimationFrame)
+      g.cancelAnimationFrame =
+        (() => {}) as unknown as typeof cancelAnimationFrame;
+    if (!g.addEventListener)
+      g.addEventListener = (() => {}) as unknown as typeof addEventListener;
+    if (!g.removeEventListener)
+      g.removeEventListener =
+        (() => {}) as unknown as typeof removeEventListener;
+    if (!g.window) g.window = g;
+    if (!g.performance)
+      g.performance = { now: () => Date.now() } as unknown as Performance;
+    const win = (g.window ?? g) as unknown as Window & typeof globalThis;
+    (win as unknown as Record<string, unknown>).requestAnimationFrame =
+      g.requestAnimationFrame as unknown as typeof requestAnimationFrame;
+    (win as unknown as Record<string, unknown>).cancelAnimationFrame =
+      g.cancelAnimationFrame as unknown as typeof cancelAnimationFrame;
+    return win as Window & typeof globalThis;
+  }
+
+  it("attach failure surfaces visible unexpected error, sets error status, preserves private lifecycle ownership", () => {
+    const win = polyfillWindowLocal();
+    const canvas = fakeCanvas();
+    let generationStatus = "pending";
+    let hasWebGL = true;
+    let lastError: unknown = null;
+    const handleVisibleUnexpectedError = (e: unknown): void => {
+      lastError = e;
+      hasWebGL = true;
+      generationStatus = "error";
+    };
+    const onSetupError = vi.fn((e: unknown) => handleVisibleUnexpectedError(e));
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      createController: (() => ({
+        attachTrack: vi.fn(),
+        clearTrack: vi.fn(),
+        updatePlayback: vi.fn(),
+        setMetric: vi.fn(),
+        hasTrack: () => false,
+        getMetricState: () => null,
+        getTrackData: () => null,
+        applyCamera: vi.fn(),
+        dispose: vi.fn(),
+      })) as unknown as typeof import("./controller.js").createRendererController,
+      getWindow: () => win,
+      onSetupError,
+      onWebGLFailure: vi.fn(),
+    });
+    expect(lc.init()).toBe(true);
+    const ctrl = lc.getController() as unknown as {
+      attachTrack: ReturnType<typeof vi.fn>;
+    };
+    ctrl.attachTrack.mockImplementation(() => {
+      throw new Error("attach fail");
+    });
+    const badData = {
+      totalLength: 99,
+    } as unknown as import("@openvibecoaster/core").CompiledTrackData;
+    let caught: unknown = null;
+    try {
+      lc.attachTrack(badData, {});
+    } catch (e) {
+      caught = e;
+      handleVisibleUnexpectedError(e);
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(generationStatus, "visible status error after attach failure").toBe(
+      "error",
+    );
+    expect(hasWebGL, "hasWebGL true on unexpected error").toBe(true);
+    expect(lastError).toBe(caught);
+    expect(onSetupError).not.toHaveBeenCalled(); // direct attach throw does not auto-route; main handler does
+    // private ownership: no mutable globals exposed
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBeUndefined();
+    expect(
+      (globalThis as unknown as Record<string, unknown>)
+        .__vibecoasterController,
+    ).toBeUndefined();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterMetrics,
+    ).toBeUndefined();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterAttachTrack,
+    ).toBeUndefined();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterRendererHandle,
+    ).toBeUndefined();
+    // lifecycle still privately owned, not cleared globally
+    expect(lc.getController()).not.toBeNull();
+    lc.dispose();
+  });
+
+  it("camera apply failure surfaces same visible unexpected error, sets error status, preserves private ownership", () => {
+    const win = polyfillWindowLocal();
+    const canvas = fakeCanvas();
+    let generationStatus = "pending";
+    let hasWebGL = true;
+    let lastError: unknown = null;
+    const handleVisibleUnexpectedError = (e: unknown): void => {
+      lastError = e;
+      hasWebGL = true;
+      generationStatus = "error";
+    };
+    const onRuntimeError = vi.fn((e: unknown) =>
+      handleVisibleUnexpectedError(e),
+    );
+    let rafCb: FrameRequestCallback | null = null;
+    const rafSpy = vi.fn((cb: FrameRequestCallback) => {
+      rafCb = cb;
+      return 5;
+    });
+    const cafSpy = vi.fn();
+    (win as unknown as Record<string, unknown>).requestAnimationFrame =
+      rafSpy as unknown as typeof requestAnimationFrame;
+    (win as unknown as Record<string, unknown>).cancelAnimationFrame =
+      cafSpy as unknown as typeof cancelAnimationFrame;
+    (globalThis as unknown as Record<string, unknown>).requestAnimationFrame =
+      rafSpy as unknown as typeof requestAnimationFrame;
+    vi.spyOn(globalThis.performance, "now").mockReturnValue(4000);
+    const lc = createAppLifecycle({
+      canvas,
+      createHandle: (c) =>
+        createRendererHandle(c, { createRenderer: () => mockRenderer(c) }),
+      createController: (() => ({
+        attachTrack: vi.fn(),
+        clearTrack: vi.fn(),
+        updatePlayback: vi.fn(),
+        setMetric: vi.fn(),
+        hasTrack: () => false,
+        getMetricState: () => null,
+        getTrackData: () => null,
+        applyCamera: vi.fn(() => {
+          throw new Error("camera boom");
+        }),
+        dispose: vi.fn(),
+      })) as unknown as typeof import("./controller.js").createRendererController,
+      getWindow: () => win,
+      onRuntimeError,
+    });
+    expect(lc.init()).toBe(true);
+    expect(generationStatus).toBe("pending");
+    rafCb!(0);
+    expect(onRuntimeError).toHaveBeenCalledTimes(1);
+    expect(generationStatus, "visible error status after camera failure").toBe(
+      "error",
+    );
+    expect(hasWebGL).toBe(true);
+    expect(lastError).toBeInstanceOf(Error);
+    expect((lastError as Error).message).toBe("camera boom");
+    expect(lc.getRafId()).toBeNull();
+    expect(cafSpy).toHaveBeenCalled();
+    // same handler as attach failure – classification is runtime unexpected error, not WebGL fallback
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterController,
+    ).toBeUndefined();
+    expect(
+      (win as unknown as Record<string, unknown>).__vibecoasterMetrics,
+    ).toBeUndefined();
+    // also test direct camera-change path via main's handler (simulate applyCamera called from main)
+    generationStatus = "pending";
+    hasWebGL = true;
+    lastError = null;
+    try {
+      lc.getController()?.applyCamera(
+        "orbit" as unknown as import("../viewState.js").CameraId,
+        {
+          reducedMotion: false,
+          deltaMs: 16,
+        },
+      );
+    } catch (e) {
+      handleVisibleUnexpectedError(e);
+    }
+    expect(generationStatus).toBe("error");
+    expect(hasWebGL).toBe(true);
+    expect(lastError).toBeInstanceOf(Error);
+    lc.dispose();
     vi.restoreAllMocks();
   });
 });

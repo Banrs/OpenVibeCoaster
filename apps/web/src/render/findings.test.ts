@@ -495,7 +495,8 @@ describe("findings round3 – lifecycle manager (production) – RAF/resize, rea
     }
     expect(
       (win as unknown as Record<string, unknown>).__vibecoasterController,
-    ).toBe(lc.getController());
+    ).toBeUndefined();
+    expect(lc.getController()).not.toBeNull();
     lc.dispose();
     expect(
       (win as unknown as Record<string, unknown>).__vibecoasterController,
@@ -524,7 +525,8 @@ describe("findings round3 – lifecycle manager (production) – RAF/resize, rea
     const ctrlBefore = lc.getController();
     expect(
       (win as unknown as Record<string, unknown>).__vibecoasterController,
-    ).toBe(ctrlBefore);
+    ).toBeUndefined();
+    expect(ctrlBefore).not.toBeNull();
     shouldFail = true;
     expect(lc.reinitialize()).toBe(false);
     expect(lc.getController()).toBeNull();
@@ -539,7 +541,8 @@ describe("findings round3 – lifecycle manager (production) – RAF/resize, rea
     expect(lc.hasTrack()).toBe(true);
     expect(
       (win as unknown as Record<string, unknown>).__vibecoasterController,
-    ).toBe(lc.getController());
+    ).toBeUndefined();
+    expect(lc.getController()).not.toBeNull();
     lc.dispose();
     expect(
       (win as unknown as Record<string, unknown>).__vibecoasterController,
@@ -638,7 +641,8 @@ describe("findings round3 – lifecycle manager (production) – RAF/resize, rea
     expect(lc.hasTrack()).toBe(true);
     expect(
       (win as unknown as Record<string, unknown>).__vibecoasterController,
-    ).toBe(lc.getController());
+    ).toBeUndefined();
+    expect(lc.getController()).not.toBeNull();
     lc.dispose();
     expect(lc.hasTrack()).toBe(false);
     expect(lc.getRendererHandle()).toBeNull();
@@ -768,7 +772,8 @@ describe("findings round4 – lifecycle transactional reattachment", () => {
     expect(lc.hasTrack()).toBe(true);
     expect(
       (win as unknown as Record<string, unknown>).__vibecoasterController,
-    ).toBe(lc.getController());
+    ).toBeUndefined();
+    expect(lc.getController()).not.toBeNull();
     lc.dispose();
   });
 

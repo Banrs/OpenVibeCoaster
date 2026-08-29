@@ -211,7 +211,7 @@ export function createRendererHandle(
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     const enableShadows = options.enableShadows ?? true;
     renderer.shadowMap.enabled = enableShadows;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
 
     const getDprNow = (): number => {
       const maybeWin = globalThis as unknown as {

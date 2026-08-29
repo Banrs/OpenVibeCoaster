@@ -311,11 +311,16 @@ for (const input of modeInputs) {
 for (const input of cameraInputs) {
   input.addEventListener("change", () => {
     if (input.checked) {
-      state.camera = selectCamera(input.value as CameraId, state.camera);
-      lifecycle.getController()?.applyCamera(state.camera, {
-        reducedMotion: state.reducedMotion,
-        deltaMs: 16,
-      });
+      try {
+        state.camera = selectCamera(input.value as CameraId, state.camera);
+        lifecycle.getController()?.applyCamera(state.camera, {
+          reducedMotion: state.reducedMotion,
+          deltaMs: 16,
+        });
+      } catch (error) {
+        handleVisibleUnexpectedError(error);
+        return;
+      }
       render();
     }
   });
@@ -496,6 +501,13 @@ window
 let metrics = new RenderMetrics();
 let lastSetupError: unknown = null;
 let lastRuntimeError: unknown = null;
+function handleVisibleUnexpectedError(error: unknown): void {
+  lastSetupError = error;
+  lastRuntimeError = error;
+  hasWebGL = true;
+  state.generationStatus = "error";
+  render();
+}
 const lifecycle = createAppLifecycle({
   canvas: viewportCanvas,
   getTerrainSeed: () => state.seed || "default-terrain",
@@ -509,16 +521,10 @@ const lifecycle = createAppLifecycle({
     render();
   },
   onSetupError: (e) => {
-    lastSetupError = e;
-    hasWebGL = true;
-    state.generationStatus = "error";
-    render();
+    handleVisibleUnexpectedError(e);
   },
   onRuntimeError: (e) => {
-    lastRuntimeError = e;
-    hasWebGL = true;
-    state.generationStatus = "error";
-    render();
+    handleVisibleUnexpectedError(e);
   },
 });
 
@@ -577,7 +583,7 @@ webglRetry.addEventListener("click", () => {
   }
 });
 
-// Expose concrete integration for Wave 3 – never fabricate a generated result
+// Internal integration for Wave 3 – never fabricate a generated result (private, not window-exposed)
 function attachCompiledTrack(
   data: CompiledTrackData,
   options: {
@@ -600,10 +606,8 @@ function attachCompiledTrack(
       metricData: options.metricData,
       timeline: options.timeline,
     });
-  } catch {
-    // transactional attachTrack rejected – do not mark ready, downgrade truthfully
-    syncReadyDowngrade(false);
-    render();
+  } catch (error) {
+    handleVisibleUnexpectedError(error);
     return;
   }
   state.generationStatus = "ready";
@@ -614,6 +618,8 @@ function clearCompiledTrack(): void {
   state.generationStatus = "pending";
   render();
 }
+void attachCompiledTrack;
+void clearCompiledTrack;
 
 // Re-init terrain deterministically when seed changes and user generates (still error path)
 // For now terrain seed follows state.seed via initRenderer on generation attempt
@@ -627,16 +633,7 @@ function wrappedGenerate(): void {
 generateBtn.removeEventListener("click", handleGenerate);
 generateBtn.addEventListener("click", wrappedGenerate);
 
-// Keep metrics and integration accessible for debugging and Wave 3 (read-only snapshot handles lifecycle privacy)
-window.__vibecoasterMetrics = metrics;
-(
-  window as unknown as { __vibecoasterAttachTrack?: typeof attachCompiledTrack }
-).__vibecoasterAttachTrack = attachCompiledTrack;
-(
-  window as unknown as { __vibecoasterClearTrack?: typeof clearCompiledTrack }
-).__vibecoasterClearTrack = clearCompiledTrack;
-
-// Minimal read-only dev/test snapshot API returning frozen primitives only – no handle/controller/scene/renderer/state references
+// Minimal read-only dev/test snapshot API returning frozen primitives only – no handle/controller/scene/renderer/state/metrics references
 function __vibecoasterSnapshot(): Readonly<{
   rendererReady: boolean;
   successfulRenderCount: number;
@@ -663,8 +660,6 @@ function __vibecoasterSnapshot(): Readonly<{
 }
 (window as unknown as Record<string, unknown>).__vibecoasterSnapshot =
   __vibecoasterSnapshot;
-(window as unknown as Record<string, unknown>).__vibecoasterTestSnapshot =
-  __vibecoasterSnapshot;
 
 // Initial paint – lifecycle manager is sole resize owner (no duplicate direct resize)
 render();
@@ -672,10 +667,6 @@ render();
 // Expose for manual inspection in devtools (not used in tests)
 declare global {
   interface Window {
-    __vibecoasterMetrics?: RenderMetrics;
-    __vibecoasterAttachTrack?: typeof attachCompiledTrack;
-    __vibecoasterClearTrack?: typeof clearCompiledTrack;
     __vibecoasterSnapshot?: typeof __vibecoasterSnapshot;
-    __vibecoasterTestSnapshot?: typeof __vibecoasterSnapshot;
   }
 }
