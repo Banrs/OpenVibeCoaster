@@ -36,13 +36,14 @@ test.describe("vertical-slice – insta generate to ride", () => {
       timeout: 5_000,
     });
     const lengthRaw = await lengthEl.getAttribute("data-length-m");
-    const lengthText = lengthRaw ?? (await lengthEl.textContent());
-    const lengthM = lengthText
-      ? Number.parseFloat(lengthText.replace(/[^0-9.]/g, ""))
-      : NaN;
-    const lengthMeters = lengthM < 100 ? lengthM * 1000 : lengthM;
-    expect(lengthMeters).toBeGreaterThanOrEqual(1600);
-    expect(lengthMeters).toBeLessThanOrEqual(2200);
+    expect(
+      lengthRaw,
+      "data-length-m finite raw metres required",
+    ).not.toBeNull();
+    const lengthM = Number.parseFloat(lengthRaw!);
+    expect(Number.isFinite(lengthM), "data-length-m must be finite").toBe(true);
+    expect(lengthM).toBeGreaterThanOrEqual(1600);
+    expect(lengthM).toBeLessThanOrEqual(2200);
 
     const elementTexts = await page
       .locator("#element-list li")
@@ -372,8 +373,8 @@ test.describe("vertical-slice – directed generation", () => {
 
     await page.locator("#target-total-length-value").fill("1800");
     await page.locator("#target-total-length-class").selectOption("hard");
-    await page.locator("#target-end-height-value").fill("18");
-    await page.locator("#target-end-height-class").selectOption("soft");
+    await page.locator("#target-end-y-value").fill("18");
+    await page.locator("#target-end-y-class").selectOption("soft");
 
     await page.locator("#seed-input").click();
     await page.locator("#seed-input").fill("1234");
@@ -421,8 +422,8 @@ test.describe("vertical-slice – directed generation", () => {
 
     await page.locator("#target-total-length-value").fill("5000");
     await page.locator("#target-total-length-class").selectOption("hard");
-    await page.locator("#target-end-height-value").fill("120");
-    await page.locator("#target-end-height-class").selectOption("hard");
+    await page.locator("#target-end-y-value").fill("120");
+    await page.locator("#target-end-y-class").selectOption("hard");
 
     await page.locator("#seed-input").click();
     await page.locator("#seed-input").fill("9999");
@@ -501,22 +502,19 @@ test.describe("vertical-slice – persistence", () => {
 
     const preLengthEl = page.locator('[data-testid="track-length"]');
     await expect(preLengthEl).toBeVisible();
-    const preLength = Number.parseFloat(
-      (
-        (await preLengthEl.getAttribute("data-length-m")) ??
-        (await preLengthEl.textContent()) ??
-        ""
-      ).replace(/[^0-9.]/g, ""),
-    );
+    const preLengthRaw = await preLengthEl.getAttribute("data-length-m");
+    expect(
+      preLengthRaw,
+      "data-length-m finite raw metres required",
+    ).not.toBeNull();
+    const preLength = Number.parseFloat(preLengthRaw!);
+    expect(Number.isFinite(preLength)).toBe(true);
     const preDurEl = page.locator('[data-testid="timeline-duration"]');
     await expect(preDurEl).toBeVisible();
-    const preDuration = Number.parseFloat(
-      (
-        (await preDurEl.getAttribute("data-duration-s")) ??
-        (await preDurEl.textContent()) ??
-        ""
-      ).replace(/[^0-9.]/g, ""),
-    );
+    const preDurRaw = await preDurEl.getAttribute("data-duration-s");
+    expect(preDurRaw, "data-duration-s required").not.toBeNull();
+    const preDuration = Number.parseFloat(preDurRaw!);
+    expect(Number.isFinite(preDuration)).toBe(true);
     const preChecksumEl = page.locator('[data-testid="compiled-checksum"]');
     await expect(preChecksumEl).toBeVisible();
     const preChecksum =
@@ -565,26 +563,20 @@ test.describe("vertical-slice – persistence", () => {
         .catch(() => null)) ?? "";
     expect(postChecksum.toLowerCase()).toBe(preChecksum.toLowerCase());
 
-    const postLengthRaw =
-      (await page
-        .locator('[data-testid="track-length"]')
-        .getAttribute("data-length-m")
-        .catch(() => null)) ??
-      (await page.locator('[data-testid="track-length"]').textContent());
-    const postLength = postLengthRaw
-      ? Number.parseFloat(postLengthRaw.replace(/[^0-9.]/g, ""))
-      : NaN;
+    const postLengthRaw = await page
+      .locator('[data-testid="track-length"]')
+      .getAttribute("data-length-m");
+    expect(postLengthRaw, "data-length-m after reload required").not.toBeNull();
+    const postLength = Number.parseFloat(postLengthRaw!);
+    expect(Number.isFinite(postLength)).toBe(true);
     expect(postLength).toBeCloseTo(preLength, 1);
 
-    const postDurRaw =
-      (await page
-        .locator('[data-testid="timeline-duration"]')
-        .getAttribute("data-duration-s")
-        .catch(() => null)) ??
-      (await page.locator('[data-testid="timeline-duration"]').textContent());
-    const postDur = postDurRaw
-      ? Number.parseFloat(postDurRaw.replace(/[^0-9.]/g, ""))
-      : NaN;
+    const postDurRaw = await page
+      .locator('[data-testid="timeline-duration"]')
+      .getAttribute("data-duration-s");
+    expect(postDurRaw, "data-duration-s after reload required").not.toBeNull();
+    const postDur = Number.parseFloat(postDurRaw!);
+    expect(Number.isFinite(postDur)).toBe(true);
     expect(postDur).toBeCloseTo(preDuration, 1);
 
     const postIds = await page
