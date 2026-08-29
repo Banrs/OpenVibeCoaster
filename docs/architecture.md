@@ -104,11 +104,13 @@ simulation timeline and do not invent data.
 
 `npm run build` invokes `vite build` and then
 `apps/web/scripts/portable-packager.mjs`, which inlines linked stylesheets and
-scripts into `apps/web/dist/OpenVibeCoaster.html`. The invariant
+scripts (including the bundled Three.js rendering code) into
+`apps/web/dist/OpenVibeCoaster.html`. The invariant
 `PORTABLE_WORKER_INVARIANT` requires future production workers to be
 Vite-inlined and Blob-backed so the single-file artifact is preserved. The
 portable file opens directly in a current built-in browser with no server,
-CDN, fonts, or media dependency.
+CDN, fonts, media, or runtime network fetch; all runtime code is already
+bundled in the artifact.
 
 ## CI and tooling
 

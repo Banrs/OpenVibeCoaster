@@ -58,10 +58,11 @@ npm run verify
 The GitHub Actions CI enforces Node 24 and npm 11.17.0 with shell-native
 assertions, runs the quality gate (typecheck, lint, format, unit tests, build,
 bench, Playwright Chromium) on `ubuntu-latest`, and verifies the portable
-artifact on `windows-latest` and `macos-latest`. Build-time dependencies
-(Node, npm, Vite, TypeScript, Vitest, Playwright, Oxlint, Prettier, Three.js)
-are disclosed in `package.json` and `apps/web/package.json`; they are not
-runtime dependencies.
+artifact on `windows-latest` and `macos-latest`. Build-time npm dependencies
+(Node 24, npm 11.17.0, Vite, TypeScript, Vitest, Playwright, Oxlint, Prettier)
+are disclosed in `package.json` and `apps/web/package.json`. Three.js is
+bundled into `OpenVibeCoaster.html` at build time as the runtime rendering
+code; no runtime package install, CDN, server, or network fetch is required.
 
 ## Portable build and offline use
 
@@ -74,18 +75,23 @@ apps/web/dist/OpenVibeCoaster.html
 
 Double-click the file or use File > Open in Edge, Chrome, Safari, or Firefox.
 No server (`vite preview` is not required), `npm install` at runtime, account,
-backend, CDN, web fonts, media download, or runtime dependency is required.
-`apps/web/scripts/portable-packager.mjs` inlines CSS and JS so the output is a
-single-file offline artifact. The project does not produce a native executable;
-the only distribution is this HTML file.
+backend, CDN, web fonts, or media download is required. The rendering code
+(Three.js) is already bundled inside the HTML by
+`apps/web/scripts/portable-packager.mjs`, which inlines CSS and JS so the
+output is a single-file offline artifact. The project does not produce a native
+executable; the only distribution is this HTML file.
 
 ## Flagship intent and default train
 
 The flagship design intent is an 80 m inverted top-hat target. It is a
 `DESIGN_TARGET`, not evidence that an unvalidated generated track achieves
 80 m. The dated records on 2026-08-29 document Spitfire at 73 m and
-127 km/h, and Falcons Flight at 195 m, 250 km/h, and 4,325 m length, each
-with official manufacturer/park and RCDB URLs beside the fact. The snapshot
+127 km/h, and Falcons Flight at 195 m, 250 km/h, and 4,325 m length. Each
+official metric fact carries its official `sourceUrls` with a nearby
+`relatedSourceUrls` pointing to the corresponding RCDB entry
+(21313 for Spitfire, 21315 for Falcons Flight) and a note that RCDB
+source-native values are recorded separately and are not asserted as
+conversions; RCDB source-native facts carry the inverse. The snapshot
 compares the 80 m target with the source-verified 73 m Spitfire height as a
 derived 7 m difference (`80 m - 73 m`); this is not a safety or record claim.
 
@@ -123,8 +129,12 @@ ready track.
 
 Machine-readable research lives in
 [the dated records snapshot](data/records/records-2026-08-29.json), with
-source URLs and retrieval dates beside each fact. The focused source notes are
-in [docs/research-snapshot.md](docs/research-snapshot.md).
+source URLs and retrieval dates beside each fact. `sourceUrls` is reserved for
+sources that actually support the stated value; nearby `relatedSourceUrls`
+with a concise note provides context-only URLs (e.g., RCDB entries beside
+official metric facts and vice versa) without claiming a corroborating
+conversion. The focused source notes are in
+[docs/research-snapshot.md](docs/research-snapshot.md).
 
 The repository distinguishes these labels:
 
@@ -136,11 +146,11 @@ The repository distinguishes these labels:
 - `DESIGN_ASSUMPTION`: model input chosen for the default train.
 - `UNKNOWN_UNCONFIGURED`: no licensed ASTM criteria are configured.
 
-The ASTM F2291-26 file stores only designation, title, status, update date,
-DOI, source, and configuration state. It intentionally contains no proprietary
-acceleration thresholds and makes no compliance or certification claim. Every
-external fact carries its source URL and `retrievedAt: 2026-08-29` without
-copying copyrighted text.
+The ASTM F2291-26 file at `https://store.astm.org/standards/f2291` stores
+only designation, title, status (Active), last updated 2026-07-15, DOI, and
+source. It intentionally contains no proprietary acceleration thresholds and
+makes no compliance or certification claim. Every external fact carries its
+source URL and `retrievedAt: 2026-08-29` without copying copyrighted text.
 
 ## Browser requirements and persistence
 
@@ -156,7 +166,8 @@ load does not apply unvalidated values or claim a ready track.
 
 All redistributable visual assets are procedural unless redistribution rights
 are recorded. The repository does not depend on proprietary ride or standards
-assets and does not fetch fonts, media, or code from a CDN at runtime.
+assets and does not fetch fonts, media, or additional code from a CDN at
+runtime; all required runtime code is already bundled in the portable HTML.
 
 ## v1 limitations
 

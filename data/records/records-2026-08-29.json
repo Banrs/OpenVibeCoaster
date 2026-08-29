@@ -1,7 +1,14 @@
 {
   "schemaVersion": 1,
   "capturedAt": "2026-08-29",
-  "provenanceVocabulary": ["SOURCE_VERIFIED", "DERIVED", "DESIGN_TARGET"],
+  "provenanceVocabulary": [
+    "SOURCE_VERIFIED",
+    "DERIVED",
+    "DESIGN_TARGET",
+    "PROJECT_ENGINEERING_LIMIT",
+    "DESIGN_ASSUMPTION",
+    "UNKNOWN_UNCONFIGURED"
+  ],
   "records": [
     {
       "id": "spitfire-inverted-top-hat",
@@ -39,6 +46,8 @@
             "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
             "https://www.intamin.com/category/innovation/"
           ],
+          "relatedSourceUrls": ["https://rcdb.com/21313.htm"],
+          "relatedSourceNote": "RCDB Spitfire entry shown as related context; not a source for this value and no conversion is asserted.",
           "retrievedAt": "2026-08-29"
         },
         {
@@ -50,6 +59,8 @@
             "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
             "https://www.intamin.com/category/innovation/"
           ],
+          "relatedSourceUrls": ["https://rcdb.com/21313.htm"],
+          "relatedSourceNote": "RCDB Spitfire entry shown as related context; not a source for this value and no conversion is asserted.",
           "retrievedAt": "2026-08-29"
         },
         {
@@ -60,6 +71,8 @@
           "sourceUrls": [
             "https://www.intamin.com/project/spitfire-six-flags-qiddiya/"
           ],
+          "relatedSourceUrls": ["https://rcdb.com/21313.htm"],
+          "relatedSourceNote": "RCDB Spitfire entry shown as related context; not a source for this value.",
           "retrievedAt": "2026-08-29"
         }
       ]
@@ -78,6 +91,8 @@
             "https://www.intamin.com/category/innovation/",
             "https://www.intamin.com/company/about-us/"
           ],
+          "relatedSourceUrls": ["https://rcdb.com/21315.htm"],
+          "relatedSourceNote": "RCDB source-native values are recorded separately; not asserted as conversion.",
           "retrievedAt": "2026-08-29"
         },
         {
@@ -90,6 +105,8 @@
             "https://www.intamin.com/category/innovation/",
             "https://www.intamin.com/company/about-us/"
           ],
+          "relatedSourceUrls": ["https://rcdb.com/21315.htm"],
+          "relatedSourceNote": "RCDB source-native values are recorded separately; not asserted as conversion.",
           "retrievedAt": "2026-08-29"
         },
         {
@@ -102,6 +119,8 @@
             "https://www.intamin.com/category/innovation/",
             "https://www.intamin.com/company/about-us/"
           ],
+          "relatedSourceUrls": ["https://rcdb.com/21315.htm"],
+          "relatedSourceNote": "RCDB source-native values are recorded separately; not asserted as conversion.",
           "retrievedAt": "2026-08-29"
         }
       ]
@@ -116,6 +135,11 @@
           "unit": "ft",
           "provenance": "SOURCE_VERIFIED",
           "sourceUrls": ["https://rcdb.com/21315.htm"],
+          "relatedSourceUrls": [
+            "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+            "https://www.intamin.com/category/innovation/"
+          ],
+          "relatedSourceNote": "Official metric values are recorded separately; not asserted as conversion.",
           "retrievedAt": "2026-08-29",
           "note": "Stored in the source's native imperial unit; no conversion is asserted here."
         },
@@ -125,6 +149,11 @@
           "unit": "ft",
           "provenance": "SOURCE_VERIFIED",
           "sourceUrls": ["https://rcdb.com/21315.htm"],
+          "relatedSourceUrls": [
+            "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+            "https://www.intamin.com/category/innovation/"
+          ],
+          "relatedSourceNote": "Official metric values are recorded separately; not asserted as conversion.",
           "retrievedAt": "2026-08-29",
           "note": "Stored in the source's native imperial unit; no conversion is asserted here."
         },
@@ -134,6 +163,11 @@
           "unit": "mph",
           "provenance": "SOURCE_VERIFIED",
           "sourceUrls": ["https://rcdb.com/21315.htm"],
+          "relatedSourceUrls": [
+            "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+            "https://www.intamin.com/category/innovation/"
+          ],
+          "relatedSourceNote": "Official metric values are recorded separately; not asserted as conversion.",
           "retrievedAt": "2026-08-29",
           "note": "Stored in the source's native imperial unit; no conversion is asserted here."
         }
