@@ -29,10 +29,19 @@
   box-sizing: border-box;
 }
 
-html,
+html {
+  height: 100%;
+  overflow: hidden;
+  max-width: 100%;
+}
+
 body {
   margin: 0;
-  min-height: 100%;
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
   color: var(--text);
   font:
@@ -42,12 +51,6 @@ body {
     "Segoe UI",
     sans-serif;
   max-width: 100%;
-}
-
-body {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
 }
 
 a,
@@ -91,8 +94,9 @@ select {
   border: 0;
 }
 
-/* Top command bar — compact, no gradient */
+/* Top command bar — compact, fixed flex row */
 #top-bar {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -102,9 +106,6 @@ select {
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: #101620;
-  position: sticky;
-  top: 0;
-  z-index: 20;
   min-width: 0;
   max-width: 100%;
 }
@@ -305,8 +306,9 @@ select {
   color: #cfe0ff;
 }
 
-/* Mobile tabs */
+/* Mobile tabs — fixed row */
 .mobile-tabs {
+  flex: 0 0 auto;
   display: none;
   gap: 6px;
   padding: 8px 10px;
@@ -320,23 +322,27 @@ select {
   background: #1e2a3d;
 }
 
-/* Layout — dense cockpit */
+/* Layout — fixed viewport cockpit */
 #app-layout {
+  flex: 1 1 0;
   display: grid;
   grid-template-columns: var(--left-w) minmax(0, 1fr) var(--right-w);
   gap: 0;
-  flex: 1;
   min-height: 0;
   min-width: 0;
   max-width: 100%;
+  overflow: hidden;
 }
 
 .panel {
   background: var(--panel);
   border-right: 1px solid var(--border);
   padding: 12px 10px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   min-width: 0;
+  min-height: 0;
+  overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
@@ -544,14 +550,15 @@ select {
   flex: 0 0 88px;
 }
 
-/* Viewport — full, flat, no haze */
+/* Viewport — fills remaining, no expanding min */
 .viewport-host {
   position: relative;
   background: #070a0f;
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
   overflow: hidden;
-  min-height: 440px;
+  min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -560,7 +567,6 @@ select {
   display: block;
   width: 100%;
   height: 100%;
-  min-height: 440px;
   background: #080c13;
 }
 
@@ -761,8 +767,9 @@ body.no-webgl #viewport-canvas {
   visibility: hidden;
 }
 
-/* Telemetry — bottom transport */
+/* Telemetry — fixed bottom row */
 .telemetry {
+  flex: 0 0 auto;
   border-top: 1px solid var(--border);
   background: var(--panel);
   padding: 10px;
@@ -770,6 +777,7 @@ body.no-webgl #viewport-canvas {
   flex-direction: column;
   gap: 10px;
   min-height: var(--tele-h);
+  overflow: hidden;
 }
 
 .telemetry-controls {
@@ -849,7 +857,7 @@ body.no-webgl #viewport-canvas {
 body.mode-ride #generation-rail,
 body.mode-ride #element-inspector,
 body.mode-ride .telemetry {
-  display: none;
+  display: none !important;
 }
 
 body.mode-ride #app-layout {
@@ -857,13 +865,8 @@ body.mode-ride #app-layout {
 }
 
 body.mode-ride .viewport-host {
-  min-height: calc(100vh - var(--topbar-h) - 40px);
   border-left: none;
   border-right: none;
-}
-
-body.mode-ride #viewport-canvas {
-  min-height: calc(100vh - var(--topbar-h) - 40px);
 }
 
 /* Reduced motion */
@@ -896,14 +899,6 @@ body.reduced-motion * {
   box-shadow: 0 0 0 4px var(--focus-ring);
 }
 
-/* Fallback for browsers without :has focus */
-.btn:focus-visible,
-.field input:focus-visible,
-.field select:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
 /* Responsive */
 @media (max-width: 1100px) {
   #app-layout {
@@ -915,15 +910,30 @@ body.reduced-motion * {
     --right-w: 280px;
   }
 
+  /* Prevent overlay/legend collision at 1024 */
+  .viewport-overlay {
+    max-width: 220px;
+  }
+
+  .metric-legend {
+    top: auto;
+    bottom: 52px;
+    left: 8px;
+    right: 8px;
+    justify-content: center;
+  }
+
   .status {
-    max-width: 180px;
+    max-width: none;
+    white-space: normal;
+    flex: 1 1 100%;
   }
 
   .status-text {
-    max-width: 160px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    max-width: none;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
   }
 }
 
@@ -934,40 +944,68 @@ body.reduced-motion * {
   }
 
   #app-layout {
-    grid-template-columns: 1fr;
-    max-width: 100%;
+    display: block;
+    position: relative;
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
+  .viewport-host {
+    position: absolute;
+    inset: 0;
+    min-height: 0;
+  }
+
+  #viewport-canvas {
+    min-height: 0;
+  }
+
+  /* Overlay drawers — not document-expanding rows */
   .panel {
-    border: none;
-    border-bottom: 1px solid var(--border);
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: min(88vw, 320px);
+    z-index: 25;
     display: none;
+    border: 1px solid var(--border);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    max-height: 100dvh;
+    overflow-y: auto;
+    padding-top: 12px;
+  }
+
+  #generation-rail {
+    left: 0;
+    border-right: 1px solid var(--border);
+    border-left: none;
+  }
+
+  #element-inspector {
+    right: 0;
+    left: auto;
+    border-left: 1px solid var(--border);
+    border-right: none;
   }
 
   .panel.is-open {
     display: block;
-    max-height: 60vh;
-    overflow: auto;
-  }
-
-  .viewport-host {
-    min-height: 52vh;
-  }
-
-  #viewport-canvas {
-    min-height: 52vh;
-  }
-
-  .metric-legend {
-    top: auto;
-    bottom: 52px;
-    right: 8px;
-    left: 8px;
-    justify-content: center;
   }
 
   .telemetry {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 46vh;
+    min-height: 0;
+    max-height: 46vh;
+    z-index: 25;
     display: none;
+    border-top: 1px solid var(--border);
+    overflow-y: auto;
+    box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.5);
   }
 
   .telemetry.is-open {
@@ -1001,11 +1039,6 @@ body.reduced-motion * {
   .status {
     padding: 4px 8px;
     font-size: 11px;
-    max-width: 120px;
-  }
-
-  .status-text {
-    max-width: 84px;
   }
 }
 
@@ -1026,37 +1059,50 @@ body.reduced-motion * {
 @media (max-width: 390px) {
   #top-bar {
     display: grid;
-    grid-template-columns: auto 1fr;
-    grid-template-rows: auto auto;
-    gap: 4px;
-    padding: 4px 6px;
-    max-height: 96px;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 6px;
+    padding: 6px;
     align-content: start;
   }
 
   .top-bar-left {
-    grid-column: 1;
+    grid-column: 1 / -1;
     grid-row: 1;
-  }
-
-  .top-bar-center {
-    grid-column: 2;
-    grid-row: 1;
-    justify-self: end;
-  }
-
-  .top-bar-right {
-    grid-column: 1 / span 2;
-    grid-row: 2;
     justify-content: space-between;
   }
 
+  .top-bar-center {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .top-bar-right {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-start;
+  }
+
   .seed-field input {
-    width: 56px;
+    width: 72px;
   }
 
   .status {
-    max-width: 90px;
+    flex: 1 1 100%;
+    max-width: none;
+    white-space: normal;
+  }
+
+  .status-text {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
   }
 
   .mobile-tabs {
