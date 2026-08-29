@@ -368,6 +368,46 @@ describe("certified same-span clearance", () => {
     );
   });
 
+  it("requires exact finite coincidence at huge translation (regression)", () => {
+    const base = 1e15;
+    const first = {
+      id: "huge-base-first",
+      span: SeventhOrderHermiteSpan.line<Vec3>(
+        vec3(base, 0, 0),
+        vec3(base + 10, 0, 0),
+      ),
+      bank,
+    };
+    const second = {
+      id: "huge-base-second",
+      span: SeventhOrderHermiteSpan.line<Vec3>(
+        vec3(base + 10.125, 0, 0),
+        vec3(base + 5, 0, 0),
+      ),
+      bank,
+    };
+
+    const diagnostics = validateClearance([first, second], undefined, {
+      trainEnvelopeRadius: 0,
+    });
+
+    const failure = diagnostics.find(
+      (diagnostic) => diagnostic.code === "TRACK_CLEARANCE",
+    );
+    expect(failure).toBeDefined();
+    expect(
+      [
+        failure?.location?.s,
+        ...(failure?.location?.position ?? []),
+        failure?.actual,
+        failure?.limit,
+        failure?.margin,
+      ].every((value) => typeof value === "number" && Number.isFinite(value)),
+    ).toBe(true);
+    expect(failure?.actual).toBeLessThanOrEqual(failure?.limit ?? -1);
+    expect(failure?.limit).toBe(0);
+  });
+
   it("returns deterministic finite exact evidence for a same-span crossing", () => {
     const span = polynomialSpan("evidence-loop", narrowLoopRows());
     const options = { trainEnvelopeRadius: 0.001 } as const;

@@ -1214,10 +1214,10 @@ export const validateClearance = (
     const segmentsBySpan = certifiedSpans.map(() => [] as Segment[]);
     for (const segment of selfSegments)
       segmentsBySpan[segment.spanIndex]!.push(segment);
-    const endpointBoundsCache = new Map<string, Bounds>();
-    const endpointBounds = (spanIndex: number, u: 0 | 1): Bounds => {
+    const _endpointBoundsCache = new Map<string, Bounds>();
+    const _endpointBounds = (spanIndex: number, u: 0 | 1): Bounds => {
       const key = `${spanIndex}:${u}`;
-      const cached = endpointBoundsCache.get(key);
+      const cached = _endpointBoundsCache.get(key);
       if (cached) return cached;
       const ranges = polynomialRows(certifiedSpans[spanIndex]!).map((row) => {
         if (u === 0) return { lo: row[0]!, hi: row[0]! };
@@ -1240,7 +1240,7 @@ export const validateClearance = (
         min: vec3(ranges[0]!.lo, ranges[1]!.lo, ranges[2]!.lo),
         max: vec3(ranges[0]!.hi, ranges[1]!.hi, ranges[2]!.hi),
       };
-      endpointBoundsCache.set(key, result);
+      _endpointBoundsCache.set(key, result);
       return result;
     };
     const endpointCoincidenceCache = new Map<string, boolean>();
@@ -1253,24 +1253,18 @@ export const validateClearance = (
       const key = `${firstSpanIndex}:${firstU}:${secondSpanIndex}:${secondU}`;
       const cached = endpointCoincidenceCache.get(key);
       if (cached !== undefined) return cached;
-      let result = overlaps(
-        endpointBounds(firstSpanIndex, firstU),
-        endpointBounds(secondSpanIndex, secondU),
+      const firstPoint = safePosition(
+        certifiedSpans[firstSpanIndex]!,
+        firstU,
+        budget,
       );
-      if (!result) {
-        const firstPoint = safePosition(
-          certifiedSpans[firstSpanIndex]!,
-          firstU,
-          budget,
-        );
-        const secondPoint = safePosition(
-          certifiedSpans[secondSpanIndex]!,
-          secondU,
-          budget,
-        );
-        const endpointDistance = safeDistance(firstPoint, secondPoint, budget);
-        result = endpointDistance <= SHARED_ENDPOINT_TOLERANCE;
-      }
+      const secondPoint = safePosition(
+        certifiedSpans[secondSpanIndex]!,
+        secondU,
+        budget,
+      );
+      const endpointDistance = safeDistance(firstPoint, secondPoint, budget);
+      const result = endpointDistance <= SHARED_ENDPOINT_TOLERANCE;
       endpointCoincidenceCache.set(key, result);
       return result;
     };
