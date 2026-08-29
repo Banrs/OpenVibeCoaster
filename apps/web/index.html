@@ -257,8 +257,9 @@
               <option value="rolling-highlands-v1" selected>
                 rolling-highlands-v1
               </option>
-              <option value="flat-plains-v1">flat-plains-v1</option>
-              <option value="alpine-ridge-v1">alpine-ridge-v1</option>
+              <option value="blocking-canyon-v1">
+                blocking-canyon-v1 (infeasible test profile)
+              </option>
             </select>
           </label>
         </fieldset>
@@ -355,36 +356,36 @@
 
         <fieldset class="control-group">
           <legend>Targets</legend>
-          <label class="field">
-            <span>Target speed (m/s)</span>
+          <label class="field" for="target-total-length-value">
+            <span>Target total length (m)</span>
             <div class="inline-pair">
               <input
-                id="target-speed-value"
+                id="target-total-length-value"
                 type="number"
-                step="0.5"
-                placeholder="e.g. 22"
+                step="10"
+                placeholder="e.g. 1800"
               />
               <select
-                id="target-speed-class"
-                aria-label="Speed constraint class"
+                id="target-total-length-class"
+                aria-label="Total length constraint class"
               >
                 <option value="hard">Hard</option>
                 <option value="soft" selected>Soft</option>
               </select>
             </div>
           </label>
-          <label class="field">
-            <span>Target airtime (g)</span>
+          <label class="field" for="target-end-y-value">
+            <span>Target end height Y (m)</span>
             <div class="inline-pair">
               <input
-                id="target-airtime-value"
+                id="target-end-y-value"
                 type="number"
-                step="0.1"
-                placeholder="e.g. 0.0"
+                step="1"
+                placeholder="e.g. 18"
               />
               <select
-                id="target-airtime-class"
-                aria-label="Airtime constraint class"
+                id="target-end-y-class"
+                aria-label="End height constraint class"
               >
                 <option value="hard">Hard</option>
                 <option value="soft" selected>Soft</option>
@@ -434,6 +435,22 @@
           >
           <span class="legend-item" data-metric="energy"
             ><span class="legend-swatch swatch-energy"></span>Energy</span
+          >
+        </div>
+
+        <div class="viewport-readouts" aria-label="Viewport readouts">
+          <span
+            data-testid="track-highlight"
+            data-highlight-distance=""
+            class="readout-chip"
+            >Highlight —</span
+          >
+          <span
+            data-testid="train-position"
+            data-distance-m=""
+            data-speed-mps=""
+            class="readout-chip"
+            >Train —</span
           >
         </div>
 
@@ -526,6 +543,22 @@
           >
             No selection.
           </div>
+          <dl class="readout-grid" aria-label="Track summary">
+            <div class="readout">
+              <dt>Length</dt>
+              <dd data-testid="track-length" data-length-m="">Length —</dd>
+            </div>
+            <div class="readout">
+              <dt>Checksum</dt>
+              <dd data-testid="compiled-checksum" data-checksum="">
+                Checksum —
+              </dd>
+            </div>
+            <div class="readout">
+              <dt>Seams</dt>
+              <dd data-testid="seam-boundaries" data-count="0">Seams —</dd>
+            </div>
+          </dl>
         </section>
 
         <fieldset class="control-group">
@@ -681,6 +714,22 @@
           when data is available.
         </div>
       </div>
+
+      <dl
+        class="readout-grid readout-grid--telemetry"
+        aria-label="Telemetry summary"
+      >
+        <div class="readout">
+          <dt>Timeline</dt>
+          <dd data-testid="timeline-duration" data-duration-s="">Timeline —</dd>
+        </div>
+        <div class="readout">
+          <dt>Telemetry</dt>
+          <dd data-testid="telemetry-signature" data-signature="">
+            Telemetry —
+          </dd>
+        </div>
+      </dl>
 
       <div class="scrubber-row">
         <label class="scrubber-label" for="scrubber">Scrub</label>
