@@ -79,6 +79,66 @@ const transformRows = (
 };
 
 describe("certified same-span clearance", () => {
+  it("detects positive clearance between separated portions of a monotonic span", () => {
+    const diagnostics = validateClearance(
+      [
+        polynomialSpan("positive-clearance", [
+          pad([0, 0.01]),
+          pad([1.875, -10, 10]),
+          pad([]),
+        ]),
+      ],
+      undefined,
+      { trainEnvelopeRadius: 0.01 },
+    );
+
+    const failure = diagnostics.find(
+      (diagnostic) => diagnostic.code === "TRACK_CLEARANCE",
+    );
+    expect(failure).toBeDefined();
+    expect(
+      [
+        failure?.location?.s,
+        ...(failure?.location?.position ?? []),
+        failure?.actual,
+        failure?.limit,
+        failure?.margin,
+      ].every((value) => typeof value === "number" && Number.isFinite(value)),
+    ).toBe(true);
+    expect(failure?.actual).toBeLessThanOrEqual(0.02);
+    expect(failure?.limit).toBe(0.02);
+  });
+
+  it("detects transformed positive clearance independently of public sampling", () => {
+    const rows = [pad([0, 0.01]), pad([1.875, -10, 10]), pad([])];
+    const angle = Math.PI / 4;
+    const scale = 3;
+    const transformedRows = [0, 1, 2].map((component) =>
+      Array.from({ length: 8 }, (_, power) => {
+        const point = vec3(
+          scale * Math.cos(angle) * rows[0]![power]!,
+          scale * rows[1]![power]!,
+          scale * Math.sin(angle) * rows[0]![power]!,
+        );
+        return point[component]!;
+      }),
+    );
+    const span = polynomialSpan(
+      "transformed-positive-clearance",
+      transformedRows,
+    );
+
+    for (const samplesPerSpan of [undefined, 64]) {
+      const diagnostics = validateClearance([span], undefined, {
+        trainEnvelopeRadius: 0.01,
+        ...(samplesPerSpan === undefined ? {} : { samplesPerSpan }),
+      });
+      expect(
+        diagnostics.some((diagnostic) => diagnostic.code === "TRACK_CLEARANCE"),
+      ).toBe(true);
+    }
+  });
+
   it("detects the reviewer figure-eight through the public default search", () => {
     const figureEight = {
       id: "figure-eight",
@@ -170,6 +230,23 @@ describe("certified same-span clearance", () => {
     );
   });
 
+  it("does not append cusp subdivision uncertainty after narrow processing stops", () => {
+    const center = 0.37;
+    const span = polynomialSpan("repeated-root-cusp", [
+      pad([center ** 2, -2 * center, 1]),
+      pad([-(center ** 3), 3 * center ** 2, -3 * center, 1]),
+      pad([]),
+    ]);
+    const diagnostics = validateClearance([span], undefined, {
+      maxDepth: 8,
+      trainEnvelopeRadius: 0.000001,
+    });
+
+    expect(diagnostics).toEqual([
+      expect.objectContaining({ code: "TRACK_CLEARANCE" }),
+    ]);
+  });
+
   it("excludes only the legitimate endpoint adjacency between open spans", () => {
     const first = {
       id: "endpoint-first",
@@ -183,6 +260,32 @@ describe("certified same-span clearance", () => {
     };
 
     expect(validateClearance([first, second], undefined)).toEqual([]);
+  });
+
+  it("detects an interior collision between default adjacent spans", () => {
+    const first = {
+      id: "default-adjacent-first",
+      span: SeventhOrderHermiteSpan.line<Vec3>(vec3(0, 0, 0), vec3(10, 0, 0)),
+      bank,
+    };
+    const second = polynomialSpan("default-adjacent-second", [
+      pad([10, -10]),
+      pad([0, -10, 20]),
+      pad([]),
+    ]);
+
+    const diagnostics = validateClearance([first, second], undefined, {
+      trainEnvelopeRadius: 0.1,
+    });
+
+    expect(
+      diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "TRACK_CLEARANCE" &&
+          diagnostic.relatedIds?.includes("default-adjacent-first") &&
+          diagnostic.relatedIds.includes("default-adjacent-second"),
+      ),
+    ).toBe(true);
   });
 
   it("excludes the legitimate endpoint adjacency across a closed seam", () => {
@@ -211,6 +314,42 @@ describe("certified same-span clearance", () => {
     ];
 
     expect(validateClearance(spans, undefined, { closed: true })).toEqual([]);
+  });
+
+  it("detects a default interior collision across a closed seam", () => {
+    const spans = [
+      {
+        id: "default-closure-first",
+        span: SeventhOrderHermiteSpan.line<Vec3>(vec3(0, 0, 0), vec3(10, 0, 0)),
+        bank,
+      },
+      {
+        id: "default-closure-middle",
+        span: SeventhOrderHermiteSpan.line<Vec3>(
+          vec3(10, 0, 0),
+          vec3(10, 0, 10),
+        ),
+        bank,
+      },
+      polynomialSpan("default-closure-last", [
+        pad([10, -10]),
+        pad([]),
+        pad([10, -50, 80, -40]),
+      ]),
+    ];
+
+    const diagnostics = validateClearance(spans, undefined, {
+      closed: true,
+      trainEnvelopeRadius: 0.1,
+    });
+    expect(
+      diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "TRACK_CLEARANCE" &&
+          diagnostic.relatedIds?.includes("default-closure-first") &&
+          diagnostic.relatedIds.includes("default-closure-last"),
+      ),
+    ).toBe(true);
   });
 
   it("detects the same narrow crossing after a rigid transform", () => {

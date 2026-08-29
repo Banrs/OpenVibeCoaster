@@ -57,6 +57,13 @@ const DEFAULT_MAX_DEPTH = 40;
 const DEFAULT_MAX_WORK = 1_000_000;
 const DEFAULT_TERRAIN_MAX_WORK = 100_000;
 const PARAMETER_TOLERANCE = 1e-12;
+// Generated seams may differ below the solver's numerical resolution even
+// though their coefficient-authoritative endpoint intervals represent a join.
+const SHARED_ENDPOINT_TOLERANCE = 1e-10;
+// The smallest integer above sqrt(3) bounds 3D arc length by a certified
+// monotonic coordinate projection; an adjacent pair contributes two leaves.
+const DIRECTIONAL_LOCALITY_FACTOR = Math.ceil(Math.sqrt(3));
+const ADJACENT_LOCALITY_FACTOR = DIRECTIONAL_LOCALITY_FACTOR * 2;
 
 const origin = vec3(0, 0, 0);
 
@@ -526,6 +533,51 @@ const derivativeHullBounds = (
   };
 };
 
+const derivativeSpeedUpper = (
+  bounds: Bounds,
+  budget: CertifiedWorkBudget,
+): number => {
+  budget.charge(5);
+  const magnitudes = ([0, 1, 2] as const).map((axis) =>
+    finite(
+      Math.max(Math.abs(bounds.min[axis]), Math.abs(bounds.max[axis])),
+      "Derivative magnitude upper",
+    ),
+  );
+  return finite(
+    nextUp(finite(Math.hypot(...magnitudes), "Derivative speed upper")),
+    "Derivative speed upper",
+  );
+};
+
+const hasDirectionalSeparation = (
+  bounds: Bounds,
+  speedUpper: number,
+  budget: CertifiedWorkBudget,
+): boolean => {
+  for (const axis of [0, 1, 2] as const) {
+    const magnitudeLower =
+      bounds.min[axis] > 0
+        ? bounds.min[axis]
+        : bounds.max[axis] < 0
+          ? -bounds.max[axis]
+          : 0;
+    if (!(magnitudeLower > 0)) continue;
+    budget.charge(2);
+    const projectedLower = finite(
+      nextDown(
+        finite(
+          DIRECTIONAL_LOCALITY_FACTOR * magnitudeLower,
+          "Directional derivative",
+        ),
+      ),
+      "Directional derivative lower",
+    );
+    if (projectedLower >= speedUpper) return true;
+  }
+  return false;
+};
+
 const splitDerivativeHull = (
   hull: DerivativeHull,
   budget: CertifiedWorkBudget,
@@ -566,7 +618,6 @@ const splitDerivativeHull = (
 const makeSelfSegments = (
   spans: readonly CertifiedSpan[],
   firstSegmentId: number,
-  clearanceLimit: number,
   broadAmount: number,
   maxDepth: number,
   budget: CertifiedWorkBudget,
@@ -580,20 +631,10 @@ const makeSelfSegments = (
     const span = spans[spanIndex]!;
     const spanLength = safeArcLength(span, 0, 1, budget);
     const wholeDerivativeHull = derivativeHull(span, budget);
-    const wholeDerivativeBounds = derivativeHullBounds(
-      wholeDerivativeHull,
-      budget,
-    );
-    const globallyMonotonic = ([0, 1, 2] as const).some(
-      (axis) =>
-        wholeDerivativeBounds.min[axis] > 0 ||
-        wholeDerivativeBounds.max[axis] < 0,
-    );
-    if (clearanceLimit === 0 && globallyMonotonic) {
-      station = finite(station + spanLength, "Track arc location");
-      continue;
-    }
-    const intervals: { readonly start: number; readonly end: number }[] = [];
+    const intervals: {
+      readonly start: number;
+      readonly end: number;
+    }[] = [];
     const refine = (
       start: number,
       end: number,
@@ -602,10 +643,8 @@ const makeSelfSegments = (
     ): void => {
       budget.charge();
       const bounds = derivativeHullBounds(hull, budget);
-      const monotonic = ([0, 1, 2] as const).some(
-        (axis) => bounds.min[axis] > 0 || bounds.max[axis] < 0,
-      );
-      if (monotonic) {
+      const speedUpper = derivativeSpeedUpper(bounds, budget);
+      if (hasDirectionalSeparation(bounds, speedUpper, budget)) {
         intervals.push({ start, end });
         return;
       }
@@ -744,6 +783,16 @@ export const validateClearance = (
         chargeFinite(budget, value, "Environment bound");
     }
     const limit = finite(radius * 2 + requestedClearance, "Clearance limit");
+    const closed = options.closed ?? false;
+    const localityLimit =
+      limit === 0
+        ? 0
+        : finite(
+            nextUp(
+              finite(limit * ADJACENT_LOCALITY_FACTOR, "Local adjacency limit"),
+            ),
+            "Local adjacency limit",
+          );
     const boundCache = new Map<string, Bounds>();
     const getBounds = (
       span: CertifiedSpan,
@@ -991,7 +1040,6 @@ export const validateClearance = (
       selfSubdivision = makeSelfSegments(
         certifiedSpans,
         segments.length,
-        limit,
         limit / 2,
         maxDepth,
         budget,
@@ -1005,11 +1053,542 @@ export const validateClearance = (
       throw error;
     }
     const selfSegments = selfSubdivision.segments;
+    const constantAxes = certifiedSpans.map((span) =>
+      polynomialRows(span).map((row) =>
+        row.slice(1).every((coefficient) => coefficient === 0),
+      ),
+    );
+    const upperSum = (left: number, right: number): number => {
+      budget.charge();
+      return finite(
+        nextUp(finite(left + right, "Local path upper sum")),
+        "Local path upper sum",
+      );
+    };
+    const localDerivativeHulls = certifiedSpans.map((span) =>
+      derivativeHull(span, budget),
+    );
+    const derivativeHullChildren = new Map<
+      string,
+      readonly [DerivativeHull, DerivativeHull]
+    >();
+    const derivativeHullArcUppers = new Map<string, number>();
+    const arcQueryCache = new Map<string, number>();
+    const hullArcUpper = (
+      spanIndex: number,
+      start: number,
+      end: number,
+      hull: DerivativeHull,
+    ): number => {
+      const key = `${spanIndex}:${start}:${end}`;
+      const cached = derivativeHullArcUppers.get(key);
+      if (cached !== undefined) return cached;
+      const speedUpper = derivativeSpeedUpper(
+        derivativeHullBounds(hull, budget),
+        budget,
+      );
+      budget.charge(2);
+      const widthUpper = finite(
+        nextUp(finite(end - start, "Parameter interval width")),
+        "Parameter interval width upper",
+      );
+      const result = finite(
+        nextUp(finite(speedUpper * widthUpper, "Arc-length upper product")),
+        "Arc-length upper bound",
+      );
+      derivativeHullArcUppers.set(key, result);
+      return result;
+    };
+    const certifiedArcUpper = (
+      spanIndex: number,
+      targetStart: number,
+      targetEnd: number,
+    ): number => {
+      if (targetStart === targetEnd) return 0;
+      const queryKey = `${spanIndex}:${targetStart}:${targetEnd}`;
+      const cached = arcQueryCache.get(queryKey);
+      if (cached !== undefined) return cached;
+      const visit = (
+        start: number,
+        end: number,
+        hull: DerivativeHull,
+      ): number => {
+        if (targetStart <= start && end <= targetEnd)
+          return hullArcUpper(spanIndex, start, end, hull);
+        const midpoint = (start + end) / 2;
+        if (midpoint === start || midpoint === end)
+          throw new CertificationError(
+            "Local path certification reached floating-point parameter resolution",
+          );
+        const key = `${spanIndex}:${start}:${end}`;
+        let children = derivativeHullChildren.get(key);
+        if (!children) {
+          children = splitDerivativeHull(hull, budget);
+          derivativeHullChildren.set(key, children);
+        }
+        if (targetEnd <= midpoint) return visit(start, midpoint, children[0]);
+        if (targetStart >= midpoint) return visit(midpoint, end, children[1]);
+        return upperSum(
+          visit(start, midpoint, children[0]),
+          visit(midpoint, end, children[1]),
+        );
+      };
+      const result = visit(0, 1, localDerivativeHulls[spanIndex]!);
+      arcQueryCache.set(queryKey, result);
+      return result;
+    };
+    const derivativeBoundsQueryCache = new Map<string, Bounds>();
+    const certifiedDerivativeBounds = (
+      spanIndex: number,
+      targetStart: number,
+      targetEnd: number,
+    ): Bounds => {
+      const queryKey = `${spanIndex}:${targetStart}:${targetEnd}`;
+      const cached = derivativeBoundsQueryCache.get(queryKey);
+      if (cached) return cached;
+      const visit = (
+        start: number,
+        end: number,
+        hull: DerivativeHull,
+      ): Bounds => {
+        if (targetStart <= start && end <= targetEnd)
+          return derivativeHullBounds(hull, budget);
+        const midpoint = (start + end) / 2;
+        if (midpoint === start || midpoint === end)
+          throw new CertificationError(
+            "Directional certification reached floating-point parameter resolution",
+          );
+        const key = `${spanIndex}:${start}:${end}`;
+        let children = derivativeHullChildren.get(key);
+        if (!children) {
+          children = splitDerivativeHull(hull, budget);
+          derivativeHullChildren.set(key, children);
+        }
+        if (targetEnd <= midpoint) return visit(start, midpoint, children[0]);
+        if (targetStart >= midpoint) return visit(midpoint, end, children[1]);
+        const left = visit(start, midpoint, children[0]);
+        const right = visit(midpoint, end, children[1]);
+        budget.charge(6);
+        return {
+          min: vec3(
+            Math.min(left.min[0], right.min[0]),
+            Math.min(left.min[1], right.min[1]),
+            Math.min(left.min[2], right.min[2]),
+          ),
+          max: vec3(
+            Math.max(left.max[0], right.max[0]),
+            Math.max(left.max[1], right.max[1]),
+            Math.max(left.max[2], right.max[2]),
+          ),
+        };
+      };
+      const result = visit(0, 1, localDerivativeHulls[spanIndex]!);
+      derivativeBoundsQueryCache.set(queryKey, result);
+      return result;
+    };
+    const derivativeSign = (
+      spanIndex: number,
+      bounds: Bounds,
+      axis: 0 | 1 | 2,
+    ): -1 | 0 | 1 | undefined => {
+      if (constantAxes[spanIndex]![axis]) return 0;
+      if (bounds.min[axis] > 0) return 1;
+      if (bounds.max[axis] < 0) return -1;
+      return undefined;
+    };
+    const compatibleOrthants = (
+      firstSpanIndex: number,
+      firstBounds: Bounds,
+      secondSpanIndex = firstSpanIndex,
+      secondBounds = firstBounds,
+    ): boolean =>
+      ([0, 1, 2] as const).every((axis) => {
+        const firstSign = derivativeSign(firstSpanIndex, firstBounds, axis);
+        const secondSign = derivativeSign(secondSpanIndex, secondBounds, axis);
+        return (
+          firstSign !== undefined &&
+          secondSign !== undefined &&
+          (firstSign === 0 || secondSign === 0 || firstSign === secondSign)
+        );
+      });
+    const segmentsBySpan = certifiedSpans.map(() => [] as Segment[]);
+    for (const segment of selfSegments)
+      segmentsBySpan[segment.spanIndex]!.push(segment);
+    const endpointBoundsCache = new Map<string, Bounds>();
+    const endpointBounds = (spanIndex: number, u: 0 | 1): Bounds => {
+      const key = `${spanIndex}:${u}`;
+      const cached = endpointBoundsCache.get(key);
+      if (cached) return cached;
+      const ranges = polynomialRows(certifiedSpans[spanIndex]!).map((row) => {
+        if (u === 0) return { lo: row[0]!, hi: row[0]! };
+        let lo = 0;
+        let hi = 0;
+        for (const coefficient of row) {
+          budget.charge(2);
+          lo = finite(
+            nextDown(finite(lo + coefficient, "Endpoint lower sum")),
+            "Endpoint lower bound",
+          );
+          hi = finite(
+            nextUp(finite(hi + coefficient, "Endpoint upper sum")),
+            "Endpoint upper bound",
+          );
+        }
+        return { lo, hi };
+      });
+      const result = {
+        min: vec3(ranges[0]!.lo, ranges[1]!.lo, ranges[2]!.lo),
+        max: vec3(ranges[0]!.hi, ranges[1]!.hi, ranges[2]!.hi),
+      };
+      endpointBoundsCache.set(key, result);
+      return result;
+    };
+    const endpointCoincidenceCache = new Map<string, boolean>();
+    const endpointsCoincide = (
+      firstSpanIndex: number,
+      firstU: 0 | 1,
+      secondSpanIndex: number,
+      secondU: 0 | 1,
+    ): boolean => {
+      const key = `${firstSpanIndex}:${firstU}:${secondSpanIndex}:${secondU}`;
+      const cached = endpointCoincidenceCache.get(key);
+      if (cached !== undefined) return cached;
+      let result = overlaps(
+        endpointBounds(firstSpanIndex, firstU),
+        endpointBounds(secondSpanIndex, secondU),
+      );
+      if (!result) {
+        const firstPoint = safePosition(
+          certifiedSpans[firstSpanIndex]!,
+          firstU,
+          budget,
+        );
+        const secondPoint = safePosition(
+          certifiedSpans[secondSpanIndex]!,
+          secondU,
+          budget,
+        );
+        const endpointDistance = safeDistance(firstPoint, secondPoint, budget);
+        result = endpointDistance <= SHARED_ENDPOINT_TOLERANCE;
+      }
+      endpointCoincidenceCache.set(key, result);
+      return result;
+    };
+    const sequentialEndpointShared = (
+      firstSpanIndex: number,
+      secondSpanIndex: number,
+    ): boolean => {
+      const earlier = Math.min(firstSpanIndex, secondSpanIndex);
+      const later = Math.max(firstSpanIndex, secondSpanIndex);
+      return later === earlier + 1 && endpointsCoincide(earlier, 1, later, 0);
+    };
+    const closureEndpointShared = (
+      firstSpanIndex: number,
+      secondSpanIndex: number,
+    ): boolean =>
+      closed &&
+      Math.min(firstSpanIndex, secondSpanIndex) === 0 &&
+      Math.max(firstSpanIndex, secondSpanIndex) === certifiedSpans.length - 1 &&
+      endpointsCoincide(certifiedSpans.length - 1, 1, 0, 0);
+    const spanHeadUpper = (segment: Segment, u: number): number =>
+      certifiedArcUpper(segment.spanIndex, 0, u);
+    const spanTailUpper = (segment: Segment, u: number): number =>
+      certifiedArcUpper(segment.spanIndex, u, 1);
+    const sameSpanPathUpper = (
+      first: Segment,
+      firstU: number,
+      second: Segment,
+      secondU: number,
+    ): number => {
+      return certifiedArcUpper(
+        first.spanIndex,
+        Math.min(firstU, secondU),
+        Math.max(firstU, secondU),
+      );
+    };
+    const localPathUpper = (
+      first: Segment,
+      firstU: number,
+      second: Segment,
+      secondU: number,
+    ): number | undefined => {
+      const candidates: number[] = [];
+      if (first.spanIndex === second.spanIndex) {
+        if (Math.abs(first.segmentIndex - second.segmentIndex) === 1)
+          candidates.push(sameSpanPathUpper(first, firstU, second, secondU));
+        if (
+          closed &&
+          certifiedSpans.length === 1 &&
+          closureEndpointShared(first.spanIndex, second.spanIndex) &&
+          Math.min(first.segmentIndex, second.segmentIndex) === 0 &&
+          Math.max(first.segmentIndex, second.segmentIndex) ===
+            segmentsBySpan[first.spanIndex]!.length - 1
+        ) {
+          const lower =
+            first.segmentIndex < second.segmentIndex
+              ? { segment: first, u: firstU }
+              : { segment: second, u: secondU };
+          const upper =
+            first.segmentIndex < second.segmentIndex
+              ? { segment: second, u: secondU }
+              : { segment: first, u: firstU };
+          candidates.push(
+            upperSum(
+              spanTailUpper(upper.segment, upper.u),
+              spanHeadUpper(lower.segment, lower.u),
+            ),
+          );
+        }
+      } else if (
+        Math.abs(first.spanIndex - second.spanIndex) === 1 &&
+        sequentialEndpointShared(first.spanIndex, second.spanIndex)
+      ) {
+        const earlier =
+          first.spanIndex < second.spanIndex
+            ? { segment: first, u: firstU }
+            : { segment: second, u: secondU };
+        const later =
+          first.spanIndex < second.spanIndex
+            ? { segment: second, u: secondU }
+            : { segment: first, u: firstU };
+        candidates.push(
+          upperSum(
+            spanTailUpper(earlier.segment, earlier.u),
+            spanHeadUpper(later.segment, later.u),
+          ),
+        );
+      }
+      if (
+        closed &&
+        first.spanIndex !== second.spanIndex &&
+        Math.min(first.spanIndex, second.spanIndex) === 0 &&
+        Math.max(first.spanIndex, second.spanIndex) ===
+          certifiedSpans.length - 1 &&
+        closureEndpointShared(first.spanIndex, second.spanIndex)
+      ) {
+        const firstTrack =
+          first.spanIndex === 0
+            ? { segment: first, u: firstU }
+            : { segment: second, u: secondU };
+        const lastTrack =
+          first.spanIndex === certifiedSpans.length - 1
+            ? { segment: first, u: firstU }
+            : { segment: second, u: secondU };
+        candidates.push(
+          upperSum(
+            spanTailUpper(lastTrack.segment, lastTrack.u),
+            spanHeadUpper(firstTrack.segment, firstTrack.u),
+          ),
+        );
+      }
+      return candidates.length === 0 ? undefined : Math.min(...candidates);
+    };
+    const localNodeUpper = (node: PairNode): number | undefined => {
+      const candidates: number[] = [];
+      if (node.first.spanIndex === node.second.spanIndex) {
+        const lower =
+          node.first.segmentIndex < node.second.segmentIndex
+            ? {
+                segment: node.first,
+                directU: node.firstU0,
+                seamU: node.firstU1,
+              }
+            : {
+                segment: node.second,
+                directU: node.secondU0,
+                seamU: node.secondU1,
+              };
+        const upper =
+          node.first.segmentIndex < node.second.segmentIndex
+            ? {
+                segment: node.second,
+                directU: node.secondU1,
+                seamU: node.secondU0,
+              }
+            : {
+                segment: node.first,
+                directU: node.firstU1,
+                seamU: node.firstU0,
+              };
+        if (Math.abs(node.first.segmentIndex - node.second.segmentIndex) === 1)
+          candidates.push(
+            sameSpanPathUpper(
+              lower.segment,
+              lower.directU,
+              upper.segment,
+              upper.directU,
+            ),
+          );
+        if (
+          closed &&
+          certifiedSpans.length === 1 &&
+          closureEndpointShared(node.first.spanIndex, node.second.spanIndex) &&
+          lower.segment.segmentIndex === 0 &&
+          upper.segment.segmentIndex ===
+            segmentsBySpan[node.first.spanIndex]!.length - 1
+        ) {
+          candidates.push(
+            upperSum(
+              spanTailUpper(upper.segment, upper.seamU),
+              spanHeadUpper(lower.segment, lower.seamU),
+            ),
+          );
+        }
+      } else if (
+        Math.abs(node.first.spanIndex - node.second.spanIndex) === 1 &&
+        sequentialEndpointShared(node.first.spanIndex, node.second.spanIndex)
+      ) {
+        const earlier =
+          node.first.spanIndex < node.second.spanIndex
+            ? { segment: node.first, start: node.firstU0 }
+            : { segment: node.second, start: node.secondU0 };
+        const later =
+          node.first.spanIndex < node.second.spanIndex
+            ? { segment: node.second, end: node.secondU1 }
+            : { segment: node.first, end: node.firstU1 };
+        candidates.push(
+          upperSum(
+            spanTailUpper(earlier.segment, earlier.start),
+            spanHeadUpper(later.segment, later.end),
+          ),
+        );
+      }
+      if (
+        closed &&
+        node.first.spanIndex !== node.second.spanIndex &&
+        Math.min(node.first.spanIndex, node.second.spanIndex) === 0 &&
+        Math.max(node.first.spanIndex, node.second.spanIndex) ===
+          certifiedSpans.length - 1 &&
+        closureEndpointShared(node.first.spanIndex, node.second.spanIndex)
+      ) {
+        const firstTrack =
+          node.first.spanIndex === 0
+            ? { segment: node.first, end: node.firstU1 }
+            : { segment: node.second, end: node.secondU1 };
+        const lastTrack =
+          node.first.spanIndex === certifiedSpans.length - 1
+            ? { segment: node.first, start: node.firstU0 }
+            : { segment: node.second, start: node.secondU0 };
+        candidates.push(
+          upperSum(
+            spanTailUpper(lastTrack.segment, lastTrack.start),
+            spanHeadUpper(firstTrack.segment, firstTrack.end),
+          ),
+        );
+      }
+      return candidates.length === 0 ? undefined : Math.min(...candidates);
+    };
+    const hasOrthantPairCertificate = (node: PairNode): boolean => {
+      if (node.first.spanIndex === node.second.spanIndex) {
+        if (
+          Math.abs(node.first.segmentIndex - node.second.segmentIndex) === 1
+        ) {
+          const bounds = certifiedDerivativeBounds(
+            node.first.spanIndex,
+            Math.min(node.first.startU, node.second.startU),
+            Math.max(node.first.endU, node.second.endU),
+          );
+          if (compatibleOrthants(node.first.spanIndex, bounds)) return true;
+        }
+        if (
+          closed &&
+          certifiedSpans.length === 1 &&
+          closureEndpointShared(node.first.spanIndex, node.second.spanIndex) &&
+          Math.min(node.first.segmentIndex, node.second.segmentIndex) === 0 &&
+          Math.max(node.first.segmentIndex, node.second.segmentIndex) ===
+            segmentsBySpan[node.first.spanIndex]!.length - 1
+        ) {
+          const firstTrack =
+            node.first.segmentIndex === 0 ? node.first : node.second;
+          const lastTrack =
+            node.first.segmentIndex ===
+            segmentsBySpan[node.first.spanIndex]!.length - 1
+              ? node.first
+              : node.second;
+          if (
+            compatibleOrthants(
+              lastTrack.spanIndex,
+              certifiedDerivativeBounds(
+                lastTrack.spanIndex,
+                lastTrack.startU,
+                1,
+              ),
+              firstTrack.spanIndex,
+              certifiedDerivativeBounds(
+                firstTrack.spanIndex,
+                0,
+                firstTrack.endU,
+              ),
+            )
+          )
+            return true;
+        }
+      } else if (
+        Math.abs(node.first.spanIndex - node.second.spanIndex) === 1 &&
+        sequentialEndpointShared(node.first.spanIndex, node.second.spanIndex)
+      ) {
+        const earlier =
+          node.first.spanIndex < node.second.spanIndex
+            ? node.first
+            : node.second;
+        const later =
+          node.first.spanIndex < node.second.spanIndex
+            ? node.second
+            : node.first;
+        if (
+          compatibleOrthants(
+            earlier.spanIndex,
+            certifiedDerivativeBounds(earlier.spanIndex, earlier.startU, 1),
+            later.spanIndex,
+            certifiedDerivativeBounds(later.spanIndex, 0, later.endU),
+          )
+        )
+          return true;
+      }
+      if (
+        closed &&
+        node.first.spanIndex !== node.second.spanIndex &&
+        Math.min(node.first.spanIndex, node.second.spanIndex) === 0 &&
+        Math.max(node.first.spanIndex, node.second.spanIndex) ===
+          certifiedSpans.length - 1 &&
+        closureEndpointShared(node.first.spanIndex, node.second.spanIndex)
+      ) {
+        const firstTrack =
+          node.first.spanIndex === 0 ? node.first : node.second;
+        const lastTrack =
+          node.first.spanIndex === certifiedSpans.length - 1
+            ? node.first
+            : node.second;
+        if (
+          compatibleOrthants(
+            lastTrack.spanIndex,
+            certifiedDerivativeBounds(lastTrack.spanIndex, lastTrack.startU, 1),
+            firstTrack.spanIndex,
+            certifiedDerivativeBounds(firstTrack.spanIndex, 0, firstTrack.endU),
+          )
+        )
+          return true;
+      }
+      return false;
+    };
+    const hasCoincidentAdjacentEndpoint = (
+      first: Segment,
+      second: Segment,
+    ): boolean => {
+      if (!adjacent(first, second, closed, certifiedSpans.length)) return false;
+      if (first.spanIndex === second.spanIndex) {
+        if (Math.abs(first.segmentIndex - second.segmentIndex) === 1)
+          return true;
+        return closureEndpointShared(first.spanIndex, second.spanIndex);
+      }
+      if (Math.abs(first.spanIndex - second.spanIndex) === 1)
+        return sequentialEndpointShared(first.spanIndex, second.spanIndex);
+      return closureEndpointShared(first.spanIndex, second.spanIndex);
+    };
 
     const seenPairs = new Set<string>();
     const pairRoots: PairNode[] = [];
     const cellSize = Math.max(limit, 1);
-    const closed = options.closed ?? false;
     const addCandidate = (
       other: Segment,
       segment: Segment,
@@ -1019,7 +1598,7 @@ export const validateClearance = (
       if (
         other === segment ||
         (other.spanIndex === segment.spanIndex) !== sameSpan ||
-        adjacent(other, segment, closed, certifiedSpans.length) ||
+        (limit === 0 && hasCoincidentAdjacentEndpoint(other, segment)) ||
         !overlaps(other.bounds, segment.bounds)
       )
         return;
@@ -1082,7 +1661,11 @@ export const validateClearance = (
       }
     };
     try {
-      if (certifiedSpans.length === 1 && selfSegments.length === 0)
+      if (
+        certifiedSpans.length === 1 &&
+        limit === 0 &&
+        selfSegments.length === 1
+      )
         for (const segment of segments) {
           const ranges = bucketRanges(segment.bounds, cellSize, budget);
           const bucketCount = CertifiedWorkBudget.checkedProduct(
@@ -1094,7 +1677,7 @@ export const validateClearance = (
           );
           budget.charge(bucketCount);
         }
-      if (certifiedSpans.length > 1) collectCandidates(segments, false);
+      if (certifiedSpans.length > 1) collectCandidates(selfSegments, false);
       let groupStart = 0;
       while (groupStart < selfSegments.length) {
         let groupEnd = groupStart + 1;
@@ -1116,12 +1699,16 @@ export const validateClearance = (
       throw error;
     }
     const processPair = (root: PairNode): void => {
+      if (limit > 0 && hasOrthantPairCertificate(root)) return;
       const stack: PairNode[] = [root];
       while (stack.length > 0) {
         const node = stack.pop()!;
         budget.charge();
         const firstSpan = certifiedSpans[node.first.spanIndex]!;
         const secondSpan = certifiedSpans[node.second.spanIndex]!;
+        const nodeLocalUpper = localNodeUpper(node);
+        if (nodeLocalUpper !== undefined && nodeLocalUpper <= localityLimit)
+          continue;
         const firstBox = getBounds(firstSpan, node.firstU0, node.firstU1);
         const secondBox = getBounds(secondSpan, node.secondU0, node.secondU1);
         if (boxDistanceLower(firstBox, secondBox, budget) > limit) continue;
@@ -1139,6 +1726,17 @@ export const validateClearance = (
         );
         for (const firstU of firstCandidates)
           for (const secondU of secondCandidates) {
+            const witnessLocalUpper = localPathUpper(
+              node.first,
+              firstU,
+              node.second,
+              secondU,
+            );
+            if (
+              witnessLocalUpper !== undefined &&
+              witnessLocalUpper <= localityLimit
+            )
+              continue;
             const distance = safeDistance(
               safePosition(firstSpan, firstU, budget),
               safePosition(secondSpan, secondU, budget),
@@ -1207,7 +1805,7 @@ export const validateClearance = (
         ]);
       }
     }
-    if (selfSubdivision.unresolvedSpanIds.length > 0)
+    if (!stopped && selfSubdivision.unresolvedSpanIds.length > 0)
       diagnostics.push(
         uncertain(
           "Same-span clearance subdivision exhausted its deterministic depth budget",
