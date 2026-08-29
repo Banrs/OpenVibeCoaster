@@ -69,6 +69,8 @@ export interface ExperienceCallbacks {
   readonly onExport?: (request: ExportRequest) => void | Promise<void>;
   readonly onElementSelectionChanged?: (elementId: string | null) => void;
   readonly onTimelineSelectionChanged?: (selection: TimelineSelection) => void;
+  /** Optional error reporter for isolated subscriber throws; no console noise if absent */
+  readonly onError?: (error: unknown, context: string) => void;
 }
 
 export interface ExperienceState {
@@ -112,11 +114,14 @@ export interface ExperienceController {
   readonly togglePin: (elementId: string) => boolean;
   readonly selectTimelineIndex: (index: number) => TimelineSelection | null;
   readonly setSeamInspection: (enabled: boolean) => void;
-  /** For compile-load success path – validates file compilation */
+  /**
+   * Validates compile-load payload; remains in generating until authoritative result arrives via setResult.
+   * No success boolean is exposed for readiness – use status/epoch. This only validates syntax.
+   */
   readonly resolveCompileLoad: (
     payload: string | Uint8Array,
     requestId: number,
-  ) => boolean;
+  ) => void;
 }
 
 const normalizeSpanHashes = (
@@ -129,39 +134,92 @@ const normalizeSpanHashes = (
   return Object.freeze({ ...(input as Readonly<Record<string, string>>) });
 };
 
-// Deep-copy file without mutating caller; freeze owned graph
+// Ownership rule: file, diagnostics, hashes are small and copied/frozen to avoid alias leakage.
+// track/timeline are huge typed arrays owned by CompiledTrackData/RideTimeline and are immutable by contract
+// (frozen by core); they are transferred by reference without duplication. Caller retains its original objects
+// unfrozen; we freeze only owned copies on the smallest coherent boundary (top-level and direct children).
 const cloneFile = (file: CoasterFileV1): CoasterFileV1 => {
-  // CoasterFile is already frozen by core, but we deep-copy design elements for draft editing
-  const elements = file.design.elements.map((element) => ({
-    ...element,
-    ...(element.parameters ? { parameters: { ...element.parameters } } : {}),
-  }));
-  const gates = file.design.gates?.map((gate) => ({ ...gate }));
-  const constraints = file.design.constraints?.map((c) => ({ ...c }));
-  const design: CoasterFileV1["design"] = Object.freeze({
-    elements: Object.freeze(elements.map((e) => Object.freeze(e))),
-    ...(gates
-      ? { gates: Object.freeze(gates.map((g) => Object.freeze(g))) }
-      : {}),
-    ...(constraints
-      ? { constraints: Object.freeze(constraints.map((c) => Object.freeze(c))) }
-      : {}),
+  // Copy design elements deeply for draft editing without mutating caller
+  const elements = file.design.elements.map((element) => {
+    const params = element.parameters
+      ? Object.freeze({ ...element.parameters })
+      : undefined;
+    return Object.freeze({
+      ...element,
+      ...(params ? { parameters: params } : {}),
+    });
   });
-  // File is frozen; create new object sharing immutable intent/solvedSpans but with new design reference
-  // We use create via core's validation path for safety? Instead shallow copy with new design.
+  const gates = file.design.gates?.map((gate) =>
+    Object.freeze({
+      ...gate,
+      position: Object.freeze([
+        ...gate.position,
+      ] as unknown as typeof gate.position),
+      ...(gate.orientation
+        ? {
+            orientation: Object.freeze([
+              ...gate.orientation,
+            ] as unknown as typeof gate.orientation),
+          }
+        : {}),
+    }),
+  );
+  const constraints = file.design.constraints?.map((c) =>
+    Object.freeze({ ...c }),
+  );
+  const design: CoasterFileV1["design"] = Object.freeze({
+    elements: Object.freeze(elements),
+    ...(gates ? { gates: Object.freeze(gates) } : {}),
+    ...(constraints ? { constraints: Object.freeze(constraints) } : {}),
+  });
+  // Copy intent and solvedSpans to avoid sharing mutable alias with caller (even though frozen, identity matters)
+  const intentCopy = Object.freeze({
+    ...file.intent,
+    elements: Object.freeze([...file.intent.elements]),
+    gates: Object.freeze([...file.intent.gates]),
+    targets: Object.freeze([...file.intent.targets]),
+    constraints: Object.freeze([...file.intent.constraints]),
+    pinnedElementIds: Object.freeze([...file.intent.pinnedElementIds]),
+    ...(file.intent.footprint
+      ? {
+          footprint: Object.freeze({
+            min: Object.freeze([
+              ...file.intent.footprint.min,
+            ] as unknown as typeof file.intent.footprint.min),
+            max: Object.freeze([
+              ...file.intent.footprint.max,
+            ] as unknown as typeof file.intent.footprint.max),
+          }),
+        }
+      : {}),
+    ...(file.intent.heightRange
+      ? { heightRange: Object.freeze({ ...file.intent.heightRange }) }
+      : {}),
+  }) as CoasterFileV1["intent"];
+  const solvedSpansCopy = Object.freeze(
+    [...file.solvedSpans].map((span) =>
+      Object.freeze({
+        ...span,
+        positionCoefficients: Object.freeze(
+          [...span.positionCoefficients].map((row) => Object.freeze([...row])),
+        ),
+        rollCoefficients: Object.freeze([...span.rollCoefficients]),
+      }),
+    ),
+  ) as CoasterFileV1["solvedSpans"];
+  const researchCopy = Object.freeze([...file.researchSnapshotIds]);
   const copy = {
     schemaVersion: 1 as const,
     name: file.name,
-    intent: file.intent,
+    intent: intentCopy,
     design,
-    solvedSpans: file.solvedSpans,
+    solvedSpans: solvedSpansCopy,
     seed: file.seed,
     generatorVersion: file.generatorVersion,
     profileVersion: file.profileVersion,
-    researchSnapshotIds: file.researchSnapshotIds,
+    researchSnapshotIds: researchCopy,
     compiledDataChecksum: file.compiledDataChecksum,
   } as unknown as CoasterFileV1;
-  // Do not freeze caller objects; freeze owned copy
   return Object.freeze(copy);
 };
 
@@ -264,24 +322,40 @@ export function createExperienceController(
   });
 
   const listeners = new Set<(next: ExperienceState) => void>();
+  let publishDepth = 0;
 
   const publish = (next: ExperienceState): void => {
-    // Freeze returned state graph without freezing caller objects
+    // Freeze returned state graph without freezing caller objects; copy direct children
     const frozen: ExperienceState = Object.freeze({
       ...next,
       pinnedElementIds: Object.freeze([...next.pinnedElementIds]),
       unchangedSpanIds: Object.freeze([...next.unchangedSpanIds]),
-      draftFile: next.draftFile ? Object.freeze(next.draftFile) : null,
-      result: next.result ? Object.freeze(next.result) : null,
-      lastGoodResult: next.lastGoodResult
-        ? Object.freeze(next.lastGoodResult)
-        : null,
+      draftFile: next.draftFile ? next.draftFile : null,
+      result: next.result ? next.result : null,
+      lastGoodResult: next.lastGoodResult ? next.lastGoodResult : null,
       timelineSelection: next.timelineSelection
         ? Object.freeze({ ...next.timelineSelection })
         : null,
     });
     state = frozen;
-    for (const listener of listeners) listener(state);
+    // Snapshot semantics for reentrant add/remove; isolate throws via optional reporter
+    publishDepth += 1;
+    const snapshot = [...listeners];
+    try {
+      for (const listener of snapshot) {
+        try {
+          listener(state);
+        } catch (error) {
+          try {
+            callbacks.onError?.(error, "subscriber");
+          } catch {
+            // never propagate subscriber errors
+          }
+        }
+      }
+    } finally {
+      publishDepth -= 1;
+    }
   };
 
   const failure = (error: unknown, failingRequestId?: number): void => {
@@ -330,8 +404,24 @@ export function createExperienceController(
     getState: () => state,
     subscribe: (listener) => {
       listeners.add(listener);
-      listener(state);
-      return () => listeners.delete(listener);
+      // If subscribing during publish, defer initial notification to next publish (snapshot semantics)
+      if (publishDepth === 0) {
+        try {
+          listener(state);
+        } catch (error) {
+          try {
+            callbacks.onError?.(error, "subscribe");
+          } catch {
+            // never leak subscriber exception
+          }
+        }
+      }
+      let unsubscribed = false;
+      return () => {
+        if (unsubscribed) return;
+        unsubscribed = true;
+        listeners.delete(listener);
+      };
     },
     requestGenerate: (request) => {
       epoch += 1;
@@ -573,18 +663,14 @@ export function createExperienceController(
     setSeamInspection: (enabled) =>
       publish({ ...state, seamInspection: Boolean(enabled) }),
     resolveCompileLoad: (payload, incomingRequestId) => {
-      if (incomingRequestId !== requestId) return false;
+      if (incomingRequestId !== requestId) return;
       try {
         const file = compileCoasterFile(payload);
-        // Build minimal authoritative result for compile-load path: we need track and timeline? But compile-load should produce file only?
-        // For now, validate file compilation succeeds; produce stub result that will be enriched by generator later.
-        // To keep controller honest, we require payload to produce valid file; then we await real pipeline to setResult.
-        // Here we just verify payload compiles; controller stays generating until actual setResult is called.
+        // Validates payload syntax only; remains generating until authoritative result via setResult.
+        // No readiness transition here – worker must supply track/timeline.
         void file;
-        return true;
       } catch (error) {
         failure(error, incomingRequestId);
-        return false;
       }
     },
   } as ExperienceController);

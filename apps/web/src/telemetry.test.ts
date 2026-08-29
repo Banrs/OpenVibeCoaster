@@ -254,6 +254,20 @@ describe("telemetry – graph sync and seam", () => {
     expect(second.values).toEqual(speedData.values);
   });
 
+  it("seam inspection returns authoritative boundary and all seam evidence without inventing", () => {
+    const track = straightTrack();
+    const diagnostics = [
+      { code: "SEAM", severity: "info" as const, message: "ok" },
+      { code: "OTHER", severity: "warning" as const, message: "other" },
+    ];
+    const enabled = getSeamInspection(track, diagnostics, true);
+    expect(enabled.boundaries).toEqual(Array.from(track.elementBoundaries));
+    expect(enabled.seamDiagnostics).toEqual(diagnostics);
+    // toggle off
+    const off = getSeamInspection(track, diagnostics, false);
+    expect(off.seamDiagnostics).toEqual([]);
+  });
+
   it("seam inspection uses compiled boundaries and honors toggle", () => {
     const track = straightTrack();
     const diagnostics = [
@@ -287,6 +301,71 @@ describe("telemetry – graph sync and seam", () => {
     expect(Number.isNaN(indexAtGraphPosition(timeline, Number.NaN, 100))).toBe(
       false,
     );
+  });
+
+  it("rejects non-finite time/head-distance arrays and empty/one-sample truthfully", () => {
+    const track = straightTrack();
+    // Use fake timeline objects to avoid RideTimeline constructor throwing on NaN – controller should still reject
+    const nanHead = {
+      length: 2,
+      headDistanceM: new Float64Array([0, Number.NaN]),
+      timeSeconds: new Float64Array([0, 1]),
+      speedMps: new Float64Array([5, 6]),
+      verticalG: new Float64Array([0, 0]),
+      lateralG: new Float64Array([0, 0]),
+      longitudinalG: new Float64Array([0, 0]),
+      jerkMps3: new Float64Array([0, 0]),
+      frames: [],
+    } as unknown as RideTimeline;
+    expect(getTimelineSeries(nanHead, "speed", track).available).toBe(false);
+    const infTime = {
+      length: 2,
+      headDistanceM: new Float64Array([0, 10]),
+      timeSeconds: new Float64Array([0, Number.POSITIVE_INFINITY]),
+      speedMps: new Float64Array([5, 6]),
+      verticalG: new Float64Array([0, 0]),
+      lateralG: new Float64Array([0, 0]),
+      longitudinalG: new Float64Array([0, 0]),
+      jerkMps3: new Float64Array([0, 0]),
+      frames: [],
+    } as unknown as RideTimeline;
+    expect(getTimelineSeries(infTime, "speed", track).available).toBe(false);
+    const empty = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([]),
+      headDistanceM: new Float64Array([]),
+      speedMps: new Float64Array([]),
+    });
+    expect(getTimelineSeries(empty, "speed", track).available).toBe(false);
+    const one = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0]),
+      headDistanceM: new Float64Array([0]),
+      speedMps: new Float64Array([5]),
+    });
+    expect(getTimelineSeries(one, "speed", track).available).toBe(false);
+  });
+
+  it("graph position selection rejects non-finite without fabricating", () => {
+    const timeline = simpleTimeline();
+    const track = straightTrack();
+    expect(getGraphSelection(timeline, track, Number.NaN, 100)).toBeNull();
+    expect(getGraphSelection(timeline, track, 10, Number.NaN)).toBeNull();
+    expect(
+      getGraphSelection(timeline, track, Number.POSITIVE_INFINITY, 100),
+    ).toBeNull();
+    // finite case still works
+    expect(getGraphSelection(timeline, track, 50, 100)).not.toBeNull();
+  });
+
+  it("metric graph/color output is metric-distinct", () => {
+    const timeline = simpleTimeline();
+    const track = straightTrack();
+    const speed = getMetricColorData(timeline, track, "speed");
+    const gForce = getMetricColorData(timeline, track, "gForce");
+    // values differ because speed vs gForce magnitudes differ
+    expect(speed.values).not.toEqual(gForce.values);
+    expect(speed.range).not.toEqual(gForce.range);
   });
 
   it("preserves caller immutability and determinism", () => {

@@ -285,4 +285,122 @@ describe("directed input – DesignIntent mapping", () => {
     expect(intent!.footprint!.min[2]).toBe(5);
     expect(intent!.footprint!.max[2]).toBe(45);
   });
+
+  it("rejects duplicate vertices, zero-length edges, bow-tie self-intersection and true zero area", () => {
+    const dup = {
+      ...validInput,
+      footprint: {
+        polygon: [
+          [0, 0],
+          [1, 0],
+          [1, 0],
+          [0, 1],
+        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
+        maxHeightM: 10,
+      },
+    };
+    expect(
+      validateDirectedInput(dup).some((e) => e.field.includes("polygon")),
+    ).toBe(true);
+    expect(createDirectedDesignIntent(dup).intent).toBeNull();
+
+    const bowTie = {
+      ...validInput,
+      footprint: {
+        polygon: [
+          [0, 0],
+          [1, 1],
+          [1, 0],
+          [0, 1],
+        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
+        maxHeightM: 10,
+      },
+    };
+    const bowErrors = validateDirectedInput(bowTie);
+    expect(bowErrors.some((e) => e.field === "footprint.polygon")).toBe(true);
+    expect(bowErrors.some((e) => e.message.includes("self-intersect"))).toBe(
+      true,
+    );
+    expect(createDirectedDesignIntent(bowTie).intent).toBeNull();
+
+    const zeroArea = {
+      ...validInput,
+      footprint: {
+        polygon: [
+          [0, 0],
+          [1, 0],
+          [2, 0],
+          [0, 1],
+        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
+        maxHeightM: 10,
+      },
+    };
+    // collinear 3 points on edge + tiny area may still be > epsilon; force degenerate line
+    const degenerate = {
+      ...validInput,
+      footprint: {
+        polygon: [
+          [0, 0],
+          [1, 0],
+          [2, 0],
+        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
+        maxHeightM: 10,
+      },
+    };
+    expect(
+      validateDirectedInput(degenerate).some((e) =>
+        e.field.includes("polygon"),
+      ),
+    ).toBe(true);
+    void zeroArea;
+  });
+
+  it("rejects non-rectangular polygons explicitly instead of silently using AABB", () => {
+    const pentagon = {
+      ...validInput,
+      footprint: {
+        polygon: [
+          [0, 0],
+          [100, 0],
+          [100, 50],
+          [50, 80],
+          [0, 50],
+        ] as unknown as DirectedEditorInput["footprint"]["polygon"],
+        maxHeightM: 10,
+      },
+    };
+    const errors = validateDirectedInput(pentagon);
+    expect(errors.some((e) => e.message.includes("unsupported"))).toBe(true);
+    expect(createDirectedDesignIntent(pentagon).intent).toBeNull();
+  });
+
+  it("never silently drops pinnedElementIds – unknown and duplicate pins error field-specifically", () => {
+    const unknownPin = {
+      ...validInput,
+      pinnedElementIds: ["station-000", "nonexistent-999"],
+    };
+    const e1 = validateDirectedInput(unknownPin);
+    expect(e1.some((e) => e.field === "pinnedElementIds[1]")).toBe(true);
+    expect(createDirectedDesignIntent(unknownPin).intent).toBeNull();
+
+    const duplicatePin = {
+      ...validInput,
+      pinnedElementIds: ["station-000", "station-000"],
+    };
+    const e2 = validateDirectedInput(duplicatePin);
+    expect(e2.some((e) => e.field === "pinnedElementIds[1]")).toBe(true);
+    expect(e2.some((e) => e.message.includes("duplicate"))).toBe(true);
+
+    const validPin = {
+      ...validInput,
+      requiredElements: [
+        "station",
+        "stall",
+      ] as unknown as DirectedEditorInput["requiredElements"],
+      pinnedElementIds: ["stall-001", "station-000"],
+    };
+    const { intent, errors } = createDirectedDesignIntent(validPin);
+    expect(errors).toHaveLength(0);
+    expect(intent!.pinnedElementIds).toEqual(["stall-001", "station-000"]);
+  });
 });

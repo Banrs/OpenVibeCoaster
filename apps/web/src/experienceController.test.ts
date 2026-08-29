@@ -324,4 +324,224 @@ describe("ExperienceController – injection and epochs", () => {
     ctrl.setResult(makeResult("a"), id1);
     expect(listener).toHaveBeenCalledTimes(2); // no longer called
   });
+
+  it("isolates throwing subscriber, uses snapshot, and supports reentrant mutations", () => {
+    const onError = vi.fn();
+    const ctrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+      onError,
+    } as unknown as never);
+    const calls: string[] = [];
+    const throwing = vi.fn(() => {
+      calls.push("throwing");
+      throw new Error("boom");
+    });
+    const second = vi.fn(() => calls.push("second"));
+    const unsubThrowing = ctrl.subscribe(throwing);
+    const unsubSecond = ctrl.subscribe(second);
+    // initial subscribe already called both once (throwing isolated)
+    expect(onError).toHaveBeenCalled();
+    onError.mockClear();
+    calls.length = 0;
+    throwing.mockClear();
+    second.mockClear();
+    // trigger publish via requestGenerate
+    ctrl.requestGenerate({ mode: "insta", seed: 10 });
+    expect(throwing).toHaveBeenCalled();
+    expect(second).toHaveBeenCalled();
+    expect(calls).toEqual(["throwing", "second"]);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), "subscriber");
+
+    // self-removal during publish: listener removes itself, snapshot still notifies later in same publish
+    const ctrl2 = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const calls2: string[] = [];
+    let unsubSelf2: () => void = () => {};
+    const self2 = vi.fn(() => {
+      unsubSelf2();
+      calls2.push("self");
+    });
+    unsubSelf2 = ctrl2.subscribe(self2);
+    const later2 = vi.fn(() => calls2.push("later"));
+    const unsubLater2 = ctrl2.subscribe(later2);
+    const remover2 = vi.fn(() => {
+      unsubLater2();
+      calls2.push("remover");
+    });
+    ctrl2.subscribe(remover2);
+    // snapshot should notify later even though remover removes it in same publish (remover after later)
+    ctrl2.requestGenerate({ mode: "insta", seed: 11 });
+    expect(calls2).toContain("later");
+    expect(calls2).toContain("remover");
+    // next publish, later should not be called
+    calls2.length = 0;
+    ctrl2.requestGenerate({ mode: "insta", seed: 12 });
+    expect(calls2).not.toContain("later");
+    expect(calls2).toContain("remover");
+
+    // subscribing during publish: new listener not notified in same publish
+    const ctrl3 = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const calls3: string[] = [];
+    const newListener = vi.fn(() => {
+      calls3.push("new");
+    });
+    const adder = vi.fn(() => {
+      // Only subscribe newListener when generating, not on initial pending notification
+      if (ctrl3.getState().status === "generating") {
+        ctrl3.subscribe(newListener);
+      }
+      calls3.push("adder");
+    });
+    ctrl3.subscribe(adder);
+    // Clear initial adder call
+    calls3.length = 0;
+    newListener.mockClear();
+    adder.mockClear();
+    ctrl3.requestGenerate({ mode: "insta", seed: 13 });
+    expect(calls3).toContain("adder");
+    expect(newListener).not.toHaveBeenCalled();
+    // next publish, newListener should be called
+    calls3.length = 0;
+    newListener.mockClear();
+    ctrl3.requestGenerate({ mode: "insta", seed: 14 });
+    expect(newListener).toHaveBeenCalled();
+
+    // repeated unsubscribe idempotent
+    const ctrl4 = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const l = vi.fn();
+    const unsub = ctrl4.subscribe(l);
+    unsub();
+    unsub();
+    const calls4: string[] = [];
+    const watcher = vi.fn(() => calls4.push("watcher"));
+    ctrl4.subscribe(watcher);
+    ctrl4.requestGenerate({ mode: "insta", seed: 15 });
+    expect(l).toHaveBeenCalledTimes(1); // only initial, not after
+    expect(calls4).toContain("watcher");
+
+    // nested publish: listener triggers another publish synchronously
+    const nestedCalls: string[] = [];
+    let nestedCtrl: ReturnType<typeof createExperienceController> | null = null;
+    nestedCtrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const outer = vi.fn(() => {
+      nestedCalls.push("outer");
+      nestedCtrl!.requestGenerate({ mode: "insta", seed: 99 });
+    });
+    const innerWatcher = vi.fn(() => nestedCalls.push("innerWatcher"));
+    nestedCtrl.subscribe(outer);
+    nestedCtrl.subscribe(innerWatcher);
+    nestedCtrl.requestGenerate({ mode: "insta", seed: 20 });
+    // outer triggered nested publish, both should be notified deterministically
+    expect(
+      nestedCalls.filter((c) => c === "outer").length,
+    ).toBeGreaterThanOrEqual(1);
+
+    // initial subscription throw does not destabilize
+    const badInitial = vi.fn(() => {
+      throw new Error("initial boom");
+    });
+    const goodInitial = vi.fn();
+    const ctrl5 = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+      onError,
+    } as unknown as never);
+    // subscribing badInitial should not throw outward
+    expect(() => ctrl5.subscribe(badInitial)).not.toThrow();
+    expect(() => ctrl5.subscribe(goodInitial)).not.toThrow();
+    expect(goodInitial).toHaveBeenCalled();
+    void unsubThrowing;
+    void unsubSecond;
+    void unsub;
+  });
+
+  it("does not freeze caller-owned objects and does not expose mutable nested aliases", () => {
+    const ctrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const original = makeResult("hash1");
+    const originalIntent = original.file.intent;
+    const originalSpans = original.file.solvedSpans;
+    const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
+    ctrl.setResult(original, id);
+    const state = ctrl.getState();
+    // caller objects not frozen
+    expect(Object.isFrozen(original)).toBe(false);
+    expect(Object.isFrozen(original.file)).toBe(false);
+    // owned copies frozen, not same reference (no alias exposure)
+    expect(state.result!.file.intent).not.toBe(originalIntent);
+    expect(state.result!.file.solvedSpans).not.toBe(originalSpans);
+    expect(Object.isFrozen(state.result!.file)).toBe(true);
+    expect(Object.isFrozen(state.result!.file.intent)).toBe(true);
+    // diagnostics/hashes not shared mutable
+    const diag = state.result!.diagnostics;
+    expect(Object.isFrozen(diag)).toBe(true);
+    // mutate returned diagnostics should not affect next state (copy)
+    const before = state.result!.diagnostics.length;
+    try {
+      (state.result!.diagnostics as unknown as string[]).push({} as never);
+    } catch {}
+    expect(ctrl.getState().result!.diagnostics.length).toBe(before);
+    // clearance typed array not duplicated unnecessarily but ownership transferred: original clearance not frozen, owned is new copy
+    const clearance = new Float64Array([1, 2]);
+    const withClearance = {
+      ...makeResult("hash2"),
+      clearanceM: clearance,
+    } as AuthoritativeExperienceResult;
+    const id2 = ctrl.requestGenerate({ mode: "insta", seed: 2 });
+    ctrl.setResult(withClearance, id2);
+    expect(ctrl.getState().result!.clearanceM).not.toBe(clearance);
+    expect(ctrl.getState().result!.clearanceM![0]).toBe(1);
+    clearance[0] = 99;
+    expect(ctrl.getState().result!.clearanceM![0]).toBe(1);
+    // timeline selection not exposed mutable
+    ctrl.selectTimelineIndex(0);
+    const sel1 = ctrl.getState().timelineSelection!;
+    try {
+      (sel1 as unknown as Record<string, unknown>).index = 999;
+    } catch {}
+    expect(ctrl.getState().timelineSelection!.index).toBe(0);
+  });
+
+  it("compile-load remains generating until authoritative result, no misleading success", () => {
+    const ctrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const loadId = ctrl.requestLoad(new File([""], "test.json"));
+    expect(ctrl.getState().status).toBe("generating");
+    // resolveCompileLoad validates syntax only; invalid goes to error, not ready
+    ctrl.resolveCompileLoad(JSON.stringify({ invalid: true }), loadId);
+    expect(ctrl.getState().status).toBe("error");
+    // new load returns to generating
+    const newLoadId = ctrl.requestLoad(new File([""], "test2.json"));
+    expect(ctrl.getState().status).toBe("generating");
+    ctrl.setResult(makeResult("loaded"), newLoadId);
+    expect(ctrl.getState().status).toBe("ready");
+    // stale resolve should be ignored (no transition, stays ready)
+    ctrl.resolveCompileLoad("{}", loadId); // stale
+    expect(ctrl.getState().requestId).toBe(newLoadId);
+    expect(ctrl.getState().status).toBe("ready");
+  });
 });

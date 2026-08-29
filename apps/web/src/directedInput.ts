@@ -85,6 +85,104 @@ function addError(errors: FieldError[], field: string, message: string): void {
   errors.push(Object.freeze({ field, message }));
 }
 
+function shoelaceArea(points: readonly (readonly [number, number])[]): number {
+  let sum = 0;
+  const n = points.length;
+  for (let i = 0; i < n; i += 1) {
+    const [x1, z1] = points[i]!;
+    const [x2, z2] = points[(i + 1) % n]!;
+    sum += x1 * z2 - x2 * z1;
+  }
+  return sum / 2;
+}
+
+function orientation(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  cx: number,
+  cz: number,
+): number {
+  const v = (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
+  if (v > 0) return 1;
+  if (v < 0) return -1;
+  return 0;
+}
+
+function onSegment(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  cx: number,
+  cz: number,
+): boolean {
+  return (
+    Math.min(ax, cx) <= bx &&
+    bx <= Math.max(ax, cx) &&
+    Math.min(az, cz) <= bz &&
+    bz <= Math.max(az, cz)
+  );
+}
+
+function segmentsIntersect(
+  p1: readonly [number, number],
+  p2: readonly [number, number],
+  q1: readonly [number, number],
+  q2: readonly [number, number],
+): boolean {
+  const o1 = orientation(p1[0], p1[1], p2[0], p2[1], q1[0], q1[1]);
+  const o2 = orientation(p1[0], p1[1], p2[0], p2[1], q2[0], q2[1]);
+  const o3 = orientation(q1[0], q1[1], q2[0], q2[1], p1[0], p1[1]);
+  const o4 = orientation(q1[0], q1[1], q2[0], q2[1], p2[0], p2[1]);
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && onSegment(p1[0], p1[1], q1[0], q1[1], p2[0], p2[1]))
+    return true;
+  if (o2 === 0 && onSegment(p1[0], p1[1], q2[0], q2[1], p2[0], p2[1]))
+    return true;
+  if (o3 === 0 && onSegment(q1[0], q1[1], p1[0], p1[1], q2[0], q2[1]))
+    return true;
+  if (o4 === 0 && onSegment(q1[0], q1[1], p2[0], p2[1], q2[0], q2[1]))
+    return true;
+  return false;
+}
+
+function isAxisAlignedRectangle(
+  points: readonly (readonly [number, number])[],
+): boolean {
+  if (points.length !== 4) return false;
+  let minX = Infinity,
+    maxX = -Infinity,
+    minZ = Infinity,
+    maxZ = -Infinity;
+  for (const [x, z] of points) {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minZ = Math.min(minZ, z);
+    maxZ = Math.max(maxZ, z);
+  }
+  if (!(maxX > minX && maxZ > minZ)) return false;
+  const corners: [number, number][] = [
+    [minX, minZ],
+    [maxX, minZ],
+    [maxX, maxZ],
+    [minX, maxZ],
+  ];
+  const sort = (a: readonly [number, number], b: readonly [number, number]) =>
+    a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1];
+  const sortedPoints = [...points].sort(sort);
+  const sortedCorners = [...corners].sort(sort);
+  for (let i = 0; i < 4; i += 1) {
+    if (
+      sortedPoints[i]![0] !== sortedCorners[i]![0] ||
+      sortedPoints[i]![1] !== sortedCorners[i]![1]
+    )
+      return false;
+  }
+  return true;
+}
+
 function validatePolygon(
   value: unknown,
   field: string,
@@ -118,24 +216,75 @@ function validatePolygon(
       addError(errors, `${pointField}[1]`, "expected finite number");
     if (finite(x) && finite(z)) result.push([x, z] as [number, number]);
   }
-  // Early return if structural errors
   if (result.length !== polygon.length) return null;
-  // Check degenerate: all points collinear or identical? Simple check: bounding area > 0
-  let minX = Infinity,
-    maxX = -Infinity,
-    minZ = Infinity,
-    maxZ = -Infinity;
-  for (const [x, z] of result) {
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minZ = Math.min(minZ, z);
-    maxZ = Math.max(maxZ, z);
+
+  // Duplicate vertices
+  for (let i = 0; i < result.length; i += 1) {
+    for (let j = i + 1; j < result.length; j += 1) {
+      if (result[i]![0] === result[j]![0] && result[i]![1] === result[j]![1]) {
+        addError(
+          errors,
+          `${field}[${j}]`,
+          `duplicate vertex ${j} duplicates ${i}`,
+        );
+      }
+    }
   }
-  if (!(maxX > minX && maxZ > minZ)) {
+
+  // Zero-length edges (consecutive duplicates, including closing edge)
+  for (let i = 0; i < result.length; i += 1) {
+    const a = result[i]!;
+    const b = result[(i + 1) % result.length]!;
+    if (a[0] === b[0] && a[1] === b[1]) {
+      addError(errors, `${field}[${i}]`, "zero-length edge");
+    }
+  }
+
+  // Zero-area (true zero-area via shoelace)
+  const area = shoelaceArea(result);
+  if (Math.abs(area) < 1e-12) {
     addError(errors, field, "polygon must have non-zero area");
+  }
+
+  // Self-intersections (including bow-tie)
+  const n = result.length;
+  for (let i = 0; i < n; i += 1) {
+    const p1 = result[i]!;
+    const p2 = result[(i + 1) % n]!;
+    for (let j = i + 1; j < n; j += 1) {
+      const q1 = result[j]!;
+      const q2 = result[(j + 1) % n]!;
+      // Skip adjacent edges and shared vertices
+      if (i === j || (i + 1) % n === j || i === (j + 1) % n) continue;
+      // Skip if they share a vertex exactly (duplicate already reported, but avoid false positive)
+      if (
+        (p1[0] === q1[0] && p1[1] === q1[1]) ||
+        (p1[0] === q2[0] && p1[1] === q2[1]) ||
+        (p2[0] === q1[0] && p2[1] === q1[1]) ||
+        (p2[0] === q2[0] && p2[1] === q2[1])
+      )
+        continue;
+      if (segmentsIntersect(p1, p2, q1, q2)) {
+        addError(errors, field, "polygon self-intersects");
+        // Break after first detection to keep deterministic single error, but could continue
+        i = n; // outer break
+        break;
+      }
+    }
+  }
+
+  if (errors.some((e) => e.field.startsWith(field))) return null;
+
+  // Preserve core contract: only axis-aligned rectangles are representable as AABB
+  if (!isAxisAlignedRectangle(result)) {
+    addError(
+      errors,
+      field,
+      "unsupported non-rectangular polygon: core contract supports only axis-aligned rectangles via AABB; provide 4 corners of the bounding rectangle",
+    );
     return null;
   }
-  // Check that polygon vertices are finite already, no NaN will be produced.
+
   return result;
 }
 
@@ -419,7 +568,7 @@ export function validateDirectedInput(input: unknown): readonly FieldError[] {
     }
   }
 
-  // pinnedElementIds
+  // pinnedElementIds – must validate against final stable IDs and preserve order, no silent drop
   if (record.pinnedElementIds !== undefined) {
     const pinned = record.pinnedElementIds;
     if (!Array.isArray(pinned))
@@ -435,6 +584,48 @@ export function validateDirectedInput(input: unknown): readonly FieldError[] {
             `pinnedElementIds[${i}]`,
             "expected non-empty string",
           );
+      }
+      // Build expected stable IDs for validation (deterministic, bounded)
+      if (Array.isArray(requiredElements)) {
+        const expectedIds: string[] = [];
+        for (let i = 0; i < requiredElements.length; i += 1) {
+          const kind = requiredElements[i];
+          if (
+            typeof kind === "string" &&
+            (ELEMENT_KINDS as readonly string[]).includes(kind)
+          ) {
+            expectedIds.push(`${String(kind)}-${String(i).padStart(3, "0")}`);
+          }
+        }
+        const hasStall = (requiredElements as unknown as string[]).includes(
+          "stall",
+        );
+        if (record.requiresStall === true && !hasStall) {
+          expectedIds.push(
+            `stall-${String(requiredElements.length).padStart(3, "0")}`,
+          );
+        }
+        const expectedSet = new Set(expectedIds);
+        const seenPinned = new Set<string>();
+        for (let i = 0; i < pinned.length; i += 1) {
+          const raw = pinned[i];
+          if (typeof raw !== "string" || raw.trim().length === 0) continue;
+          const id = raw.trim();
+          if (!expectedSet.has(id)) {
+            addError(
+              errors,
+              `pinnedElementIds[${i}]`,
+              `unknown element ID ${id}`,
+            );
+          } else if (seenPinned.has(id)) {
+            addError(
+              errors,
+              `pinnedElementIds[${i}]`,
+              `duplicate pinned ID ${id}`,
+            );
+          }
+          seenPinned.add(id);
+        }
       }
     }
   }
@@ -635,14 +826,10 @@ export function createDirectedDesignIntent(input: DirectedEditorInput): {
 
   const heightRange = Object.freeze({ min: minY, max: maxY });
 
-  // Determine pinnedElementIds: must be stable semantic IDs that exist
-  const elementIds = new Set(finalElements.map((e) => e.id));
-  const pinnedElementIds: string[] = [];
-  if (copy.pinnedElementIds) {
-    for (const id of copy.pinnedElementIds) {
-      if (elementIds.has(id)) pinnedElementIds.push(id);
-    }
-  }
+  // Pinned IDs validated field-specifically above – preserve order exactly, no silent drop
+  const pinnedElementIds = copy.pinnedElementIds
+    ? Object.freeze(copy.pinnedElementIds.map((id) => id.trim()))
+    : Object.freeze([] as string[]);
 
   const rawIntent: Omit<DesignIntentV1, "schemaVersion"> = {
     generatorVersion: "directed-v1",
@@ -656,7 +843,7 @@ export function createDirectedDesignIntent(input: DirectedEditorInput): {
     footprint,
     heightRange,
     terrainProfileId: copy.terrainProfileId,
-    pinnedElementIds: Object.freeze([...pinnedElementIds]),
+    pinnedElementIds,
   };
 
   // This will throw if we accidentally produced schema-invalid intent – we map to field error instead.

@@ -134,7 +134,29 @@ export function getTimelineSeries(
 ): TimelineSeries {
   const { distances, times } = arraysFromTimeline(timeline);
   const length = timeline.length;
-  // Validate alignment early: distances/times already from timeline; if length 0, unavailable
+  // Reject non-finite or misaligned time/head-distance arrays truthfully (NaN/Infinity/empty/one-sample)
+  if (length === 0) return unavailable(timeline, metric, "timeline is empty");
+  if (length === 1)
+    return unavailable(
+      timeline,
+      metric,
+      "timeline requires at least two samples",
+    );
+  if (distances.length !== length || times.length !== length)
+    return unavailable(
+      timeline,
+      metric,
+      "time/head-distance arrays misaligned",
+    );
+  if (
+    !distances.every((v) => Number.isFinite(v)) ||
+    !times.every((v) => Number.isFinite(v))
+  )
+    return unavailable(
+      timeline,
+      metric,
+      "time/head-distance arrays must be finite",
+    );
   let values: number[] | null = null;
   let reason = "";
 
@@ -405,9 +427,11 @@ export function getGraphSelection(
   width: number,
 ): GraphSelection | null {
   if (timeline.length === 0 || !track) return null;
+  if (!Number.isFinite(x) || !Number.isFinite(width) || width <= 0) return null;
   const index = indexAtGraphPosition(timeline, x, width);
   const distanceM = timeline.headDistanceM[index] ?? 0;
   const timeSeconds = timeline.timeSeconds[index] ?? 0;
+  if (!Number.isFinite(distanceM) || !Number.isFinite(timeSeconds)) return null;
   const sample = sampleTrackAtDistance(track, distanceM);
   return Object.freeze({
     index,
@@ -476,18 +500,8 @@ export function getSeamInspection(
     });
   }
   const boundaries = Object.freeze(Array.from(track.elementBoundaries));
-  // Filter analytic diagnostic evidence that relates to seams (e.g., curvature, position residual)
-  const seamDiagnostics = Object.freeze(
-    diagnostics.filter(
-      (d) =>
-        d.code.startsWith("SEAM") ||
-        d.code.includes("SEAM") ||
-        d.code === "CURVATURE" ||
-        d.relatedIds?.some((id) => String(id).includes("seam")),
-    ),
-  );
-  // Actually, return all diagnostics but ensure toggle honored – here filter to preserve analytic evidence
-  // For general case, if no seam-specific diagnostics, return empty but still honor boundaries
+  // Return authoritative boundary and all relevant seam evidence without inventing diagnostics
+  const seamDiagnostics = Object.freeze([...diagnostics]);
   return Object.freeze({ enabled: true, boundaries, seamDiagnostics });
 }
 
@@ -516,7 +530,18 @@ export function drawTimelineGraph(
   const min = range.min;
   const max = range.max;
   const span = Math.max(max - min, 1e-9);
-  context.strokeStyle = "#6ea1ff";
+  const metricColors: Record<TimelineMetricId, string> = {
+    speed: "#6ea1ff",
+    verticalG: "#ff6e6e",
+    lateralG: "#6eff8a",
+    longitudinalG: "#ffde6e",
+    jerk: "#d36eff",
+    rollRate: "#6efff2",
+    clearance: "#ff9f6e",
+    energyResidual: "#8aff6e",
+    gForce: "#ff6eb5",
+  };
+  context.strokeStyle = metricColors[series.metric] ?? "#6ea1ff";
   context.lineWidth = 2;
   context.beginPath();
   series.values.forEach((value, index) => {
