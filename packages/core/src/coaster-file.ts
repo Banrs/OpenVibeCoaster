@@ -116,12 +116,14 @@ const quaternion = (
 ): readonly [number, number, number, number] => {
   const values = array(value, path);
   if (values.length !== 4) fail(path, "quaternion");
-  return [
+  const result = [
     finite(values[0], `${path}[0]`),
     finite(values[1], `${path}[1]`),
     finite(values[2], `${path}[2]`),
     finite(values[3], `${path}[3]`),
-  ];
+  ] as const;
+  if (Math.hypot(...result) === 0) fail(path, "non-zero quaternion");
+  return result;
 };
 const targetValue = (value: unknown, path: string): number | Vec3 =>
   Array.isArray(value) ? vector(value, path) : finite(value, path);
@@ -220,9 +222,8 @@ const validateGate = (value: unknown, path: string): void => {
   );
   if (string(gate.id, `${path}.id`).trim().length === 0)
     fail(`${path}.id`, "unique non-empty id");
-  if (gate.position === undefined && gate.at === undefined)
-    fail(`${path}.position`, "3-vector");
-  if (gate.position !== undefined) vector(gate.position, `${path}.position`);
+  if (gate.position === undefined) fail(`${path}.position`, "3-vector");
+  vector(gate.position, `${path}.position`);
   if (gate.orientation !== undefined)
     quaternion(gate.orientation, `${path}.orientation`);
   if (gate.at !== undefined) finite(gate.at, `${path}.at`);

@@ -20,7 +20,7 @@ export interface DesignCompatibilityV1 {
 }
 export interface GateV1 {
   readonly id: string;
-  readonly position?: Vec3;
+  readonly position: Vec3;
   readonly orientation?: QuaternionV1;
   readonly at?: number;
   readonly kind?: string;
