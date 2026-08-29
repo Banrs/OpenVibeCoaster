@@ -118,36 +118,16 @@ const createGenerationOperationCache = (): GenerationOperationCache => ({
 const canonicalIntentCopy = (intent: DesignIntentV1): DesignIntentV1 =>
   parseDesignIntentV1(serializeDesignIntentV1(intent));
 
-const ownedEnvironment = (
-  environment: EnvironmentQuery | undefined,
-): EnvironmentQuery | undefined =>
-  environment === undefined
-    ? undefined
-    : {
-        signedDistance: environment.signedDistance.bind(environment),
-        ...(environment.sampleSolid
-          ? { sampleSolid: environment.sampleSolid.bind(environment) }
-          : {}),
-        ...(environment.bounds
-          ? { bounds: environment.bounds.bind(environment) }
-          : {}),
-        raycast: environment.raycast.bind(environment),
-      };
-
-const ownedGenerationOptions = (
-  options: GenerationOptions,
-): GenerationOptions => {
-  const { environment, researchSnapshotIds, ...rest } = options;
-  return {
-    ...rest,
-    ...(environment === undefined
-      ? {}
-      : { environment: ownedEnvironment(environment)! }),
-    ...(researchSnapshotIds === undefined
-      ? {}
-      : { researchSnapshotIds: [...researchSnapshotIds] }),
-  };
-};
+const ownedGenerationOptions = ({
+  environment: _operationEnvironment,
+  researchSnapshotIds,
+  ...rest
+}: GenerationOptions): GenerationOptions => ({
+  ...rest,
+  ...(researchSnapshotIds === undefined
+    ? {}
+    : { researchSnapshotIds: [...researchSnapshotIds] }),
+});
 
 const ownedElements = (
   elements: readonly AnySemanticElement[],

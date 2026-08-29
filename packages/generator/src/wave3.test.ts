@@ -2301,6 +2301,38 @@ describe("wave 3 deterministic generator", () => {
     }
   });
 
+  it("does not retain a caller-owned stateful environment", () => {
+    const environment = {
+      offset: 3,
+      signedDistanceCalls: 0,
+      signedDistance() {
+        this.signedDistanceCalls += 1;
+        return this.offset;
+      },
+      raycast: () => undefined,
+    };
+
+    const first = generateCoaster(directedIntent, { environment, samples: 32 });
+    const callsAfterFirst = environment.signedDistanceCalls;
+    const second = generateCoaster(directedIntent, {
+      environment,
+      samples: 32,
+    });
+
+    expect(callsAfterFirst).toBeGreaterThan(0);
+    expect(environment.signedDistanceCalls).toBeGreaterThan(callsAfterFirst);
+    expect(first.options).not.toHaveProperty("environment");
+    expect(second.options).not.toHaveProperty("environment");
+    expect(first.options).not.toBe(second.options);
+
+    const firstSnapshot = JSON.stringify(first);
+    const secondSnapshot = JSON.stringify(second);
+    environment.offset = 9;
+
+    expect(JSON.stringify(first)).toBe(firstSnapshot);
+    expect(JSON.stringify(second)).toBe(secondSnapshot);
+  });
+
   it("returns deeply independent deterministic result graphs", () => {
     const callerIntent = {
       ...directedIntent,
@@ -2352,6 +2384,7 @@ describe("wave 3 deterministic generator", () => {
     );
     expect(first.options).not.toBe(second.options);
     expect(first.options).not.toBe(callerOptions);
+    expect(first.options).not.toHaveProperty("environment");
     expect(first.options.researchSnapshotIds).not.toBe(
       second.options.researchSnapshotIds,
     );
