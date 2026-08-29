@@ -1,12 +1,23 @@
 import {
   compileCoasterFile,
   deserializeCoasterFileV1,
+  serializeCoasterFileV1,
+  serializeSolvedSpanV1,
   validateDesignIntentV1,
   type CoasterFileV1,
   type DesignIntentV1,
   type Diagnostic,
+  type SolvedSpan,
 } from "@openvibecoaster/core";
-import { generateCoaster, regenerateLocal } from "@openvibecoaster/generator";
+import {
+  createElement,
+  generateCoaster,
+  regenerateLocal,
+} from "@openvibecoaster/generator";
+import type {
+  GenerationResult,
+  StoredGenerationOptions,
+} from "@openvibecoaster/generator";
 import {
   createDefaultSimulatorConfig,
   simulateRide,
@@ -120,6 +131,94 @@ function parseFile(file: unknown): CoasterFileV1 {
   // compileCoasterFile will validate
   const loaded = compileCoasterFile(file as CoasterFileV1 | string);
   return loaded.file;
+}
+
+function ownerForSpanId(
+  spanId: string,
+  elementById: ReadonlyMap<string, unknown>,
+): string | undefined {
+  if (elementById.has(spanId)) return spanId;
+  const separator = spanId.lastIndexOf("#");
+  if (separator <= 0 || !/^\d+$/.test(spanId.slice(separator + 1)))
+    return undefined;
+  const owner = spanId.slice(0, separator);
+  return elementById.has(owner) ? owner : undefined;
+}
+
+function spanBytesForSolved(span: SolvedSpan): string {
+  const serial = serializeSolvedSpanV1(span);
+  const coefficients = [
+    ...serial.positionCoefficients.flat(),
+    ...serial.rollCoefficients,
+  ];
+  const bytes = new Uint8Array(coefficients.length * 8);
+  const view = new DataView(bytes.buffer);
+  coefficients.forEach((coefficient, index) =>
+    view.setFloat64(index * 8, coefficient, true),
+  );
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
+function hashSpanForSolved(span: SolvedSpan): string {
+  let hash = 0x811c9dc5;
+  for (const character of spanBytesForSolved(span))
+    hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193);
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function generationFromFile(file: CoasterFileV1): GenerationResult {
+  // Compile stored coefficients without solving – validates file
+  const loaded = compileCoasterFile(file);
+  const solvedSpans = loaded.solvedSpans;
+  const track = loaded.track;
+  const elements = file.intent.elements.map((e) => {
+    const kind = (e.kind ?? e.type) as string;
+    return createElement(
+      kind as Parameters<typeof createElement>[0],
+      e.id,
+      (e.parameters ?? {}) as Parameters<typeof createElement>[2],
+    );
+  });
+  const elementById = new Map(elements.map((e) => [e.id, e] as const));
+  const bytes: Record<string, string> = {};
+  const hashes: Record<string, string> = {};
+  for (const span of solvedSpans) {
+    bytes[span.id] = spanBytesForSolved(span);
+    hashes[span.id] = hashSpanForSolved(span);
+  }
+  for (const el of elements) {
+    const first = solvedSpans.find(
+      (s) => ownerForSpanId(s.id, elementById) === el.id,
+    );
+    if (first) {
+      bytes[el.id] = spanBytesForSolved(first);
+      hashes[el.id] = hashSpanForSolved(first);
+    }
+  }
+  return Object.freeze({
+    feasible: true,
+    intent: file.intent,
+    elements: Object.freeze([...elements]),
+    solvedSpans: Object.freeze([...solvedSpans]),
+    track,
+    file,
+    serializedFile: serializeCoasterFileV1(file),
+    diagnostics: Object.freeze([]),
+    relaxations: Object.freeze([]),
+    candidatesTested: 1,
+    lmIterations: 0,
+    selectedLmIterations: 0,
+    candidateLmIterations: Object.freeze([0]),
+    candidateLmWork: 0,
+    relaxationLmIterations: Object.freeze([]),
+    relaxationLmWork: 0,
+    spanHashes: Object.freeze({ ...hashes }),
+    spanBytes: Object.freeze({ ...bytes }),
+    relaxationEvidence: Object.freeze([]),
+    options: Object.freeze({}) as StoredGenerationOptions,
+  } as unknown as GenerationResult);
 }
 
 export function handleGenerate(
@@ -254,9 +353,10 @@ export function handleRegenerate(
       toDiagnostic("UNKNOWN_ELEMENT", `Unknown element ${elementId}`),
     ]);
   }
-  let baseGeneration: ReturnType<typeof generateCoaster>;
+  let baseGeneration: GenerationResult;
   try {
-    baseGeneration = generateCoaster(parsedFile.intent);
+    // Compile stored solved coefficients without solving; reconstruct generation input owned by supplied file
+    baseGeneration = generationFromFile(parsedFile);
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(

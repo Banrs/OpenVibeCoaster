@@ -298,8 +298,10 @@ describe("EngineeringWorkerClient lifecycle", () => {
   });
 
   it("supports compile-simulate and regenerate via client", async () => {
+    const { generateCoaster } = await import("@openvibecoaster/generator");
+    const file = generateCoaster(validIntent).file;
     const client = new EngineeringWorkerClient(factory);
-    const cs = client.compileSimulate("cs-1", { dummy: "file" });
+    const cs = client.compileSimulate("cs-1", file);
     expect(workers[0]!.posted[0]).toMatchObject({
       type: "compile-simulate",
       requestId: "cs-1",
@@ -307,7 +309,7 @@ describe("EngineeringWorkerClient lifecycle", () => {
     workers[0]!.emitMessage(makeSuccess("cs-1"));
     await expect(cs).resolves.toMatchObject({ requestId: "cs-1" });
 
-    const rg = client.regenerate("rg-1", { dummy: "file" }, "station-0");
+    const rg = client.regenerate("rg-1", file, "station-0");
     expect(workers[0]!.posted[1]).toMatchObject({
       type: "regenerate",
       requestId: "rg-1",
@@ -339,5 +341,76 @@ describe("EngineeringWorkerClient lifecycle", () => {
     expect(client.getPendingCount()).toBe(1); // q1 still pending
     workers[0]!.emitMessage(makeSuccess("q1"));
     await expect(p1).resolves.toMatchObject({ requestId: "q1" });
+  });
+
+  it("factory throw during recreate after active cancel never retains terminated worker and allows retry", async () => {
+    const localWorkers: MockWorker[] = [];
+    let calls = 0;
+    const throwingFactory = (): WorkerLike => {
+      calls += 1;
+      if (calls === 2) throw new Error("factory boom");
+      const w = new MockWorker();
+      localWorkers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(throwingFactory);
+    expect(localWorkers).toHaveLength(1);
+    const firstWorker = localWorkers[0]!;
+    const p1 = client.generate("f1", validIntent);
+    // Active cancel will terminate w1, advance epoch to 1, then factory throws on recreate
+    client.cancel("f1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    expect(firstWorker.terminateCount).toBe(1);
+    expect(client.getWorker()).toBeNull();
+    expect(client.getEpoch()).toBe(1);
+    // Never retain terminated worker
+    expect(client.getWorker()).not.toBe(firstWorker);
+    // Next operation should attempt fresh creation (calls ===3) and succeed with new epoch
+    const p2 = client.generate("f2", validIntent);
+    // This should have triggered a retry creation; localWorkers should now have 2 (initial + retry)
+    expect(localWorkers).toHaveLength(2);
+    expect(client.getWorker()).toBe(localWorkers[1]!);
+    expect(client.getEpoch()).toBe(1);
+    localWorkers[1]!.emitMessage(makeSuccess("f2"));
+    await expect(p2).resolves.toMatchObject({ requestId: "f2" });
+  });
+
+  it("factory throw during recreate after error never retains terminated worker and rejects exactly once", async () => {
+    const localWorkers: MockWorker[] = [];
+    let calls = 0;
+    const throwingFactory = (): WorkerLike => {
+      calls += 1;
+      if (calls === 2) throw new Error("factory boom 2");
+      const w = new MockWorker();
+      localWorkers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(throwingFactory);
+    const p1 = client.generate("e1", validIntent);
+    // Trigger worker error – handleError will terminate, epoch++ and try recreate (throws)
+    localWorkers[0]!.emitError("boom");
+    await expect(p1).rejects.toThrow(/boom/);
+    expect(client.getWorker()).toBeNull();
+    expect(client.getEpoch()).toBe(1);
+    // No uncaught from event handler (would have failed test)
+    // Next operation retries
+    const p2 = client.generate("e2", validIntent);
+    expect(localWorkers).toHaveLength(2);
+    localWorkers[1]!.emitMessage(makeSuccess("e2"));
+    await expect(p2).resolves.toMatchObject({ requestId: "e2" });
+  });
+
+  it("cancel is synchronous void and never throws", () => {
+    const client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("sync1", validIntent);
+    const ret = client.cancel("sync1");
+    expect(ret).toBeUndefined();
+    // Must be synchronous – pending rejected immediately, epoch advanced before next tick
+    expect(client.getEpoch()).toBe(1);
+    expect(client.getWorker()).not.toBe(workers[0]!);
+    // Even with invalid id, cancel is void sync
+    expect(client.cancel("nope")).toBeUndefined();
+    expect(client.cancel("")).toBeUndefined();
+    return expect(p1).rejects.toThrow(/cancelled/);
   });
 });

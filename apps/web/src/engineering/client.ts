@@ -79,76 +79,105 @@ export class EngineeringWorkerClient {
   }
 
   private handleMessage(ev: MessageEvent): void {
-    const data = (ev as MessageEvent).data ?? (ev as unknown);
-    const response = data as EngineeringWorkerResponse;
-    if (
-      !response ||
-      typeof (response as { requestId?: unknown }).requestId !== "string"
-    )
-      return;
-    const entry = this.pending.get(response.requestId);
-    if (!entry) return; // stale ID
-    if (entry.epoch !== this.epoch) {
+    try {
+      const data = (ev as MessageEvent).data ?? (ev as unknown);
+      const response = data as EngineeringWorkerResponse;
+      if (
+        !response ||
+        typeof (response as { requestId?: unknown }).requestId !== "string"
+      )
+        return;
+      const entry = this.pending.get(response.requestId);
+      if (!entry) return; // stale ID
+      if (entry.epoch !== this.epoch) {
+        this.pending.delete(response.requestId);
+        return; // old epoch
+      }
       this.pending.delete(response.requestId);
-      return; // old epoch
-    }
-    this.pending.delete(response.requestId);
-    if (response.type === "success") {
-      entry.resolve(response);
-    } else if (response.type === "failure") {
-      const err = Object.assign(
-        new Error(response.diagnostics[0]?.message ?? "Engineering failure"),
-        {
-          diagnostics: response.diagnostics,
-          relaxations: response.relaxations,
-          requestId: response.requestId,
-          code: "failure",
-        },
-      );
-      entry.reject(err);
-    } else if (response.type === "cancelled") {
-      const err = Object.assign(
-        new Error(`Request ${response.requestId} cancelled`),
-        {
-          code: "cancelled",
-          requestId: response.requestId,
-        },
-      );
-      entry.reject(err);
-    } else {
-      entry.reject(
-        new Error(
-          `Unknown response type ${(response as { type: unknown }).type}`,
-        ),
-      );
+      if (response.type === "success") {
+        entry.resolve(response);
+      } else if (response.type === "failure") {
+        const err = Object.assign(
+          new Error(response.diagnostics[0]?.message ?? "Engineering failure"),
+          {
+            diagnostics: response.diagnostics,
+            relaxations: response.relaxations,
+            requestId: response.requestId,
+            code: "failure",
+          },
+        );
+        entry.reject(err);
+      } else if (response.type === "cancelled") {
+        const err = Object.assign(
+          new Error(`Request ${response.requestId} cancelled`),
+          {
+            code: "cancelled",
+            requestId: response.requestId,
+          },
+        );
+        entry.reject(err);
+      } else {
+        entry.reject(
+          new Error(
+            `Unknown response type ${(response as { type: unknown }).type}`,
+          ),
+        );
+      }
+    } catch {
+      // Never throw from event handler
     }
   }
 
   private handleError(ev: Event): void {
-    const message =
-      (ev as ErrorEvent).message ??
-      (ev as { data?: unknown })?.data?.toString() ??
-      "Worker error";
-    // Reject all pending for current epoch
-    for (const [id, entry] of this.pending.entries()) {
-      if (entry.epoch !== this.epoch) continue;
-      this.pending.delete(id);
-      entry.reject(
-        Object.assign(new Error(String(message)), {
-          code: "worker-error",
-          requestId: id,
-        }),
-      );
-    }
-    if (this.terminated) return;
-    // Advance epoch and recreate worker for subsequent work
     try {
-      this.worker?.terminate();
+      const message =
+        (ev as ErrorEvent).message ??
+        (ev as { data?: unknown })?.data?.toString() ??
+        "Worker error";
+      // Reject all pending for current epoch
+      for (const [id, entry] of this.pending.entries()) {
+        if (entry.epoch !== this.epoch) continue;
+        this.pending.delete(id);
+        entry.reject(
+          Object.assign(new Error(String(message)), {
+            code: "worker-error",
+            requestId: id,
+          }),
+        );
+      }
+      if (this.terminated) return;
+      // Advance epoch and recreate worker for subsequent work
+      let previousWorker: WorkerLike | null = null;
+      try {
+        previousWorker = this.worker;
+        previousWorker?.terminate();
+      } catch {
+        // ignore
+      }
+      this.epoch += 1;
+      this.worker = null;
+      try {
+        this.worker = this.createWorker();
+      } catch {
+        // Factory threw during recreate – never retain terminated worker, keep epoch advanced, reject already done; next operation will retry
+        this.worker = null;
+      }
+      // Ensure terminated worker is not retained
+      void previousWorker;
     } catch {
-      // ignore
+      // Never throw from event handler; ensure worker not retained if factory threw
+      this.worker = null;
     }
-    this.epoch += 1;
-    this.worker = this.createWorker();
+  }
+
+  private ensureWorker(): void {
+    if (this.terminated) return;
+    if (this.worker) return;
+    try {
+      this.worker = this.createWorker();
+    } catch {
+      this.worker = null;
+    }
   }
 
   private enqueue(
@@ -170,6 +199,15 @@ export class EngineeringWorkerClient {
     const requestId = request.requestId;
     if (this.pending.has(requestId)) {
       return Promise.reject(new Error(`Duplicate requestId ${requestId}`));
+    }
+    this.ensureWorker();
+    if (!this.worker) {
+      return Promise.reject(
+        Object.assign(new Error("Worker factory failed"), {
+          code: "worker-factory",
+          requestId,
+        }),
+      );
     }
     return new Promise<EngineeringWorkerSuccess>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject, epoch: this.epoch });
@@ -213,73 +251,84 @@ export class EngineeringWorkerClient {
   }
 
   public cancel(requestId: string): void {
-    if (this.terminated) return;
-    if (typeof requestId !== "string" || requestId.trim().length === 0) return;
-    const entry = this.pending.get(requestId);
-    if (!entry) return; // cancel-after-response: ignore
-    if (entry.epoch !== this.epoch) {
-      this.pending.delete(requestId);
-      return; // old epoch stale
-    }
-    const activeId = this.pending.keys().next().value as string | undefined;
-    const isActive = activeId === requestId;
-    if (isActive) {
-      // Must terminate worker because synchronous engineering occupies event loop
-      const w = this.worker;
-      if (w) {
-        try {
-          w.removeEventListener?.(
-            "message",
-            this.messageHandler as EventListener,
-          );
-        } catch {}
-        try {
-          w.removeEventListener?.("error", this.errorHandler as EventListener);
-        } catch {}
-        try {
-          w.removeEventListener?.(
-            "messageerror",
-            this.messageErrorHandler as EventListener,
-          );
-        } catch {}
-        try {
-          (w as { onmessage?: unknown }).onmessage = null;
-        } catch {}
-        try {
-          (w as { onerror?: unknown }).onerror = null;
-        } catch {}
-        try {
-          w.terminate();
-        } catch {}
+    try {
+      if (this.terminated) return;
+      if (typeof requestId !== "string" || requestId.trim().length === 0)
+        return;
+      const entry = this.pending.get(requestId);
+      if (!entry) return; // cancel-after-response: ignore
+      if (entry.epoch !== this.epoch) {
+        this.pending.delete(requestId);
+        return; // old epoch stale
       }
-      this.epoch += 1;
-      this.pending.delete(requestId);
-      entry.reject(
-        Object.assign(new Error(`Request ${requestId} cancelled`), {
-          code: "cancelled",
-          requestId,
-        }),
-      );
-      if (!this.terminated) {
-        this.worker = this.createWorker();
-      } else {
+      const activeId = this.pending.keys().next().value as string | undefined;
+      const isActive = activeId === requestId;
+      if (isActive) {
+        // Must terminate worker because synchronous engineering occupies event loop
+        const w = this.worker;
+        if (w) {
+          try {
+            w.removeEventListener?.(
+              "message",
+              this.messageHandler as EventListener,
+            );
+          } catch {}
+          try {
+            w.removeEventListener?.(
+              "error",
+              this.errorHandler as EventListener,
+            );
+          } catch {}
+          try {
+            w.removeEventListener?.(
+              "messageerror",
+              this.messageErrorHandler as EventListener,
+            );
+          } catch {}
+          try {
+            (w as { onmessage?: unknown }).onmessage = null;
+          } catch {}
+          try {
+            (w as { onerror?: unknown }).onerror = null;
+          } catch {}
+          try {
+            w.terminate();
+          } catch {}
+        }
+        this.epoch += 1;
+        this.pending.delete(requestId);
+        entry.reject(
+          Object.assign(new Error(`Request ${requestId} cancelled`), {
+            code: "cancelled",
+            requestId,
+          }),
+        );
         this.worker = null;
+        if (!this.terminated) {
+          try {
+            this.worker = this.createWorker();
+          } catch {
+            this.worker = null;
+          }
+        }
+      } else {
+        // Queued (not active) — reject exactly that request without terminating
+        this.pending.delete(requestId);
+        entry.reject(
+          Object.assign(new Error(`Request ${requestId} cancelled`), {
+            code: "cancelled",
+            requestId,
+          }),
+        );
+        try {
+          this.worker?.postMessage({
+            type: "cancel",
+            requestId,
+          } as EngineeringWorkerRequest);
+        } catch {}
       }
-    } else {
-      // Queued (not active) — reject exactly that request without terminating
-      this.pending.delete(requestId);
-      entry.reject(
-        Object.assign(new Error(`Request ${requestId} cancelled`), {
-          code: "cancelled",
-          requestId,
-        }),
-      );
-      try {
-        this.worker?.postMessage({
-          type: "cancel",
-          requestId,
-        } as EngineeringWorkerRequest);
-      } catch {}
+    } catch {
+      // Synchronous cancel never throws
     }
   }
 

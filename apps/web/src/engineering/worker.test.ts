@@ -122,6 +122,35 @@ describe("engineering worker authoritative flow", () => {
     }
   });
 
+  it("handleRegenerate does not call global generator and preserves file-owned unchanged span bitwise identical", async () => {
+    const gen = generateCoaster(validIntent);
+    const file = gen.file;
+    const originalSpan = file.solvedSpans.find((s) => s.id === "station-3")!;
+    expect(originalSpan).toBeDefined();
+    const generatorModule = await import("@openvibecoaster/generator");
+    const spy = vi.spyOn(generatorModule, "generateCoaster");
+    const result = handleRegenerate(
+      "req-reg-preserve",
+      file as unknown,
+      "launch-1",
+    );
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+    expect(result.type).toBe("success");
+    if (result.type !== "success") return;
+    // station-3 is outside changed window [0,2] for launch-1, so must remain bitwise identical
+    const newSpan = result.file.solvedSpans.find((s) => s.id === "station-3")!;
+    expect(newSpan).toBeDefined();
+    expect(newSpan.positionCoefficients).toEqual(
+      originalSpan!.positionCoefficients,
+    );
+    expect(newSpan.rollCoefficients).toEqual(originalSpan!.rollCoefficients);
+    // Also ensure pinned hashes preserved via file-owned generation
+    expect(result.file.intent.pinnedElementIds).toEqual(
+      file.intent.pinnedElementIds,
+    );
+  });
+
   it("regenerate rejects unknown element", () => {
     const gen = generateCoaster(validIntent);
     const result = handleRegenerate(

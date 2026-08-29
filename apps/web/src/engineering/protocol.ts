@@ -1,3 +1,8 @@
+import {
+  compileCoasterFile,
+  deserializeCoasterFileV1,
+  validateDesignIntentV1,
+} from "@openvibecoaster/core";
 import type {
   CoasterFileV1,
   DesignIntentV1,
@@ -105,17 +110,46 @@ export function validateEngineeringWorkerRequest(
     for (const key of Object.keys(rec))
       if (!allowed.has(key)) fail(`request.${key}`, "no extra field");
     if (!isRecord(rec.intent)) fail("request.intent", "object");
+    try {
+      validateDesignIntentV1(rec.intent);
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
   } else if (type === "regenerate") {
     const allowed = new Set(["type", "requestId", "file", "elementId"]);
     for (const key of Object.keys(rec))
       if (!allowed.has(key)) fail(`request.${key}`, "no extra field");
     stringNonEmpty(rec.elementId, "request.elementId");
     if (rec.file === undefined) fail("request.file", "file value");
+    try {
+      const fileVal = rec.file;
+      if (typeof fileVal === "string" || fileVal instanceof Uint8Array) {
+        deserializeCoasterFileV1(fileVal as string | Uint8Array);
+      } else if (isRecord(fileVal)) {
+        compileCoasterFile(fileVal as unknown as CoasterFileV1);
+      } else {
+        fail("request.file", "CoasterFileV1 object, string or Uint8Array");
+      }
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
   } else if (type === "compile-simulate") {
     const allowed = new Set(["type", "requestId", "file"]);
     for (const key of Object.keys(rec))
       if (!allowed.has(key)) fail(`request.${key}`, "no extra field");
     if (rec.file === undefined) fail("request.file", "file value");
+    try {
+      const fileVal = rec.file;
+      if (typeof fileVal === "string" || fileVal instanceof Uint8Array) {
+        deserializeCoasterFileV1(fileVal as string | Uint8Array);
+      } else if (isRecord(fileVal)) {
+        compileCoasterFile(fileVal as unknown as CoasterFileV1);
+      } else {
+        fail("request.file", "CoasterFileV1 object, string or Uint8Array");
+      }
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
   } else {
     const allowed = new Set(["type", "requestId"]);
     for (const key of Object.keys(rec))
