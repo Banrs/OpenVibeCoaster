@@ -426,23 +426,104 @@ describe("wave 3 core contracts", () => {
     expect(slope.signedDistance(below)).toBeCloseTo(-0.5, 9);
   });
 
-  it("keeps the clamped height graph 1-Lipschitz outside the sampled footprint", () => {
+  it("returns independently derived distances for a large finite field", () => {
+    const scale = 1e100;
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: scale,
+      heights: [0, scale, 0, scale],
+    });
+
+    expect(environment.bounds()).toEqual({
+      min: [0, 0, 0],
+      max: [scale, scale, scale],
+    });
+    expect(
+      environment.signedDistance(vec3(2.5e99, 7.5e99, 5e99)) / scale,
+    ).toBeCloseTo(0.3535533905932738, 14);
+    expect(
+      environment.signedDistance(vec3(7.5e99, 2.5e99, 5e99)) / scale,
+    ).toBeCloseTo(-0.3535533905932738, 14);
+  });
+
+  it("accepts large geometry when its bounds and distance remain finite", () => {
+    const scale = 1e200;
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: scale,
+      heights: [0, scale, 0, scale],
+    });
+
+    expect(environment.bounds().max).toEqual([scale, scale, scale]);
+    expect(
+      environment.signedDistance(vec3(2.5e199, 7.5e199, 5e199)) / scale,
+    ).toBeCloseTo(0.3535533905932738, 14);
+  });
+
+  it("rejects only signed distances that cannot remain finite", () => {
     const environment = new HeightfieldEnvironment({
       width: 2,
       depth: 2,
       cellSize: 1,
       heights: [0, 0, 0, 0],
     });
-    const above = vec3(-100, 0.001, 0.5);
-    const below = vec3(-100, -0.001, 0.5);
 
-    expect(environment.signedDistance(above)).toBeCloseTo(0.001, 12);
-    expect(environment.signedDistance(below)).toBeCloseTo(-0.001, 12);
-    expect(
-      Math.abs(
-        environment.signedDistance(above) - environment.signedDistance(below),
-      ),
-    ).toBeLessThanOrEqual(0.002 + 1e-12);
+    expect(environment.signedDistance(vec3(Number.MAX_VALUE, 0, 0))).toBe(
+      Number.MAX_VALUE,
+    );
+    expect(() =>
+      environment.signedDistance(vec3(Number.MAX_VALUE, 0, Number.MAX_VALUE)),
+    ).toThrow("Signed distance must be finite");
+  });
+
+  it("returns bounded edge and corner distances outside the sampled footprint", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 1,
+      heights: [0, 0, 0, 0],
+    });
+
+    expect(environment.signedDistance(vec3(-100, 0.001, 0.5))).toBeCloseTo(
+      100.000000005,
+      12,
+    );
+    expect(environment.signedDistance(vec3(-3, 4, -4))).toBeCloseTo(
+      6.4031242374328485,
+      12,
+    );
+    expect(environment.signedDistance(vec3(-3, -4, -4))).toBeCloseTo(
+      -6.4031242374328485,
+      12,
+    );
+  });
+
+  it("keeps ray roots invariant under huge positive and negative scales", () => {
+    const environment = new HeightfieldEnvironment({
+      width: 2,
+      depth: 2,
+      cellSize: 2,
+      heights: [0, 2, 0, 2],
+    });
+    const cases = [
+      {
+        origin: vec3(0, 1.5, 1),
+        unitDirection: vec3(1, 0, 0),
+        hugeDirection: vec3(1e200, 0, 0),
+      },
+      {
+        origin: vec3(2, 0.5, 1),
+        unitDirection: vec3(-1, 0, 0),
+        hugeDirection: vec3(-1e200, 0, 0),
+      },
+    ];
+
+    for (const { origin, unitDirection, hugeDirection } of cases) {
+      expect(environment.raycast(origin, unitDirection, 2)?.distance).toBe(1.5);
+      expect(environment.raycast(origin, hugeDirection, 2)?.distance).toBe(1.5);
+    }
   });
 
   it("rejects non-finite heightfield construction and query inputs", () => {
@@ -532,8 +613,10 @@ describe("wave 3 core contracts", () => {
       expect(() => environment.raycast(origin, vec3(0, -1, 0), 10)).toThrow(
         RangeError,
       );
+    expect(() => environment.raycast(vec3(0, 1, 0), vec3(0, 0, 0), 10)).toThrow(
+      "Raycast direction must be non-zero",
+    );
     for (const direction of [
-      vec3(0, 0, 0),
       vec3(Number.NaN, -1, 0),
       vec3(0, Number.POSITIVE_INFINITY, 0),
     ])

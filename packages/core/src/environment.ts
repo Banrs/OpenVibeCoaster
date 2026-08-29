@@ -10,8 +10,6 @@ export interface HeightfieldOptions {
   readonly origin?: readonly [number, number];
 }
 
-const MAX_SAFE_GEOMETRY_COMPONENT = Math.sqrt(Number.MAX_VALUE) / 16;
-
 const requireFinite = (value: number, label: string): number => {
   if (!Number.isFinite(value)) throw new RangeError(`${label} must be finite`);
   return value;
@@ -40,6 +38,34 @@ const closestPointOnTriangle = (
 ): TriangleClosestPoint => {
   const subtract = (left: Vec3, right: Vec3): Vec3 =>
     vec3(left[0] - right[0], left[1] - right[1], left[2] - right[2]);
+  const rawAb = subtract(b, a);
+  const rawAc = subtract(c, a);
+  const rawAp = subtract(point, a);
+  const calculationScale = Math.max(
+    Math.abs(rawAb[0]),
+    Math.abs(rawAb[1]),
+    Math.abs(rawAb[2]),
+    Math.abs(rawAc[0]),
+    Math.abs(rawAc[1]),
+    Math.abs(rawAc[2]),
+    Math.abs(rawAp[0]),
+    Math.abs(rawAp[1]),
+    Math.abs(rawAp[2]),
+  );
+  if (!(calculationScale > 0) || !Number.isFinite(calculationScale))
+    throw new RangeError(
+      "Heightfield triangle must be finite and non-degenerate",
+    );
+  const scaled = (value: Vec3): Vec3 =>
+    vec3(
+      value[0] / calculationScale,
+      value[1] / calculationScale,
+      value[2] / calculationScale,
+    );
+  const scaledA = vec3();
+  const scaledB = scaled(rawAb);
+  const scaledC = scaled(rawAc);
+  const scaledPoint = scaled(rawAp);
   const dot = (left: Vec3, right: Vec3): number =>
     requireFinite(
       left[0] * right[0] + left[1] * right[1] + left[2] * right[2],
@@ -51,31 +77,31 @@ const closestPointOnTriangle = (
     third: number,
   ): TriangleClosestPoint => {
     const closest = vec3(
-      first * a[0] + second * b[0] + third * c[0],
-      first * a[1] + second * b[1] + third * c[1],
-      first * a[2] + second * b[2] + third * c[2],
+      first * scaledA[0] + second * scaledB[0] + third * scaledC[0],
+      first * scaledA[1] + second * scaledB[1] + third * scaledC[1],
+      first * scaledA[2] + second * scaledB[2] + third * scaledC[2],
     );
     return {
       barycentric: [first, second, third],
       distance: requireFinite(
         Math.hypot(
-          closest[0] - point[0],
-          closest[1] - point[1],
-          closest[2] - point[2],
-        ),
+          closest[0] - scaledPoint[0],
+          closest[1] - scaledPoint[1],
+          closest[2] - scaledPoint[2],
+        ) * calculationScale,
         "Heightfield triangle distance",
       ),
     };
   };
 
-  const ab = subtract(b, a);
-  const ac = subtract(c, a);
-  const ap = subtract(point, a);
+  const ab = scaledB;
+  const ac = scaledC;
+  const ap = scaledPoint;
   const d1 = dot(ab, ap);
   const d2 = dot(ac, ap);
   if (d1 <= 0 && d2 <= 0) return result(1, 0, 0);
 
-  const bp = subtract(point, b);
+  const bp = subtract(scaledPoint, scaledB);
   const d3 = dot(ab, bp);
   const d4 = dot(ac, bp);
   if (d3 >= 0 && d4 <= d3) return result(0, 1, 0);
@@ -89,7 +115,7 @@ const closestPointOnTriangle = (
     return result(1 - along, along, 0);
   }
 
-  const cp = subtract(point, c);
+  const cp = subtract(scaledPoint, scaledC);
   const d5 = dot(ab, cp);
   const d6 = dot(ac, cp);
   if (d6 >= 0 && d5 <= d6) return result(0, 0, 1);
@@ -206,14 +232,7 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
             );
         }
       }
-    if (
-      !Number.isFinite(maximumHeight - minimumHeight) ||
-      Math.max(
-        maximumX - origin[0],
-        maximumZ - origin[1],
-        maximumHeight - minimumHeight,
-      ) > MAX_SAFE_GEOMETRY_COMPONENT
-    )
+    if (!Number.isFinite(maximumHeight - minimumHeight))
       throw new RangeError("Heightfield generated geometry must be finite");
     this.width = options.width;
     this.depth = options.depth;
@@ -333,74 +352,6 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       "Signed distance",
     );
 
-    const includeBoundarySegment = (
-      coordinate: number,
-      firstCoordinate: number,
-      firstHeight: number,
-      secondCoordinate: number,
-      secondHeight: number,
-    ): void => {
-      const coordinateDelta = secondCoordinate - firstCoordinate;
-      const heightDelta = secondHeight - firstHeight;
-      const length = requireFinite(
-        Math.hypot(coordinateDelta, heightDelta),
-        "Heightfield boundary segment length",
-      );
-      const projection = requireFinite(
-        (coordinate - firstCoordinate) * (coordinateDelta / length) +
-          (point[1] - firstHeight) * (heightDelta / length),
-        "Heightfield boundary projection",
-      );
-      const parameter = Math.max(0, Math.min(1, projection / length));
-      bestDistance = Math.min(
-        bestDistance,
-        requireFinite(
-          Math.hypot(
-            firstCoordinate + parameter * coordinateDelta - coordinate,
-            firstHeight + parameter * heightDelta - point[1],
-          ),
-          "Heightfield boundary distance",
-        ),
-      );
-    };
-    if (point[0] <= this.origin[0] || point[0] >= this.maximumX) {
-      const column = point[0] <= this.origin[0] ? 0 : this.width - 1;
-      for (let row = 0; row < this.depth - 1; row += 1)
-        includeBoundarySegment(
-          point[2],
-          this.origin[1] + row * this.cellSize,
-          this.sample(column, row),
-          this.origin[1] + (row + 1) * this.cellSize,
-          this.sample(column, row + 1),
-        );
-    }
-    if (point[2] <= this.origin[1] || point[2] >= this.maximumZ) {
-      const row = point[2] <= this.origin[1] ? 0 : this.depth - 1;
-      for (let column = 0; column < this.width - 1; column += 1)
-        includeBoundarySegment(
-          point[0],
-          this.origin[0] + column * this.cellSize,
-          this.sample(column, row),
-          this.origin[0] + (column + 1) * this.cellSize,
-          this.sample(column + 1, row),
-        );
-    }
-    if (
-      (point[0] <= this.origin[0] || point[0] >= this.maximumX) &&
-      (point[2] <= this.origin[1] || point[2] >= this.maximumZ)
-    ) {
-      const column = point[0] <= this.origin[0] ? 0 : this.width - 1;
-      const row = point[2] <= this.origin[1] ? 0 : this.depth - 1;
-      bestDistance = Math.min(
-        bestDistance,
-        requireFinite(
-          Math.abs(point[1] - this.sample(column, row)),
-          "Heightfield corner distance",
-        ),
-      );
-    }
-    if (bestDistance > MAX_SAFE_GEOMETRY_COMPONENT)
-      throw new RangeError("Signed-distance input exceeds finite query range");
     const tolerance =
       1e-10 +
       256 *
@@ -637,9 +588,13 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
       Math.hypot(direction[0], direction[1], direction[2]),
       "Raycast direction length",
     );
-    if (directionLength < 1e-15)
+    if (directionLength === 0)
       throw new RangeError("Raycast direction must be non-zero");
-    const dir = vec3Normalize(direction);
+    const dir = vec3(
+      direction[0] / directionLength,
+      direction[1] / directionLength,
+      direction[2] / directionLength,
+    );
     const pointAt = (distance: number): Vec3 => {
       requireFinite(distance, "Raycast generated distance");
       return requireFiniteVector(
