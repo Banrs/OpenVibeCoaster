@@ -19,6 +19,7 @@ export {
   generate,
   generateCoaster,
   localRegenerate,
+  regenerateCoasterFileLocal,
   regenerateLocal,
 } from "./pipeline";
 export { validateClearance } from "./clearance";

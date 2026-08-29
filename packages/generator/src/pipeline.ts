@@ -23,6 +23,7 @@ import {
   vec3Scale,
   vec3,
   transportFramesAlongPath,
+  type CoasterFileV1,
   type Diagnostic,
   type DesignIntentV1,
   type EnvironmentQuery,
@@ -2305,6 +2306,69 @@ export const regenerateLocal = (
     untouchedSpanBytes: generated.spanBytes,
   };
 };
+
+export function regenerateCoasterFileLocal(
+  fileInput: CoasterFileV1 | string | Uint8Array,
+  elementId: string,
+  options: LocalRegenerationOptions = {},
+): LocalRegenerationResult {
+  // Validate/compile supplied file without global solve – canonical 32-sample compilation
+  const loaded = compileCoasterFile(
+    fileInput as CoasterFileV1 | string | Uint8Array,
+    { samples: 32 },
+  );
+  const file = loaded.file;
+  const solvedSpans = loaded.solvedSpans;
+  const track = loaded.track;
+  const elements = file.intent.elements.map((e) => {
+    const kind = (e.kind ?? e.type) as string;
+    return createElement(
+      kind as (typeof ELEMENT_KINDS)[number],
+      e.id,
+      (e.parameters ?? {}) as never,
+    ) as AnySemanticElement;
+  });
+  const elementById = new Map(elements.map((e) => [e.id, e] as const));
+  const bytes: Record<string, string> = {};
+  const hashes: Record<string, string> = {};
+  for (const span of solvedSpans) {
+    bytes[span.id] = spanBytes(span);
+    hashes[span.id] = hashSpan(span);
+  }
+  for (const el of elements) {
+    const first = solvedSpans.find(
+      (s) => ownerForSpan(s.id, elementById) === el.id,
+    );
+    if (first) {
+      bytes[el.id] = spanBytes(first);
+      hashes[el.id] = hashSpan(first);
+    }
+  }
+  // Loaded file has no candidate-search history; represent honestly
+  const adapter = {
+    feasible: true,
+    intent: file.intent,
+    elements: Object.freeze([...elements]),
+    solvedSpans: Object.freeze([...solvedSpans]),
+    track,
+    file,
+    serializedFile: serializeCoasterFileV1(file),
+    diagnostics: Object.freeze([] as Diagnostic[]),
+    relaxations: Object.freeze([] as string[]),
+    candidatesTested: 0,
+    lmIterations: 0,
+    selectedLmIterations: 0,
+    candidateLmIterations: Object.freeze([] as number[]),
+    candidateLmWork: 0,
+    relaxationLmIterations: Object.freeze([] as number[]),
+    relaxationLmWork: 0,
+    spanHashes: Object.freeze({ ...hashes }),
+    spanBytes: Object.freeze({ ...bytes }),
+    relaxationEvidence: Object.freeze([] as RelaxationEvidence[]),
+    options: Object.freeze({ samples: 32 } satisfies StoredGenerationOptions),
+  } satisfies GenerationResult;
+  return regenerateLocal(adapter, elementId, options);
+}
 
 export const generate = generateCoaster;
 export const localRegenerate = regenerateLocal;

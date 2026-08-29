@@ -58,15 +58,13 @@ export class EngineeringWorkerClient {
     if (w.addEventListener) {
       w.addEventListener("message", this.messageHandler as EventListener);
       w.addEventListener("error", this.errorHandler as EventListener);
-      if (w.addEventListener.length >= 2) {
-        try {
-          w.addEventListener(
-            "messageerror",
-            this.messageErrorHandler as EventListener,
-          );
-        } catch {
-          // ignore
-        }
+      try {
+        w.addEventListener(
+          "messageerror",
+          this.messageErrorHandler as EventListener,
+        );
+      } catch {
+        // ignore
       }
     } else {
       (w as { onmessage?: unknown }).onmessage = this

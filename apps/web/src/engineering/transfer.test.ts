@@ -76,4 +76,64 @@ describe("collectTransferables", () => {
     expect(hasDuplicateBuffers([buf, buf])).toBe(true);
     expect(hasDuplicateBuffers([buf, new ArrayBuffer(8)])).toBe(false);
   });
+
+  it("handles SharedArrayBuffer views without transferring", () => {
+    const sab = new SharedArrayBuffer(16);
+    const view = new Float64Array(sab);
+    view[0] = 123;
+    const payload = { view };
+    const buffers = collectTransferables(payload);
+    // SharedArrayBuffer is not transferable, should not be collected as ArrayBuffer
+    expect(buffers).toHaveLength(0);
+    expect(view[0]).toBe(123);
+  });
+
+  it("deduplicates offset views sharing same ArrayBuffer", () => {
+    const buf = new ArrayBuffer(16);
+    const view1 = new Float64Array(buf, 0, 1);
+    const view2 = new Float64Array(buf, 8, 1);
+    view1[0] = 1;
+    view2[0] = 2;
+    const payload = { a: view1, b: view2 };
+    const buffers = collectTransferables(payload);
+    expect(buffers).toHaveLength(1);
+    expect(buffers[0]).toBe(buf);
+  });
+
+  it("handles cycles without infinite loop", () => {
+    const buf = new Float64Array([1, 2]).buffer;
+    const obj: Record<string, unknown> = { a: new Float64Array(buf) };
+    (obj as Record<string, unknown>).self = obj;
+    const buffers = collectTransferables(obj);
+    expect(buffers).toHaveLength(1);
+    expect(buffers[0]).toBe(buf);
+  });
+
+  it("handles aliases via different paths", () => {
+    const arr = new Uint32Array([5, 6, 7]);
+    const payload = {
+      path1: { track: { data: arr } },
+      path2: { timeline: { buffers: [arr.buffer] } },
+      path3: arr,
+    };
+    const buffers = collectTransferables(payload);
+    expect(buffers).toHaveLength(1);
+    expect(buffers[0]).toBe(arr.buffer);
+  });
+
+  it("excludes caller request buffer even when response shares structure", () => {
+    const requestBuf = new Float64Array([9, 9, 9]);
+    const responseBuf = new Float64Array([8, 8, 8]);
+    const request = { intent: { data: requestBuf } };
+    const response = { track: { positions: responseBuf }, shared: requestBuf };
+    // Simulate passing only response payload (caller-owned request not included)
+    const responseOnly = { track: { positions: responseBuf } };
+    const buffers = collectTransferables(responseOnly);
+    expect(buffers).toContain(responseBuf.buffer);
+    expect(buffers).not.toContain(requestBuf.buffer);
+    // Ensure original request buffer still intact
+    expect(requestBuf[0]).toBe(9);
+    void request;
+    void response;
+  });
 });

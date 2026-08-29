@@ -1,175 +1,174 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
+import { build } from "vite";
+import { mkdtemp, writeFile, rm } from "fs/promises";
+import { tmpdir } from "os";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { readdirSync, readFileSync } from "fs";
 
-describe("Vite ?worker&inline factory runtime", () => {
-  const originalWorker = (globalThis as unknown as { Worker?: unknown }).Worker;
-  const originalCreate = URL.createObjectURL;
-  const originalRevoke = URL.revokeObjectURL;
-  const originalFetch = globalThis.fetch;
+function listFiles(dir: string, prefix = ""): string[] {
+  const entries = readdirSync(dir, { withFileTypes: true });
+  let out: string[] = [];
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...listFiles(p, prefix + e.name + "/"));
+    else out.push(prefix + e.name);
+  }
+  return out;
+}
 
-  let createdUrls: string[] = [];
-  let revokedUrls: string[] = [];
-  let fetchCalls = 0;
+describe("Vite ?worker&inline factory transform/runtime", () => {
+  it("Vite 8.2.2 inline transform supplies self-contained Blob/data URL, no asset, no fetch", async () => {
+    const testFile = fileURLToPath(import.meta.url);
+    const projectRoot = join(dirname(testFile), "../..");
+    const tempDir = await mkdtemp(join(tmpdir(), "vibe-inline-"));
+    const entryPath = join(tempDir, "entry.ts");
+    const outDir = join(tempDir, "dist");
+    try {
+      await writeFile(
+        entryPath,
+        `
+import { createEngineeringWorker } from "${projectRoot.replace(/\\/g, "/")}/src/engineering/factory.ts";
+const w = createEngineeringWorker();
+w.postMessage({type:"ping"});
+w.terminate();
+const w2 = createEngineeringWorker();
+w2.terminate();
+export {};
+`,
+        "utf8",
+      );
 
-  beforeEach(() => {
-    createdUrls = [];
-    revokedUrls = [];
-    fetchCalls = 0;
-    // Spy create/revoke
-    vi.spyOn(URL, "createObjectURL").mockImplementation(
-      (blob: Blob | MediaSource) => {
+      await build({
+        root: projectRoot,
+        configFile: false,
+        logLevel: "silent",
+        build: {
+          outDir,
+          emptyOutDir: true,
+          write: true,
+          target: "es2023",
+          minify: false,
+          rollupOptions: {
+            input: entryPath,
+          },
+        },
+      });
+
+      const all = listFiles(outDir);
+      const jsFiles = all.filter((f) => f.endsWith(".js"));
+      expect(jsFiles).toHaveLength(1);
+      const hasWorkerAsset = all.some(
+        (f) => f.toLowerCase().includes("worker") && !f.includes("entry"),
+      );
+      expect(hasWorkerAsset).toBe(false);
+
+      const entryFile = jsFiles[0]!;
+      const code = readFileSync(join(outDir, entryFile), "utf8");
+
+      const hasBlob = code.includes("Blob");
+      const hasCreateObjectURL = code.includes("createObjectURL");
+      const hasRevoke = code.includes("revokeObjectURL");
+      const hasDataUrl = code.includes("data:");
+      const hasWorker = code.includes("Worker");
+
+      expect(hasWorker).toBe(true);
+      expect(hasBlob || hasDataUrl).toBe(true);
+      if (hasBlob) {
+        expect(hasCreateObjectURL).toBe(true);
+        expect(hasRevoke).toBe(true);
+        expect(code.length).toBeGreaterThan(1000);
+        expect(code.includes("new Worker")).toBe(true);
+        const workerIdx = code.indexOf("new Worker");
+        const revokeIdx = code.indexOf("revokeObjectURL");
+        expect(workerIdx).toBeGreaterThan(-1);
+        expect(revokeIdx).toBeGreaterThan(-1);
+      } else {
+        expect(hasDataUrl).toBe(true);
+      }
+      expect(code.includes("/assets/worker")).toBe(false);
+      expect(code.includes("/assets/")).toBe(false);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("factory creates worker without network and terminates cleanly (runtime sanity)", async () => {
+    const capture: {
+      blob?: Blob;
+      createdUrl?: string;
+      revokedUrl?: string;
+      workerUrl?: string;
+    } = {};
+    const originalWorker = (globalThis as unknown as { Worker?: unknown })
+      .Worker;
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      URL.createObjectURL = ((blob: Blob | MediaSource): string => {
+        if (blob instanceof Blob) capture.blob = blob;
         const url = originalCreate.call(URL, blob as Blob);
-        createdUrls.push(url);
+        capture.createdUrl = url;
         return url;
-      },
-    );
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation((url: string) => {
-      revokedUrls.push(url);
-      return originalRevoke.call(URL, url);
-    });
-    // Spy fetch to ensure no network
-    globalThis.fetch = vi.fn(async () => {
-      fetchCalls += 1;
-      return new Response("", { status: 200 });
-    }) as unknown as typeof fetch;
-  });
+      }) as unknown as typeof URL.createObjectURL;
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-    (globalThis as unknown as { Worker?: unknown }).Worker = originalWorker;
-    globalThis.fetch = originalFetch;
-    createdUrls = [];
-    revokedUrls = [];
-  });
+      URL.revokeObjectURL = ((url: string): void => {
+        capture.revokedUrl = url;
+        return originalRevoke.call(URL, url);
+      }) as unknown as typeof URL.revokeObjectURL;
 
-  it("Vite transforms and instantiates real inline worker without network, revokes URL on terminate/recreate/teardown", async () => {
-    // Provide a minimal Worker mock that records URL and delegates revoke on terminate
-    void originalWorker;
-    let _lastMockWorker: {
-      url: string;
-      terminate: () => void;
-      postMessage: () => void;
-      addEventListener: () => void;
-      removeEventListener: () => void;
-    } | null = null;
+      (globalThis as unknown as { fetch: unknown }).fetch = (async () => {
+        throw new Error("fetch should not be called for inline worker");
+      }) as unknown as typeof fetch;
 
-    // If native Worker exists in jsdom, it will attempt to load blob URL – we mock it to avoid execution but still capture
-    const MockWorker = vi.fn(function (this: unknown, url: string | URL) {
-      const urlString = String(url);
-      createdUrls.push(urlString);
-      // If createObjectURL was not used (data: URL), we still have url
-      const instance = {
-        url: urlString,
-        postMessage: vi.fn(),
-        terminate: vi.fn(function (this: unknown) {
-          // Simulate Vite's revoke on terminate for inline blob workers
-          if (urlString.startsWith("blob:")) {
-            try {
-              URL.revokeObjectURL(urlString);
-            } catch {}
-          } else {
-            // For data: URLs, revoke may not be needed but we ensure no leak
-          }
-        }),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        onmessage: null,
-        onerror: null,
-      };
-      _lastMockWorker = instance as unknown as typeof _lastMockWorker;
-      // @ts-ignore
-      return instance;
-    }) as unknown as typeof Worker;
+      const MockWorker = function (this: unknown, url: string | URL) {
+        capture.workerUrl = String(url);
+        return {
+          postMessage: () => {},
+          terminate: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        } as unknown as Worker;
+      } as unknown as typeof Worker;
+      (globalThis as unknown as { Worker: unknown }).Worker = MockWorker;
 
-    // @ts-ignore
-    (globalThis as unknown as { Worker: unknown }).Worker = MockWorker;
-
-    // Dynamic import after mocking Worker ensures Vite's transformed factory uses our mock
-    const factoryModule = await import("./factory");
-    const { createEngineeringWorker, createEngineeringWorkerFactory } =
-      factoryModule;
-
-    expect(typeof createEngineeringWorker).toBe("function");
-    expect(typeof createEngineeringWorkerFactory).toBe("function");
-
-    // First instantiation
-    const w1 = createEngineeringWorker();
-    expect(MockWorker).toHaveBeenCalledTimes(1);
-    const rawUrl1 = (MockWorker as unknown as { mock: { calls: unknown[][] } })
-      .mock.calls[0]?.[0] as unknown;
-    const url1 = rawUrl1 == null ? "" : String(rawUrl1);
-    // Debug: if transform differs, allow any non-http URL (including empty for mocked worker that doesn't use blob)
-    // But we must prove no network
-    expect(typeof url1).toBe("string");
-    // Inline worker must not be http/https network request
-    expect(url1.startsWith("http://") || url1.startsWith("https://")).toBe(
-      false,
-    );
-    // Should be blob: or data: or inline worker may use no URL when mocked – accept empty as transformed inline evidence if Vite inlines as data URL without passing to Worker (Vitest mock)
-    // For executable evidence we check that MockWorker was called and fetch not used
-    if (url1.length > 0) {
+      const { createEngineeringWorker } = await import("./factory");
+      const w = createEngineeringWorker();
+      expect(w).toHaveProperty("postMessage");
+      expect(w).toHaveProperty("terminate");
+      expect(capture.workerUrl).toBeDefined();
       expect(
-        url1.startsWith("blob:") ||
-          url1.startsWith("data:") ||
-          url1.includes("worker"),
-      ).toBe(true);
-    } else {
-      // Fallback: at least ensure Worker was instantiated via Vite transform (no network)
-      expect(MockWorker).toHaveBeenCalled();
+        String(capture.workerUrl).startsWith("http://") ||
+          String(capture.workerUrl).startsWith("https://"),
+      ).toBe(false);
+      if (capture.blob) {
+        expect(capture.blob.size).toBeGreaterThan(0);
+        expect(capture.createdUrl).toBe(capture.workerUrl);
+        expect(capture.revokedUrl).toBeUndefined();
+        w.terminate();
+        expect(capture.revokedUrl).toBe(capture.createdUrl);
+      } else if (capture.createdUrl) {
+        expect(capture.createdUrl).toBe(capture.workerUrl);
+        w.terminate();
+        expect(capture.revokedUrl).toBe(capture.createdUrl);
+      } else {
+        const urlStr = String(capture.workerUrl);
+        expect(
+          urlStr.includes("&inline") ||
+            urlStr.startsWith("data:") ||
+            urlStr.includes("worker"),
+        ).toBe(true);
+        expect(urlStr.includes("/assets/worker")).toBe(false);
+        w.terminate();
+        expect(capture.revokedUrl).toBeUndefined();
+      }
+    } finally {
+      (globalThis as unknown as { Worker?: unknown }).Worker = originalWorker;
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+      (globalThis as unknown as { fetch: unknown }).fetch = originalFetch;
     }
-    expect(fetchCalls).toBe(0);
-    expect(w1).toHaveProperty("postMessage");
-    expect(w1).toHaveProperty("terminate");
-
-    // Terminate should revoke blob URL (if blob) and not leak
-    w1.terminate();
-    // For blob: URLs, revoke should have been called; for data: URLs, at least no leak (no new URLs)
-    if (String(url1).startsWith("blob:")) {
-      expect(revokedUrls).toContain(String(url1));
-    } else {
-      // data: URL case – ensure no blob leak
-      expect(
-        createdUrls
-          .filter((u) => u.startsWith("blob:"))
-          .every((u) => revokedUrls.includes(u)),
-      ).toBe(true);
-    }
-
-    // Recreate – factory should produce new worker (new epoch)
-    const w2 = createEngineeringWorker();
-    expect(MockWorker).toHaveBeenCalledTimes(2);
-    const url2 = String(
-      (MockWorker as unknown as { mock: { calls: unknown[][] } }).mock
-        .calls[1]?.[0] ?? "",
-    );
-    // For blob/data inline workers the URL should be new; for Vitest virtual path it may be reused – only check distinct for blob/data
-    if (url1.startsWith("blob:") || url1.startsWith("data:")) {
-      expect(url2).not.toBe(url1);
-    } else {
-      expect(typeof url2).toBe("string");
-    }
-    expect(fetchCalls).toBe(0);
-
-    // Factory via createEngineeringWorkerFactory
-    const factory = createEngineeringWorkerFactory();
-    const w3 = factory();
-    expect(MockWorker).toHaveBeenCalledTimes(3);
-    expect(fetchCalls).toBe(0);
-
-    // Teardown sequence: terminate all
-    w2.terminate();
-    w3.terminate();
-    // Ensure all blob URLs created are revoked
-    const blobCreated = createdUrls.filter((u) => u.startsWith("blob:"));
-    for (const b of blobCreated) {
-      expect(revokedUrls).toContain(b);
-    }
-    // Ensure no blob leak: every blob created must be revoked
-    expect(blobCreated.every((u) => revokedUrls.includes(u))).toBe(true);
-
-    // Verify that after terminate/recreate, a fresh factory call still works (portable, no server)
-    const w4 = createEngineeringWorker();
-    expect(MockWorker).toHaveBeenCalledTimes(4);
-    expect(fetchCalls).toBe(0);
-    w4.terminate();
   });
 });
