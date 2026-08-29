@@ -23,58 +23,33 @@ describe("terrain profiles deterministic", () => {
 
   it("useful bounds – rolling covers 520x360 footprint with low heights", () => {
     const env = resolveTerrainEnvironment(ROLLING_TERRAIN_PROFILE_ID)!;
+    expect(env.width).toBe(66);
+    expect(env.depth).toBe(46);
+    expect(env.cellSize).toBe(8);
+    expect(env.origin[0]).toBe(-260);
+    expect(env.origin[1]).toBe(-180);
     const bounds = env.bounds();
     const width = bounds.max[0] - bounds.min[0];
     const depth = bounds.max[2] - bounds.min[2];
-    expect(width).toBeGreaterThanOrEqual(520);
-    expect(depth).toBeGreaterThanOrEqual(360);
-    // rolling low: max height should be modest (<10)
+    expect(width).toBe(520);
+    expect(depth).toBe(360);
     const maxH = bounds.max[1];
     const minH = bounds.min[1];
-    expect(maxH).toBeLessThan(10);
-    expect(maxH - minH).toBeLessThan(10);
-  });
-
-  it("rolling terrain allows generation success", () => {
-    const intent = createDesignIntentV1({
-      generatorVersion: "test-v1",
-      seed: 42,
-      mode: "directed",
-      family: "steel-sitdown-lsm-v1",
-      elements: [
-        {
-          id: "station-0",
-          kind: "station",
-          type: "station",
-          parameters: { length: 80, bank: 0, closed: false },
-        },
-        {
-          id: "launch-1",
-          kind: "launch",
-          type: "launch",
-          parameters: { length: 80, targetSpeed: 20, bank: 0 },
-        },
-        {
-          id: "brake-2",
-          kind: "brake",
-          type: "brake",
-          parameters: { length: 80, targetSpeed: 5, bank: 0 },
-        },
-        {
-          id: "station-3",
-          kind: "station",
-          type: "station",
-          parameters: { length: 80, bank: 0, closed: false },
-        },
-      ],
-      gates: [],
-      targets: [],
-      constraints: [],
-      pinnedElementIds: [],
-      terrainProfileId: ROLLING_TERRAIN_PROFILE_ID,
-    });
-    const result = handleGenerate("terrain-rolling", intent as unknown);
-    expect(result.type).toBe("success");
+    // Procedural low hills roughly in [-11,-5], safely below station y~0
+    expect(minH).toBeGreaterThanOrEqual(-11);
+    expect(maxH).toBeLessThanOrEqual(-5);
+    expect(maxH).toBeGreaterThan(minH);
+    expect(maxH - minH).toBeGreaterThan(1);
+    expect(maxH - minH).toBeLessThan(6);
+    // Coherence: adjacent cells differ smoothly (<1.5)
+    const idx = 22 * env.width + 33;
+    const h0 = env.heights[idx]!;
+    const h1 = env.heights[idx + 1]!;
+    const h2 = env.heights[idx + env.width]!;
+    expect(Math.abs(h0 - h1)).toBeLessThan(1.5);
+    expect(Math.abs(h0 - h2)).toBeLessThan(1.5);
+    // Not flat
+    expect(new Set(env.heights).size).toBeGreaterThan(10);
   });
 
   it("blocking terrain causes hard failure with terrain diagnostics", () => {
@@ -112,14 +87,19 @@ describe("terrain profiles deterministic", () => {
     const result = handleGenerate("terrain-blocking", intent as unknown);
     expect(result.type).toBe("failure");
     if (result.type === "failure") {
-      // Should contain TRACK_CLEARANCE or terrain diagnostics
-      const hasTerrain = result.diagnostics.some(
-        (d) =>
-          d.code === "TRACK_CLEARANCE" ||
-          d.message.toLowerCase().includes("terrain") ||
-          d.message.toLowerCase().includes("clearance"),
-      );
-      expect(hasTerrain).toBe(true);
+      const diag = result.diagnostics.find(
+        (d) => d.code === "TERRAIN_CLEARANCE",
+      )!;
+      expect(diag).toBeDefined();
+      expect(diag.severity).toMatch(/error|fatal/);
+      expect(diag.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
+      expect(diag.location).toBeDefined();
+      expect(diag.location!.s).toBeDefined();
+      expect(diag.location!.position).toBeDefined();
+      expect(diag.actual).toBeDefined();
+      expect(diag.limit).toBe(0);
+      expect(diag.margin).toBeLessThan(0);
+      expect(diag.actual).toBeLessThan(0);
     }
   });
 

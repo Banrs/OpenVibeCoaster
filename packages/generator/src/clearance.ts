@@ -55,7 +55,7 @@ interface SelfSubdivision {
 
 const DEFAULT_MAX_DEPTH = 40;
 const DEFAULT_MAX_WORK = 1_000_000;
-const DEFAULT_TERRAIN_MAX_WORK = 100_000;
+const DEFAULT_TERRAIN_MAX_WORK = 1_000_000;
 const PARAMETER_TOLERANCE = 1e-12;
 // Generated seams may differ below the solver's numerical resolution even
 // though their coefficient-authoritative endpoint intervals represent a join.

@@ -99,11 +99,11 @@ describe("lifecycle onFrame seam", () => {
     });
     expect(lc.init()).toBe(true);
     expect(rafCb).not.toBeNull();
-    // First tick
+    // First tick – exactly 0
     now = 1016;
     rafCb!(0);
     expect(onFrame).toHaveBeenCalledTimes(1);
-    expect(deltas[0]).toBeCloseTo(0.016, 3);
+    expect(deltas[0]).toBe(0);
     expect(renderSpy).toHaveBeenCalledTimes(1);
     // onFrame should be before render: check order via mock invocation order
     const onFrameOrder = (
@@ -113,7 +113,7 @@ describe("lifecycle onFrame seam", () => {
       renderSpy as unknown as { mock: { invocationCallOrder: number[] } }
     ).mock.invocationCallOrder[0]!;
     expect(onFrameOrder).toBeLessThan(renderOrder);
-    // Second frame
+    // Second frame – finite nonnegative
     now = 1032;
     // rafCb was re-registered, capture new
     const rafCb2 = rafCb;
@@ -182,7 +182,6 @@ describe("lifecycle onFrame seam", () => {
       raf as unknown as typeof requestAnimationFrame;
     vi.spyOn(performance, "now")
       .mockReturnValueOnce(1000)
-      .mockReturnValueOnce(1016)
       .mockReturnValueOnce(2000)
       .mockReturnValueOnce(2016);
     const onFrame = vi.fn();
@@ -208,6 +207,7 @@ describe("lifecycle onFrame seam", () => {
     expect(lc.getRafId()).not.toBeNull();
     cb!(0);
     expect(onFrame).toHaveBeenCalledTimes(1);
+    expect(onFrame.mock.calls[0]![0]).toBe(0);
     lc.dispose();
     expect(caf).toHaveBeenCalled();
     expect(lc.getRafId()).toBeNull();
@@ -215,11 +215,14 @@ describe("lifecycle onFrame seam", () => {
     raf.mockClear();
     lc.reinitialize();
     expect(lc.getRafId()).not.toBeNull();
-    // new tick
-    void cb;
-    // need to capture new raf
-    // after reinitialize, raf should have been called again
-    expect(raf).toHaveBeenCalled();
+    // first tick after reinit should be 0 again
+    cb!(0);
+    expect(onFrame).toHaveBeenCalledTimes(1);
+    expect(onFrame.mock.calls[0]![0]).toBe(0);
+    // second tick after reinit should be 0.016
+    cb!(0);
+    expect(onFrame).toHaveBeenCalledTimes(2);
+    expect(onFrame.mock.calls[1]![0]).toBeCloseTo(0.016, 3);
     lc.dispose();
   });
 

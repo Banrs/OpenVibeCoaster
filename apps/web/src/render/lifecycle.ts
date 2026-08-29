@@ -19,6 +19,8 @@ export interface AttachmentSnapshot {
 export interface AppLifecycleConfig {
   canvas: HTMLCanvasElement;
   getTerrainSeed?: () => string;
+  getTerrainProfileId?: () => string | undefined;
+  terrainProfileId?: string | undefined;
   getDprCap?: () => number;
   createRenderer?: (canvas: HTMLCanvasElement) => THREE.WebGLRenderer;
   onWebGLFailure?: () => void;
@@ -206,11 +208,16 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     const ctrlFactory = config.createController ?? createRendererController;
     const dprCap = config.getDprCap?.() ?? 2;
     const terrainSeed = config.getTerrainSeed?.() ?? "default-terrain";
+    const terrainProfileId =
+      config.getTerrainProfileId?.() ??
+      config.terrainProfileId ??
+      "rolling-highlands-v1";
     let handle: RendererHandle | null = null;
     try {
       handle = handleFactory(config.canvas, {
         dprCap,
         terrainSeed,
+        terrainProfileId,
         onWebGLFailure: config.onWebGLFailure,
         ...(config.createRenderer
           ? { createRenderer: config.createRenderer }
@@ -324,14 +331,14 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     }
 
     const metrics = config.metrics;
-    lastFrameMs = globalThis.performance.now();
+    lastFrameMs = 0;
     const tick = (): void => {
       if (!rendererHandle || !camera || !controller) {
         rafId = null;
         return;
       }
       const now = globalThis.performance.now();
-      const deltaMs = now - lastFrameMs;
+      const deltaMs = lastFrameMs === 0 ? 0 : now - lastFrameMs;
       lastFrameMs = now;
       metrics?.beginFrame();
       // onFrame seam – finite non-negative delta, before render, single RAF
@@ -453,6 +460,7 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     teardownRafAndResize();
     disposeHandles();
     successfulRenderCount = 0;
+    lastFrameMs = 0;
     attachment = null;
     lastPlayback = null;
     pendingAttachment = null;

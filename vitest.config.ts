@@ -26,7 +26,6 @@ export default defineConfig(({ mode }) => ({
     ],
   },
   test: {
-    testTimeout: 20000,
     include:
       mode === "bench"
         ? ["packages/generator/src/bench.test.ts"]

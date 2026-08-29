@@ -511,6 +511,7 @@ function handleVisibleUnexpectedError(error: unknown): void {
 const lifecycle = createAppLifecycle({
   canvas: viewportCanvas,
   getTerrainSeed: () => state.seed || "default-terrain",
+  getTerrainProfileId: () => "rolling-highlands-v1",
   getDprCap: () => 2,
   metrics,
   getCameraId: () => state.camera,

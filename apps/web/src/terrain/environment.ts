@@ -2,12 +2,12 @@ import { HeightfieldEnvironment } from "@openvibecoaster/core";
 
 /**
  * Explicit v1 terrain profiles – only these IDs are valid.
- * - rolling-520x360-v1: broad low rolling terrain for 520x360 footprint.
- * - blocking-v1: deliberately blocking high terrain for honest infeasible case.
+ * - rolling-highlands-v1: broad low rolling terrain for 520x360 footprint.
+ * - blocking-canyon-v1: deliberately blocking high terrain for honest infeasible case.
  * Unknown IDs must throw, never silently fallback.
  */
-export const ROLLING_TERRAIN_PROFILE_ID = "rolling-520x360-v1";
-export const BLOCKING_TERRAIN_PROFILE_ID = "blocking-v1";
+export const ROLLING_TERRAIN_PROFILE_ID = "rolling-highlands-v1";
+export const BLOCKING_TERRAIN_PROFILE_ID = "blocking-canyon-v1";
 
 export const VALID_TERRAIN_PROFILE_IDS = [
   ROLLING_TERRAIN_PROFILE_ID,
@@ -24,9 +24,17 @@ function createRolling(): HeightfieldEnvironment {
     -((width - 1) * cellSize) / 2,
     -((depth - 1) * cellSize) / 2,
   ];
-  // Flat low terrain well below track (track at y~0). Height -100 ensures clearance with large margin.
+  // Deterministic coherent procedural low hills in [-11,-5], safely below station
   const heights = new Float64Array(width * depth);
-  for (let i = 0; i < heights.length; i++) heights[i] = -100;
+  for (let z = 0; z < depth; z++) {
+    for (let x = 0; x < width; x++) {
+      const worldX = origin[0] + x * cellSize;
+      const worldZ = origin[1] + z * cellSize;
+      const h =
+        -9.5 + Math.sin(worldX * 0.02) * 0.6 + Math.cos(worldZ * 0.02) * 0.6;
+      heights[z * width + x] = h;
+    }
+  }
   return new HeightfieldEnvironment({
     width,
     depth,

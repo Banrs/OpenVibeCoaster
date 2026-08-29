@@ -1,4 +1,8 @@
-import { CompiledTrackData } from "@openvibecoaster/core";
+import {
+  CompiledTrackData,
+  type Diagnostic,
+  type Vec3,
+} from "@openvibecoaster/core";
 import { RideTimeline } from "@openvibecoaster/simulator";
 import {
   validateEngineeringWorkerResponse,
@@ -15,6 +19,8 @@ export function hydrateEngineeringSuccess(response: unknown): {
   readonly timeline: RideTimeline;
   readonly file: EngineeringWorkerSuccess["file"];
   readonly spanHashes: Readonly<Record<string, string>>;
+  readonly diagnostics: readonly import("@openvibecoaster/core").Diagnostic[];
+  readonly relaxations: readonly string[];
 } {
   validateEngineeringWorkerResponse(response);
   const success = response as EngineeringWorkerSuccess;
@@ -51,10 +57,35 @@ export function hydrateEngineeringSuccess(response: unknown): {
       `File checksum mismatch: file ${success.file.compiledDataChecksum} vs track ${track.checksum}`,
     );
   const timeline = RideTimeline.fromTransferable(success.timeline);
+  // Deep owned/frozen copies – caller mutation cannot affect hydrated values, no JSON round-trip
+  const diagnostics = Object.freeze(
+    success.diagnostics.map((d) => {
+      const copy: Diagnostic = {
+        ...d,
+        ...(d.location
+          ? {
+              location: {
+                ...d.location,
+                ...(d.location.position
+                  ? { position: [...d.location.position] as Vec3 }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(d.relatedIds ? { relatedIds: [...d.relatedIds] } : {}),
+      };
+      return Object.freeze(copy);
+    }),
+  );
+  const relaxations = Object.freeze([...success.relaxations]);
+  const spanHashes = Object.freeze({ ...success.spanHashes });
+  const file = Object.freeze(structuredClone(success.file));
   return {
     track,
     timeline,
-    file: success.file,
-    spanHashes: success.spanHashes,
+    file,
+    spanHashes,
+    diagnostics,
+    relaxations,
   };
 }

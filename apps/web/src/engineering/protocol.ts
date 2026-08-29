@@ -185,9 +185,10 @@ export function validateEngineeringWorkerResponse(
     if (!Array.isArray(rec.diagnostics)) fail("response.diagnostics", "array");
     if (!Array.isArray(rec.relaxations)) fail("response.relaxations", "array");
     if (!isRecord(rec.spanHashes)) fail("response.spanHashes", "object");
-    for (const [key, value] of Object.entries(
-      rec.spanHashes as Record<string, unknown>,
-    )) {
+    const spanHashesRecord = rec.spanHashes as Record<string, unknown>;
+    if (Object.keys(spanHashesRecord).length === 0)
+      fail("response.spanHashes", "non-empty object");
+    for (const [key, value] of Object.entries(spanHashesRecord)) {
       if (typeof key !== "string" || key.trim().length === 0)
         fail("response.spanHashes key", "non-empty string");
       if (typeof value !== "string" || !/^[0-9a-f]{8}$/i.test(value))

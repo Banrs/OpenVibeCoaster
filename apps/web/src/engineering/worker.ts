@@ -345,12 +345,13 @@ export function handleGenerate(
       [...generation.relaxations],
     );
   }
-  let spanHashes: Readonly<Record<string, string>>;
-  try {
-    spanHashes =
-      generation.spanHashes ?? coasterFileSpanHashes(generation.file);
-  } catch {
-    spanHashes = generation.spanHashes;
+  if (
+    !generation.spanHashes ||
+    Object.keys(generation.spanHashes).length === 0
+  ) {
+    return failure(requestId, [
+      toDiagnostic("SPAN_HASH_ERROR", "Missing spanHashes", "fatal"),
+    ]);
   }
   return {
     type: "success",
@@ -363,7 +364,7 @@ export function handleGenerate(
       ...(sim.diagnostics as Diagnostic[]),
     ],
     relaxations: [...generation.relaxations],
-    spanHashes,
+    spanHashes: generation.spanHashes,
   };
 }
 
@@ -440,12 +441,13 @@ export function handleRegenerate(
       [...generation.relaxations],
     );
   }
-  let spanHashes: Readonly<Record<string, string>>;
-  try {
-    spanHashes =
-      generation.spanHashes ?? coasterFileSpanHashes(generation.file);
-  } catch {
-    spanHashes = generation.spanHashes;
+  if (
+    !generation.spanHashes ||
+    Object.keys(generation.spanHashes).length === 0
+  ) {
+    return failure(requestId, [
+      toDiagnostic("SPAN_HASH_ERROR", "Missing spanHashes", "fatal"),
+    ]);
   }
   return {
     type: "success",
@@ -458,7 +460,7 @@ export function handleRegenerate(
       ...(sim.diagnostics as Diagnostic[]),
     ],
     relaxations: [...generation.relaxations],
-    spanHashes,
+    spanHashes: generation.spanHashes,
   };
 }
 
@@ -495,6 +497,9 @@ export function handleCompileSimulate(
   let spanHashes: Readonly<Record<string, string>>;
   try {
     spanHashes = coasterFileSpanHashes(loaded.file);
+    if (!spanHashes || Object.keys(spanHashes).length === 0) {
+      throw new Error("Empty spanHashes");
+    }
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(

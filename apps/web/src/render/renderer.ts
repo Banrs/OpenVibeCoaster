@@ -3,11 +3,7 @@ import {
   createDeterministicHeightfield,
   createTerrainGroup,
 } from "./terrain.js";
-import {
-  resolveTerrainEnvironment,
-  ROLLING_TERRAIN_PROFILE_ID,
-  BLOCKING_TERRAIN_PROFILE_ID,
-} from "../terrain/environment.js";
+import { resolveTerrainEnvironment } from "../terrain/environment.js";
 
 export interface RendererHandle {
   scene: THREE.Scene;
@@ -22,6 +18,7 @@ export interface CreateRendererOptions {
   dprCap?: number | undefined;
   enableShadows?: boolean | undefined;
   terrainSeed?: string | undefined;
+  terrainProfileId?: string | undefined;
   createRenderer?:
     ((canvas: HTMLCanvasElement) => THREE.WebGLRenderer) | undefined;
 }
@@ -33,7 +30,10 @@ export function _setWebGLRendererForTest(
   _WebGLRendererForTest = ctor;
 }
 
-function buildScene(terrainSeed: string): THREE.Scene {
+function buildScene(
+  terrainSeed: string,
+  terrainProfileId?: string,
+): THREE.Scene {
   const scene = new THREE.Scene();
   let terrainMesh: THREE.Mesh | null = null;
   let terrainGrid: THREE.GridHelper | null = null;
@@ -69,18 +69,11 @@ function buildScene(terrainSeed: string): THREE.Scene {
     scene.add(fill);
 
     const env = (() => {
-      // Prefer explicit profile IDs for deterministic terrain
-      if (
-        terrainSeed === ROLLING_TERRAIN_PROFILE_ID ||
-        terrainSeed === BLOCKING_TERRAIN_PROFILE_ID
-      ) {
-        return resolveTerrainEnvironment(terrainSeed)!;
+      // Explicit profile takes strict precedence – unknown must throw, never silently use another
+      if (terrainProfileId !== undefined) {
+        return resolveTerrainEnvironment(terrainProfileId)!;
       }
-      // "default-terrain" is the initial seed before any generation – map to rolling profile for footprint
-      if (terrainSeed === "default-terrain") {
-        return resolveTerrainEnvironment(ROLLING_TERRAIN_PROFILE_ID)!;
-      }
-      // For generic seeds, use legacy seeded generation – allows tests to spy on createDeterministicHeightfield
+      // Legacy generic seed path – only when no profile is claimed
       return createDeterministicHeightfield(terrainSeed);
     })();
     const terrain = createTerrainGroup(env);
@@ -244,7 +237,10 @@ export function createRendererHandle(
     const dpr = getDprNow();
     renderer.setPixelRatio(dpr);
 
-    scene = buildScene(options.terrainSeed ?? "default-terrain");
+    scene = buildScene(
+      options.terrainSeed ?? "default-terrain",
+      options.terrainProfileId,
+    );
 
     const localScene = scene;
     const localRenderer = renderer;
