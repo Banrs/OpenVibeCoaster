@@ -44,6 +44,7 @@ import type {
   AnySemanticElement,
   GenerationOptions,
   GenerationResult,
+  StoredGenerationOptions,
   LocalRegenerationOptions,
   LocalRegenerationResult,
   RelaxationEvidence,
@@ -118,15 +119,26 @@ const createGenerationOperationCache = (): GenerationOperationCache => ({
 const canonicalIntentCopy = (intent: DesignIntentV1): DesignIntentV1 =>
   parseDesignIntentV1(serializeDesignIntentV1(intent));
 
-const ownedGenerationOptions = ({
-  environment: _operationEnvironment,
-  researchSnapshotIds,
-  ...rest
-}: GenerationOptions): GenerationOptions => ({
-  ...rest,
-  ...(researchSnapshotIds === undefined
+const ownedGenerationOptions = (
+  options: GenerationOptions,
+): StoredGenerationOptions => ({
+  ...(options.samples === undefined ? {} : { samples: options.samples }),
+  ...(options.name === undefined ? {} : { name: options.name }),
+  ...(options.generatorVersion === undefined
     ? {}
-    : { researchSnapshotIds: [...researchSnapshotIds] }),
+    : { generatorVersion: options.generatorVersion }),
+  ...(options.profileVersion === undefined
+    ? {}
+    : { profileVersion: options.profileVersion }),
+  ...(options.researchSnapshotIds === undefined
+    ? {}
+    : { researchSnapshotIds: [...options.researchSnapshotIds] }),
+  ...(options.trainEnvelopeRadius === undefined
+    ? {}
+    : { trainEnvelopeRadius: options.trainEnvelopeRadius }),
+  ...(options.trackClearance === undefined
+    ? {}
+    : { trackClearance: options.trackClearance }),
 });
 
 const ownedElements = (
@@ -1805,19 +1817,15 @@ const mergedDiagnostics = (
   elements: readonly AnySemanticElement[],
   spans: readonly SolvedSpan[],
   intent: DesignIntentV1,
-  options: GenerationOptions,
+  options: StoredGenerationOptions,
+  environment: EnvironmentQuery | undefined,
   localDiagnostics: readonly Diagnostic[],
 ): readonly Diagnostic[] => {
   const diagnostics = [
     ...localDiagnostics,
     ...localSeamDiagnostics(spans, elements, isClosedChain(elements)),
     ...gateDiagnostics(spans, intent),
-    ...validateGenerationConstraints(
-      elements,
-      spans,
-      intent,
-      options.environment,
-    ),
+    ...validateGenerationConstraints(elements, spans, intent, environment),
   ];
   const end = spans[spans.length - 1]!;
   const endPose = {
@@ -1891,7 +1899,7 @@ const mergedDiagnostics = (
       diagnostic.severity === "error" || diagnostic.severity === "fatal",
   );
   if (!hasHardFailure) {
-    const clearance = validateClearance(spans, options.environment, {
+    const clearance = validateClearance(spans, environment, {
       ...(options.trainEnvelopeRadius === undefined
         ? {}
         : { trainEnvelopeRadius: options.trainEnvelopeRadius }),
@@ -2211,6 +2219,7 @@ export const regenerateLocal = (
         mergedSpans,
         changedIntent,
         generated.options,
+        options.environment,
         localSolved.diagnostics,
       );
       lastDiagnostics = diagnostics;

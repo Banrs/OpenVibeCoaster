@@ -183,6 +183,8 @@ export interface GenerationOptions {
   readonly trackClearance?: number;
 }
 
+export type StoredGenerationOptions = Omit<GenerationOptions, "environment">;
+
 export interface GenerationResult {
   readonly feasible: boolean;
   readonly intent: DesignIntentV1;
@@ -207,7 +209,7 @@ export interface GenerationResult {
   readonly spanHashes: Readonly<Record<string, string>>;
   readonly spanBytes: Readonly<Record<string, string>>;
   readonly relaxationEvidence: readonly RelaxationEvidence[];
-  readonly options: GenerationOptions;
+  readonly options: StoredGenerationOptions;
 }
 
 export interface RelaxationEvidence {
@@ -228,6 +230,7 @@ export interface ClearanceOptions {
 }
 
 export interface LocalRegenerationOptions {
+  readonly environment?: EnvironmentQuery;
   readonly pinnedElementIds?: readonly string[];
   readonly intent?: DesignIntentV1;
   readonly changes?: Readonly<

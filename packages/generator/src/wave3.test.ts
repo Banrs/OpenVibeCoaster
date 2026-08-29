@@ -144,6 +144,24 @@ const rigidlyTransformTrack = (
     totalLength: track.totalLength,
   });
 
+const retainsObjectReference = (root: unknown, target: object): boolean => {
+  const pending: unknown[] = [root];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === target) return true;
+    if (current === null || typeof current !== "object" || seen.has(current))
+      continue;
+    seen.add(current);
+    if (ArrayBuffer.isView(current)) continue;
+    for (const key of Reflect.ownKeys(current)) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (descriptor && "value" in descriptor) pending.push(descriptor.value);
+    }
+  }
+  return false;
+};
+
 describe("wave 3 deterministic generator", () => {
   it("builds the flagship semantic sequence for automatic modes", () => {
     const result = generateCoaster({
@@ -2136,31 +2154,25 @@ describe("wave 3 deterministic generator", () => {
       ...directedIntent,
       targets: [{ id: "impossible-z", kind: "end-z", target: 999, hard: true }],
     });
-    const generatedWithEnvironment = {
-      ...generated,
-      options: {
-        ...generated.options,
-        environment: {
-          signedDistance: () => {
-            queryCalls += 1;
-            throw new Error("local clearance must be short-circuited");
-          },
-          sampleSolid: () => {
-            queryCalls += 1;
-            throw new Error("local solid query must be short-circuited");
-          },
-          bounds: () => {
-            queryCalls += 1;
-            throw new Error("local environment bounds must be short-circuited");
-          },
-          raycast: () => {
-            queryCalls += 1;
-            throw new Error("local raycast must be short-circuited");
-          },
+    const result = regenerateLocal(generated, "stall-001", {
+      environment: {
+        signedDistance: () => {
+          queryCalls += 1;
+          throw new Error("local clearance must be short-circuited");
+        },
+        sampleSolid: () => {
+          queryCalls += 1;
+          throw new Error("local solid query must be short-circuited");
+        },
+        bounds: () => {
+          queryCalls += 1;
+          throw new Error("local environment bounds must be short-circuited");
+        },
+        raycast: () => {
+          queryCalls += 1;
+          throw new Error("local raycast must be short-circuited");
         },
       },
-    };
-    const result = regenerateLocal(generatedWithEnvironment, "stall-001", {
       changes: { "stall-001": { height: 19 } },
     });
     expect(result.feasible).toBe(false);
@@ -2173,37 +2185,102 @@ describe("wave 3 deterministic generator", () => {
     expect(queryCalls).toBe(0);
   });
 
-  it("queries clearance when local validation has only a soft target residual", () => {
-    const generated = generateCoaster({
-      ...directedIntent,
-      targets: [{ id: "soft-z", kind: "end-z", target: 999, hard: false }],
-    });
-    let queryCalls = 0;
-    const generatedWithEnvironment = {
-      ...generated,
-      options: {
-        ...generated.options,
-        environment: {
-          signedDistance: () => {
-            queryCalls += 1;
-            return 100;
-          },
-          raycast: () => undefined,
-        },
+  it("uses a local environment only when the operation supplies it", () => {
+    const environmentAlias = Symbol("local-environment-alias");
+    const environment = {
+      offset: 100,
+      signedDistanceCalls: 0,
+      signedDistance() {
+        this.signedDistanceCalls += 1;
+        return this.offset;
       },
+      raycast: () => undefined,
     };
-    const result = regenerateLocal(generatedWithEnvironment, "stall-001", {
+    const generationOptions = {
+      environment,
+      samples: 32,
+      [environmentAlias]: environment,
+    };
+    const generated = generateCoaster(
+      {
+        ...directedIntent,
+        targets: [{ id: "soft-z", kind: "end-z", target: 999, hard: false }],
+        terrainProfileId: "benign-terrain",
+        constraints: [
+          {
+            id: "terrain",
+            kind: "terrain-profile",
+            target: "benign-terrain",
+            hard: true,
+          },
+        ],
+      },
+      generationOptions,
+    );
+    const callsAfterGeneration = environment.signedDistanceCalls;
+    const withEnvironment = regenerateLocal(generated, "stall-001", {
+      environment,
       changes: { "stall-001": { length: 40 } },
     });
-    const target = result.diagnostics.find(
+    const callsAfterLocal = environment.signedDistanceCalls;
+    const target = withEnvironment.diagnostics.find(
       (item) => item.code === "TARGET" && item.relatedIds?.includes("soft-z"),
     );
-    expect(result.feasible).toBe(true);
+
+    expect(callsAfterGeneration).toBeGreaterThan(0);
+    expect(callsAfterLocal).toBeGreaterThan(callsAfterGeneration);
+    expect(withEnvironment.feasible).toBe(true);
     expect(target).toMatchObject({
       severity: "warning",
       provenance: "DESIGN_ASSUMPTION",
     });
-    expect(queryCalls).toBeGreaterThan(0);
+
+    const withoutEnvironment = regenerateLocal(generated, "stall-001", {
+      changes: { "stall-001": { length: 40 } },
+    });
+    const repeatedWithoutEnvironment = regenerateLocal(generated, "stall-001", {
+      changes: { "stall-001": { length: 40 } },
+    });
+    expect(environment.signedDistanceCalls).toBe(callsAfterLocal);
+    expect(withoutEnvironment.feasible).toBe(false);
+    expect(
+      withoutEnvironment.diagnostics.some(
+        (item) =>
+          item.code === "REQUIRED_TERRAIN" &&
+          item.relatedIds?.includes("terrain"),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(repeatedWithoutEnvironment)).toBe(
+      JSON.stringify(withoutEnvironment),
+    );
+
+    for (const result of [
+      generated,
+      withEnvironment,
+      withoutEnvironment,
+      repeatedWithoutEnvironment,
+    ]) {
+      expect(retainsObjectReference(result, environment)).toBe(false);
+      const generation = "generation" in result ? result.generation : result;
+      expect(Object.getOwnPropertySymbols(generation.options)).toEqual([]);
+      expect(generation.options).not.toHaveProperty("environment");
+    }
+    expect(Object.isFrozen(environment)).toBe(false);
+    const snapshots = [
+      generated,
+      withEnvironment,
+      withoutEnvironment,
+      repeatedWithoutEnvironment,
+    ].map((result) => JSON.stringify(result));
+    environment.offset = 200;
+    expect(
+      [
+        generated,
+        withEnvironment,
+        withoutEnvironment,
+        repeatedWithoutEnvironment,
+      ].map((result) => JSON.stringify(result)),
+    ).toEqual(snapshots);
   });
 
   it("sanitizes both directional extreme finite bound branches", () => {
@@ -2301,32 +2378,64 @@ describe("wave 3 deterministic generator", () => {
     }
   });
 
-  it("does not retain a caller-owned stateful environment", () => {
+  it("stores only explicitly owned generation options", () => {
+    const environmentAlias = Symbol("environment-alias");
     const environment = {
       offset: 3,
-      signedDistanceCalls: 0,
       signedDistance() {
-        this.signedDistanceCalls += 1;
         return this.offset;
       },
       raycast: () => undefined,
     };
-
-    const first = generateCoaster(directedIntent, { environment, samples: 32 });
-    const callsAfterFirst = environment.signedDistanceCalls;
-    const second = generateCoaster(directedIntent, {
+    const callerOptions = {
       environment,
       samples: 32,
-    });
+      name: "Owned options",
+      generatorVersion: "owned-generator-v1",
+      profileVersion: "owned-profile-v1",
+      researchSnapshotIds: ["snapshot-a"],
+      trainEnvelopeRadius: 0.25,
+      trackClearance: 0.25,
+      unexpected: environment,
+      [environmentAlias]: environment,
+    };
 
-    expect(callsAfterFirst).toBeGreaterThan(0);
-    expect(environment.signedDistanceCalls).toBeGreaterThan(callsAfterFirst);
-    expect(first.options).not.toHaveProperty("environment");
-    expect(second.options).not.toHaveProperty("environment");
+    const first = generateCoaster(directedIntent, callerOptions);
+    const second = generateCoaster(directedIntent, callerOptions);
+
+    const allowedNames = [
+      "generatorVersion",
+      "name",
+      "profileVersion",
+      "researchSnapshotIds",
+      "samples",
+      "trackClearance",
+      "trainEnvelopeRadius",
+    ];
+    for (const result of [first, second]) {
+      expect(Object.getOwnPropertySymbols(result.options)).toEqual([]);
+      expect(Object.getOwnPropertyNames(result.options).sort()).toEqual(
+        allowedNames,
+      );
+      expect(result.options).not.toHaveProperty("environment");
+      expect(result.options).not.toHaveProperty("unexpected");
+    }
     expect(first.options).not.toBe(second.options);
+    expect(first.options.researchSnapshotIds).not.toBe(
+      second.options.researchSnapshotIds,
+    );
+    expect(first.serializedFile).toBe(second.serializedFile);
+    expect(first.track.positions).toEqual(second.track.positions);
+    expect(Object.isFrozen(callerOptions)).toBe(false);
+    expect(Object.isFrozen(callerOptions.researchSnapshotIds)).toBe(false);
+    expect(Object.isFrozen(environment)).toBe(false);
 
     const firstSnapshot = JSON.stringify(first);
     const secondSnapshot = JSON.stringify(second);
+    callerOptions.samples = 64;
+    callerOptions.researchSnapshotIds.push("snapshot-b");
+    callerOptions.unexpected = environment;
+    callerOptions[environmentAlias] = environment;
     environment.offset = 9;
 
     expect(JSON.stringify(first)).toBe(firstSnapshot);
