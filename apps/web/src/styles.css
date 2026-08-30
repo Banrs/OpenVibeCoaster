@@ -1147,14 +1147,15 @@ body.reduced-motion * {
 @media (pointer: coarse), (max-width: 900px) {
   .btn,
   .mobile-tab,
-  .cam-option {
-    min-height: 40px;
+  .cam-option,
+  #webgl-retry {
+    min-height: 44px;
   }
 
   .field input,
   .field select,
   #seed-input {
-    min-height: 40px;
+    min-height: 44px;
   }
 }
 
