@@ -18,7 +18,7 @@ test("WebGL fallback visible, camera/metric disabled/hidden, retry operable, no 
   await page.waitForTimeout(800);
   const fallback = page.locator("#webgl-fallback");
   await expect(fallback).toBeVisible();
-  await expect(fallback).toContainText("WebGL unavailable");
+  await expect(fallback.locator("h2")).toHaveText("3D view unavailable");
   await expect(page.locator("#webgl-retry")).toBeVisible();
   await expect(page.locator("#webgl-retry")).toBeEnabled();
   const cameraDisabled = await page.evaluate(() =>
