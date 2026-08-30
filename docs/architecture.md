@@ -8,7 +8,7 @@ DesignIntentV1
   -> SolvedSpan[]
   -> immutable CompiledTrackData
   -> simulation and validation
-  -> worker transfer (when available)
+  -> inline browser worker (generate/regenerate/compile-simulate) with cancellation and transferable canonical arrays
   -> Three.js rendering, DOM editor, telemetry, and ride cameras
 ```
 
@@ -28,7 +28,7 @@ and playback interpolation are visual only and do not change simulation data.
   the transferable `RideTimeline`.
 - `generator`: semantic elements, solving, deterministic search, clearance,
   local regeneration, and worker message contracts.
-- `web`: browser worker integration (when present), rendering, UI, plots,
+- `web`: inline browser worker, `ExperienceController`, rendering, UI, plots,
   cameras, audio, and persistence.
 
 ## Numerical conventions
@@ -80,18 +80,24 @@ validation consumes the environment but remains deterministic and budget-bound.
 
 ## Worker and transfer
 
-`packages/core/src/contracts.ts` defines `WorkerRequest`
-(`compile | sample | cancel`) and `WorkerResponse`
-(`compiled | diagnostics | error`). Simulator `RideTimeline` is transferable:
-`toTransferable()` exposes 11 `ArrayBuffer` views and `fromTransferable`
-reconstitutes them without copying semantics.
-
-When a browser worker is present, generation, simulation, and validation are
-expected to run off the main thread with `Transferable` promotion and
-explicit cancellation (`cancel` request). The current web shell has no live
-worker integration (`apps/web/src/main.ts` keeps generation data-gated and
-resolves to `error` rather than fabricating a track); the contracts document
-the available mechanism without claiming it is wired.
+`apps/web/src/engineering/protocol.ts` defines `EngineeringWorkerRequest`
+(`generate` | `regenerate` | `compile-simulate` | `cancel`) and
+`EngineeringWorkerResponse` (`success` | `failure` | `cancelled`) with strict
+validation and timings. `apps/web/src/engineering/worker.ts` runs
+generation, regeneration, and compile-simulate off the main thread with
+`Transferable` promotion of canonical arrays and explicit `cancel`
+termination with epoch-based stale-response rejection;
+`EngineeringWorkerClient` (`apps/web/src/engineering/client.ts`) rejects
+stale responses and clamps future timestamps within its 5 ms tolerance and
+rejects timestamps beyond that tolerance. `collectTransferables`
+collects owned `ArrayBuffer` views for zero-copy transfer. `RideTimeline` is
+transferable: `toTransferable()` exposes `ArrayBuffer` views and
+`fromTransferable` reconstitutes them. `apps/web/src/engineering/hydrate.ts`
+hydrates `CompiledTrackData` and `RideTimeline` from transferables and
+verifies the canonical file/checksum path; loading via `compile-simulate`
+recompiles stored solved coefficients without re-solving. The worker is
+created via `createEngineeringWorker` (`?worker&inline`) for a Blob-backed
+inline worker suitable for the single-file artifact.
 
 ## Rendering and portable artifact
 
@@ -105,12 +111,12 @@ simulation timeline and do not invent data.
 `npm run build` invokes `vite build` and then
 `apps/web/scripts/portable-packager.mjs`, which inlines linked stylesheets and
 scripts (including the bundled Three.js rendering code) into
-`apps/web/dist/OpenVibeCoaster.html`. The invariant
-`PORTABLE_WORKER_INVARIANT` requires future production workers to be
-Vite-inlined and Blob-backed so the single-file artifact is preserved. The
-portable file opens directly in a current built-in browser with no server,
-CDN, fonts, media, or runtime network fetch; all runtime code is already
-bundled in the artifact.
+`apps/web/dist/OpenVibeCoaster.html`. The inline worker is Vite-inlined and
+Blob-backed via `apps/web/src/engineering/factory.ts` (`?worker&inline`),
+satisfying `PORTABLE_WORKER_INVARIANT` so the single-file artifact is
+preserved. The portable file opens directly in a current built-in browser on
+Windows and macOS with no server, CDN, fonts, media, backend, install, or
+runtime network fetch; all runtime code is already bundled in the artifact.
 
 ## CI and tooling
 
@@ -145,11 +151,23 @@ Every external research fact carries its source URL and retrieval date. A
 source fact, a derived comparison, a project limit, and a model assumption
 must not be presented as interchangeable evidence.
 
-## Current integration boundary
+## Experience authority and rendering
 
-The architecture defines the intended worker, persistence, and rendering data
-flow. Until those integrations are live in the web shell, data-dependent
-actions remain disabled and arbitrary loaded JSON or an authored target must
-not be described as a validated generated track. Diagnostics stay hard: they
-identify exact failures and label source-verified facts, project limits,
-assumptions, and unknown criteria.
+`apps/web/src/experienceController.ts` is the single authority for the
+accepted result, last-good result, selection, pins, local edits/regeneration,
+save/load, and stale-response rejection. It validates `CompiledTrackData` and
+`RideTimeline` alignment and the canonical file/checksum path; only a
+validated result becomes `ready`.
+
+Generated tracks render via `apps/web/src/render/controller.ts` and
+`lifecycle.ts` (single WebGL2 `THREE.WebGLRenderer` and single
+`requestAnimationFrame`). Track geometry, train meshes, terrain, and supports
+tessellate `CompiledTrackData`; supports are visual-only. Telemetry plots and
+procedural audio (`apps/web/src/audio`) consume the simulation timeline and do
+not invent data. Ride cameras (front, middle, rear, chase, orbit) smooth
+visually and respect `prefers-reduced-motion`; seam/metric inspection and
+directed controls are data-gated to the ready state, with diagnostics/
+relaxations surfaced. The viewport provides a WebGL fallback message when
+WebGL is unavailable. Diagnostics stay hard: they identify exact failures and
+label source-verified facts, project limits, assumptions, and unknown
+criteria.

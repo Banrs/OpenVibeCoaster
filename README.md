@@ -23,7 +23,7 @@ DesignIntentV1
   -> SolvedSpan[]
   -> immutable CompiledTrackData
   -> simulation and validation
-  -> worker transfer (when available)
+  -> inline browser worker (generate/regenerate/compile-simulate) with cancellation and transferable canonical arrays
   -> Three.js rendering, DOM editor, telemetry, and ride cameras
 ```
 
@@ -78,8 +78,11 @@ No server (`vite preview` is not required), `npm install` at runtime, account,
 backend, CDN, web fonts, or media download is required. The rendering code
 (Three.js) is already bundled inside the HTML by
 `apps/web/scripts/portable-packager.mjs`, which inlines CSS and JS so the
-output is a single-file offline artifact. The project does not produce a native
-executable; the only distribution is this HTML file.
+output is a single-file offline artifact. The inline browser worker is
+Vite-inlined and Blob-backed (`apps/web/src/engineering/factory.ts` via
+`?worker&inline`) so the portable file has no runtime network, backend, or
+install requirement on current Windows/macOS browsers. The project does not
+produce a native executable; the only distribution is this HTML file.
 
 ## Flagship intent and default train
 
@@ -118,12 +121,18 @@ absolute longitudinal 1.5 g, jerk 15 m/s3, roll rate 1.5 rad/s, clearance
 margin 0.5 m, and seam tolerances (position 0.0001 m, tangent 0.00001 rad,
 etc.). They are editable project thresholds, not standards.
 
-The intended workflow is to choose a seed and design intent, generate a track,
-inspect diagnostics and telemetry, ride it, and save or load a JSON coaster
-file. The current web shell keeps actions data-gated; worker generation and
-the canonical `CoasterFile` validation path are not yet integrated in the
-browser shell, so a well-formed loaded JSON file is not by itself a validated
-ready track.
+The workflow is to choose a seed and design intent, generate a track via the
+inline browser worker (`generate`/`regenerate`/`compile-simulate`) with
+explicit cancellation and transferable canonical arrays, inspect diagnostics
+and telemetry, ride it, and save or load a JSON coaster file.
+`ExperienceController` (`apps/web/src/experienceController.ts`) is the single
+authority for the accepted result, last-good result, selection, pins, local
+edits/regeneration, save/load, and stale-response rejection. Generated tracks
+render with telemetry, seam/metric inspection, ride cameras (front, middle,
+rear, chase, orbit), procedural audio, directed controls, diagnostics/
+relaxations, and a WebGL fallback. Loading recompiles stored solved
+coefficients without re-solving and verifies the canonical file/checksum path;
+only a validated result becomes ready.
 
 ## Provenance and research data
 
@@ -159,10 +168,12 @@ available. The viewport provides a fallback message when WebGL is unavailable;
 Playwright Chromium is the automated browser baseline. No backend, account, or
 network service is required for the intended local workflow.
 
-Save/Export is intended to download JSON containing the current design and
-ride state. Load is intended to accept a JSON coaster file through the browser
-file picker. Until the canonical parser and worker integration are complete,
-load does not apply unvalidated values or claim a ready track.
+Save/Export downloads the canonical `CoasterFileV1` (design intent, stored
+solved coefficients, versions, and checksum) via the controller's save/load
+path; telemetry is re-derived on load. Load accepts a JSON coaster file
+through the browser file picker and recompiles stored solved coefficients
+without re-solving, verifying the canonical file/checksum path before a
+result becomes ready.
 
 All redistributable visual assets are procedural unless redistribution rights
 are recorded. The repository does not depend on proprietary ride or standards
