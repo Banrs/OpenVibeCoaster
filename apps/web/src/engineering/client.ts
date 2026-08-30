@@ -113,6 +113,7 @@ export class EngineeringWorkerClient {
     ) {
       try {
         performance.measure("ovc:simulation", {
+          start: 0,
           duration: simulationMs,
         });
       } catch {
@@ -120,6 +121,7 @@ export class EngineeringWorkerClient {
       }
       try {
         performance.measure("ovc:worker-transfer", {
+          start: 0,
           duration: transferMs,
         });
       } catch {

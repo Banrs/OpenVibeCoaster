@@ -242,11 +242,12 @@ export function buildTrackGeometries(
       canonicalSet.add(b);
   }
   if (options.seamInspectionEnabled === true) {
-    for (const b of canonicalSet) seamSet.add(b);
-    if (options.seamIndices) {
+    if (options.seamIndices !== undefined) {
       for (const idx of options.seamIndices) {
         if (canonicalSet.has(idx)) seamSet.add(idx);
       }
+    } else {
+      for (const b of canonicalSet) seamSet.add(b);
     }
   } else if (options.seamInspectionEnabled === false) {
     // disabled: no seams

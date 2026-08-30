@@ -839,4 +839,76 @@ describe("EngineeringWorkerClient User Timing", () => {
     expect(call).toBe(1);
     expect(measureSpy).toHaveBeenCalledTimes(2);
   });
+
+  it("chromium User Timing — duration-only without start/end must throw (Chromium emulation) and both ovc measures must be accepted with authoritative durations", async () => {
+    const client = new EngineeringWorkerClient(factory);
+    const accepted: Array<{
+      name: string;
+      duration: number;
+      options: unknown;
+    }> = [];
+    const chromiumMeasure = vi
+      .spyOn(performance, "measure")
+      .mockImplementation(
+        (
+          ...args: Parameters<typeof performance.measure>
+        ): PerformanceMeasure => {
+          const [name, startOrOptions] = args;
+          const opts = startOrOptions as Record<string, unknown> | undefined;
+          // Chromium rule: non-empty options without start or end throws
+          if (
+            opts &&
+            typeof opts === "object" &&
+            Object.keys(opts).length > 0 &&
+            !("start" in opts) &&
+            !("end" in opts)
+          ) {
+            throw new TypeError(
+              "If a non-empty PerformanceMeasureOptions object was passed, at least one of its 'start' or 'end' properties must be present.",
+            );
+          }
+          // Chromium accepts { start: 0, duration: N } and records duration N
+          if (opts && typeof opts === "object" && "duration" in opts) {
+            accepted.push({
+              name,
+              duration: (opts as { duration: number }).duration,
+              options: opts,
+            });
+          }
+          return {} as PerformanceMeasure;
+        },
+      );
+    // lock current-epoch clock: receipt at fixedOrigin+fixedNow, worker 8ms earlier
+    const fixedNow = 1000;
+    const fixedOrigin = 5000;
+    Object.defineProperty(performance, "timeOrigin", {
+      value: fixedOrigin,
+      configurable: true,
+    });
+    vi.spyOn(performance, "now").mockReturnValue(fixedNow);
+    const authoritativeSimMs = 22.5;
+    const workerEpoch = fixedOrigin + fixedNow - 8; // 8ms transfer
+    const expectedTransferMs = 8;
+    const promise = client.generate("chromium-timing", validIntent);
+    workers[0]!.emitMessage(
+      makeSuccess("chromium-timing", {
+        simulationMs: authoritativeSimMs,
+        workerSendEpochMs: workerEpoch,
+      }),
+    );
+    const result = await promise;
+    expect(result.timings.simulationMs).toBe(authoritativeSimMs);
+    // Record accepted measure entries only after the Chromium rule is satisfied
+    expect(chromiumMeasure).toHaveBeenCalledTimes(2);
+    expect(accepted).toHaveLength(2);
+    const simEntry = accepted.find((e) => e.name === "ovc:simulation");
+    const transferEntry = accepted.find(
+      (e) => e.name === "ovc:worker-transfer",
+    );
+    expect(simEntry).toBeDefined();
+    expect(transferEntry).toBeDefined();
+    // Consumers claim and read only duration; anchor is required only by User Timing API
+    expect(simEntry!.duration).toBe(authoritativeSimMs);
+    expect(transferEntry!.duration).toBe(expectedTransferMs);
+  });
 });

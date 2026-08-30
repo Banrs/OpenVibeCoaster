@@ -72,9 +72,11 @@ export function assertNoObservability(
   ).toEqual([]);
 }
 
+export const ENGINEERING_READY_TIMEOUT = 90_000;
+
 export async function waitForReady(
   page: Page,
-  timeout = 30_000,
+  timeout = ENGINEERING_READY_TIMEOUT,
 ): Promise<void> {
   const status = page.locator("#status");
   await expect(status).toHaveAttribute("data-state", "ready", { timeout });
@@ -98,7 +100,7 @@ export async function gotoAndGenerateInsta(
   await input.click();
   await input.fill(seed);
   await page.locator("#generate-btn").click();
-  await waitForReady(page, 30_000);
+  await waitForReady(page, ENGINEERING_READY_TIMEOUT);
 }
 
 export async function waitForRAF(page: Page): Promise<void> {

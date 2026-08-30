@@ -476,12 +476,12 @@
             ></label
           >
           <label class="cam-option"
-            ><input type="radio" name="camera" value="chase" checked /><span
+            ><input type="radio" name="camera" value="chase" /><span
               >Chase</span
             ></label
           >
           <label class="cam-option"
-            ><input type="radio" name="camera" value="orbit" /><span
+            ><input type="radio" name="camera" value="orbit" checked /><span
               >Orbit</span
             ></label
           >
@@ -527,7 +527,7 @@
 
         <section class="inspector-section" aria-label="Authoritative elements">
           <h3 class="section-title">Elements</h3>
-          <p class="panel-hint">
+          <p id="elements-empty-hint" class="panel-hint">
             No generated elements — generate to see authoritative station and
             track elements.
           </p>
@@ -665,8 +665,8 @@
           <span>Seat</span>
           <select id="seat-select" disabled>
             <option value="0">Front — rider eye, lead car</option>
-            <option value="1">Middle — car 2</option>
-            <option value="2">Middle — car 3</option>
+            <option value="1">Middle — seat 1</option>
+            <option value="2">Middle — seat 2</option>
             <option value="3">Rear — last car</option>
           </select>
         </label>

@@ -65,12 +65,30 @@ describe("viewState – pending versus ready enablement", () => {
     expect(getStatusText("error")).toMatch(/error|failed/i);
   });
 
-  it("error status is neutral and truthful for load, generate, and regenerate while integration unavailable", () => {
-    const err = getStatusText("error");
-    expect(err).not.toMatch(/Load failed/i);
-    expect(err).toMatch(/canonical/i);
-    expect(err).toMatch(/unavailable|integration/i);
-    expect(err).toMatch(/error|failed|unavailable/i);
+  it("initial seed is deterministic valid uint32 1337 and error status is truthful", () => {
+    const state = createInitialState();
+    expect(state.seed).toBe("1337");
+    expect(Number.isInteger(Number.parseInt(state.seed, 10))).toBe(true);
+    expect(Number.parseInt(state.seed, 10)).toBeGreaterThanOrEqual(0);
+    expect(Number.parseInt(state.seed, 10)).toBeLessThanOrEqual(0xffffffff);
+    expect(state.camera).toBe("orbit");
+  });
+
+  it("error status is truthful with actual message and deterministic otherwise", () => {
+    expect(getStatusText("error")).toBe("Action failed");
+    expect(getStatusText("error", "")).toBe("Action failed");
+    expect(getStatusText("error", null)).toBe("Action failed");
+    expect(getStatusText("error", "seed: expected uint32 integer")).toBe(
+      "Action failed — seed: expected uint32 integer",
+    );
+    expect(getStatusText("error", "  custom error  ")).toBe(
+      "Action failed — custom error",
+    );
+    expect(getStatusText("pending")).toMatch(/pending/i);
+    expect(getStatusText("ready")).toMatch(/ready/i);
+    expect(getStatusText("generating")).toMatch(/generat/i);
+    // error without message must not invent diagnostics or leak stale prior
+    expect(getStatusText("error", "   ")).toBe("Action failed");
   });
 });
 

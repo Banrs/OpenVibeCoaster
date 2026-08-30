@@ -48,7 +48,7 @@ export function createInitialState(): AppState {
   return {
     generationStatus: "pending",
     appMode: "edit",
-    camera: "chase",
+    camera: "orbit",
     metric: "speed",
     seatIndex: 0,
     seatCount: 4,
@@ -56,11 +56,14 @@ export function createInitialState(): AppState {
     isPaused: true,
     reducedMotion: false,
     isMuted: false,
-    seed: "",
+    seed: "1337",
   };
 }
 
-export function getStatusText(status: GenerationStatus): string {
+export function getStatusText(
+  status: GenerationStatus,
+  errorMessage?: string | null,
+): string {
   switch (status) {
     case "pending":
       return "Generation pending — configure intent and generate";
@@ -68,8 +71,14 @@ export function getStatusText(status: GenerationStatus): string {
       return "Ready — track data loaded";
     case "generating":
       return "Generating…";
-    case "error":
-      return "Action failed — canonical track validation unavailable until integration";
+    case "error": {
+      const trimmed =
+        typeof errorMessage === "string" ? errorMessage.trim() : "";
+      if (trimmed.length > 0) {
+        return `Action failed — ${trimmed}`;
+      }
+      return "Action failed";
+    }
     default:
       return "Unknown status";
   }

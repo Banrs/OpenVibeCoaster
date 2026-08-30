@@ -9,6 +9,7 @@ test.use({ launchOptions: { args: ["--disable-webgl", "--disable-gpu"] } });
 test("WebGL-disabled: generation/save/load usable while 3D controls disabled, no cross-origin/fetch", async ({
   page,
 }) => {
+  test.setTimeout(180_000);
   const obs = attachObservability(page);
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/");

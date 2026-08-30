@@ -15,7 +15,7 @@ export type TimelineMetricId =
   | "gForce";
 
 export interface TimelineSeries {
-  readonly metric: TimelineMetricId;
+  readonly metric: TimelineMetricId | "height";
   readonly label: string;
   readonly unit: string;
   readonly values: readonly number[];
@@ -48,7 +48,10 @@ export interface SeamInspectionState {
   readonly seamDiagnostics: readonly Diagnostic[];
 }
 
-const metadata: Record<TimelineMetricId, { label: string; unit: string }> = {
+const metadata: Record<
+  TimelineMetricId | "height",
+  { label: string; unit: string }
+> = {
   speed: { label: "Speed", unit: "m/s" },
   verticalG: { label: "Vertical G", unit: "g" },
   lateralG: { label: "Lateral G", unit: "g" },
@@ -58,6 +61,7 @@ const metadata: Record<TimelineMetricId, { label: string; unit: string }> = {
   clearance: { label: "Clearance", unit: "m" },
   energyResidual: { label: "Energy residual", unit: "J" },
   gForce: { label: "G force", unit: "g" },
+  height: { label: "Height", unit: "m" },
 };
 
 function copyArray(input: Float64Array): number[] {
@@ -77,7 +81,7 @@ function arraysFromTimeline(timeline: RideTimeline): {
 
 function unavailable(
   timeline: RideTimeline,
-  metric: TimelineMetricId,
+  metric: TimelineMetricId | "height",
   reason: string,
 ): TimelineSeries {
   const { distances, times } = arraysFromTimeline(timeline);
@@ -486,11 +490,15 @@ export function getMetricColorData(
 /**
  * Seam inspection uses compiled boundaries and analytic diagnostic evidence.
  * Toggle state is honored – when disabled, returns empty boundaries/diagnostics.
+ * When enabled and an explicit semantic seam set is supplied, that set is
+ * authoritative (validated against the canonical compiled boundary set);
+ * otherwise falls back to all canonical compiled boundaries.
  */
 export function getSeamInspection(
   track: CompiledTrackData | null,
   diagnostics: readonly Diagnostic[],
   enabled: boolean,
+  semanticSeamIndices?: readonly number[],
 ): SeamInspectionState {
   if (!enabled || !track) {
     return Object.freeze({
@@ -499,7 +507,18 @@ export function getSeamInspection(
       seamDiagnostics: Object.freeze([]),
     });
   }
-  const boundaries = Object.freeze(Array.from(track.elementBoundaries));
+  const canonicalSet = new Set<number>(Array.from(track.elementBoundaries));
+  let boundaries: readonly number[];
+  if (semanticSeamIndices && semanticSeamIndices.length > 0) {
+    const validated = semanticSeamIndices.filter(
+      (idx) => Number.isInteger(idx) && canonicalSet.has(idx),
+    );
+    boundaries = Object.freeze([...validated]);
+  } else if (semanticSeamIndices && semanticSeamIndices.length === 0) {
+    boundaries = Object.freeze([]);
+  } else {
+    boundaries = Object.freeze(Array.from(track.elementBoundaries));
+  }
   const distances = track.distances;
   const boundaryDistances = boundaries.map((idx) =>
     Number.isFinite(distances[idx]!) ? distances[idx]! : Number.NaN,
@@ -548,7 +567,7 @@ export function drawTimelineGraph(
   const min = range.min;
   const max = range.max;
   const span = Math.max(max - min, 1e-9);
-  const metricColors: Record<TimelineMetricId, string> = {
+  const metricColors: Record<TimelineMetricId | "height", string> = {
     speed: "#6ea1ff",
     verticalG: "#ff6e6e",
     lateralG: "#6eff8a",
@@ -558,6 +577,7 @@ export function drawTimelineGraph(
     clearance: "#ff9f6e",
     energyResidual: "#8aff6e",
     gForce: "#ff6eb5",
+    height: "#ff8a65",
   };
   context.strokeStyle = metricColors[series.metric] ?? "#6ea1ff";
   context.lineWidth = 2;

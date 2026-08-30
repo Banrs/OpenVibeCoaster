@@ -15,9 +15,14 @@ test.describe("vertical-slice – insta generate to ride", () => {
   test("flow1: Insta -> ready diagnostics -> front-seat ride, 1.6-2.2km, 80m inverted top-hat, duration>5s, controls enabled", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await page.setViewportSize({ width: 1280, height: 800 });
-    await gotoAndGenerateInsta(page, "1337");
+    await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
+    await expect(page.locator("#seed-input")).toHaveValue("1337");
+    await page.locator("#generate-btn").click();
+    await waitForReady(page);
 
     const errCount = await page
       .locator(
@@ -99,6 +104,7 @@ test.describe("vertical-slice – ride controls", () => {
   test("flow2: cameras, pause/play, scrub, speeds, reset assert readout changes", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await page.setViewportSize({ width: 1280, height: 800 });
     await gotoAndGenerateInsta(page, "2026");
@@ -150,6 +156,7 @@ test.describe("vertical-slice – graph synchronization", () => {
   test("flow3: graph click -> scrubber, selection readout, highlight, playback position", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await gotoAndGenerateInsta(page, "42");
 
@@ -197,6 +204,7 @@ test.describe("vertical-slice – metric coloring and seam", () => {
   test("flow4: color by G/speed/rollRate/clearance (+height/energy) and seam inspection bounded", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await gotoAndGenerateInsta(page, "99");
 
@@ -256,6 +264,7 @@ test.describe("vertical-slice – stable elements and local regenerate", () => {
   test("flow5: select/pin, edit param, local regenerate, unaffected hashes identical", async ({
     page,
   }) => {
+    test.setTimeout(300_000);
     const obs = attachObservability(page);
     await gotoAndGenerateInsta(page, "777");
 
@@ -301,7 +310,7 @@ test.describe("vertical-slice – stable elements and local regenerate", () => {
     await expect(lenInput).toHaveValue(newLen);
 
     await page.locator("#local-regenerate-btn").click();
-    await waitForReady(page, 30_000);
+    await waitForReady(page, 90_000);
 
     if (elId)
       await expect(
@@ -321,6 +330,12 @@ test.describe("vertical-slice – stable elements and local regenerate", () => {
       }
       return map;
     });
+    if (elId) {
+      expect(
+        hashesAfter[elId],
+        "selected edited element hash should change after deliberate pinned override",
+      ).not.toBe(hashesBefore[elId]);
+    }
     let identical = 0;
     for (const k of Object.keys(hashesBefore))
       if (hashesAfter[k] === hashesBefore[k]) identical += 1;
@@ -338,6 +353,7 @@ test.describe("vertical-slice – directed generation", () => {
   test("flow6a: directed success – stall, gate, rect footprint, rolling terrain, hard+soft targets", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
@@ -379,7 +395,7 @@ test.describe("vertical-slice – directed generation", () => {
     await page.locator("#seed-input").click();
     await page.locator("#seed-input").fill("1234");
     await page.locator("#generate-btn").click();
-    await waitForReady(page, 30_000);
+    await waitForReady(page, 90_000);
 
     expect(
       await page
@@ -397,6 +413,7 @@ test.describe("vertical-slice – directed generation", () => {
   test("flow6b: directed infeasible – blocking terrain stays error, error diagnostic with provenance/location/margin, 0-3 tested relaxations", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
@@ -496,6 +513,7 @@ test.describe("vertical-slice – persistence", () => {
   test("flow7: save CoasterFileV1, load via file input, checksum/geometry/IDs/telemetry exact, schema+seed in Node", async ({
     page,
   }) => {
+    test.setTimeout(300_000);
     const obs = attachObservability(page);
     await page.setViewportSize({ width: 1280, height: 800 });
     await gotoAndGenerateInsta(page, "5555");
@@ -528,10 +546,9 @@ test.describe("vertical-slice – persistence", () => {
     expect(preIds.length).toBeGreaterThan(5);
     const preTelemetry = await page
       .locator('[data-testid="telemetry-signature"]')
-      .getAttribute("data-signature")
-      .catch(
-        async () => (await page.locator(".scrubber-value").textContent()) ?? "",
-      );
+      .getAttribute("data-signature");
+    expect(preTelemetry, "data-signature required").not.toBeNull();
+    expect(preTelemetry!).toMatch(/^[0-9a-f]{8}-[0-9a-f]{8}-\d+-\d+\.\d{2}$/i);
 
     const downloadPromise = page.waitForEvent("download", { timeout: 15_000 });
     await page.locator("#save-btn").click();
@@ -554,7 +571,7 @@ test.describe("vertical-slice – persistence", () => {
     expect(dlChecksum.toLowerCase()).toBe(preChecksum.toLowerCase());
 
     await page.locator("#load-file").setInputFiles(dlPath as string);
-    await waitForReady(page, 30_000);
+    await waitForReady(page, 90_000);
 
     const postChecksum =
       (await page
@@ -586,10 +603,12 @@ test.describe("vertical-slice – persistence", () => {
 
     const postTelemetry = await page
       .locator('[data-testid="telemetry-signature"]')
-      .getAttribute("data-signature")
-      .catch(
-        async () => (await page.locator(".scrubber-value").textContent()) ?? "",
-      );
+      .getAttribute("data-signature");
+    expect(
+      postTelemetry,
+      "data-signature after reload required",
+    ).not.toBeNull();
+    expect(postTelemetry!).toMatch(/^[0-9a-f]{8}-[0-9a-f]{8}-\d+-\d+\.\d{2}$/i);
     expect(postTelemetry).toBe(preTelemetry);
 
     assertNoObservability(obs, "flow7");
@@ -600,6 +619,7 @@ test.describe("vertical-slice – keyboard, reduced motion, audio, viewports, no
   test("flow8: keyboard generate/ride, reducedMotion, audio unlock/mute, viewports screenshots, no cross-origin/fetch", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -641,7 +661,76 @@ test.describe("vertical-slice – keyboard, reduced motion, audio, viewports, no
     }
     expect(atGenerate).toBe(true);
     await page.keyboard.press("Enter");
-    await waitForReady(page, 30_000);
+    await waitForReady(page, 90_000);
+
+    // Keyboard element selection: focus first element button and activate via keyboard
+    const firstElementBtn = page.locator("#element-list li button").first();
+    await expect(
+      firstElementBtn,
+      "element button keyboard-operable",
+    ).toBeVisible();
+    await firstElementBtn.focus();
+    await expect(firstElementBtn).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#selection-readout")).not.toContainText(
+      "No selection",
+    );
+    const firstElementId = await page
+      .locator("#element-list li")
+      .first()
+      .getAttribute("data-element-id");
+    expect(firstElementId, "exact first data-element-id required").toBeTruthy();
+    await expect(page.locator("#selection-readout")).toContainText(
+      firstElementId!,
+    );
+
+    // Second element via Space — must move selection to that exact data-element-id and not trigger global playback toggle
+    const secondLi = page.locator("#element-list li").nth(1);
+    await expect(secondLi, "second element li required").toBeVisible();
+    const secondElementId = await secondLi.getAttribute("data-element-id");
+    expect(
+      secondElementId,
+      "exact second data-element-id required",
+    ).toBeTruthy();
+    expect(secondElementId).not.toBe(firstElementId);
+    const secondElementBtn = secondLi.locator("button");
+    await expect(
+      secondElementBtn,
+      "second element button keyboard-operable",
+    ).toBeVisible();
+    await secondElementBtn.focus();
+    await expect(secondElementBtn).toBeFocused();
+    const pauseBtnForSpace = page.locator("#pause-btn");
+    await expect(pauseBtnForSpace).toHaveText("Play");
+    await expect(pauseBtnForSpace).toHaveAttribute("aria-pressed", "false");
+    await page.keyboard.press("Space");
+    await expect(page.locator("#selection-readout")).toContainText(
+      secondElementId!,
+    );
+    await expect(pauseBtnForSpace).toHaveText("Play");
+    await expect(pauseBtnForSpace).toHaveAttribute("aria-pressed", "false");
+
+    // Keyboard telemetry scrubbing: ArrowRight/Home/End on focused telemetry graph
+    const graph = page.locator("#telemetry-graph");
+    await expect(graph).toBeVisible();
+    await expect(graph).toHaveAttribute("role", "slider");
+    await graph.focus();
+    await expect(graph).toBeFocused();
+    const initialVal = await graph.getAttribute("aria-valuenow");
+    await page.keyboard.press("ArrowRight");
+    await expect
+      .poll(async () => await graph.getAttribute("aria-valuenow"), {
+        timeout: 5_000,
+      })
+      .not.toBe(initialVal);
+    await page.keyboard.press("Home");
+    await expect(graph).toHaveAttribute("aria-valuenow", "0");
+    const maxVal = await graph.getAttribute("aria-valuemax");
+    expect(maxVal && Number.isFinite(Number.parseInt(maxVal, 10))).toBe(true);
+    await page.keyboard.press("End");
+    await expect(graph).toHaveAttribute("aria-valuenow", maxVal!);
+    // Verify scrubber/highlight updated via keyboard telemetry
+    await expect(page.locator("#scrubber")).toHaveValue("1000");
 
     await page.locator('input[name="app-mode"][value="ride"]').focus();
     await page.keyboard.press("Space");

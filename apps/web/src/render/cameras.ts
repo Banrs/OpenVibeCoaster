@@ -125,16 +125,16 @@ export function getCameraState(
     case "orbit":
     default: {
       const s = samplePosition(data, distance);
-      // Orbit: fixed radius around car, slow rotation based on distance
-      const orbitRadius = 14;
-      const angle = (distance * 0.06) % (Math.PI * 2);
+      // Orbit: wider radius exposes substantially more track and reduces train dominance
+      const orbitRadius = 32;
+      const angle = (distance * 0.03) % (Math.PI * 2);
       const orbitOffset: Vec3 = [
         Math.cos(angle) * orbitRadius,
-        6,
+        14,
         Math.sin(angle) * orbitRadius,
       ] as unknown as Vec3;
       rawPos = add(s.pos, orbitOffset);
-      rawTarget = add(s.pos, scale(s.normal, 0.3));
+      rawTarget = add(s.pos, scale(s.normal, 0.6));
       break;
     }
   }

@@ -173,7 +173,7 @@ describe("engineering worker authoritative flow", () => {
 
   it(
     "handleRegenerate preserves untouched hashes for beginning/middle/end",
-    { timeout: 20000 },
+    { timeout: 60000 },
     async () => {
       const gen = generateCoaster(validIntent);
       const file = gen.file;

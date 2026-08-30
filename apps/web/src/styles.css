@@ -180,8 +180,8 @@ select {
 
 .mode-option input {
   appearance: none;
-  width: 0;
-  height: 0;
+  width: 14px;
+  height: 14px;
   margin: 0;
   position: absolute;
   opacity: 0;
@@ -408,6 +408,32 @@ select {
   min-height: 42px;
 }
 
+.data-list li {
+  border-bottom: 1px solid var(--border);
+}
+
+.data-list li:last-child {
+  border-bottom: none;
+}
+
+.element-select-btn {
+  appearance: none;
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.element-select-btn:hover {
+  background: var(--panel-2);
+}
+
 .data-list:empty::before {
   content: "—";
   display: block;
@@ -630,6 +656,14 @@ select {
   max-width: 320px;
 }
 
+.viewport-overlay[hidden] {
+  display: none !important;
+}
+
+#elements-empty-hint[hidden] {
+  display: none !important;
+}
+
 .viewport-overlay .overlay-status {
   font-weight: 700;
   font-size: 11px;
@@ -776,8 +810,8 @@ select {
 
 .cam-option input {
   appearance: none;
-  width: 0;
-  height: 0;
+  width: 14px;
+  height: 14px;
   position: absolute;
   opacity: 0;
 }
@@ -922,8 +956,7 @@ body.no-webgl #viewport-canvas {
 
 /* Ride mode */
 body.mode-ride #generation-rail,
-body.mode-ride #element-inspector,
-body.mode-ride .telemetry {
+body.mode-ride #element-inspector {
   display: none !important;
 }
 
@@ -957,7 +990,10 @@ body.reduced-motion * {
 .field input:focus-visible,
 .field select:focus-visible,
 #seed-input:focus-visible,
+#scrubber:focus-visible,
 #webgl-retry:focus-visible,
+.element-select-btn:focus-visible,
+#telemetry-graph:focus-visible,
 .mode-option:has(input:focus-visible),
 .cam-option:has(input:focus-visible) {
   outline: 2px solid var(--focus);
@@ -1080,10 +1116,6 @@ body.reduced-motion * {
 
   .telemetry.is-open {
     display: flex;
-  }
-
-  body.mode-ride .telemetry {
-    display: none !important;
   }
 
   .grid-2,

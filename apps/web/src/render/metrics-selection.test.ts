@@ -341,6 +341,57 @@ describe("selection – seam inspection", () => {
     expect(seamFoundDisabled).toBe(false);
   });
 
+  it("seam with explicit indices is authoritative and disabled shows none", () => {
+    const data = makeTrack();
+    const canonical = Array.from(data.elementBoundaries);
+    const explicit = [canonical[0]!, canonical[2]!].filter(
+      (v) => v !== undefined,
+    );
+    const withExplicit = buildTrackGeometries(data, {
+      metric: "height",
+      seamInspectionEnabled: true,
+      seamIndices: explicit,
+    });
+    const withAll = buildTrackGeometries(data, {
+      metric: "height",
+      seamInspectionEnabled: true,
+    });
+    const withDisabled = buildTrackGeometries(data, {
+      metric: "height",
+      seamInspectionEnabled: false,
+      seamIndices: explicit,
+    });
+    const colExplicit = withExplicit.leftRail.getAttribute(
+      "color",
+    ) as THREE.BufferAttribute;
+    const colAll = withAll.leftRail.getAttribute(
+      "color",
+    ) as THREE.BufferAttribute;
+    const colDisabled = withDisabled.leftRail.getAttribute(
+      "color",
+    ) as THREE.BufferAttribute;
+    const countSeams = (col: THREE.BufferAttribute): number => {
+      let c = 0;
+      for (let i = 0; i < col.count; i++) {
+        if (Math.abs(col.getX(i) - 1) < 0.01) c++;
+      }
+      return c;
+    };
+    expect(countSeams(colExplicit)).toBeGreaterThan(0);
+    expect(countSeams(colExplicit)).toBeLessThan(countSeams(colAll));
+    expect(countSeams(colDisabled)).toBe(0);
+    // invalid index not in canonical should be ignored
+    const withInvalid = buildTrackGeometries(data, {
+      metric: "height",
+      seamInspectionEnabled: true,
+      seamIndices: [99999],
+    });
+    const colInvalid = withInvalid.leftRail.getAttribute(
+      "color",
+    ) as THREE.BufferAttribute;
+    expect(countSeams(colInvalid)).toBe(0);
+  });
+
   it("controller selection/seam rebuilds static colors not per frame", () => {
     const canvas = fakeCanvas();
     const handle = createRendererHandle(canvas, {
