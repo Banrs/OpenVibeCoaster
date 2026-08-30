@@ -65,6 +65,17 @@ describe("portable HTML packager", () => {
     ["absolute asset", "file:///outside.css", /local relative/],
     ["browser-root asset", "/assets/app.js", /local relative/],
     ["encoded browser-root asset", "%2Fassets/app.js", /local relative/],
+    [
+      "encoded backslash traversal",
+      "assets%5C..%5C..%5Coutside.css",
+      /outside dist|local relative/,
+    ],
+    ["encoded leading backslash", "%5Cassets/app.js", /local relative/],
+    [
+      "encoded backslash traversal mixed",
+      "assets%5c..%2f..%5c..%5coutside.css",
+      /outside dist|local relative/,
+    ],
   ])("rejects %s references", (_label, reference, error) => {
     const root = createFixture();
     try {

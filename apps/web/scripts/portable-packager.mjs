@@ -49,13 +49,18 @@ function resolveAsset(distDir, reference) {
   } catch {
     throw new Error(`Portable asset reference is not valid: ${reference}`);
   }
-  if (decodedPath.startsWith("/")) {
+  if (decodedPath.startsWith("/") || decodedPath.startsWith("\\")) {
     throw new Error(
       `Portable asset reference must be local relative path: ${reference}`,
     );
   }
-  if (decodedPath.split("/").includes("..")) {
+  if (decodedPath.split(/[\\/]/).includes("..")) {
     throw new Error(`Portable asset reference is outside dist: ${reference}`);
+  }
+  if (decodedPath.includes("\\")) {
+    throw new Error(
+      `Portable asset reference must be local relative path: ${reference}`,
+    );
   }
 
   const distRealPath = realpathSync(distDir);
