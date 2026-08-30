@@ -175,15 +175,17 @@ const doubleReflect = (
   const displacementLength = vec3Dot(displacement, displacement);
   if (displacementLength < 1e-20)
     return rotateMinimal(normal, previousTangent, tangent);
-  const reflectionFactor =
+  const reflectionFactorTangent =
     (2 * vec3Dot(displacement, previousTangent)) / displacementLength;
+  const reflectionFactorNormal =
+    (2 * vec3Dot(displacement, normal)) / displacementLength;
   const reflectedNormal = vec3Sub(
     normal,
-    vec3Scale(displacement, reflectionFactor),
+    vec3Scale(displacement, reflectionFactorNormal),
   );
   const reflectedTangent = vec3Sub(
     previousTangent,
-    vec3Scale(displacement, reflectionFactor),
+    vec3Scale(displacement, reflectionFactorTangent),
   );
   const tangentDelta = vec3Sub(tangent, reflectedTangent);
   const tangentDeltaLength = vec3Dot(tangentDelta, tangentDelta);
