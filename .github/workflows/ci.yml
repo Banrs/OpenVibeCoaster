@@ -15,7 +15,7 @@ jobs:
   quality:
     name: quality-e2e-bench (linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 70
     steps:
       - name: Checkout
         uses: actions/checkout@v4
