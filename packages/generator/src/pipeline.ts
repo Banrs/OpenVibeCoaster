@@ -38,11 +38,22 @@ import {
   certifiedPolynomialBounds,
   certifyPolynomialThreshold,
 } from "./polynomial-bounds";
-import { buildElement, createElement, defaultPose } from "./elements";
+import {
+  buildElement,
+  createAnyElement,
+  createElement,
+  defaultPose,
+} from "./elements";
 import { ELEMENT_KINDS } from "./types";
+import {
+  deriveGateStartPose,
+  isRequirementStyleDirectedIntent,
+  selectSwitchbackScaffold,
+} from "./directed-scaffold";
 import * as solver from "./solver";
 import type {
   AnySemanticElement,
+  ElementKind,
   GenerationOptions,
   GenerationResult,
   StoredGenerationOptions,
@@ -171,24 +182,84 @@ const deepFreeze = <T>(value: T, seen = new Set<object>()): T => {
   return Object.freeze(value);
 };
 
+const buildEffectiveDirectedElements = (
+  intent: DesignIntentV1,
+): AnySemanticElement[] => {
+  if (!isRequirementStyleDirectedIntent(intent)) {
+    return intent.elements.map((element) => {
+      const kind = (element.kind ?? element.type) as string;
+      if (!ELEMENT_KINDS.includes(kind as ElementKind)) {
+        throw new CoasterFileError(
+          `elements.${element.id}: unknown semantic element kind ${kind}`,
+        );
+      }
+      const kindTyped = kind as ElementKind;
+      const params = element.parameters as Record<string, unknown>;
+      return createAnyElement(kindTyped, element.id, params);
+    });
+  }
+  const targetLength = intent.targets.find(
+    (target) => target.kind === "total-length",
+  )?.target as number | undefined;
+  const gate = intent.gates[0];
+  const sharedBudget = new CertifiedWorkBudget(1_000_000);
+  const scaffold =
+    selectSwitchbackScaffold(
+      intent.footprint,
+      targetLength,
+      gate,
+      sharedBudget,
+    ) ?? [];
+  const result: AnySemanticElement[] = [...scaffold];
+  const replaced = new Set<number>();
+  for (const requested of intent.elements) {
+    const kind = (requested.kind ?? requested.type) as string;
+    if (!ELEMENT_KINDS.includes(kind as ElementKind)) {
+      throw new CoasterFileError(
+        `elements.${requested.id}: unknown semantic element kind ${kind}`,
+      );
+    }
+    let found = -1;
+    for (let index = 0; index < result.length; index += 1) {
+      if (!replaced.has(index) && result[index]!.kind === kind) {
+        found = index;
+        break;
+      }
+    }
+    const requestedParams = requested.parameters as
+      Record<string, unknown> | undefined;
+    const baseParams =
+      found !== -1
+        ? (result[found]!.parameters as Record<string, unknown>)
+        : {};
+    const merged =
+      requestedParams === undefined
+        ? { ...baseParams }
+        : { ...baseParams, ...requestedParams };
+    const kindTyped = kind as ElementKind;
+    if (found !== -1) {
+      const created = createAnyElement(kindTyped, requested.id, merged);
+      result[found] = created;
+      replaced.add(found);
+    } else {
+      const created = createAnyElement(
+        kindTyped,
+        requested.id,
+        requestedParams ?? {},
+      );
+      result.push(created);
+    }
+  }
+  return result;
+};
+
 const asElements = (
   intent: DesignIntentV1,
   candidate: number,
 ): AnySemanticElement[] => {
   if (intent.mode !== "directed")
     return defaultElements(intent.seed, candidate);
-  return intent.elements.map((element) => {
-    const kind = (element.kind ?? element.type) as string;
-    if (!ELEMENT_KINDS.includes(kind as (typeof ELEMENT_KINDS)[number]))
-      throw new CoasterFileError(
-        `elements.${element.id}: unknown semantic element kind ${kind}`,
-      );
-    return createElement(
-      kind as (typeof ELEMENT_KINDS)[number],
-      element.id,
-      element.parameters ?? {},
-    ) as AnySemanticElement;
-  });
+  return buildEffectiveDirectedElements(intent);
 };
 
 const childBoundaries = (span: SolvedSpan): readonly number[] => {
@@ -903,6 +974,20 @@ const validateGenerationConstraints = (
       diagnostics.push(uncertified("BOUNDS", [span.id], error));
       continue;
     }
+    let certifiedBounds:
+      ReturnType<typeof certifiedPolynomialBounds> | undefined;
+    try {
+      certifiedBounds = certifiedPolynomialBounds(
+        geometry.coefficients,
+        0,
+        1,
+        boundBudget,
+      );
+    } catch (error) {
+      diagnostics.push(uncertified("BOUNDS", [span.id], error));
+      station += arcLength(geometry);
+      continue;
+    }
     const check = (
       code: "FOOTPRINT" | "HEIGHT_RANGE",
       axis: 0 | 1 | 2,
@@ -927,38 +1012,51 @@ const validateGenerationConstraints = (
         diagnostics.push(uncertified(code, [span.id], error));
       }
     };
-    if (footprint)
+    if (footprint) {
       for (const axis of [0, 1, 2] as const) {
-        check(
-          "FOOTPRINT",
-          axis,
-          footprint.min[axis]!,
-          "minimum",
-          `Footprint minimum exceeded by ${span.id}`,
-        );
-        check(
-          "FOOTPRINT",
-          axis,
-          footprint.max[axis]!,
-          "maximum",
-          `Footprint maximum exceeded by ${span.id}`,
-        );
+        const minLimit = footprint.min[axis]!;
+        const maxLimit = footprint.max[axis]!;
+        const needsMinCheck = certifiedBounds.min[axis]! < minLimit;
+        const needsMaxCheck = certifiedBounds.max[axis]! > maxLimit;
+        if (needsMinCheck)
+          check(
+            "FOOTPRINT",
+            axis,
+            minLimit,
+            "minimum",
+            `Footprint minimum exceeded by ${span.id}`,
+          );
+        if (needsMaxCheck)
+          check(
+            "FOOTPRINT",
+            axis,
+            maxLimit,
+            "maximum",
+            `Footprint maximum exceeded by ${span.id}`,
+          );
       }
+    }
     if (intent.heightRange) {
-      check(
-        "HEIGHT_RANGE",
-        1,
-        intent.heightRange.min,
-        "minimum",
-        `Height range minimum exceeded by ${span.id}`,
-      );
-      check(
-        "HEIGHT_RANGE",
-        1,
-        intent.heightRange.max,
-        "maximum",
-        `Height range maximum exceeded by ${span.id}`,
-      );
+      const minLimit = intent.heightRange.min;
+      const maxLimit = intent.heightRange.max;
+      const needsMin = certifiedBounds.min[1]! < minLimit;
+      const needsMax = certifiedBounds.max[1]! > maxLimit;
+      if (needsMin)
+        check(
+          "HEIGHT_RANGE",
+          1,
+          minLimit,
+          "minimum",
+          `Height range minimum exceeded by ${span.id}`,
+        );
+      if (needsMax)
+        check(
+          "HEIGHT_RANGE",
+          1,
+          maxLimit,
+          "maximum",
+          `Height range maximum exceeded by ${span.id}`,
+        );
     }
     station += arcLength(geometry);
   }
@@ -1206,8 +1304,12 @@ const evaluateCandidate = (
               } as AnySemanticElement)
             : element,
         );
+  const gateStartPose = isRequirementStyleDirectedIntent(intent)
+    ? deriveGateStartPose(intent)
+    : undefined;
   const rawSolved = solver.solveSemanticChain(solveElements, {
     ...(targets && targets.length > 0 ? { targets } : {}),
+    ...(gateStartPose ? { startPose: gateStartPose } : {}),
     referenceSpeed: 44,
     maxIterations:
       intent.mode === "directed"
@@ -1380,7 +1482,7 @@ const buildFileResult = (
     const owner = ownerForSpan(span.id, elementById);
     const element = owner === undefined ? undefined : elementById.get(owner);
     if (!element) throw new Error(`Missing semantic owner for span ${span.id}`);
-    const parameters = element.parameters as unknown as Record<string, unknown>;
+    const parameters = element.parameters as Record<string, unknown>;
     const lengthKey = spanBytes(span);
     let curvedLength = operationCache.spanLengthCache.get(lengthKey);
     if (curvedLength === undefined) {
@@ -1395,10 +1497,10 @@ const buildFileResult = (
   });
   const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
   const canonicalTrack = compileTrack(canonicalSpans, { samples: 32 });
+  const isRequirementIntent = isRequirementStyleDirectedIntent(intent);
   const effectiveIntent: DesignIntentV1 =
-    intent.mode === "directed"
-      ? intent
-      : {
+    isRequirementIntent || intent.mode !== "directed"
+      ? {
           ...intent,
           elements: evaluation.elements.map((element) => ({
             id: element.id,
@@ -1406,7 +1508,8 @@ const buildFileResult = (
             type: element.type,
             parameters: element.parameters,
           })),
-        };
+        }
+      : intent;
   const ownedIntent = canonicalIntentCopy(effectiveIntent);
   const resultElements = ownedElements(evaluation.elements);
   const file = createCoasterFileV1({
@@ -2093,7 +2196,7 @@ export const regenerateLocal = (
     ...patchIds,
     ...parameterChangedOwnerIds,
   ]);
-  const changedIntent = {
+  const changedIntent: DesignIntentV1 = {
     ...baseIntent,
     elements: changedElements.map((element) => ({
       id: element.id,
@@ -2101,7 +2204,7 @@ export const regenerateLocal = (
       type: element.type,
       parameters: element.parameters,
     })),
-  } as unknown as DesignIntentV1;
+  };
   for (const id of pinned)
     if (parameterChangedOwnerIds.has(id)) {
       const item = hardDiagnostic(

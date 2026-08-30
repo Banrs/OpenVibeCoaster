@@ -2,6 +2,7 @@ import {
   SeventhOrderHermiteSpan,
   QuinticScalarSpan,
   aabbFromPoints,
+  quatRotateVector,
   vec3,
   vec3Add,
   vec3Cross,
@@ -752,5 +753,96 @@ export const buildElement = (
         bounds: aabbFromPoints(points),
       },
     ],
+  };
+};
+
+export const createAnyElement = (
+  kind: ElementKind,
+  id: string,
+  params: Record<string, unknown>,
+): AnySemanticElement => {
+  switch (kind) {
+    case "station":
+      return createElement(
+        "station",
+        id,
+        params as Partial<ElementParameters<"station">>,
+      );
+    case "launch":
+      return createElement(
+        "launch",
+        id,
+        params as Partial<ElementParameters<"launch">>,
+      );
+    case "boost":
+      return createElement(
+        "boost",
+        id,
+        params as Partial<ElementParameters<"boost">>,
+      );
+    case "brake":
+      return createElement(
+        "brake",
+        id,
+        params as Partial<ElementParameters<"brake">>,
+      );
+    case "topHat":
+      return createElement(
+        "topHat",
+        id,
+        params as Partial<ElementParameters<"topHat">>,
+      );
+    case "stall":
+      return createElement(
+        "stall",
+        id,
+        params as Partial<ElementParameters<"stall">>,
+      );
+    case "overbankedTurn":
+      return createElement(
+        "overbankedTurn",
+        id,
+        params as Partial<ElementParameters<"overbankedTurn">>,
+      );
+    case "transition":
+      return createElement(
+        "transition",
+        id,
+        params as Partial<ElementParameters<"transition">>,
+      );
+    case "airtimeHill":
+      return createElement(
+        "airtimeHill",
+        id,
+        params as Partial<ElementParameters<"airtimeHill">>,
+      );
+    case "zeroGRoll":
+      return createElement(
+        "zeroGRoll",
+        id,
+        params as Partial<ElementParameters<"zeroGRoll">>,
+      );
+    default:
+      throw new Error(`Unknown element kind ${kind}`);
+  }
+};
+
+export const poseFromGate = (gate: {
+  readonly position: Vec3;
+  readonly orientation?: readonly [number, number, number, number];
+}): Pose => {
+  if (gate.orientation === undefined) {
+    return {
+      position: vec3(gate.position[0]!, gate.position[1]!, gate.position[2]!),
+      tangent: vec3(0, 0, 1),
+      normal: vec3(0, 1, 0),
+      bank: 0,
+    };
+  }
+  return {
+    position: vec3(gate.position[0]!, gate.position[1]!, gate.position[2]!),
+    tangent: vec3Normalize(quatRotateVector(gate.orientation, vec3(0, 0, 1))),
+    normal: vec3Normalize(quatRotateVector(gate.orientation, vec3(0, 1, 0))),
+    bank: 0,
   };
 };

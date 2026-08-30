@@ -777,10 +777,13 @@ export const validateClearance = (
       throw new CertificationError("Segment count overflows");
     const certifiedSpans = spans.map((span) => canonicalSpan(span, budget));
     for (const span of certifiedSpans) validateSpanNumerics(span, budget);
+    let cachedEnvBounds:
+      ReturnType<NonNullable<EnvironmentQuery["bounds"]>> | undefined;
     if (environment?.bounds) {
       const bounds = environment.bounds();
       for (const value of [...bounds.min, ...bounds.max])
         chargeFinite(budget, value, "Environment bound");
+      cachedEnvBounds = bounds;
     }
     const limit = finite(radius * 2 + requestedClearance, "Clearance limit");
     const closed = options.closed ?? false;
@@ -1026,6 +1029,26 @@ export const validateClearance = (
     if (environment) {
       for (const segment of segments) {
         if (stopped) break;
+        // Certified terrain broad-phase: EnvironmentQuery.bounds() is the authoritative
+        // enclosure of all reported solid geometry; a dishonest custom query violates
+        // the interface contract. If the entire swept envelope is provably above the
+        // environment's maximum Y (outward-safe), skip recursive terrain certification.
+        if (cachedEnvBounds !== undefined) {
+          const segmentMinY = segment.centerBounds.min[1]!;
+          // Outward-safe: lower bound of segmentMinY - radius
+          const minYMinusRadius = outwardDifference(
+            segmentMinY,
+            radius,
+            budget,
+          );
+          const envMaxYUp = finite(
+            nextUp(cachedEnvBounds.max[1]!),
+            "Environment maxY upper",
+          );
+          if (minYMinusRadius > envMaxYUp) {
+            continue;
+          }
+        }
         try {
           certifyTerrain(segment);
         } catch (error) {
