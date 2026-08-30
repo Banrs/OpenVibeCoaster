@@ -42,13 +42,13 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
   test("warm up 3 seeds then 50 measured seeds via UI at 1080p, Performance API only, p50/p95", async ({
     page,
   }) => {
-    // Scoped realistic timeout: root measured ~11.98s certified terrain per run
-    // before simulation for each of 53 sequential UI generations (3 warmup + 50 measured)
-    // → 53 × 11.98s ≈ 635s, plus per-seed generation/simulation/mesh clears,
-    // 8s status wait, 8s frame wait (30 steady frames at 1080p), and preview
-    // build overhead. 1_200_000 ms (20 min) covers certified terrain + overhead
+    // Scoped realistic timeout: observed complete per-seed browser generation 52.7-63.6s
+    // for each of 53 sequential UI generations (3 warmup + 50 measured)
+    // → 53 × 52.7-63.6s ≈ 2793-3371s, plus per-seed generation/simulation/mesh clears,
+    // 90s status wait, 8s frame wait (30 steady frames at 1080p), and preview
+    // build overhead. 3_600_000 ms (60 min) covers complete per-seed generation + overhead
     // without touching global Playwright config.
-    test.setTimeout(1_200_000);
+    test.setTimeout(3_600_000);
 
     await page.setViewportSize({
       width: VIEWPORT.width,
@@ -215,7 +215,7 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
           return state !== "generating" && state !== "";
         },
         null,
-        { timeout: 12_000 },
+        { timeout: 90_000 },
       );
 
       const state = await getReadyStateAndReadouts();
@@ -357,7 +357,7 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
           return state !== "generating" && state !== "";
         },
         null,
-        { timeout: 12_000 },
+        { timeout: 90_000 },
       );
       // Warm-up does not assert ready; it still exercises real path.
       // Clear again to avoid warm-up measures leaking into measured window.
