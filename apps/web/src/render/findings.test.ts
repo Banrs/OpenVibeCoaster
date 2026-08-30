@@ -1052,23 +1052,44 @@ describe("findings round5 – pending retry does not overwrite last-known-good m
 });
 
 describe("findings round5 – main downgrade on every failed path", () => {
-  it("main truthfully downgrades ready/generating when no usable track after failure", async () => {
+  it("downgrades ready/generating without usable track to error; pending/error or existing track remain truthful", async () => {
+    const { downgradeIfNoTrack } = await import("../app/downgrade.js");
+    expect(downgradeIfNoTrack("ready", false)).toBe("error");
+    expect(downgradeIfNoTrack("generating", false)).toBe("error");
+    expect(downgradeIfNoTrack("pending", false)).toBe("pending");
+    expect(downgradeIfNoTrack("error", false)).toBe("error");
+    expect(downgradeIfNoTrack("ready", true)).toBe("ready");
+    expect(downgradeIfNoTrack("generating", true)).toBe("generating");
+    expect(downgradeIfNoTrack("pending", true)).toBe("pending");
+    expect(downgradeIfNoTrack("error", true)).toBe("error");
+  });
+});
+
+describe("findings main attach downgrade wiring – ready attach failure cannot leave no-track ready", () => {
+  it("main.ts attachTrack catch invokes truthful downgrade via lifecycle.hasTrack", async () => {
     const fs = await import("node:fs/promises");
     const mainText = await fs.readFile("apps/web/src/main.ts", "utf8");
-    // every failed reinitialize path must downgrade
-    expect(mainText).toMatch(/syncReadyDowngrade|downgradeIfNoTrack/);
-    // attachCompiledTrack must downgrade on catch and on failed reinitialize
-    // count that downgrade appears inside attachCompiledTrack failure branches
-    const attachSection = mainText.slice(
-      mainText.indexOf("function attachCompiledTrack"),
-      mainText.indexOf("function attachCompiledTrack") + 3000,
-    );
-    expect(attachSection).toMatch(/downgrade|syncReadyDowngrade/);
-    // webglRetry must downgrade on failure (both handle failure and supportsWebGL false)
-    expect(mainText).toContain("webglRetry");
-    // no exit may leave ready/generating without track – file must contain guard checking hasTrack before leaving ready
-    expect(mainText).toMatch(/hasTrack\(\)/);
-    expect(mainText).toMatch(/generationStatus.*error|error.*generationStatus/);
+    const attachIdx = mainText.indexOf("lifecycle.attachTrack");
+    expect(attachIdx).toBeGreaterThan(-1);
+    const slice = mainText.slice(attachIdx, attachIdx + 800);
+    // attach failure must be downgraded truthfully; hasWebGL alone leaves empty ready viewport
+    expect(slice).toContain("catch");
+    const hasDowngrade =
+      slice.includes("downgradeIfNoTrack") ||
+      slice.includes("truthfulDowngrade");
+    expect(hasDowngrade).toBe(true);
+    if (
+      slice.includes("truthfulDowngrade") &&
+      !slice.includes("lifecycle.hasTrack()")
+    ) {
+      const downgradeIdx = mainText.indexOf("function truthfulDowngrade");
+      expect(downgradeIdx).toBeGreaterThan(-1);
+      const downgradeSlice = mainText.slice(downgradeIdx, downgradeIdx + 300);
+      expect(downgradeSlice).toContain("lifecycle.hasTrack()");
+      expect(downgradeSlice).toContain("downgradeIfNoTrack");
+    } else {
+      expect(slice).toContain("lifecycle.hasTrack()");
+    }
   });
 });
 

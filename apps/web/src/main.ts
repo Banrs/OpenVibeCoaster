@@ -1,24 +1,69 @@
 import "./styles.css";
 import {
-  clampPlaybackSpeed,
   createInitialState,
   getActionEnabled,
   getCanvasAriaLabel,
-  getNextStatusAfterGenerate,
-  getNextStatusAfterLoad,
   getPanelVisibility,
   getReducedMotionState,
   getStatusText,
   selectCamera,
   selectMetric,
-  selectSeat,
   type AppState,
   type CameraId,
   type MetricId,
 } from "./viewState.js";
 import { RenderMetrics } from "./render/metrics.js";
 import { createAppLifecycle } from "./render/lifecycle.js";
-import type { CompiledTrackData } from "@openvibecoaster/core";
+import type { CompiledTrackData, Diagnostic } from "@openvibecoaster/core";
+import { createDesignIntentV1 } from "@openvibecoaster/core";
+import { EngineeringWorkerClient } from "./engineering/client.js";
+import { createEngineeringWorkerFactory } from "./engineering/factory.js";
+import { hydrateEngineeringSuccess } from "./engineering/hydrate.js";
+import {
+  createExperienceController,
+  type AuthoritativeExperienceResult,
+} from "./experienceController.js";
+import {
+  parseUint32Seed,
+  validateDirectedInput,
+  createDirectedDesignIntent,
+  type DirectedEditorInput,
+} from "./directedInput.js";
+import { buildDirectedInputFromDom } from "./app/directed.js";
+import { deriveMetricData, getMetricSeries } from "./app/metricData.js";
+import { downloadCoasterFile } from "./app/download.js";
+import { resolveZoneMask } from "./app/zone.js";
+import { downgradeIfNoTrack } from "./app/downgrade.js";
+import {
+  getElementCompiledRange,
+  getSemanticSeamIndices,
+} from "./app/elementBounds.js";
+import {
+  preparePinnedRegeneration,
+  restorePinnedFileAfterRegeneration,
+} from "./app/pinnedRegeneration.js";
+import { detectGateContradictions } from "./app/gateContradiction.js";
+import {
+  getSeamInspection,
+  drawTimelineGraph,
+  indexAtGraphPosition,
+} from "./telemetry.js";
+import { getCanvasKeyboardAction } from "./accessibility.js";
+import { getTelemetryNextIndex } from "./app/telemetryKeyboard.js";
+import { isShortcutOwnerElement } from "./app/shortcutTarget.js";
+import {
+  createRidePlayback,
+  type RidePlaybackController,
+  type RidePlaybackSnapshot,
+} from "./ride/controller.js";
+import {
+  getSeatOptionByValue,
+  getSeatValueFromSnapshot,
+  isAllowedRate,
+  type AllowedRate,
+} from "./app/playbackOptions.js";
+import { createRideAudioEngine, type RideAudioEngine } from "./audio/engine.js";
+import type { RideTimeline } from "@openvibecoaster/simulator";
 
 function el<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -33,9 +78,10 @@ const state: AppState = createInitialState();
 // WebGL support is determined transactionally by THREE.WebGLRenderer creation via lifecycle.
 // No preflight canvas.getContext("webgl") to avoid binding WebGL1 before Three.
 let hasWebGL = true;
-const prefersReducedMotion = window.matchMedia(
+const prefersReducedMotionQuery = window.matchMedia(
   "(prefers-reduced-motion: reduce)",
-).matches;
+);
+const prefersReducedMotion = prefersReducedMotionQuery.matches;
 state.reducedMotion = getReducedMotionState(prefersReducedMotion, null);
 
 // Elements
@@ -49,11 +95,13 @@ const overlayStatus = viewportOverlay.querySelector(
 ) as HTMLElement;
 const webglFallback = el<HTMLDivElement>("webgl-fallback");
 const generateBtn = el<HTMLButtonElement>("generate-btn");
+const cancelGenerationBtn = el<HTMLButtonElement>("cancel-generation-btn");
 const saveBtn = el<HTMLButtonElement>("save-btn");
 const loadBtn = el<HTMLButtonElement>("load-btn");
 const loadFile = el<HTMLInputElement>("load-file");
 const exportBtn = el<HTMLButtonElement>("export-btn");
 const muteBtn = el<HTMLButtonElement>("mute-btn");
+const audioUnlockBtn = el<HTMLButtonElement>("audio-unlock-btn");
 const seedInput = el<HTMLInputElement>("seed-input");
 const modeInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="app-mode"]'),
@@ -82,6 +130,12 @@ const telemetryGraphWrap = document.querySelector(
   ".telemetry-graph-wrap",
 ) as HTMLElement;
 const telemetryGraph = el<HTMLCanvasElement>("telemetry-graph");
+telemetryGraph.tabIndex = 0;
+telemetryGraph.setAttribute("role", "slider");
+telemetryGraph.setAttribute("aria-valuemin", "0");
+telemetryGraph.setAttribute("aria-valuemax", "0");
+telemetryGraph.setAttribute("aria-valuenow", "0");
+telemetryGraph.setAttribute("aria-orientation", "horizontal");
 const webglRetry = el<HTMLButtonElement>("webgl-retry");
 
 const generationRail = el<HTMLElement>("generation-rail");
@@ -91,6 +145,139 @@ const mobileTabs = Array.from(
   document.querySelectorAll<HTMLButtonElement>(".mobile-tab"),
 );
 
+// New DOM for directed and readouts
+const generationModeInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="generation-mode"]'),
+);
+const diagnosticsList = el<HTMLUListElement>("diagnostics-list");
+const relaxationsList = el<HTMLUListElement>("relaxations-list");
+const elementList = el<HTMLUListElement>("element-list");
+const elementsEmptyHint = document.getElementById(
+  "elements-empty-hint",
+) as HTMLElement | null;
+const selectionReadout = el<HTMLDivElement>("selection-readout");
+const trackLengthEl = document.querySelector(
+  '[data-testid="track-length"]',
+) as HTMLElement;
+const compiledChecksumEl = document.querySelector(
+  '[data-testid="compiled-checksum"]',
+) as HTMLElement;
+const seamBoundariesEl = document.querySelector(
+  '[data-testid="seam-boundaries"]',
+) as HTMLElement;
+const timelineDurationEl = document.querySelector(
+  '[data-testid="timeline-duration"]',
+) as HTMLElement;
+const telemetrySignatureEl = document.querySelector(
+  '[data-testid="telemetry-signature"]',
+) as HTMLElement;
+const trackHighlightEl = document.querySelector(
+  '[data-testid="track-highlight"]',
+) as HTMLElement;
+const trainPositionEl = document.querySelector(
+  '[data-testid="train-position"]',
+) as HTMLElement;
+const metricLegend = el<HTMLDivElement>("metric-legend");
+
+function isDiagnostic(value: unknown): value is Diagnostic {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("code" in value) || typeof Reflect.get(value, "code") !== "string")
+    return false;
+  if (!("severity" in value)) return false;
+  const severity = Reflect.get(value, "severity");
+  if (
+    severity !== "info" &&
+    severity !== "warning" &&
+    severity !== "error" &&
+    severity !== "fatal"
+  )
+    return false;
+  if (
+    !("message" in value) ||
+    typeof Reflect.get(value, "message") !== "string"
+  )
+    return false;
+  if ("provenance" in value) {
+    const provenance = Reflect.get(value, "provenance");
+    if (
+      provenance !== undefined &&
+      provenance !== "SOURCE_VERIFIED" &&
+      provenance !== "PROJECT_ENGINEERING_LIMIT" &&
+      provenance !== "DESIGN_ASSUMPTION" &&
+      provenance !== "UNKNOWN_UNCONFIGURED"
+    )
+      return false;
+  }
+  return true;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+function normalizeEngineeringError(e: unknown): {
+  message: string;
+  code?: string;
+  diagnostics?: Diagnostic[];
+  relaxations?: string[];
+} {
+  if (typeof e === "object" && e !== null && "message" in e) {
+    const messageValue = Reflect.get(e, "message");
+    const message = typeof messageValue === "string" ? messageValue : String(e);
+    const codeValue = Reflect.get(e, "code");
+    const code = typeof codeValue === "string" ? codeValue : undefined;
+    const diagnosticsValue = Reflect.get(e, "diagnostics");
+    const diagnostics =
+      Array.isArray(diagnosticsValue) && diagnosticsValue.every(isDiagnostic)
+        ? diagnosticsValue.filter(isDiagnostic)
+        : undefined;
+    const relaxationsValue = Reflect.get(e, "relaxations");
+    const relaxations = isStringArray(relaxationsValue)
+      ? relaxationsValue.filter((v) => typeof v === "string")
+      : undefined;
+    return {
+      message,
+      ...(code !== undefined ? { code } : {}),
+      ...(diagnostics !== undefined ? { diagnostics } : {}),
+      ...(relaxations !== undefined ? { relaxations } : {}),
+    };
+  }
+  return { message: String(e) };
+}
+
+function getAuthoritativeResult(): AuthoritativeExperienceResult | null {
+  return controller.getState().result ?? controller.getState().lastGoodResult;
+}
+
+function getSelectedElementId(): string | null {
+  return controller.getState().selectedElementId;
+}
+
+function getSpanHash(
+  spanHashes:
+    | Readonly<Record<string, string>>
+    | readonly { readonly spanId: string; readonly hash: string }[],
+  id: string,
+): string | undefined {
+  if (Array.isArray(spanHashes)) {
+    const found = spanHashes.find((e) => e.spanId === id);
+    return found?.hash;
+  }
+  if (
+    typeof spanHashes === "object" &&
+    spanHashes !== null &&
+    id in spanHashes
+  ) {
+    const val = Reflect.get(spanHashes, id);
+    return typeof val === "string" ? val : undefined;
+  }
+  return undefined;
+}
+
+function getSelectedTimelineIndex(): number | null {
+  return controller.getState().timelineSelection?.index ?? null;
+}
+
 function syncBodyClasses(): void {
   body.classList.toggle("mode-ride", state.appMode === "ride");
   body.classList.toggle("mode-edit", state.appMode === "edit");
@@ -99,11 +286,11 @@ function syncBodyClasses(): void {
   body.dataset.status = state.generationStatus;
 }
 
+let visibleErrorMessage: string | null = null;
+
 function render(): void {
   syncBodyClasses();
-
-  // Status text and aria
-  const text = getStatusText(state.generationStatus);
+  const text = getStatusText(state.generationStatus, visibleErrorMessage);
   statusText.textContent = text;
   topBarStatus.dataset.state = state.generationStatus;
   overlayStatus.textContent =
@@ -114,12 +301,25 @@ function render(): void {
         : state.generationStatus === "ready"
           ? "Ready — viewport idle"
           : "Generation failed";
+  const overlayShouldHide = state.generationStatus === "ready";
+  viewportOverlay.hidden = overlayShouldHide;
+  viewportOverlay.setAttribute(
+    "aria-hidden",
+    overlayShouldHide ? "true" : "false",
+  );
+  if (elementsEmptyHint) {
+    const shouldHideElementsHint = state.generationStatus === "ready";
+    elementsEmptyHint.hidden = shouldHideElementsHint;
+    elementsEmptyHint.setAttribute(
+      "aria-hidden",
+      shouldHideElementsHint ? "true" : "false",
+    );
+  }
   viewportCanvas.setAttribute(
     "aria-label",
     getCanvasAriaLabel(state.generationStatus),
   );
 
-  // Data-dependent enablement
   const canSave = getActionEnabled("save", state.generationStatus);
   const canExport = getActionEnabled("export", state.generationStatus);
   const canScrub = getActionEnabled("scrub", state.generationStatus);
@@ -141,23 +341,20 @@ function render(): void {
   generateBtn.disabled = !canGenerate;
   generateBtn.textContent =
     state.generationStatus === "generating" ? "Generating…" : "Insta Generate";
+  cancelGenerationBtn.disabled = state.generationStatus !== "generating";
 
   for (const input of inspectInputs) {
     input.disabled = !canLocal;
   }
 
-  // When WebGL fallback is visible, camera/metric controls are unavailable – disable and ensure not interceptable
   for (const input of cameraInputs) {
     input.disabled = !hasWebGL;
   }
 
-  // Panel visibility via class — getPanelVisibility used for logic verification
   const vis = getPanelVisibility(state);
   generationRail.hidden = !vis.leftRailVisible;
   inspector.hidden = !vis.rightInspectorVisible;
-  // telemetry visibility handled via CSS mode-ride, but keep aria
-  telemetry.hidden = !vis.telemetryVisible && state.appMode === "ride";
-  // On desktop, keep panels visible via CSS; hidden attribute for a11y when ride
+  telemetry.hidden = !vis.telemetryVisible && state.appMode !== "ride";
   if (state.appMode === "ride") {
     generationRail.setAttribute("aria-hidden", "true");
     inspector.setAttribute("aria-hidden", "true");
@@ -166,14 +363,12 @@ function render(): void {
     inspector.removeAttribute("aria-hidden");
   }
 
-  // Playback state
   pauseBtn.setAttribute("aria-pressed", String(!state.isPaused));
   pauseBtn.textContent = state.isPaused ? "Play" : "Pause";
   muteBtn.setAttribute("aria-pressed", String(state.isMuted));
   muteBtn.textContent = state.isMuted ? "Unmute" : "Mute";
   pinBtn.setAttribute("aria-pressed", String(pinBtn.dataset.pinned === "true"));
 
-  // Sync controls to state
   for (const input of modeInputs) {
     input.checked = input.value === state.appMode;
   }
@@ -185,7 +380,6 @@ function render(): void {
   playbackSelect.value = String(state.playbackSpeed);
   scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
 
-  // Telemetry graph placeholder
   const hasData = state.generationStatus === "ready";
   telemetryGraphWrap.classList.toggle("has-data", hasData);
   telemetryEmpty.hidden = hasData;
@@ -196,7 +390,6 @@ function render(): void {
       : "Telemetry graph — no data, generate to populate",
   );
 
-  // WebGL fallback
   if (!hasWebGL) {
     webglFallback.hidden = false;
     viewportCanvas.hidden = true;
@@ -205,305 +398,19 @@ function render(): void {
     viewportCanvas.hidden = false;
   }
 
-  // Seed
   if (document.activeElement !== seedInput) {
     seedInput.value = state.seed;
   }
 }
 
-function handleGenerate(): void {
-  if (!getActionEnabled("generate", state.generationStatus)) {
-    return;
-  }
-  state.generationStatus = "generating";
-  render();
-  // Worker not yet integrated — never claim ready without canonical data.
-  // Resolve to error so data-dependent actions stay disabled and status remains truthful.
-  window.setTimeout(() => {
-    state.generationStatus = getNextStatusAfterGenerate(state.generationStatus);
-    render();
-  }, 900);
-}
-
-function handleSave(): void {
-  if (!getActionEnabled("save", state.generationStatus)) {
-    return;
-  }
-  const payload = JSON.stringify(
-    {
-      seed: state.seed,
-      status: state.generationStatus,
-      camera: state.camera,
-      metric: state.metric,
-      seatIndex: state.seatIndex,
-      playbackSpeed: state.playbackSpeed,
-    },
-    null,
-    2,
-  );
-  const blob = new Blob([payload], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `vibecoaster-${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function handleLoadFile(file: File | undefined): void {
-  if (!file) {
-    return;
-  }
-  const reader = new FileReader();
-  reader.addEventListener("load", () => {
-    try {
-      const parsed: unknown = JSON.parse(String(reader.result));
-      // Wave 1 has no real CoasterFileV1 parser; distinguish well-formed JSON from malformed,
-      // but never transition to ready. Keep data-dependent actions disabled.
-      // We intentionally do not apply seed/camera from unvalidated payload.
-      void parsed;
-      state.generationStatus = getNextStatusAfterLoad(
-        parsed,
-        state.generationStatus,
-      );
-      render();
-    } catch {
-      state.generationStatus = "error";
-      render();
-    }
-  });
-  reader.readAsText(file);
-}
-
-// Event wiring
-generateBtn.addEventListener("click", handleGenerate);
-saveBtn.addEventListener("click", handleSave);
-exportBtn.addEventListener("click", handleSave);
-loadBtn.addEventListener("click", () => {
-  loadFile.click();
-});
-loadFile.addEventListener("change", () => {
-  handleLoadFile(loadFile.files?.[0]);
-  loadFile.value = "";
-});
-muteBtn.addEventListener("click", () => {
-  state.isMuted = !state.isMuted;
-  render();
-});
-seedInput.addEventListener("input", () => {
-  state.seed = seedInput.value.slice(0, 64);
-});
-seedInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    handleGenerate();
-  }
-});
-
-for (const input of modeInputs) {
-  input.addEventListener("change", () => {
-    if (input.checked) {
-      state.appMode = input.value as AppState["appMode"];
-      render();
-    }
-  });
-}
-
-for (const input of cameraInputs) {
-  input.addEventListener("change", () => {
-    if (input.checked) {
-      try {
-        state.camera = selectCamera(input.value as CameraId, state.camera);
-        lifecycle.getController()?.applyCamera(state.camera, {
-          reducedMotion: state.reducedMotion,
-          deltaMs: 16,
-        });
-      } catch (error) {
-        handleVisibleUnexpectedError(error);
-        return;
-      }
-      render();
-    }
-  });
-}
-
-metricSelect.addEventListener("change", () => {
-  state.metric = selectMetric(metricSelect.value as MetricId, state.metric);
-  lifecycle.setMetric(state.metric);
-  render();
-});
-
-seatSelect.addEventListener("change", () => {
-  const next = Number.parseInt(seatSelect.value, 10);
-  state.seatIndex = selectSeat(next, state.seatCount, state.seatIndex);
-  render();
-});
-
-playbackSelect.addEventListener("change", () => {
-  const next = Number.parseFloat(playbackSelect.value);
-  state.playbackSpeed = clampPlaybackSpeed(next);
-  render();
-});
-
-scrubber.addEventListener("input", () => {
-  scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
-  if (lifecycle.hasTrack()) {
-    const t =
-      Number.parseInt(scrubber.value, 10) / Number.parseInt(scrubber.max, 10);
-    const data = lifecycle.getController()?.getTrackData() ?? null;
-    if (data) {
-      const dist = t * data.totalLength;
-      lifecycle.updatePlayback(dist, 0);
-    }
-  }
-});
-
-pauseBtn.addEventListener("click", () => {
-  if (!getActionEnabled("playback", state.generationStatus)) {
-    return;
-  }
-  state.isPaused = !state.isPaused;
-  render();
-});
-
-resetBtn.addEventListener("click", () => {
-  if (!getActionEnabled("playback", state.generationStatus)) {
-    return;
-  }
-  scrubber.value = "0";
-  state.isPaused = true;
-  render();
-});
-
-seamInspectBtn.addEventListener("click", () => {
-  if (!getActionEnabled("seamInspect", state.generationStatus)) {
-    return;
-  }
-  seamInspectBtn.setAttribute("aria-pressed", "true");
-  window.setTimeout(() => {
-    seamInspectBtn.setAttribute("aria-pressed", "false");
-  }, 1200);
-});
-
-localRegenerateBtn.addEventListener("click", () => {
-  if (!getActionEnabled("localRegenerate", state.generationStatus)) {
-    return;
-  }
-  state.generationStatus = "generating";
-  render();
-  window.setTimeout(() => {
-    state.generationStatus = getNextStatusAfterGenerate(state.generationStatus);
-    render();
-  }, 700);
-});
-
-pinBtn.addEventListener("click", () => {
-  const pinned = pinBtn.dataset.pinned === "true";
-  pinBtn.dataset.pinned = String(!pinned);
-  pinBtn.setAttribute("aria-pressed", String(!pinned));
-  pinBtn.textContent = pinned ? "Pin" : "Pinned";
-  inspector.classList.toggle("is-pinned", !pinned);
-});
-
-// Mobile drawers
-for (const tab of mobileTabs) {
-  tab.addEventListener("click", () => {
-    const target = tab.dataset.drawer;
-    const isOpen = tab.getAttribute("aria-expanded") === "true";
-    // close all
-    for (const other of mobileTabs) {
-      other.setAttribute("aria-expanded", "false");
-    }
-    generationRail.classList.remove("is-open");
-    inspector.classList.remove("is-open");
-    telemetry.classList.remove("is-open");
-
-    if (!isOpen) {
-      tab.setAttribute("aria-expanded", "true");
-      if (target === "left") {
-        generationRail.classList.add("is-open");
-      } else if (target === "right") {
-        inspector.classList.add("is-open");
-      } else if (target === "telemetry") {
-        telemetry.classList.add("is-open");
-      }
-    }
-  });
-}
-
-// Keyboard shortcuts: M for mute, Space for pause when not typing
-document.addEventListener("keydown", (event) => {
-  const target = event.target as HTMLElement | null;
-  const isTyping =
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLSelectElement ||
-    target instanceof HTMLTextAreaElement;
-  if (isTyping) {
-    return;
-  }
-  if (event.key === "m" || event.key === "M") {
-    state.isMuted = !state.isMuted;
-    render();
-  } else if (event.key === " ") {
-    event.preventDefault();
-    if (getActionEnabled("playback", state.generationStatus)) {
-      state.isPaused = !state.isPaused;
-      render();
-    }
-  } else if (event.key === "r" || event.key === "R") {
-    const nextMode: AppState["appMode"] =
-      state.appMode === "ride" ? "edit" : "ride";
-    state.appMode = nextMode;
-    render();
-  }
-});
-
-// Resize canvas to device pixels without drawing fake coaster
-// Telemetry 2D path touches only telemetry canvas — never viewportCanvas (WebGL)
-function resizeCanvases(): void {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const rect = telemetryGraph.getBoundingClientRect();
-  const w = Math.max(1, Math.round(rect.width * dpr));
-  const h = Math.max(1, Math.round(rect.height * dpr));
-  if (telemetryGraph.width !== w || telemetryGraph.height !== h) {
-    telemetryGraph.width = w;
-    telemetryGraph.height = h;
-  }
-  const ctx = telemetryGraph.getContext("2d");
-  if (ctx) {
-    ctx.clearRect(0, 0, w, h);
-    // Keep telemetry graph empty — no fake data; subtle grid only when ready
-    if (state.generationStatus === "ready") {
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.lineWidth = 1;
-      for (let i = 1; i < 4; i += 1) {
-        const y = (h / 4) * i;
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
-        ctx.stroke();
-      }
-    }
-  }
-}
-
-// Change reduced motion live if system preference changes
-window
-  .matchMedia("(prefers-reduced-motion: reduce)")
-  .addEventListener("change", (event) => {
-    // Only follow system if user hasn't toggled manually via future control;
-    // for now, follow system directly.
-    state.reducedMotion = getReducedMotionState(event.matches, null);
-    render();
-  });
-
-// Three renderer lifecycle – terrain/grid only before generation (no fixture coaster)
-// Single RAF and single resize owner via production lifecycle manager
-let metrics = new RenderMetrics();
+// Lifecycle setup
+const metrics = new RenderMetrics();
 let lastSetupError: unknown = null;
 let lastRuntimeError: unknown = null;
 function handleVisibleUnexpectedError(error: unknown): void {
   lastSetupError = error;
   lastRuntimeError = error;
+  visibleErrorMessage = error instanceof Error ? error.message : String(error);
   hasWebGL = true;
   state.generationStatus = "error";
   render();
@@ -527,22 +434,39 @@ const lifecycle = createAppLifecycle({
   onRuntimeError: (e) => {
     handleVisibleUnexpectedError(e);
   },
+  onFrame: (deltaSeconds: number) => {
+    if (ridePlayback) {
+      try {
+        ridePlayback.tick(deltaSeconds);
+      } catch {}
+    }
+    if (ridePlayback) {
+      const snap = ridePlayback.getSnapshot();
+      const track = lifecycle.getController()?.getTrackData() ?? null;
+      const zoneMask = track ? resolveZoneMask(track, snap.headDistanceM) : 0;
+      if (audioEngine) {
+        try {
+          audioEngine.update({
+            speedMps: snap.speedMps,
+            zoneMask,
+            paused: !snap.isPlaying,
+          });
+        } catch {}
+      }
+      lifecycle.updatePlayback(snap.headDistanceM, snap.speedMps);
+    }
+  },
 });
 
 function truthfulDowngrade(): void {
-  if (
-    !lifecycle.hasTrack() &&
-    (state.generationStatus === "ready" ||
-      state.generationStatus === "generating")
-  ) {
-    state.generationStatus = "error";
-  }
+  state.generationStatus = downgradeIfNoTrack(
+    state.generationStatus,
+    lifecycle.hasTrack(),
+  );
 }
-
 function syncReadyDowngrade(ok: boolean): void {
   if (!ok) truthfulDowngrade();
 }
-
 function initRenderer(): void {
   lastSetupError = null;
   lastRuntimeError = null;
@@ -550,9 +474,6 @@ function initRenderer(): void {
   if (ok) {
     hasWebGL = true;
   } else {
-    // if setup/runtime error occurred, hasWebGL stays true (WebGL available) but status is error
-    // if WebGL failure occurred, callback already set hasWebGL false
-    // fallback: if no callback fired and not ok, treat as WebGL unavailable
     if (lastSetupError === null && lastRuntimeError === null) {
       hasWebGL = false;
     }
@@ -560,11 +481,8 @@ function initRenderer(): void {
   syncReadyDowngrade(ok);
   render();
 }
-
 initRenderer();
-
 webglRetry.addEventListener("click", () => {
-  // No supportsWebGL preflight – let transactional reinitialize determine support and report once
   lastSetupError = null;
   lastRuntimeError = null;
   const ok = lifecycle.reinitialize();
@@ -584,55 +502,1434 @@ webglRetry.addEventListener("click", () => {
   }
 });
 
-// Internal integration for Wave 3 – never fabricate a generated result (private, not window-exposed)
-function attachCompiledTrack(
-  data: CompiledTrackData,
-  options: {
-    metric?: import("./render/trackGeometry.js").MetricId;
-    metricData?: import("./render/controller.js").MetricData;
-    timeline?: { distances: Float64Array; speeds: Float64Array };
-  } = {},
-): void {
-  if (!lifecycle.getController() || !lifecycle.getRendererHandle()) {
-    const ok = lifecycle.reinitialize();
-    if (!ok) {
-      syncReadyDowngrade(ok);
-      render();
-      return;
+function resizeCanvases(): void {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const rect = telemetryGraph.getBoundingClientRect();
+  const w = Math.max(1, Math.round(rect.width * dpr));
+  const h = Math.max(1, Math.round(rect.height * dpr));
+  if (telemetryGraph.width !== w || telemetryGraph.height !== h) {
+    telemetryGraph.width = w;
+    telemetryGraph.height = h;
+  }
+  // telemetry drawing is handled via subscription; just clear if not ready
+  if (state.generationStatus !== "ready") {
+    const ctx = telemetryGraph.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, w, h);
     }
   }
-  try {
-    lifecycle.attachTrack(data, {
-      metric: options.metric ?? state.metric,
-      metricData: options.metricData,
-      timeline: options.timeline,
+}
+
+// Worker and controller wiring — exactly one each
+const engineeringClient = new EngineeringWorkerClient(
+  createEngineeringWorkerFactory(),
+);
+
+let activeWorkerRequestId: string | null = null;
+let generationStartMark: number | null = null;
+let pendingObjectUrls: string[] = [];
+let pendingRevokeTimers: number[] = [];
+const abortController = new AbortController();
+const abortSignal = abortController.signal;
+let ridePlayback: RidePlaybackController | null = null;
+let unsubscribeRidePlayback: (() => void) | null = null;
+let audioEngine: RideAudioEngine | null = null;
+let lastFailureDiagnostics: readonly Diagnostic[] = [];
+let lastFailureRelaxations: readonly string[] = [];
+
+function workerRequestIdFromNumeric(numeric: number): string {
+  return `req-${numeric.toString(16).padStart(8, "0")}`;
+}
+
+function getGenerationMode(): string {
+  const checked = generationModeInputs.find((i) => i.checked);
+  return checked?.value ?? "insta";
+}
+
+function buildInstaIntent(
+  seed: number,
+  mode: "insta" | "full-auto",
+): ReturnType<typeof createDesignIntentV1> {
+  return createDesignIntentV1({
+    generatorVersion: "generator-v1",
+    seed,
+    mode,
+    family: "steel-sitdown-lsm-v1",
+    elements: [],
+    gates: [],
+    targets: [],
+    constraints: [],
+    terrainProfileId: "rolling-highlands-v1",
+    pinnedElementIds: [],
+  });
+}
+
+function readDirectedControls(): {
+  intent: import("@openvibecoaster/core").DesignIntentV1 | null;
+  errors: readonly import("./directedInput.js").FieldError[];
+  editorInput: DirectedEditorInput | null;
+} {
+  const { editorInput: builtInput, parsedSeed } = buildDirectedInputFromDom(
+    seedInput.value,
+    controller.getState().pinnedElementIds,
+  );
+  const errors = validateDirectedInput(builtInput);
+  if (errors.length > 0) {
+    return { intent: null, errors, editorInput: builtInput };
+  }
+  if (parsedSeed === null) {
+    return {
+      intent: null,
+      errors: [{ field: "seed", message: "expected uint32 integer" }],
+      editorInput: builtInput,
+    };
+  }
+  const { intent, errors: createErrors } =
+    createDirectedDesignIntent(builtInput);
+  return { intent, errors: createErrors, editorInput: builtInput };
+}
+
+function computeTelemetrySignature(
+  track: CompiledTrackData,
+  timeline: RideTimeline,
+): string {
+  // Use checksum, timeline length, duration, and a stable hash of speed samples
+  const checksum = track.checksum.toLowerCase();
+  const len = timeline.length;
+  const duration = timeline.timeSeconds[len - 1] ?? 0;
+  // simple deterministic hash: FNV-ish over speed + distance
+  let hash = 0x811c9dc5;
+  const update = (v: number) => {
+    const s = v.toFixed(6);
+    for (let i = 0; i < s.length; i++) {
+      hash = Math.imul(hash ^ s.charCodeAt(i), 0x01000193);
+    }
+  };
+  for (let i = 0; i < Math.min(len, 64); i++) {
+    update(timeline.speedMps[i] ?? 0);
+    update(timeline.headDistanceM[i] ?? 0);
+  }
+  update(len);
+  update(duration);
+  const hex = (hash >>> 0).toString(16).padStart(8, "0");
+  return `${checksum}-${hex}-${len}-${duration.toFixed(2)}`;
+}
+
+// DOM population helpers
+function renderDiagnostics(diagnostics: readonly Diagnostic[]): void {
+  diagnosticsList.innerHTML = "";
+  for (const d of diagnostics) {
+    const li = document.createElement("li");
+    li.dataset.severity = d.severity;
+    li.dataset.code = d.code;
+    li.dataset.provenance = d.provenance ?? "";
+    if (d.location?.s !== undefined && Number.isFinite(d.location.s)) {
+      li.dataset.locationS = String(d.location.s);
+    }
+    if (d.margin !== undefined && Number.isFinite(d.margin)) {
+      li.dataset.margin = String(d.margin);
+    }
+    if (d.actual !== undefined && Number.isFinite(d.actual)) {
+      li.dataset.actual = String(d.actual);
+    }
+    if (d.limit !== undefined && Number.isFinite(d.limit)) {
+      li.dataset.limit = String(d.limit);
+    }
+    li.textContent = `${d.code}: ${d.message}`;
+    diagnosticsList.appendChild(li);
+  }
+}
+function renderRelaxations(relaxations: readonly string[]): void {
+  relaxationsList.innerHTML = "";
+  for (const r of relaxations) {
+    const li = document.createElement("li");
+    // Ensure label tested/suggested
+    const hasTested = /tested/i.test(r);
+    const hasSuggested = /suggested/i.test(r);
+    if (!hasTested && !hasSuggested) {
+      li.dataset.tested = "true";
+      li.textContent = `tested: ${r}`;
+    } else {
+      li.textContent = r;
+      if (hasTested) li.dataset.tested = "true";
+      if (hasSuggested) li.dataset.suggested = "true";
+    }
+    // Never claim applied
+    relaxationsList.appendChild(li);
+  }
+}
+function activateElementSelection(
+  elementId: string,
+  file: import("@openvibecoaster/core").CoasterFileV1,
+  track: CompiledTrackData,
+): void {
+  controller.selectElement(elementId);
+  const elementIndex = file.intent.elements.findIndex(
+    (e) => e.id === elementId,
+  );
+  if (elementIndex >= 0) {
+    lifecycle.updateSelection({ selectedElementIndex: elementIndex });
+    const params2 = file.intent.elements[elementIndex]!.parameters;
+    const lenVal = params2?.["length"] ?? params2?.["height"] ?? "";
+    const lenEl = document.getElementById(
+      "inspect-length",
+    ) as HTMLInputElement | null;
+    if (lenEl) lenEl.value = String(lenVal);
+    const range = getElementCompiledRange(elementId, file, track);
+    const distance = range ? (track.distances[range.start] ?? 0) : 0;
+    selectionReadout.textContent = `Selected ${elementId} at ${distance.toFixed(1)} m`;
+  }
+}
+
+function renderElementList(
+  track: CompiledTrackData,
+  spanHashes:
+    | Readonly<Record<string, string>>
+    | readonly { readonly spanId: string; readonly hash: string }[],
+  file: import("@openvibecoaster/core").CoasterFileV1,
+): void {
+  elementList.innerHTML = "";
+  for (const el of file.intent.elements) {
+    const li = document.createElement("li");
+    li.dataset.elementId = el.id;
+    const hash = getSpanHash(spanHashes, el.id);
+    if (hash) {
+      li.dataset.spanHash = hash.toLowerCase().slice(0, 8);
+    }
+    const kind = el.kind ?? el.type ?? "element";
+    const params = el.parameters;
+    let text = `${kind} — ${el.id}`;
+    if (kind === "topHat" || kind === "top-hat") {
+      const heightVal = params?.["height"];
+      const heightPart = typeof heightVal === "number" ? `${heightVal}m` : "";
+      const bankVal = params?.["bank"];
+      const bankPart = typeof bankVal === "number" ? `bank ${bankVal}` : "";
+      const range = getElementCompiledRange(el.id, file, track);
+      let inverted = "";
+      if (range) {
+        const { start, end } = range;
+        const banks = track.bank;
+        let minBank = Infinity;
+        let maxBank = -Infinity;
+        for (let i = start; i <= end; i++) {
+          const b = banks[i];
+          if (typeof b === "number" && Number.isFinite(b)) {
+            minBank = Math.min(minBank, b);
+            maxBank = Math.max(maxBank, b);
+          }
+        }
+        if (
+          Number.isFinite(minBank) &&
+          Number.isFinite(maxBank) &&
+          Math.abs(maxBank - minBank) > Math.PI * 0.8
+        ) {
+          inverted = "inverted";
+        }
+      }
+      const parts = ["topHat", heightPart, inverted, bankPart, `— ${el.id}`]
+        .filter(Boolean)
+        .join(" ");
+      text = parts;
+    } else if (kind === "stall") {
+      text = `stall — ${el.id}`;
+    } else {
+      text = `${kind} — ${el.id}`;
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "element-select-btn";
+    btn.textContent = text;
+    btn.setAttribute("aria-label", `Select element ${el.id}`);
+    const activate = (): void => activateElementSelection(el.id, file, track);
+    btn.addEventListener("click", activate);
+    li.appendChild(btn);
+    elementList.appendChild(li);
+  }
+}
+
+function updateReadoutsForResult(result: AuthoritativeExperienceResult): void {
+  const track = result.track;
+  const timeline = result.timeline;
+  // Length
+  if (trackLengthEl) {
+    trackLengthEl.textContent = `${track.totalLength.toFixed(1)} m`;
+    trackLengthEl.setAttribute("data-length-m", String(track.totalLength));
+  }
+  if (compiledChecksumEl) {
+    compiledChecksumEl.textContent = track.checksum;
+    compiledChecksumEl.setAttribute(
+      "data-checksum",
+      track.checksum.toLowerCase(),
+    );
+    compiledChecksumEl.setAttribute(
+      "data-compiled-checksum",
+      track.checksum.toLowerCase(),
+    );
+  }
+  if (seamBoundariesEl) {
+    const semanticSeams = getSemanticSeamIndices(result.file, track);
+    const total = semanticSeams.length;
+    seamBoundariesEl.textContent = `Seams ${total}`;
+    const isInspecting = controller.getState().seamInspection;
+    const displayed = isInspecting ? total : 0;
+    seamBoundariesEl.setAttribute("data-count", String(displayed));
+  }
+  if (timelineDurationEl) {
+    const duration = timeline.timeSeconds[timeline.length - 1] ?? 0;
+    timelineDurationEl.textContent = `${duration.toFixed(2)} s`;
+    timelineDurationEl.setAttribute("data-duration-s", String(duration));
+  }
+  if (telemetrySignatureEl) {
+    const sig = computeTelemetrySignature(track, timeline);
+    telemetrySignatureEl.textContent = sig;
+    telemetrySignatureEl.setAttribute("data-signature", sig);
+  }
+  // Initialize highlight/train position to first sample
+  if (trackHighlightEl) {
+    const d0 = timeline.headDistanceM[0] ?? 0;
+    trackHighlightEl.setAttribute("data-highlight-distance", String(d0));
+    trackHighlightEl.textContent = `Highlight ${d0.toFixed(1)} m`;
+  }
+  if (trainPositionEl) {
+    const d0 = timeline.headDistanceM[0] ?? 0;
+    const s0 = timeline.speedMps[0] ?? 0;
+    trainPositionEl.setAttribute("data-distance-m", String(d0));
+    trainPositionEl.setAttribute("data-speed-mps", String(s0));
+    trainPositionEl.textContent = `Train ${d0.toFixed(1)} m at ${s0.toFixed(1)} m/s`;
+  }
+}
+
+function updatePlaybackDomFromSnapshot(
+  snap: ReturnType<RidePlaybackController["getSnapshot"]>,
+): void {
+  const d = snap.headDistanceM;
+  const s = snap.speedMps;
+  if (trackHighlightEl) {
+    trackHighlightEl.setAttribute("data-highlight-distance", String(d));
+    trackHighlightEl.textContent = `Highlight ${d.toFixed(1)} m`;
+  }
+  if (trainPositionEl) {
+    trainPositionEl.setAttribute("data-distance-m", String(d));
+    trainPositionEl.setAttribute("data-speed-mps", String(s));
+    trainPositionEl.textContent = `Train ${d.toFixed(1)} m at ${s.toFixed(1)} m/s`;
+  }
+  // Scrubber sync
+  const authForSync = getAuthoritativeResult();
+  const syncTimeline = authForSync?.timeline ?? null;
+  if (syncTimeline) {
+    const maxIdx = syncTimeline.length - 1;
+    const ratio = maxIdx > 0 ? snap.sampleIndex / maxIdx : 0;
+    const scrubVal = Math.round(ratio * 1000);
+    scrubber.value = String(scrubVal);
+    scrubberValue.textContent = `${scrubVal} / ${scrubber.max}`;
+  }
+  // Selection readout sync with distance/time
+  if (syncTimeline) {
+    const time = snap.timeSeconds;
+    selectionReadout.textContent = `Distance ${d.toFixed(1)} m — time ${time.toFixed(2)} s at ${s.toFixed(1)} m/s`;
+  }
+}
+
+function syncPlaybackControlsFromSnapshot(snap: RidePlaybackSnapshot): void {
+  state.isPaused = !snap.isPlaying;
+  state.playbackSpeed = snap.rate;
+  const seatValue = getSeatValueFromSnapshot(snap);
+  state.seatIndex = Number.parseInt(seatValue, 10);
+  pauseBtn.setAttribute("aria-pressed", String(!state.isPaused));
+  pauseBtn.textContent = state.isPaused ? "Play" : "Pause";
+  playbackSelect.value = String(snap.rate);
+  seatSelect.value = seatValue;
+  updatePlaybackDomFromSnapshot(snap);
+  syncTelemetryGraphA11y();
+}
+
+function renderMetricLegend(metric: MetricId): void {
+  for (const item of metricLegend.querySelectorAll<HTMLElement>(
+    "[data-metric]",
+  )) {
+    const m = item.dataset.metric ?? "";
+    const selected = m === metric;
+    item.classList.toggle("is-selected", selected);
+    item.setAttribute("aria-selected", String(selected));
+    item.setAttribute("data-selected", String(selected));
+  }
+}
+
+let unsubscribeController: (() => void) | null = null;
+
+// ExperienceController with real callbacks
+const controller = createExperienceController({
+  onGenerate: async (request, numericId) => {
+    const workerId = workerRequestIdFromNumeric(numericId);
+    if (activeWorkerRequestId && activeWorkerRequestId !== workerId) {
+      engineeringClient.cancel(activeWorkerRequestId);
+    }
+    activeWorkerRequestId = workerId;
+    generationStartMark = performance.now();
+    try {
+      performance.mark("ovc:generation-total-start");
+    } catch {}
+    try {
+      let intent: import("@openvibecoaster/core").DesignIntentV1;
+      if (request.mode === "insta" || request.mode === "full-auto") {
+        const seed = request.seed;
+        if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+          throw new Error("seed: expected uint32 integer");
+        }
+        intent = buildInstaIntent(seed, request.mode);
+      } else {
+        const validation = validateDirectedInput(request.input);
+        if (validation.length > 0) {
+          const msgs = validation
+            .map((e) => `${e.field}: ${e.message}`)
+            .join("; ");
+          lastFailureDiagnostics = validation.map((e) => ({
+            code: "INVALID_INTENT",
+            severity: "error" as const,
+            provenance: "PROJECT_ENGINEERING_LIMIT" as const,
+            message: `${e.field}: ${e.message}`,
+          }));
+          lastFailureRelaxations = [];
+          renderDiagnostics(lastFailureDiagnostics);
+          renderRelaxations([]);
+          throw new Error(msgs || "Invalid directed input");
+        }
+        const { intent: directedIntent, errors } = createDirectedDesignIntent(
+          request.input,
+        );
+        if (!directedIntent) {
+          const msgs = errors.map((e) => `${e.field}: ${e.message}`).join("; ");
+          lastFailureDiagnostics = errors.map((e) => ({
+            code: "INVALID_INTENT",
+            severity: "error" as const,
+            provenance: "PROJECT_ENGINEERING_LIMIT" as const,
+            message: `${e.field}: ${e.message}`,
+          }));
+          lastFailureRelaxations = [];
+          renderDiagnostics(lastFailureDiagnostics);
+          renderRelaxations([]);
+          throw new Error(msgs || "Invalid directed input");
+        }
+        const gateDiags = detectGateContradictions(request.input);
+        if (gateDiags.length > 0) {
+          lastFailureDiagnostics = gateDiags;
+          renderDiagnostics(gateDiags);
+          lastFailureRelaxations = [];
+          renderRelaxations([]);
+          throw new Error(gateDiags[0]!.message);
+        }
+        intent = directedIntent;
+      }
+      // Await worker
+      const response = await engineeringClient.generate(workerId, intent);
+      // Stale check already via controller, but also check activeWorkerRequestId
+      const hydrated = hydrateEngineeringSuccess(response);
+      const result: AuthoritativeExperienceResult = {
+        file: hydrated.file,
+        track: hydrated.track,
+        timeline: hydrated.timeline,
+        diagnostics: hydrated.diagnostics,
+        relaxations: hydrated.relaxations,
+        spanHashes: hydrated.spanHashes,
+      };
+      const ok = controller.setResult(result, numericId);
+      if (ok) {
+        try {
+          performance.measure("ovc:generation-total", {
+            start: "ovc:generation-total-start",
+          });
+        } catch {}
+        // also record total via custom? Already done
+      }
+      // Clear failure caches on success
+      lastFailureDiagnostics = [];
+      lastFailureRelaxations = [];
+    } catch (e) {
+      const err = normalizeEngineeringError(e);
+      // Handle cancelled gracefully - don't surface as error if stale
+      if (err.code === "cancelled") {
+        controller.setError("Cancelled", numericId);
+        return;
+      }
+      // Extract diagnostics if present (worker failure)
+      if (err.diagnostics) {
+        lastFailureDiagnostics = err.diagnostics;
+        // Ensure at least one has provenance and finite evidence where applicable
+        renderDiagnostics(lastFailureDiagnostics);
+      } else if (lastFailureDiagnostics.length === 0) {
+        const msg = err.message;
+        lastFailureDiagnostics = [
+          {
+            code: "GENERATION_ERROR",
+            severity: "error",
+            provenance: "PROJECT_ENGINEERING_LIMIT",
+            message: msg,
+          },
+        ];
+        renderDiagnostics(lastFailureDiagnostics);
+      }
+      if (err.relaxations) {
+        lastFailureRelaxations = err.relaxations;
+        renderRelaxations(lastFailureRelaxations);
+      } else {
+        // keep existing relaxations if any
+        renderRelaxations(lastFailureRelaxations);
+      }
+      const message = err.message;
+      // Set controller error matching request
+      controller.setError(message, numericId);
+    } finally {
+      if (activeWorkerRequestId === workerId) activeWorkerRequestId = null;
+    }
+  },
+  onLocalRegenerate: async (req, numericId) => {
+    const workerId = workerRequestIdFromNumeric(numericId);
+    if (activeWorkerRequestId && activeWorkerRequestId !== workerId) {
+      engineeringClient.cancel(activeWorkerRequestId);
+    }
+    activeWorkerRequestId = workerId;
+    try {
+      const preparation = preparePinnedRegeneration(req);
+      if (preparation.kind === "fatal") {
+        lastFailureDiagnostics = [preparation.diagnostic];
+        renderDiagnostics(lastFailureDiagnostics);
+        lastFailureRelaxations = [];
+        renderRelaxations([]);
+        controller.setError(preparation.diagnostic.message, numericId);
+        // Also ensure the diagnostic is stored for seam filtering
+        return;
+      }
+      const targetId = preparation.targetId;
+      const workerFile = preparation.workerFile;
+      const restoreId = preparation.restoreId;
+      const originalPinnedIds = preparation.originalPinnedIds;
+      const response = await engineeringClient.regenerate(
+        workerId,
+        workerFile,
+        targetId,
+      );
+      const hydrated = hydrateEngineeringSuccess(response);
+      let resultFile: typeof hydrated.file = hydrated.file;
+      if (restoreId) {
+        resultFile = restorePinnedFileAfterRegeneration(
+          hydrated.file,
+          restoreId,
+          originalPinnedIds,
+        );
+      }
+      const result: AuthoritativeExperienceResult = {
+        file: resultFile,
+        track: hydrated.track,
+        timeline: hydrated.timeline,
+        diagnostics: hydrated.diagnostics,
+        relaxations: hydrated.relaxations,
+        spanHashes: hydrated.spanHashes,
+      };
+      const ok = controller.setResult(result, numericId);
+      if (ok) {
+        // keep selection/pin visible: controller will preserve selectedElementId if still exists
+      }
+    } catch (e) {
+      const err = normalizeEngineeringError(e);
+      if (err.code === "cancelled") {
+        controller.setError("Cancelled", numericId);
+        return;
+      }
+      if (err.diagnostics) {
+        lastFailureDiagnostics = err.diagnostics;
+        renderDiagnostics(lastFailureDiagnostics);
+      }
+      if (err.relaxations) {
+        lastFailureRelaxations = err.relaxations;
+        renderRelaxations(lastFailureRelaxations);
+      }
+      controller.setError(err.message, numericId);
+    } finally {
+      if (activeWorkerRequestId === workerId) activeWorkerRequestId = null;
+    }
+  },
+  onCompileLoad: async (req, numericId) => {
+    const workerId = workerRequestIdFromNumeric(numericId);
+    if (activeWorkerRequestId && activeWorkerRequestId !== workerId) {
+      engineeringClient.cancel(activeWorkerRequestId);
+    }
+    activeWorkerRequestId = workerId;
+    try {
+      let payload: unknown = req.source;
+      if (payload instanceof File) {
+        payload = await payload.text();
+      }
+      const response = await engineeringClient.compileSimulate(
+        workerId,
+        payload,
+      );
+      const hydrated = hydrateEngineeringSuccess(response);
+      const result: AuthoritativeExperienceResult = {
+        file: hydrated.file,
+        track: hydrated.track,
+        timeline: hydrated.timeline,
+        diagnostics: hydrated.diagnostics,
+        relaxations: hydrated.relaxations,
+        spanHashes: hydrated.spanHashes,
+      };
+      controller.setResult(result, numericId);
+      lastFailureDiagnostics = [];
+      lastFailureRelaxations = [];
+    } catch (e) {
+      const err = normalizeEngineeringError(e);
+      if (err.code === "cancelled") {
+        controller.setError("Cancelled", numericId);
+        return;
+      }
+      if (err.diagnostics) {
+        lastFailureDiagnostics = err.diagnostics;
+        renderDiagnostics(lastFailureDiagnostics);
+      } else {
+        lastFailureDiagnostics = [
+          {
+            code: "LOAD_ERROR",
+            severity: "error",
+            provenance: "PROJECT_ENGINEERING_LIMIT",
+            message: err.message,
+          },
+        ];
+        renderDiagnostics(lastFailureDiagnostics);
+      }
+      controller.setError(err.message, numericId);
+    } finally {
+      if (activeWorkerRequestId === workerId) activeWorkerRequestId = null;
+    }
+  },
+  onSave: async (req) => {
+    const { url, timerId } = downloadCoasterFile(req.file, "vibecoaster");
+    pendingObjectUrls.push(url);
+    pendingRevokeTimers.push(timerId);
+  },
+  onExport: async (req) => {
+    const { url, timerId } = downloadCoasterFile(
+      req.file,
+      "vibecoaster-export",
+    );
+    pendingObjectUrls.push(url);
+    pendingRevokeTimers.push(timerId);
+  },
+  onElementSelectionChanged: (elementId) => {
+    if (elementId) {
+      pinBtn.dataset.pinned = String(
+        controller.getState().pinnedElementIds.includes(elementId),
+      );
+      pinBtn.setAttribute(
+        "aria-pressed",
+        String(pinBtn.dataset.pinned === "true"),
+      );
+      pinBtn.textContent = pinBtn.dataset.pinned === "true" ? "Pinned" : "Pin";
+      inspector.classList.toggle("is-pinned", pinBtn.dataset.pinned === "true");
+    }
+  },
+  onTimelineSelectionChanged: (selection) => {
+    // Update highlight and scrubber
+    lifecycle.setHighlight(selection.distanceM);
+    const authoritative = getAuthoritativeResult();
+    const timeline = authoritative?.timeline ?? null;
+    if (timeline) {
+      const ratio = (selection.index / (timeline.length - 1)) * 1000;
+      scrubber.value = String(Math.round(ratio));
+      scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
+      selectionReadout.textContent = `Distance ${selection.distanceM.toFixed(1)} m — time ${selection.timeSeconds.toFixed(2)} s at ${timeline.speedMps[selection.index]?.toFixed(1) ?? "0"} m/s`;
+      if (trackHighlightEl)
+        trackHighlightEl.setAttribute(
+          "data-highlight-distance",
+          String(selection.distanceM),
+        );
+      if (trainPositionEl) {
+        trainPositionEl.setAttribute(
+          "data-distance-m",
+          String(selection.distanceM),
+        );
+        trainPositionEl.setAttribute(
+          "data-speed-mps",
+          String(timeline.speedMps[selection.index] ?? 0),
+        );
+      }
+      // Draw graph selection line
+      if (timeline && authoritative?.track) {
+        const series = getMetricSeries(
+          state.metric,
+          authoritative.track,
+          timeline,
+          authoritative.clearanceM ?? null,
+        );
+        drawTimelineGraph(telemetryGraph, series, selection.index);
+      }
+    }
+    syncTelemetryGraphA11y();
+  },
+});
+
+function syncTelemetryGraphA11y(): void {
+  const auth = getAuthoritativeResult();
+  const timeline = auth?.timeline ?? null;
+  const maxIdx = timeline ? Math.max(0, timeline.length - 1) : 0;
+  const selIdx = controller.getState().timelineSelection?.index ?? null;
+  const snapshotIdx = ridePlayback?.getSnapshot().sampleIndex ?? null;
+  const current = snapshotIdx ?? selIdx ?? 0;
+  telemetryGraph.setAttribute("aria-valuemax", String(maxIdx));
+  telemetryGraph.setAttribute(
+    "aria-valuenow",
+    String(Math.max(0, Math.min(maxIdx, current))),
+  );
+  if (timeline) {
+    telemetryGraph.setAttribute(
+      "aria-label",
+      `Telemetry graph — ${state.metric} scrubber, sample ${current + 1} of ${timeline.length}`,
+    );
+    telemetryGraph.setAttribute(
+      "aria-valuetext",
+      `sample ${current + 1} of ${timeline.length}`,
+    );
+  }
+}
+
+// Subscribe once to ExperienceController
+unsubscribeController = controller.subscribe((expState) => {
+  // Sync generationStatus to viewState state
+  const prevStatus = state.generationStatus;
+  state.generationStatus = expState.status as AppState["generationStatus"];
+  // Store current result references
+  if (expState.status === "pending" || expState.status === "generating") {
+    if (expState.status === "pending") {
+      lastFailureDiagnostics = [];
+      lastFailureRelaxations = [];
+      renderDiagnostics([]);
+      renderRelaxations([]);
+      elementList.innerHTML = "";
+      if (trackLengthEl) {
+        trackLengthEl.textContent = "Length —";
+        trackLengthEl.removeAttribute("data-length-m");
+      }
+      if (compiledChecksumEl) {
+        compiledChecksumEl.textContent = "Checksum —";
+        compiledChecksumEl.removeAttribute("data-checksum");
+      }
+      if (seamBoundariesEl) {
+        seamBoundariesEl.textContent = "Seams —";
+        seamBoundariesEl.setAttribute("data-count", "0");
+      }
+      if (timelineDurationEl) {
+        timelineDurationEl.textContent = "Timeline —";
+        timelineDurationEl.removeAttribute("data-duration-s");
+      }
+      if (telemetrySignatureEl) {
+        telemetrySignatureEl.textContent = "Telemetry —";
+        telemetrySignatureEl.removeAttribute("data-signature");
+      }
+    }
+  }
+
+  if (expState.status === "ready" && expState.result) {
+    const result = expState.result;
+    const track = result.track;
+    const timeline = result.timeline;
+    const metricData = deriveMetricData(state.metric, result);
+
+    // Attach track through lifecycle — handle WebGL failure queuing
+    try {
+      lifecycle.attachTrack(result.track, {
+        metric: state.metric,
+        metricData,
+        timeline: {
+          distances: result.timeline.headDistanceM,
+          speeds: result.timeline.speedMps,
+        },
+        closedTrack: false,
+      });
+    } catch {
+      hasWebGL = false;
+      truthfulDowngrade();
+      render();
+    }
+
+    // Populate DOM
+    renderDiagnostics(result.diagnostics);
+    renderRelaxations(result.relaxations ?? []);
+    renderElementList(result.track, result.spanHashes, result.file);
+    updateReadoutsForResult(result);
+
+    renderMetricLegend(state.metric);
+    lifecycle.setMetric(state.metric, metricData);
+
+    const series = getMetricSeries(
+      state.metric,
+      track,
+      timeline,
+      result.clearanceM ?? null,
+    );
+    drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());
+
+    seamInspectBtn.setAttribute(
+      "aria-pressed",
+      String(controller.getState().seamInspection),
+    );
+    if (seamBoundariesEl) {
+      const semanticSeams = getSemanticSeamIndices(result.file, track);
+      const seamState = getSeamInspection(
+        track,
+        result.diagnostics,
+        controller.getState().seamInspection,
+        semanticSeams,
+      );
+      seamBoundariesEl.setAttribute(
+        "data-count",
+        String(seamState.boundaries.length),
+      );
+      lifecycle.setSeamInspection(controller.getState().seamInspection, [
+        ...seamState.boundaries,
+      ]);
+    }
+
+    // Ride playback: own one createRidePlayback per accepted timeline; dispose prior
+    if (unsubscribeRidePlayback) {
+      try {
+        unsubscribeRidePlayback();
+      } catch {}
+      unsubscribeRidePlayback = null;
+    }
+    if (ridePlayback) {
+      try {
+        ridePlayback.dispose();
+      } catch {}
+      ridePlayback = null;
+    }
+    try {
+      const initialRate: AllowedRate = isAllowedRate(state.playbackSpeed)
+        ? state.playbackSpeed
+        : 1;
+      ridePlayback = createRidePlayback(timeline, {
+        reducedMotion: state.reducedMotion,
+        rate: initialRate,
+        camera: state.camera as "front" | "middle" | "rear" | "chase" | "orbit",
+        selectedSeat: "front",
+      });
+      unsubscribeRidePlayback = ridePlayback.subscribe((snap) => {
+        syncPlaybackControlsFromSnapshot(snap);
+      });
+      ridePlayback.pause();
+      const snap = ridePlayback.getSnapshot();
+      lifecycle.updatePlayback(snap.headDistanceM, snap.speedMps);
+    } catch {
+      // contained playback creation failure remains visible via error status without console
+    }
+
+    // Audio: own one procedural createRideAudioEngine per track/timeline with actual zone names/masks
+    if (audioEngine) {
+      try {
+        audioEngine.dispose();
+      } catch {}
+      audioEngine = null;
+    }
+    try {
+      const zoneNames = track.zoneNames;
+      const lsmMask = zoneNames.reduce(
+        (m, name, idx) =>
+          name === "launch" || name === "boost" ? m | (1 << idx) : m,
+        0,
+      );
+      const brakeMask = zoneNames.reduce(
+        (m, name, idx) => (name === "brake" ? m | (1 << idx) : m),
+        0,
+      );
+      audioEngine = createRideAudioEngine({
+        zoneNames,
+        lsmZoneMask: lsmMask,
+        brakeZoneMask: brakeMask,
+      });
+      // mute state sync
+      audioEngine.setMuted(state.isMuted);
+      if (ridePlayback) {
+        const snap = ridePlayback.getSnapshot();
+        const zoneMask = resolveZoneMask(track, snap.headDistanceM);
+        audioEngine.update({
+          speedMps: snap.speedMps,
+          zoneMask,
+          paused: !snap.isPlaying,
+        });
+      }
+    } catch {
+      // Unsupported audio is visible/operable without console/page errors -> set to null but keep mute operable
+      audioEngine = null;
+    }
+
+    // Selection readout initial
+    if (expState.selectedElementId) {
+      selectionReadout.textContent = `Selected ${expState.selectedElementId} — distance ${track.distances[0]?.toFixed(1) ?? "0"} m`;
+    } else {
+      selectionReadout.textContent = `No selection. Distance ${timeline.headDistanceM[0]?.toFixed(1) ?? "0"} m — time ${timeline.timeSeconds[0]?.toFixed(2) ?? "0"} s at ${timeline.speedMps[0]?.toFixed(1) ?? "0"} m/s`;
+    }
+
+    // Update scrubber max etc
+    scrubber.max = "1000";
+    scrubber.value = "0";
+    scrubberValue.textContent = `0 / ${scrubber.max}`;
+    syncTelemetryGraphA11y();
+  } else if (expState.status === "error") {
+    // Error state: retain WebGL queue but show diagnostics/relaxations from failure
+    if (lastFailureDiagnostics.length > 0) {
+      renderDiagnostics(lastFailureDiagnostics);
+    } else if (expState.lastGoodResult) {
+      // show last good diagnostics? but failure should show error diagnostics
+      renderDiagnostics(expState.lastGoodResult.diagnostics);
+    } else {
+      renderDiagnostics([]);
+    }
+    const relaxToShow =
+      lastFailureRelaxations.length > 0
+        ? lastFailureRelaxations
+        : (expState.result?.relaxations ?? []);
+    renderRelaxations(relaxToShow);
+    // Seam toggle persists but count maybe from last good
+    seamInspectBtn.setAttribute(
+      "aria-pressed",
+      String(expState.seamInspection),
+    );
+    const errorAuthoritative = expState.lastGoodResult ?? expState.result;
+    if (seamBoundariesEl && errorAuthoritative?.track) {
+      const semanticSeams = getSemanticSeamIndices(
+        errorAuthoritative.file,
+        errorAuthoritative.track,
+      );
+      const seamState = getSeamInspection(
+        errorAuthoritative.track,
+        lastFailureDiagnostics,
+        expState.seamInspection,
+        semanticSeams,
+      );
+      seamBoundariesEl.setAttribute(
+        "data-count",
+        String(seamState.boundaries.length),
+      );
+    }
+    // Metric legend still updates
+    renderMetricLegend(state.metric);
+    // Graph: if we have authoritative, draw with selection?
+    if (errorAuthoritative?.timeline && errorAuthoritative?.track) {
+      const s = getMetricSeries(
+        state.metric,
+        errorAuthoritative.track,
+        errorAuthoritative.timeline,
+        errorAuthoritative.clearanceM ?? null,
+      );
+      drawTimelineGraph(telemetryGraph, s, getSelectedTimelineIndex());
+    }
+  } else if (expState.status === "generating") {
+    // Disable generate etc via render()
+  }
+
+  if (expState.status === "error") {
+    visibleErrorMessage = expState.error;
+  } else {
+    visibleErrorMessage = null;
+  }
+
+  // Always re-render view state
+  render();
+  // Ensure reduced motion class etc
+
+  // Preserve one renderer lifecycle/RAF and one resize owner already
+
+  // For transition from generating to ready, measure total generation time if started
+  if (
+    prevStatus === "generating" &&
+    expState.status === "ready" &&
+    generationStartMark !== null
+  ) {
+    try {
+      const dur = performance.now() - generationStartMark;
+      performance.measure("ovc:generation-total", {
+        duration: dur,
+      });
+    } catch {}
+    generationStartMark = null;
+  }
+  if (expState.status === "error" || expState.status === "pending") {
+    generationStartMark = null;
+  }
+});
+
+// Helpers for playback DOM sync already defined
+
+function handleGenerateClick(): void {
+  if (!getActionEnabled("generate", controller.getState().status)) return;
+  const rawSeed = seedInput.value.trim();
+  const mode = getGenerationMode() as "insta" | "full-auto" | "directed";
+  if (mode === "directed") {
+    const directed = readDirectedControls();
+    if (directed.errors.length > 0 || !directed.intent) {
+      lastFailureDiagnostics = directed.errors.map((e) => ({
+        code: "INVALID_INTENT",
+        severity: "error" as const,
+        provenance: "PROJECT_ENGINEERING_LIMIT" as const,
+        message: `${e.field}: ${e.message}`,
+      }));
+      renderDiagnostics(lastFailureDiagnostics);
+      renderRelaxations([]);
+      controller.setError(
+        directed.errors.map((e) => `${e.field}: ${e.message}`).join("; ") ||
+          "Invalid directed input",
+      );
+      return;
+    }
+    const seedVal = parseUint32Seed(rawSeed);
+    if (seedVal === null) {
+      lastFailureDiagnostics = [
+        {
+          code: "INVALID_SEED",
+          severity: "error",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: "seed: expected uint32 integer",
+        },
+      ];
+      renderDiagnostics(lastFailureDiagnostics);
+      controller.setError("seed: expected uint32 integer");
+      return;
+    }
+    if (!directed.editorInput) return;
+    state.seed = String(seedVal);
+    controller.requestGenerate({
+      mode: "directed",
+      input: directed.editorInput,
     });
-  } catch (error) {
-    handleVisibleUnexpectedError(error);
+  } else {
+    const parsed = parseUint32Seed(rawSeed);
+    if (parsed === null) {
+      lastFailureDiagnostics = [
+        {
+          code: "INVALID_SEED",
+          severity: "error",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: "seed: expected uint32 integer",
+        },
+      ];
+      renderDiagnostics(lastFailureDiagnostics);
+      controller.setError("seed: expected uint32 integer");
+      return;
+    }
+    state.seed = String(parsed);
+    controller.requestGenerate({ mode, seed: parsed });
+  }
+}
+
+generateBtn.addEventListener("click", handleGenerateClick, {
+  signal: abortSignal,
+});
+
+cancelGenerationBtn.addEventListener("click", () => {
+  const capturedRequestId = controller.getState().requestId;
+  if (activeWorkerRequestId) {
+    engineeringClient.cancel(activeWorkerRequestId);
+    activeWorkerRequestId = null;
+  }
+  controller.setError("Cancelled", capturedRequestId);
+});
+
+// Save/export already via controller requestSave callbacks, but need UI wiring
+saveBtn.addEventListener("click", () => {
+  if (!getActionEnabled("save", controller.getState().status)) return;
+  controller.requestSave();
+});
+exportBtn.addEventListener("click", () => {
+  if (!getActionEnabled("export", controller.getState().status)) return;
+  controller.requestExport("json");
+});
+loadBtn.addEventListener("click", () => {
+  loadFile.click();
+});
+loadFile.addEventListener("change", () => {
+  const file = loadFile.files?.[0];
+  if (!file) return;
+  // Validate via controller path: read without fetch
+  // Directly requestLoad, which will trigger compileSimulate
+  controller.requestLoad(file);
+  loadFile.value = "";
+});
+
+// Seed input sync
+seedInput.addEventListener("input", () => {
+  state.seed = seedInput.value.slice(0, 64);
+});
+seedInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    handleGenerateClick();
+  }
+});
+
+for (const input of modeInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) {
+      state.appMode = input.value as AppState["appMode"];
+      render();
+    }
+  });
+}
+
+for (const input of cameraInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) {
+      try {
+        state.camera = selectCamera(input.value as CameraId, state.camera);
+        if (ridePlayback) {
+          ridePlayback.setCamera(
+            state.camera as "front" | "middle" | "rear" | "chase" | "orbit",
+          );
+        }
+        lifecycle.getController()?.applyCamera(state.camera, {
+          reducedMotion: state.reducedMotion,
+          deltaMs: 16,
+        });
+      } catch (error) {
+        handleVisibleUnexpectedError(error);
+        return;
+      }
+      render();
+    }
+  });
+}
+
+metricSelect.addEventListener("change", () => {
+  state.metric = selectMetric(metricSelect.value as MetricId, state.metric);
+  const authoritative = getAuthoritativeResult();
+  if (authoritative) {
+    const series = getMetricSeries(
+      state.metric,
+      authoritative.track,
+      authoritative.timeline,
+      authoritative.clearanceM ?? null,
+    );
+    renderMetricLegend(state.metric);
+    drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());
+    const metricData = deriveMetricData(state.metric, authoritative);
+    lifecycle.setMetric(state.metric, metricData);
+  } else {
+    lifecycle.setMetric(state.metric);
+    renderMetricLegend(state.metric);
+  }
+  render();
+});
+
+seatSelect.addEventListener("change", () => {
+  const opt = getSeatOptionByValue(seatSelect.value);
+  if (!opt) {
+    seatSelect.value = String(state.seatIndex);
     return;
   }
-  state.generationStatus = "ready";
-  render();
-}
-function clearCompiledTrack(): void {
-  lifecycle.clearTrack();
-  state.generationStatus = "pending";
-  render();
-}
-void attachCompiledTrack;
-void clearCompiledTrack;
+  if (ridePlayback) {
+    ridePlayback.selectSeat(opt.seatId, opt.seatIndex);
+  } else {
+    state.seatIndex = Number.parseInt(opt.value, 10);
+    render();
+  }
+});
 
-// Re-init terrain deterministically when seed changes and user generates (still error path)
-// For now terrain seed follows state.seed via initRenderer on generation attempt
-const originalHandleGenerate = handleGenerate;
-function wrappedGenerate(): void {
-  originalHandleGenerate();
-  window.setTimeout(() => {
-    initRenderer();
-  }, 950);
+playbackSelect.addEventListener("change", () => {
+  const parsed = Number.parseFloat(playbackSelect.value);
+  if (!isAllowedRate(parsed)) {
+    playbackSelect.value = String(state.playbackSpeed);
+    return;
+  }
+  if (ridePlayback) {
+    ridePlayback.setRate(parsed);
+  } else {
+    state.playbackSpeed = parsed;
+    render();
+  }
+});
+
+scrubber.addEventListener("input", () => {
+  scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
+  const scrubAuthoritative = getAuthoritativeResult();
+  const scrubTimeline = scrubAuthoritative?.timeline ?? null;
+  const scrubTrack = scrubAuthoritative?.track ?? null;
+  if (scrubTimeline && scrubTrack && ridePlayback) {
+    const t =
+      Number.parseInt(scrubber.value, 10) / Number.parseInt(scrubber.max, 10);
+    const idx = Math.round(t * (scrubTimeline.length - 1));
+    const selection = controller.selectTimelineIndex(idx);
+    if (selection) {
+      ridePlayback.scrubIndex(idx);
+      lifecycle.setHighlight(selection.distanceM);
+    } else {
+      const dist = t * scrubTrack.totalLength;
+      lifecycle.updatePlayback(dist, 0);
+    }
+    syncTelemetryGraphA11y();
+  }
+});
+
+// Graph click
+telemetryGraph.addEventListener("click", (event) => {
+  const graphAuthoritative = getAuthoritativeResult();
+  const graphTimeline = graphAuthoritative?.timeline ?? null;
+  const graphTrack = graphAuthoritative?.track ?? null;
+  if (!graphTimeline || !graphTrack) return;
+  const rect = telemetryGraph.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const width = rect.width;
+  const idx = indexAtGraphPosition(graphTimeline, x, width);
+  const sel = controller.selectTimelineIndex(idx);
+  if (sel && ridePlayback) {
+    ridePlayback.scrubIndex(idx);
+  }
+  syncTelemetryGraphA11y();
+});
+
+telemetryGraph.addEventListener("keydown", (event) => {
+  const action = getCanvasKeyboardAction(event.key);
+  if (action === "none") return;
+  const graphAuthoritative = getAuthoritativeResult();
+  const graphTimeline = graphAuthoritative?.timeline ?? null;
+  if (!graphTimeline || graphTimeline.length === 0 || !ridePlayback) return;
+  event.preventDefault();
+  const currentIdx =
+    controller.getState().timelineSelection?.index ??
+    ridePlayback.getSnapshot().sampleIndex;
+  const nextIdx = getTelemetryNextIndex(
+    currentIdx,
+    event.key,
+    graphTimeline.length,
+  );
+  if (nextIdx === currentIdx) return;
+  const selection = controller.selectTimelineIndex(nextIdx);
+  if (selection) {
+    ridePlayback.scrubIndex(nextIdx);
+    lifecycle.setHighlight(selection.distanceM);
+  }
+  syncTelemetryGraphA11y();
+});
+
+pauseBtn.addEventListener("click", () => {
+  if (!getActionEnabled("playback", controller.getState().status)) return;
+  if (!ridePlayback) return;
+  const snap = ridePlayback.getSnapshot();
+  if (snap.isPlaying) ridePlayback.pause();
+  else ridePlayback.play();
+});
+
+resetBtn.addEventListener("click", () => {
+  if (!getActionEnabled("playback", controller.getState().status)) return;
+  if (!ridePlayback) return;
+  ridePlayback.reset();
+  const snap = ridePlayback.getSnapshot();
+  controller.selectTimelineIndex(snap.sampleIndex);
+  lifecycle.setHighlight(snap.headDistanceM);
+});
+
+seamInspectBtn.addEventListener("click", () => {
+  if (!getActionEnabled("seamInspect", controller.getState().status)) return;
+  const current = controller.getState().seamInspection;
+  const next = !current;
+  controller.setSeamInspection(next);
+  seamInspectBtn.setAttribute("aria-pressed", String(next));
+  // Use canonical boundaries/diagnostics, not timeout animation
+  const seamAuth2 = getAuthoritativeResult();
+  if (seamAuth2?.track) {
+    const semanticSeams = getSemanticSeamIndices(
+      seamAuth2.file,
+      seamAuth2.track,
+    );
+    const seamState = getSeamInspection(
+      seamAuth2.track,
+      seamAuth2.diagnostics,
+      next,
+      semanticSeams,
+    );
+    lifecycle.setSeamInspection(next, [...seamState.boundaries]);
+    if (seamBoundariesEl)
+      seamBoundariesEl.setAttribute(
+        "data-count",
+        String(seamState.boundaries.length),
+      );
+  }
+});
+
+localRegenerateBtn.addEventListener("click", () => {
+  if (!getActionEnabled("localRegenerate", controller.getState().status))
+    return;
+  const selId = getSelectedElementId();
+  if (!selId) {
+    // No selection, pick first unpinned?
+    controller.requestLocalRegenerate();
+    return;
+  }
+  // Check if inspector has edited value: apply edit before regenerate
+  const lengthVal = (
+    document.getElementById("inspect-length") as HTMLInputElement
+  )?.value;
+  if (lengthVal && lengthVal.trim() !== "") {
+    const num = Number.parseFloat(lengthVal);
+    if (Number.isFinite(num)) {
+      controller.editElementParameter(selId, "length", num);
+    }
+  }
+  controller.requestLocalRegenerate();
+});
+
+pinBtn.addEventListener("click", () => {
+  const id = getSelectedElementId();
+  if (!id) return;
+  const wasPinned = controller.getState().pinnedElementIds.includes(id);
+  controller.togglePin(id);
+  const nowPinned = !wasPinned;
+  pinBtn.dataset.pinned = String(nowPinned);
+  pinBtn.setAttribute("aria-pressed", String(nowPinned));
+  pinBtn.textContent = nowPinned ? "Pinned" : "Pin";
+  inspector.classList.toggle("is-pinned", nowPinned);
+});
+
+// Inspector edits: listen to inputs and call editElementParameter
+for (const input of inspectInputs) {
+  input.addEventListener("change", () => {
+    const id = getSelectedElementId();
+    if (!id) return;
+    const paramMap: Record<string, string> = {
+      "inspect-length": "length",
+      "inspect-radius": "radius",
+      "inspect-height": "height",
+      "inspect-roll": "roll",
+    };
+    const param = paramMap[input.id] ?? input.id;
+    const val = input.value.trim();
+    const num = Number.parseFloat(val);
+    const value = Number.isFinite(num) ? num : val;
+    controller.editElementParameter(id, param, value);
+  });
 }
-generateBtn.removeEventListener("click", handleGenerate);
-generateBtn.addEventListener("click", wrappedGenerate);
+
+// Mobile drawers
+for (const tab of mobileTabs) {
+  tab.addEventListener("click", () => {
+    const target = tab.dataset.drawer;
+    const isOpen = tab.getAttribute("aria-expanded") === "true";
+    for (const other of mobileTabs) {
+      other.setAttribute("aria-expanded", "false");
+    }
+    generationRail.classList.remove("is-open");
+    inspector.classList.remove("is-open");
+    telemetry.classList.remove("is-open");
+    if (!isOpen) {
+      tab.setAttribute("aria-expanded", "true");
+      if (target === "left") generationRail.classList.add("is-open");
+      else if (target === "right") inspector.classList.add("is-open");
+      else if (target === "telemetry") telemetry.classList.add("is-open");
+    }
+  });
+}
+
+// Keyboard shortcuts: M for mute, Space for pause when not typing (keep existing)
+document.addEventListener(
+  "keydown",
+  (event) => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (isShortcutOwnerElement(target)) return;
+    if (event.key === "m" || event.key === "M") {
+      state.isMuted = !state.isMuted;
+      if (audioEngine) audioEngine.setMuted(state.isMuted);
+      render();
+    } else if (event.key === " ") {
+      event.preventDefault();
+      if (
+        getActionEnabled("playback", controller.getState().status) &&
+        ridePlayback
+      ) {
+        const snap = ridePlayback.getSnapshot();
+        if (snap.isPlaying) ridePlayback.pause();
+        else if (!snap.ended) ridePlayback.play();
+      }
+    } else if (event.key === "r" || event.key === "R") {
+      const nextMode: AppState["appMode"] =
+        state.appMode === "ride" ? "edit" : "ride";
+      state.appMode = nextMode;
+      render();
+    }
+  },
+  { signal: abortSignal },
+);
+
+audioUnlockBtn.addEventListener("click", async () => {
+  if (!audioEngine) return;
+  try {
+    await audioEngine.unlock();
+  } catch {}
+});
+muteBtn.addEventListener("click", () => {
+  state.isMuted = !state.isMuted;
+  if (audioEngine) {
+    try {
+      audioEngine.setMuted(state.isMuted);
+    } catch {}
+  }
+  render();
+});
+
+// Reduced motion live query
+prefersReducedMotionQuery.addEventListener(
+  "change",
+  (event) => {
+    state.reducedMotion = getReducedMotionState(event.matches, null);
+    if (ridePlayback) {
+      ridePlayback.setReducedMotion(state.reducedMotion);
+    }
+    render();
+  },
+  { signal: abortSignal },
+);
+
+// Mode toggle (app-mode edit/ride already handled, but also generation mode radios are just read at generation time)
+
+// Teardown
+function teardown(): void {
+  try {
+    if (activeWorkerRequestId) {
+      engineeringClient.cancel(activeWorkerRequestId);
+      activeWorkerRequestId = null;
+    }
+  } catch {}
+  try {
+    engineeringClient.teardown();
+  } catch {}
+  try {
+    unsubscribeRidePlayback?.();
+  } catch {}
+  unsubscribeRidePlayback = null;
+  try {
+    ridePlayback?.dispose();
+  } catch {}
+  try {
+    audioEngine?.dispose();
+  } catch {}
+  try {
+    unsubscribeController?.();
+  } catch {}
+  try {
+    lifecycle.dispose();
+  } catch {}
+  for (const id of pendingRevokeTimers) {
+    try {
+      clearTimeout(id);
+    } catch {}
+  }
+  pendingRevokeTimers = [];
+  for (const url of pendingObjectUrls) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {}
+  }
+  pendingObjectUrls = [];
+  try {
+    abortController.abort();
+  } catch {}
+}
+
+window.addEventListener("beforeunload", teardown, { signal: abortSignal });
+window.addEventListener("pagehide", teardown, { signal: abortSignal });
 
 // Minimal read-only dev/test snapshot API returning frozen primitives only – no handle/controller/scene/renderer/state/metrics references
 function __vibecoasterSnapshot(): Readonly<{
@@ -659,8 +1956,7 @@ function __vibecoasterSnapshot(): Readonly<{
     cameraZ: cam ? cam.position.z : 0,
   });
 }
-(window as unknown as Record<string, unknown>).__vibecoasterSnapshot =
-  __vibecoasterSnapshot;
+window.__vibecoasterSnapshot = __vibecoasterSnapshot;
 
 // Initial paint – lifecycle manager is sole resize owner (no duplicate direct resize)
 render();
