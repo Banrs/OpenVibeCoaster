@@ -2,6 +2,9 @@
 import { expect, test } from "@playwright/test";
 import { percentilePair, type BenchmarkSummary } from "./benchmark-helpers.js";
 
+// Disable benchmark instrumentation that contends with measurement.
+test.use({ trace: "off", screenshot: "off" });
+
 // Real-browser benchmark acceptance contract – RED phase.
 // Owns only browser-observable stages via Performance API measures.
 // Existing generator bench owns search/solving/compilation/validation and must remain untouched.
