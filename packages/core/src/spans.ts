@@ -118,14 +118,14 @@ export class SeventhOrderHermiteSpan<
     right: ParametricSpan<T>,
   ): SeventhOrderHermiteSpan<T> {
     return new SeventhOrderHermiteSpan({
-      p0: left.position(0),
-      d10: left.derivative(0, 1),
-      d20: left.derivative(0, 2),
-      d30: left.derivative(0, 3),
-      p1: right.position(1),
-      d11: right.derivative(1, 1),
-      d21: right.derivative(1, 2),
-      d31: right.derivative(1, 3),
+      p0: left.position(1),
+      d10: left.derivative(1, 1),
+      d20: left.derivative(1, 2),
+      d30: left.derivative(1, 3),
+      p1: right.position(0),
+      d11: right.derivative(0, 1),
+      d21: right.derivative(0, 2),
+      d31: right.derivative(0, 3),
     } as SeventhOrderHermiteSpec<T>);
   }
 
