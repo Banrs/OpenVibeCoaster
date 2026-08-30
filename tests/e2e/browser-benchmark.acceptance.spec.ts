@@ -46,9 +46,9 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
     // for each of 53 sequential UI generations (3 warmup + 50 measured)
     // → 53 × 52.7-63.6s ≈ 2793-3371s, plus per-seed generation/simulation/mesh clears,
     // 90s status wait, 8s frame wait (30 steady frames at 1080p), and preview
-    // build overhead. 3_600_000 ms (60 min) covers complete per-seed generation + overhead
-    // without touching global Playwright config.
-    test.setTimeout(3_600_000);
+    // build overhead. 3_600_000 ms (60 min) was observed insufficient (browser benchmark failed at 1.0h);
+    // 5_400_000 ms (90 min) is the measurement budget without touching global Playwright config.
+    test.setTimeout(5_400_000);
 
     await page.setViewportSize({
       width: VIEWPORT.width,
