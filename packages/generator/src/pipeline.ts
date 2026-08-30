@@ -367,11 +367,14 @@ const ownerForSpan = <T>(
   elementById: ReadonlyMap<string, T>,
 ): string | undefined => {
   if (elementById.has(spanId)) return spanId;
-  const separator = spanId.lastIndexOf("#");
-  if (separator <= 0 || !/^\d+$/.test(spanId.slice(separator + 1)))
-    return undefined;
-  const owner = spanId.slice(0, separator);
-  return elementById.has(owner) ? owner : undefined;
+  let current = spanId;
+  while (true) {
+    const separator = current.lastIndexOf("#");
+    if (separator <= 0 || !/^\d+$/.test(current.slice(separator + 1)))
+      return undefined;
+    current = current.slice(0, separator);
+    if (elementById.has(current)) return current;
+  }
 };
 
 export const coasterFileSpanHashes = (
@@ -1257,8 +1260,8 @@ const flagshipBankProfile = (
   );
   if (!overbank) return spans;
   const amplitude = (overbank.parameters as { readonly bank: number }).bank;
-  return spans.map((span) => {
-    if (span.id !== overbank.id) return span;
+  return spans.flatMap((span) => {
+    if (span.id !== overbank.id) return [span];
     const base = span.bank
       ? new QuinticScalarSpan({
           v0: span.bank.position(0),
@@ -1269,19 +1272,50 @@ const flagshipBankProfile = (
           d21: span.bank.derivative(1, 2),
         })
       : QuinticScalarSpan.fromCoefficients([0, 0, 0, 0, 0, 0]);
+    const startBank = base.position(0);
     const bumpAmplitude = amplitude - base.position(0.5);
-    const bump = [
-      0,
-      0,
-      16 * bumpAmplitude,
-      -32 * bumpAmplitude,
-      16 * bumpAmplitude,
-      0,
-    ];
-    const bank = QuinticScalarSpan.fromCoefficients(
-      base.coefficients.map((coefficient, index) => coefficient + bump[index]!),
+    const peakBank = startBank + bumpAmplitude;
+    const leftBank = new QuinticScalarSpan({
+      v0: startBank,
+      d10: 0,
+      d20: 0,
+      v1: peakBank,
+      d11: 0,
+      d21: 0,
+    });
+    const rightBank = new QuinticScalarSpan({
+      v0: peakBank,
+      d10: 0,
+      d20: 0,
+      v1: startBank,
+      d11: 0,
+      d21: 0,
+    });
+    const leftGeometry = subspan(span.span, 0, 0.5);
+    const rightGeometry = subspan(span.span, 0.5, 1);
+    const leftPoints = Array.from({ length: 17 }, (_, index) =>
+      leftGeometry.position(index / 16),
     );
-    return { ...span, bank, rollCoefficients: bank.coefficients };
+    const rightPoints = Array.from({ length: 17 }, (_, index) =>
+      rightGeometry.position(index / 16),
+    );
+    const leftSpan: SolvedSpan = {
+      ...span,
+      id: `${span.id}#0`,
+      span: leftGeometry,
+      bank: leftBank,
+      rollCoefficients: leftBank.coefficients,
+      bounds: aabbFromPoints(leftPoints),
+    };
+    const rightSpan: SolvedSpan = {
+      ...span,
+      id: `${span.id}#1`,
+      span: rightGeometry,
+      bank: rightBank,
+      rollCoefficients: rightBank.coefficients,
+      bounds: aabbFromPoints(rightPoints),
+    };
+    return [leftSpan, rightSpan];
   });
 };
 

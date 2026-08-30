@@ -116,6 +116,7 @@ export interface SeamTolerances {
   readonly curvatureGradientPerM2: number;
   readonly bankRad: number;
   readonly bankDerivativeRadPerM: number;
+  readonly bankSecondDerivativeRadPerM2: number;
   readonly specificForceJumpG: number;
   readonly sustainedForceDeviationG: number;
 }
@@ -147,6 +148,7 @@ export interface ResidualSet {
   readonly curvatureVectorJumpPerM: number;
   readonly bankRad: number;
   readonly bankDerivativeRadPerM: number;
+  readonly bankSecondDerivativeRadPerM2: number;
   readonly specificForceJumpG: number;
   readonly sustainedForceDeviationG: number;
 }

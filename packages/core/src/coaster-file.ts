@@ -776,11 +776,14 @@ function validateCoasterFile(value: unknown): asserts value is CoasterFileV1 {
   );
   const ownerForSpan = (id: string): string | undefined => {
     if (intentKinds.has(id)) return id;
-    const separator = id.lastIndexOf("#");
-    if (separator <= 0 || !/^\d+$/.test(id.slice(separator + 1)))
-      return undefined;
-    const owner = id.slice(0, separator);
-    return intentKinds.has(owner) ? owner : undefined;
+    let current = id;
+    while (true) {
+      const separator = current.lastIndexOf("#");
+      if (separator <= 0 || !/^\d+$/.test(current.slice(separator + 1)))
+        return undefined;
+      current = current.slice(0, separator);
+      if (intentKinds.has(current)) return current;
+    }
   };
   const spansPerElement = new Set<string>();
   for (const [index, value] of solvedSpans.entries()) {

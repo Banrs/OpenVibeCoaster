@@ -1,4 +1,5 @@
 import {
+  aabbFromPoints,
   compileTrack,
   vec3,
   vec3Add,
@@ -38,6 +39,7 @@ const defaultTolerances: SeamTolerances = {
   curvatureGradientPerM2: 1e-4,
   bankRad: 1e-4,
   bankDerivativeRadPerM: 1e-4,
+  bankSecondDerivativeRadPerM2: 1e-4,
   specificForceJumpG: 0.05,
   sustainedForceDeviationG: 0.05,
 };
@@ -52,6 +54,7 @@ const zeroResiduals = (): ResidualSet => ({
   curvatureVectorJumpPerM: 0,
   bankRad: 0,
   bankDerivativeRadPerM: 0,
+  bankSecondDerivativeRadPerM2: 0,
   specificForceJumpG: 0,
   sustainedForceDeviationG: 0,
 });
@@ -104,6 +107,31 @@ const bankValue = (span: SolvedSpan, u: number): number =>
   span.bank?.position(u) ?? 0;
 const bankDerivative = (span: SolvedSpan, u: number): number =>
   span.bank?.derivative(u, 1) ?? 0;
+const bankSecondDerivative = (span: SolvedSpan, u: number): number =>
+  span.bank?.derivative(u, 2) ?? 0;
+const subspan = <T extends number | Vec3>(
+  source: ParametricSpan<T>,
+  start: number,
+  end: number,
+): ParametricSpan<T> => {
+  const width = end - start;
+  return {
+    position: (u) => source.position(start + width * u),
+    derivative: (u, order = 1) => {
+      const value = source.derivative(start + width * u, order);
+      const scale = width ** order;
+      return (
+        typeof value === "number"
+          ? (value as number) * scale
+          : vec3(
+              (value as Vec3)[0] * scale,
+              (value as Vec3)[1] * scale,
+              (value as Vec3)[2] * scale,
+            )
+      ) as T;
+    },
+  };
+};
 const finiteTangent = (span: ParametricSpan<Vec3>, u: number): Vec3 => {
   const derivative = span.derivative(u, 1);
   const speed = vec3Length(derivative);
@@ -335,6 +363,9 @@ export const diagnoseSeams = (
       bankDerivativeRadPerM: Math.abs(
         bankDerivative(left, 1) - bankDerivative(right, 0),
       ),
+      bankSecondDerivativeRadPerM2: Math.abs(
+        bankSecondDerivative(left, 1) - bankSecondDerivative(right, 0),
+      ),
       specificForceJumpG: Math.abs(
         specificForceNormalG(left, 1, speed) -
           specificForceNormalG(right, 0, speed),
@@ -379,6 +410,8 @@ const exceedsHardTolerance = (
   residual.curvatureGradientPerM2 > tolerances.curvatureGradientPerM2 ||
   residual.bankRad > tolerances.bankRad ||
   residual.bankDerivativeRadPerM > tolerances.bankDerivativeRadPerM ||
+  residual.bankSecondDerivativeRadPerM2 >
+    tolerances.bankSecondDerivativeRadPerM2 ||
   residual.specificForceJumpG > tolerances.specificForceJumpG;
 
 const targetResidual = (target: HardTarget, pose: Pose): number => {
@@ -588,21 +621,50 @@ const buildChain = (
       } as AnySemanticElement;
       const geometry = buildElement(geometryElement, pose, referenceSpeed);
       const startBank = pose.bank;
-      const bumpAmplitude = element.parameters.bank - startBank;
-      const bank = QuinticScalarSpan.fromCoefficients([
-        startBank,
-        0,
-        16 * bumpAmplitude,
-        -32 * bumpAmplitude,
-        16 * bumpAmplitude,
-        0,
-      ]);
+      const peakBank = element.parameters.bank;
+      const sourceSpan = geometry.solvedSpans[0]!;
+      const leftBank = new QuinticScalarSpan({
+        v0: startBank,
+        d10: 0,
+        d20: 0,
+        v1: peakBank,
+        d11: 0,
+        d21: 0,
+      });
+      const rightBank = new QuinticScalarSpan({
+        v0: peakBank,
+        d10: 0,
+        d20: 0,
+        v1: startBank,
+        d11: 0,
+        d21: 0,
+      });
+      const leftGeometry = subspan(sourceSpan.span, 0, 0.5);
+      const rightGeometry = subspan(sourceSpan.span, 0.5, 1);
+      const leftPoints = Array.from({ length: 33 }, (_, i) =>
+        leftGeometry.position(i / 32),
+      );
+      const rightPoints = Array.from({ length: 33 }, (_, i) =>
+        rightGeometry.position(i / 32),
+      );
+      const leftSpan: SolvedSpan = {
+        ...sourceSpan,
+        id: `${sourceSpan.id}#0`,
+        span: leftGeometry,
+        bank: leftBank,
+        rollCoefficients: leftBank.coefficients,
+        bounds: aabbFromPoints(leftPoints),
+      };
+      const rightSpan: SolvedSpan = {
+        ...sourceSpan,
+        id: `${sourceSpan.id}#1`,
+        span: rightGeometry,
+        bank: rightBank,
+        rollCoefficients: rightBank.coefficients,
+        bounds: aabbFromPoints(rightPoints),
+      };
       built = {
-        solvedSpans: geometry.solvedSpans.map((span) => ({
-          ...span,
-          bank,
-          rollCoefficients: bank.coefficients,
-        })),
+        solvedSpans: [leftSpan, rightSpan],
         endPose: { ...geometry.endPose, bank: startBank },
       };
     }
@@ -755,6 +817,8 @@ const diagnosticResiduals = (
       seam.curvatureGradientPerM2 / tolerances.curvatureGradientPerM2,
       seam.bankRad / tolerances.bankRad,
       seam.bankDerivativeRadPerM / tolerances.bankDerivativeRadPerM,
+      seam.bankSecondDerivativeRadPerM2 /
+        tolerances.bankSecondDerivativeRadPerM2,
       seam.specificForceJumpG / tolerances.specificForceJumpG,
     );
     if (options.softForceTargetG !== undefined)
@@ -892,6 +956,14 @@ export const solveSemanticChain = (
                 "bank derivative",
                 seam.bankDerivativeRadPerM,
                 tolerances.bankDerivativeRadPerM,
+              ] as const)
+            : undefined,
+          seam.bankSecondDerivativeRadPerM2 >
+          tolerances.bankSecondDerivativeRadPerM2
+            ? ([
+                "bank second derivative",
+                seam.bankSecondDerivativeRadPerM2,
+                tolerances.bankSecondDerivativeRadPerM2,
               ] as const)
             : undefined,
           seam.specificForceJumpG > tolerances.specificForceJumpG
