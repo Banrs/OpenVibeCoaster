@@ -535,31 +535,41 @@ describe("render – defensive-copy amplification regression", () => {
       5,
     );
     const spy = spyTrackGetters(data);
-    const result = buildSupportColumns(data, env, 10);
-    expect(result.meshes.length).toBeGreaterThan(0);
-    // positions previously copied 3 times per support iteration (~12 for 4 supports)
-    expect(spy.counts.positions).toBeLessThanOrEqual(1);
-    spy.restore();
+    try {
+      const result = buildSupportColumns(data, env, 10);
+      expect(result.meshes.length).toBeGreaterThan(0);
+      // positions previously copied 3 times per support iteration (~12 for 4 supports)
+      expect(spy.counts.positions).toBeLessThanOrEqual(1);
+    } finally {
+      spy.restore();
+    }
   });
 
   it("buildTrackGeometries snapshots tangents once per build and elementIndices once when selection enabled", () => {
     const data = makeSimpleTrack();
-    // Without selection, tangents per tie was 3 per tie
+    // Without selection, tangents per tie was 3 per tie; elementIndices must be lazy (0 copies when disabled)
     const spy1 = spyTrackGetters(data);
-    const res1 = buildTrackGeometries(data, { metric: "height" });
-    expect(res1.leftRail).toBeInstanceOf(THREE.BufferGeometry);
-    expect(spy1.counts.tangents).toBeLessThanOrEqual(1);
-    spy1.restore();
+    try {
+      const res1 = buildTrackGeometries(data, { metric: "height" });
+      expect(res1.leftRail).toBeInstanceOf(THREE.BufferGeometry);
+      expect(spy1.counts.tangents).toBeLessThanOrEqual(1);
+      expect(spy1.counts.elementIndices).toBe(0);
+    } finally {
+      spy1.restore();
+    }
     // With selection enabled, elementIndices was copied per sample
     const spy2 = spyTrackGetters(data);
-    const res2 = buildTrackGeometries(data, {
-      metric: "height",
-      selectedElementIndex: 0,
-    });
-    expect(res2.leftRail).toBeInstanceOf(THREE.BufferGeometry);
-    expect(spy2.counts.elementIndices).toBeLessThanOrEqual(1);
-    expect(spy2.counts.tangents).toBeLessThanOrEqual(1);
-    spy2.restore();
+    try {
+      const res2 = buildTrackGeometries(data, {
+        metric: "height",
+        selectedElementIndex: 0,
+      });
+      expect(res2.leftRail).toBeInstanceOf(THREE.BufferGeometry);
+      expect(spy2.counts.elementIndices).toBeLessThanOrEqual(1);
+      expect(spy2.counts.tangents).toBeLessThanOrEqual(1);
+    } finally {
+      spy2.restore();
+    }
   });
 
   it("supports fallback also snapshots positions once", () => {
@@ -567,10 +577,13 @@ describe("render – defensive-copy amplification regression", () => {
     // Use env that will trigger fallback path (no hit on first passes)
     const env = createDeterministicHeightfield("fallback-reg", 4, 4, 0.1);
     const spy = spyTrackGetters(data);
-    const result = buildSupportColumns(data, env, 1000);
-    // May have zero or one mesh but positions still should be snapshot once
-    expect(spy.counts.positions).toBeLessThanOrEqual(1);
-    expect(result.meshes.length).toBeGreaterThanOrEqual(0);
-    spy.restore();
+    try {
+      const result = buildSupportColumns(data, env, 1000);
+      // May have zero or one mesh but positions still should be snapshot once
+      expect(spy.counts.positions).toBeLessThanOrEqual(1);
+      expect(result.meshes.length).toBeGreaterThanOrEqual(0);
+    } finally {
+      spy.restore();
+    }
   });
 });

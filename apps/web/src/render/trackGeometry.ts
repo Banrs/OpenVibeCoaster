@@ -216,7 +216,6 @@ export function buildTrackGeometries(
   const normalsArr = data.normals;
   const binormalsArr = data.binormals;
   const tangentsArr = data.tangents;
-  const elementIndicesArr = data.elementIndices;
 
   const metricRes = resolveMetricAvailability(data, metric, options.metricData);
   const available = metricRes.available;
@@ -231,8 +230,10 @@ export function buildTrackGeometries(
   }
   const range = Math.max(1e-6, max - min);
 
+  let elementIndicesArr: Uint32Array | null = null;
   const isSelected = (idx: number): boolean => {
     if (options.selectedElementIndex === undefined) return false;
+    if (elementIndicesArr === null) elementIndicesArr = data.elementIndices;
     return elementIndicesArr[idx] === options.selectedElementIndex;
   };
   const seamSet = new Set<number>();
