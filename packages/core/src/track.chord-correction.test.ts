@@ -5,6 +5,7 @@ import {
   chordErrorUpperBoundSeventhOrder,
   compileTrack,
 } from "./track";
+import type { CompiledTrackDataInput } from "./track";
 import { SeventhOrderHermiteSpan } from "./spans";
 import { vec3 } from "./math";
 import { checkedArcLength } from "./arc-length";
@@ -383,7 +384,7 @@ describe("chord correction – genuinely conservative", () => {
   });
 
   it("streaming checksum: byte-for-byte vs legacy and bounded large-array", () => {
-    const small = {
+    const small: CompiledTrackDataInput = {
       positions: new Float64Array([0, 0, 0, 10, 0, 0]),
       tangents: new Float64Array([1, 0, 0, 1, 0, 0]),
       normals: new Float64Array([0, 1, 0, 0, 1, 0]),
@@ -394,7 +395,7 @@ describe("chord correction – genuinely conservative", () => {
       bank: new Float64Array([0, 0]),
       bankDerivative: new Float64Array([0, 0]),
       zoneMasks: new Uint32Array([0, 0]),
-      zoneNames: ["a"] as const,
+      zoneNames: ["a"],
       elementIndices: new Uint32Array([0, 0]),
       elementBoundaries: new Uint32Array([0, 1]),
       parameters: new Float64Array([0, 1]),
@@ -448,12 +449,12 @@ describe("chord correction – genuinely conservative", () => {
         totalLength: small.totalLength,
       }),
     );
-    expect(_checksumForTest(small as any)).toBe(legacy);
-    // Large: 262144 numbers (positions 262144*3 would be huge, test with 262144 total numbers across one array)
+    expect(_checksumForTest(small)).toBe(legacy);
+    // Large: 262144-number typed arrays at advertised cap scale – streaming must not box/stringify the whole array
     const largePositions = new Float64Array(262144);
     for (let i = 0; i < largePositions.length; i++)
       largePositions[i] = i * 0.001;
-    const large: any = {
+    const large: CompiledTrackDataInput = {
       positions: largePositions,
       tangents: new Float64Array(262144),
       normals: new Float64Array(262144),
@@ -464,7 +465,7 @@ describe("chord correction – genuinely conservative", () => {
       bank: new Float64Array(262144 / 3),
       bankDerivative: new Float64Array(262144 / 3),
       zoneMasks: new Uint32Array(262144 / 3),
-      zoneNames: [] as const,
+      zoneNames: [],
       elementIndices: new Uint32Array(262144 / 3),
       elementBoundaries: new Uint32Array([0, 262144 / 3 - 1]),
       parameters: new Float64Array(262144 / 3),
