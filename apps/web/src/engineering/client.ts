@@ -9,12 +9,6 @@ import {
   validateEngineeringWorkerResponse,
 } from "./protocol";
 
-/**
- * Single-digit millisecond tolerance for tiny clock skew between worker
- * and main thread epoch-normalized clocks. Negative transfer raw values
- * within this window are clamped to 0; materially future worker timestamps
- * beyond the tolerance are treated as timing validation errors.
- */
 const CLOCK_SKEW_TOLERANCE_MS = 5;
 
 export interface WorkerLike {
@@ -22,396 +16,446 @@ export interface WorkerLike {
   terminate(): void;
   addEventListener?(type: string, listener: EventListener): void;
   removeEventListener?(type: string, listener: EventListener): void;
-  // fallback properties
-  onmessage?: ((ev: MessageEvent) => void) | null;
-  onerror?: ((ev: Event) => void) | null;
-  onmessageerror?: ((ev: MessageEvent) => void) | null;
+  onmessage?: ((event: MessageEvent) => void) | null;
+  onerror?: ((event: Event) => void) | null;
+  onmessageerror?: ((event: MessageEvent) => void) | null;
 }
 
 export type WorkerFactory = () => WorkerLike;
 
+type PendingEntry = {
+  readonly request: EngineeringWorkerRequest;
+  readonly resolve: (value: EngineeringWorkerSuccess) => void;
+  readonly reject: (error: Error) => void;
+  epoch: number;
+  postedEpoch?: number;
+};
+
+type Transition = { readonly token: symbol; readonly epoch: number };
+type TransitionState = readonly [Transition, WorkerBinding | null, number];
+type ListenerTuple = readonly [type: string, listener: EventListener];
+type PriorHandlers = readonly [
+  WorkerLike["onmessage"],
+  WorkerLike["onerror"],
+  WorkerLike["onmessageerror"],
+];
+type WorkerBinding = {
+  readonly worker: WorkerLike;
+  readonly epoch: number;
+  readonly listeners: readonly ListenerTuple[];
+  readonly priorHandlers?: PriorHandlers;
+};
+
+const safely = (action: () => void): void => {
+  try {
+    action();
+  } catch {}
+};
+
+const restoreHandlers = (worker: WorkerLike, prior: PriorHandlers): void => {
+  safely(() => void Reflect.set(worker, "onmessage", prior[0]));
+  safely(() => void Reflect.set(worker, "onerror", prior[1]));
+  safely(() => void Reflect.set(worker, "onmessageerror", prior[2]));
+};
+
+const requestError = (
+  code: string,
+  requestId: string,
+  message: string,
+): Error => Object.assign(new Error(message), { code, requestId });
+
 export class EngineeringWorkerClient {
-  private factory: WorkerFactory;
+  private readonly factory: WorkerFactory;
   private worker: WorkerLike | null = null;
+  private binding: WorkerBinding | null = null;
   private epoch = 0;
-  private pending = new Map<
-    string,
-    {
-      resolve: (v: EngineeringWorkerSuccess) => void;
-      reject: (e: Error) => void;
-      epoch: number;
-    }
-  >();
+  private readonly pending = new Map<string, PendingEntry>();
+  private transition: Transition | null = null;
   private terminated = false;
   private teardownOnce = false;
-
-  private readonly messageHandler = (ev: Event) =>
-    this.handleMessage(ev as MessageEvent);
-  private readonly errorHandler = (ev: Event) => this.handleError(ev);
-  private readonly messageErrorHandler = (ev: Event) => this.handleError(ev);
 
   public constructor(factory: WorkerFactory) {
     if (typeof factory !== "function")
       throw new Error("factory: expected function");
     this.factory = factory;
     try {
-      this.worker = this.createWorker();
+      this.publish(this.createBinding(this.epoch));
     } catch {
       this.worker = null;
+      this.binding = null;
     }
   }
 
-  private createWorker(): WorkerLike {
-    const w = this.factory();
+  private createBinding(epoch: number): WorkerBinding {
+    const worker = this.factory();
     if (
-      !w ||
-      typeof w.postMessage !== "function" ||
-      typeof w.terminate !== "function"
-    ) {
+      !worker ||
+      typeof worker.postMessage !== "function" ||
+      typeof worker.terminate !== "function"
+    )
       throw new Error("WorkerLike must implement postMessage and terminate");
-    }
-    if (w.addEventListener) {
-      w.addEventListener("message", this.messageHandler as EventListener);
-      w.addEventListener("error", this.errorHandler as EventListener);
+
+    let binding: WorkerBinding;
+    const current = (): boolean =>
+      this.binding === binding && this.epoch === epoch && !this.terminated;
+    const listeners: readonly ListenerTuple[] = [
+      [
+        "message",
+        (event) => current() && this.handleMessage(event as MessageEvent),
+      ],
+      ["error", (event) => current() && this.handleWorkerError(event)],
+      ["messageerror", (event) => current() && this.handleWorkerError(event)],
+    ];
+
+    if (worker.addEventListener && worker.removeEventListener) {
+      const attached: ListenerTuple[] = [];
       try {
-        w.addEventListener(
-          "messageerror",
-          this.messageErrorHandler as EventListener,
-        );
-      } catch {
-        // ignore
+        for (const listener of listeners) {
+          worker.addEventListener(listener[0], listener[1]);
+          attached.push(listener);
+        }
+      } catch (error) {
+        for (const listener of attached)
+          safely(() => worker.removeEventListener!(listener[0], listener[1]));
+        safely(() => worker.terminate());
+        throw error;
       }
-    } else {
-      (w as { onmessage?: unknown }).onmessage = this
-        .messageHandler as unknown as (ev: MessageEvent) => void;
-      (w as { onerror?: unknown }).onerror = this.errorHandler as unknown as (
-        ev: Event,
-      ) => void;
+      binding = { worker, epoch, listeners };
+      return binding;
     }
-    return w;
+
+    const priorHandlers: PriorHandlers = [
+      worker.onmessage,
+      worker.onerror,
+      worker.onmessageerror,
+    ];
+    try {
+      worker.onmessage = listeners[0]![1] as (event: MessageEvent) => void;
+      worker.onerror = listeners[1]![1] as (event: Event) => void;
+      worker.onmessageerror = listeners[2]![1] as (event: MessageEvent) => void;
+    } catch (error) {
+      restoreHandlers(worker, priorHandlers);
+      safely(() => worker.terminate());
+      throw error;
+    }
+    binding = { worker, epoch, listeners, priorHandlers };
+    return binding;
   }
 
-  private getClientEpochMs(): number {
+  private publish(binding: WorkerBinding): void {
+    this.binding = binding;
+    this.worker = binding.worker;
+  }
+
+  private dispose(binding: WorkerBinding | null): void {
+    if (!binding) return;
+    const { worker } = binding;
+    if (binding.priorHandlers) {
+      restoreHandlers(worker, binding.priorHandlers);
+    } else {
+      for (const listener of binding.listeners)
+        safely(() => worker.removeEventListener?.(listener[0], listener[1]));
+    }
+    safely(() => worker.terminate());
+  }
+
+  private beginTransition(): TransitionState {
+    const oldBinding = this.binding;
+    const oldEpoch = this.epoch;
+    const transition = {
+      token: Symbol("worker-transition"),
+      epoch: oldEpoch + 1,
+    };
+    this.worker = null;
+    this.binding = null;
+    this.epoch = transition.epoch;
+    this.transition = transition;
+    return [transition, oldBinding, oldEpoch];
+  }
+
+  private isCurrent(transition: Transition): boolean {
+    return this.transition === transition && !this.terminated && !this.worker;
+  }
+
+  private failReplacement(transition: Transition): void {
+    if (!this.isCurrent(transition)) return;
+    const entries = [...this.pending.entries()].filter(
+      ([, entry]) => entry.epoch === transition.epoch,
+    );
+    for (const [id] of entries) this.pending.delete(id);
+    this.transition = null;
+    for (const [id, entry] of entries)
+      entry.reject(requestError("worker-factory", id, "Worker factory failed"));
+  }
+
+  private replaceAndReplay(transition: Transition): void {
+    let candidate: WorkerBinding;
+    try {
+      candidate = this.createBinding(transition.epoch);
+    } catch {
+      this.failReplacement(transition);
+      return;
+    }
+    if (!this.isCurrent(transition)) {
+      this.dispose(candidate);
+      return;
+    }
+    this.publish(candidate);
+    this.replay(transition, candidate);
+  }
+
+  private replay(transition: Transition, binding: WorkerBinding): void {
+    while (
+      this.transition === transition &&
+      this.binding === binding &&
+      !this.terminated
+    ) {
+      const next = [...this.pending.entries()].find(
+        ([, entry]) =>
+          entry.epoch === transition.epoch &&
+          entry.postedEpoch !== transition.epoch,
+      );
+      if (!next) {
+        this.transition = null;
+        return;
+      }
+      const [id, entry] = next;
+      entry.postedEpoch = transition.epoch;
+      try {
+        binding.worker.postMessage(entry.request);
+      } catch (error) {
+        if (this.pending.get(id) !== entry) continue;
+        if (this.transition !== transition || this.binding !== binding) return;
+        this.pending.delete(id);
+        entry.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  }
+
+  private handleWorkerError(event: Event): void {
+    try {
+      const message =
+        (event as ErrorEvent).message ??
+        (event as { data?: unknown }).data?.toString() ??
+        "Worker error";
+      const [transition, oldBinding, oldEpoch] = this.beginTransition();
+      const affected = [...this.pending.entries()].filter(
+        ([, entry]) => entry.epoch === oldEpoch,
+      );
+      for (const [id] of affected) this.pending.delete(id);
+      this.dispose(oldBinding);
+      for (const [id, entry] of affected)
+        entry.reject(
+          requestError("worker-error", id, `worker-error: ${String(message)}`),
+        );
+      if (this.isCurrent(transition)) this.replaceAndReplay(transition);
+    } catch {
+      this.worker = null;
+      this.binding = null;
+    }
+  }
+
+  private clientEpochMs(): number {
     const now =
-      typeof performance !== "undefined" &&
-      typeof performance.now === "function"
+      typeof performance !== "undefined" && performance.now
         ? performance.now()
         : Date.now();
     const origin =
       typeof performance !== "undefined" &&
-      typeof performance.timeOrigin === "number" &&
       Number.isFinite(performance.timeOrigin)
         ? performance.timeOrigin
         : Date.now() - now;
     return origin + now;
   }
 
-  private recordTimingMeasures(simulationMs: number, transferMs: number): void {
-    if (
-      typeof performance !== "undefined" &&
-      typeof performance.measure === "function"
-    ) {
-      try {
-        performance.measure("ovc:simulation", {
-          start: 0,
-          duration: simulationMs,
-        });
-      } catch {
-        // ignore measure errors — success must still settle
-      }
-      try {
-        performance.measure("ovc:worker-transfer", {
-          start: 0,
-          duration: transferMs,
-        });
-      } catch {
-        // ignore — non-fatal to engineering success
-      }
-    }
+  private recordTimings(simulationMs: number, transferMs: number): void {
+    if (typeof performance === "undefined" || !performance.measure) return;
+    const measures = [
+      ["ovc:simulation", simulationMs],
+      ["ovc:worker-transfer", transferMs],
+    ] as const;
+    for (const [name, duration] of measures)
+      safely(() => performance.measure(name, { start: 0, duration }));
   }
 
-  private handleMessage(ev: MessageEvent): void {
+  private handleMessage(event: MessageEvent): void {
     try {
-      const receiptEpochMs = this.getClientEpochMs();
-      const data = (ev as MessageEvent).data ?? (ev as unknown);
-      const response = data as EngineeringWorkerResponse;
-      if (
-        !response ||
-        typeof (response as { requestId?: unknown }).requestId !== "string"
-      )
-        return;
+      const receiptEpochMs = this.clientEpochMs();
+      const response = (event.data ?? event) as EngineeringWorkerResponse;
+      if (!response || typeof response.requestId !== "string") return;
       const entry = this.pending.get(response.requestId);
-      if (!entry) return; // stale ID
+      if (!entry) return;
       if (entry.epoch !== this.epoch) {
         this.pending.delete(response.requestId);
-        return; // old epoch
+        entry.reject(
+          requestError(
+            "epoch-mismatch",
+            response.requestId,
+            `Stale epoch for ${response.requestId}`,
+          ),
+        );
+        return;
       }
-      let validated: EngineeringWorkerResponse;
       try {
         validateEngineeringWorkerResponse(response);
-        validated = response;
-      } catch (err) {
+      } catch (error) {
         this.pending.delete(response.requestId);
-        entry.reject(err instanceof Error ? err : new Error(String(err)));
+        entry.reject(error instanceof Error ? error : new Error(String(error)));
         return;
       }
       this.pending.delete(response.requestId);
-      if (validated.type === "success") {
-        const raw = receiptEpochMs - validated.timings.workerSendEpochMs;
-        if (raw < -CLOCK_SKEW_TOLERANCE_MS) {
-          const err = Object.assign(
-            new Error(
-              `Worker timestamp ${(-raw).toFixed(1)}ms in the future exceeds ${CLOCK_SKEW_TOLERANCE_MS}ms tolerance`,
+      if (response.type === "success") {
+        const transferMs = receiptEpochMs - response.timings.workerSendEpochMs;
+        if (transferMs < -CLOCK_SKEW_TOLERANCE_MS) {
+          entry.reject(
+            Object.assign(
+              requestError(
+                "clock-skew",
+                response.requestId,
+                `Worker timestamp ${(-transferMs).toFixed(1)}ms in the future exceeds ${CLOCK_SKEW_TOLERANCE_MS}ms tolerance`,
+              ),
+              { rawTransferMs: transferMs },
             ),
-            {
-              code: "clock-skew",
-              requestId: validated.requestId,
-              rawTransferMs: raw,
-            },
           );
-          entry.reject(err);
           return;
         }
-        const transferMs = raw < 0 ? 0 : raw;
-        try {
-          this.recordTimingMeasures(validated.timings.simulationMs, transferMs);
-        } catch {
-          // never throw from timing
-        }
-        entry.resolve(validated);
-      } else if (validated.type === "failure") {
-        const err = Object.assign(
-          new Error(validated.diagnostics[0]?.message ?? "Engineering failure"),
-          {
-            diagnostics: validated.diagnostics,
-            relaxations: validated.relaxations,
-            requestId: validated.requestId,
-            code: "failure",
-          },
+        this.recordTimings(
+          response.timings.simulationMs,
+          Math.max(0, transferMs),
         );
-        entry.reject(err);
-      } else if (validated.type === "cancelled") {
-        const err = Object.assign(
-          new Error(`Request ${validated.requestId} cancelled`),
-          {
-            code: "cancelled",
-            requestId: validated.requestId,
-          },
+        entry.resolve(response);
+      } else if (response.type === "failure") {
+        entry.reject(
+          Object.assign(
+            requestError(
+              "failure",
+              response.requestId,
+              response.diagnostics[0]?.message ?? "Engineering failure",
+            ),
+            {
+              diagnostics: response.diagnostics,
+              relaxations: response.relaxations,
+            },
+          ),
         );
-        entry.reject(err);
       } else {
         entry.reject(
-          new Error(
-            `Unknown response type ${(validated as { type: unknown }).type}`,
+          requestError(
+            "cancelled",
+            response.requestId,
+            `Request ${response.requestId} cancelled`,
           ),
         );
       }
-    } catch {
-      // Never throw from event handler
-    }
-  }
-
-  private handleError(ev: Event): void {
-    try {
-      const message =
-        (ev as ErrorEvent).message ??
-        (ev as { data?: unknown })?.data?.toString() ??
-        "Worker error";
-      // Reject all pending for current epoch
-      for (const [id, entry] of this.pending.entries()) {
-        if (entry.epoch !== this.epoch) continue;
-        this.pending.delete(id);
-        entry.reject(
-          Object.assign(new Error(String(message)), {
-            code: "worker-error",
-            requestId: id,
-          }),
-        );
-      }
-      if (this.terminated) return;
-      // Advance epoch and recreate worker for subsequent work
-      let previousWorker: WorkerLike | null = null;
-      try {
-        previousWorker = this.worker;
-        previousWorker?.terminate();
-      } catch {
-        // ignore
-      }
-      this.epoch += 1;
-      this.worker = null;
-      try {
-        this.worker = this.createWorker();
-      } catch {
-        // Factory threw during recreate – never retain terminated worker, keep epoch advanced, reject already done; next operation will retry
-        this.worker = null;
-      }
-      // Ensure terminated worker is not retained
-      void previousWorker;
-    } catch {
-      // Never throw from event handler; ensure worker not retained if factory threw
-      this.worker = null;
-    }
-  }
-
-  private ensureWorker(): void {
-    if (this.terminated) return;
-    if (this.worker) return;
-    try {
-      this.worker = this.createWorker();
-    } catch {
-      this.worker = null;
-    }
+    } catch {}
   }
 
   private enqueue(
     request: EngineeringWorkerRequest,
   ): Promise<EngineeringWorkerSuccess> {
-    if (this.terminated) {
+    if (this.terminated)
       return Promise.reject(
-        Object.assign(new Error("Client terminated"), { code: "teardown" }),
+        requestError("teardown", request.requestId, "Client terminated"),
       );
-    }
-    // Validate request shape synchronously to prove exact validation
     try {
       validateEngineeringWorkerRequest(request);
-    } catch (err) {
+    } catch (error) {
       return Promise.reject(
-        err instanceof Error ? err : new Error(String(err)),
+        error instanceof Error ? error : new Error(String(error)),
       );
     }
-    const requestId = request.requestId;
-    if (this.pending.has(requestId)) {
-      return Promise.reject(new Error(`Duplicate requestId ${requestId}`));
-    }
-    this.ensureWorker();
-    if (!this.worker) {
+    if (this.pending.has(request.requestId))
       return Promise.reject(
-        Object.assign(new Error("Worker factory failed"), {
-          code: "worker-factory",
-          requestId,
-        }),
+        new Error(`Duplicate requestId ${request.requestId}`),
       );
-    }
-    return new Promise<EngineeringWorkerSuccess>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject, epoch: this.epoch });
+
+    return new Promise((resolve, reject) => {
+      const entry: PendingEntry = {
+        request,
+        resolve,
+        reject,
+        epoch: this.epoch,
+      };
+      this.pending.set(request.requestId, entry);
+      if (this.transition) return;
+      if (!this.binding) {
+        const transition = {
+          token: Symbol("worker-retry"),
+          epoch: this.epoch,
+        };
+        this.transition = transition;
+        this.replaceAndReplay(transition);
+        return;
+      }
+      entry.postedEpoch = this.epoch;
       try {
-        this.worker?.postMessage(request);
-      } catch (err) {
-        this.pending.delete(requestId);
-        reject(err instanceof Error ? err : new Error(String(err)));
+        this.binding.worker.postMessage(request);
+      } catch (error) {
+        if (this.pending.get(request.requestId) !== entry) return;
+        this.pending.delete(request.requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
   }
 
-  public generate(
-    requestId: string,
-    intent: DesignIntentV1,
-  ): Promise<EngineeringWorkerSuccess> {
+  public generate(requestId: string, intent: DesignIntentV1) {
     return this.enqueue({ type: "generate", requestId, intent });
   }
 
-  public regenerate(
-    requestId: string,
-    file: unknown,
-    elementId: string,
-  ): Promise<EngineeringWorkerSuccess> {
+  public regenerate(requestId: string, file: unknown, elementId: string) {
     return this.enqueue({ type: "regenerate", requestId, file, elementId });
   }
 
-  public compileSimulate(
-    requestId: string,
-    file: unknown,
-  ): Promise<EngineeringWorkerSuccess> {
+  public compileSimulate(requestId: string, file: unknown) {
     return this.enqueue({ type: "compile-simulate", requestId, file });
   }
 
-  // Alias for spec naming: compile-simulate hyphen
-  public ["compile-simulate"](
-    requestId: string,
-    file: unknown,
-  ): Promise<EngineeringWorkerSuccess> {
+  public ["compile-simulate"](requestId: string, file: unknown) {
     return this.compileSimulate(requestId, file);
   }
 
   public cancel(requestId: string): void {
     try {
-      if (this.terminated) return;
-      if (typeof requestId !== "string" || requestId.trim().length === 0)
-        return;
+      if (this.terminated || !requestId.trim()) return;
       const entry = this.pending.get(requestId);
-      if (!entry) return; // cancel-after-response: ignore
+      if (!entry) return;
       if (entry.epoch !== this.epoch) {
         this.pending.delete(requestId);
-        return; // old epoch stale
-      }
-      const activeId = this.pending.keys().next().value as string | undefined;
-      const isActive = activeId === requestId;
-      if (isActive) {
-        // Must terminate worker because synchronous engineering occupies event loop
-        const w = this.worker;
-        if (w) {
-          try {
-            w.removeEventListener?.(
-              "message",
-              this.messageHandler as EventListener,
-            );
-          } catch {}
-          try {
-            w.removeEventListener?.(
-              "error",
-              this.errorHandler as EventListener,
-            );
-          } catch {}
-          try {
-            w.removeEventListener?.(
-              "messageerror",
-              this.messageErrorHandler as EventListener,
-            );
-          } catch {}
-          try {
-            (w as { onmessage?: unknown }).onmessage = null;
-          } catch {}
-          try {
-            (w as { onerror?: unknown }).onerror = null;
-          } catch {}
-          try {
-            w.terminate();
-          } catch {}
-        }
-        this.epoch += 1;
-        this.pending.delete(requestId);
         entry.reject(
-          Object.assign(new Error(`Request ${requestId} cancelled`), {
-            code: "cancelled",
-            requestId,
-          }),
+          requestError("epoch-mismatch", requestId, `Stale ${requestId}`),
         );
-        this.worker = null;
-        if (!this.terminated) {
-          try {
-            this.worker = this.createWorker();
-          } catch {
-            this.worker = null;
-          }
-        }
-      } else {
-        // Queued (not active) — reject exactly that request without terminating
-        this.pending.delete(requestId);
-        entry.reject(
-          Object.assign(new Error(`Request ${requestId} cancelled`), {
-            code: "cancelled",
-            requestId,
-          }),
-        );
-        try {
-          this.worker?.postMessage({
-            type: "cancel",
-            requestId,
-          } as EngineeringWorkerRequest);
-        } catch {}
+        return;
       }
+      const activeId = [...this.pending.entries()].find(
+        ([, candidate]) => candidate.postedEpoch === this.epoch,
+      )?.[0];
+      this.pending.delete(requestId);
+      if (activeId !== requestId) {
+        entry.reject(
+          requestError(
+            "cancelled",
+            requestId,
+            `Request ${requestId} cancelled`,
+          ),
+        );
+        if (entry.postedEpoch === this.epoch)
+          safely(() => this.worker?.postMessage({ type: "cancel", requestId }));
+        return;
+      }
+
+      const [transition, oldBinding, oldEpoch] = this.beginTransition();
+      for (const candidate of this.pending.values())
+        if (candidate.epoch === oldEpoch) {
+          candidate.epoch = transition.epoch;
+          delete candidate.postedEpoch;
+        }
+      this.dispose(oldBinding);
+      entry.reject(
+        requestError("cancelled", requestId, `Request ${requestId} cancelled`),
+      );
+      if (this.isCurrent(transition)) this.replaceAndReplay(transition);
     } catch {
-      // Synchronous cancel never throws
+      // Cancellation is synchronous and never throws.
     }
   }
 
@@ -419,42 +463,23 @@ export class EngineeringWorkerClient {
     if (this.teardownOnce) return;
     this.teardownOnce = true;
     this.terminated = true;
-    for (const [id, entry] of this.pending.entries()) {
-      entry.reject(
-        Object.assign(new Error(`Client teardown: request ${id} cancelled`), {
-          code: "teardown",
-          requestId: id,
-        }),
-      );
-    }
+    const entries = [...this.pending.entries()];
+    const binding = this.binding;
     this.pending.clear();
-    if (this.worker) {
-      try {
-        this.worker.removeEventListener?.(
-          "message",
-          this.messageHandler as EventListener,
-        );
-      } catch {}
-      try {
-        this.worker.removeEventListener?.(
-          "error",
-          this.errorHandler as EventListener,
-        );
-      } catch {}
-      try {
-        this.worker.removeEventListener?.(
-          "messageerror",
-          this.messageErrorHandler as EventListener,
-        );
-      } catch {}
-      try {
-        this.worker.terminate();
-      } catch {}
-      this.worker = null;
-    }
+    this.worker = null;
+    this.binding = null;
+    this.transition = null;
+    this.dispose(binding);
+    for (const [id, entry] of entries)
+      entry.reject(
+        requestError(
+          "teardown",
+          id,
+          `Client teardown: request ${id} cancelled`,
+        ),
+      );
   }
 
-  // Exposed for tests to prove lifecycle ownership
   public getEpoch(): number {
     return this.epoch;
   }

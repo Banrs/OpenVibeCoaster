@@ -1044,8 +1044,10 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
     expect((workers[0] as any).onmessage).toBe(pm);
     expect((workers[0] as any).onerror).toBe(pe);
     expect((workers[0] as any).onmessageerror).toBe(undefined);
-    const w2 = workers[1] as any;
-    expect(w2.posted.map((m) => (m as any).requestId)).toEqual(["q2"]);
+    const w2 = workers[1] as WorkerLike & { posted: unknown[] };
+    expect(
+      w2.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q2"]);
     client.cancel("q2");
     await expect(p2).rejects.toThrow(/cancelled/);
   });
@@ -1109,15 +1111,17 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
     const p1 = client.generate("q1", validIntent);
     const p2 = client.generate("q2", validIntent);
     const p3 = client.generate("q3", validIntent);
+    void p2.catch(() => {});
+    void p3.catch(() => {});
     client.cancel("q1");
     await expect(p1).rejects.toThrow(/cancelled/);
     await expect(p2).rejects.toThrow(/worker-error/i);
     await expect(p3).rejects.toThrow(/worker-error/i);
     const crashing = workers[1]!;
     expect(crashing.posted.map((m: any) => m.requestId)).toEqual(["q2"]);
-    const allPosted = workers.flatMap((w) =>
-      w.posted.map((m: any) => m.requestId),
-    );
+    const allPosted = workers
+      .slice(1)
+      .flatMap((w) => w.posted.map((m: any) => m.requestId));
     expect(allPosted.filter((id) => id === "q3")).toHaveLength(0);
     expect(client.getWorker()).not.toBe(crashing);
   });
