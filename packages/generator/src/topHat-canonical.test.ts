@@ -273,7 +273,7 @@ describe("canonical top-hat coefficients", () => {
   });
 
   it("round-trips every canonical child without re-solving", () => {
-    const compiled = compileSemanticChain(elements, { startPose, samples: 32 });
+    const compiled = compileSemanticChain(elements, { startPose });
     expect(compiled.track).toBeDefined();
     const solvedSpans = compiled.solvedSpans.map((span) =>
       serializeSolvedSpanV1(span, span.kind, span.kind === "topHat" ? 20 : 12),
@@ -296,7 +296,7 @@ describe("canonical top-hat coefficients", () => {
       pinnedElementIds: [],
     };
     const reconstructed = solvedSpans.map(reconstructSolvedSpan);
-    const reconstructedTrack = compileTrack(reconstructed, { samples: 32 });
+    const reconstructedTrack = compileTrack(reconstructed);
     expect(reconstructedTrack.positions).toEqual(compiled.track!.positions);
     expect(reconstructedTrack.tangents).toEqual(compiled.track!.tangents);
     expect(reconstructedTrack.normals).toEqual(compiled.track!.normals);

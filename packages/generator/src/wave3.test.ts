@@ -346,13 +346,18 @@ describe("wave 3 deterministic generator", () => {
     );
     expect(first.serializedFile).toBe(second.serializedFile);
     expect(first.track.checksum).toBe(second.track.checksum);
-    expect(compileCoasterFile(first.file, { samples: 32 }).track.checksum).toBe(
+    expect(compileCoasterFile(first.file).track.checksum).toBe(
       first.track.checksum,
     );
-    expect(
-      compileCoasterFile(first.serializedFile, { samples: 32 }).track.checksum,
-    ).toBe(
-      compileCoasterFile(second.serializedFile, { samples: 32 }).track.checksum,
+    expect(compileCoasterFile(first.serializedFile).track.checksum).toBe(
+      compileCoasterFile(second.serializedFile).track.checksum,
+    );
+    // Preview fixed sampling is deterministic but must not weaken stored checksum
+    const previewA = compileCoasterFile(first.file, { samples: 32 });
+    const previewB = compileCoasterFile(first.serializedFile, { samples: 32 });
+    expect(previewA.track.checksum).toBe(previewB.track.checksum);
+    expect(previewA.file.compiledDataChecksum).toBe(
+      first.file.compiledDataChecksum,
     );
     expect(first.diagnostics).toEqual(second.diagnostics);
   });

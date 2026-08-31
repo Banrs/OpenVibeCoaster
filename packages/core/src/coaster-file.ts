@@ -1,4 +1,4 @@
-import { compileTrack } from "./track";
+import { CANONICAL_TRACK_COMPILE_OPTIONS, compileTrack } from "./track";
 import { SeventhOrderHermiteSpan, QuinticScalarSpan } from "./spans";
 import type { Aabb, Vec3 } from "./math";
 import type {
@@ -906,21 +906,64 @@ export const compileCoasterFile = (
   const solvedSpans = parsed.solvedSpans.map(reconstructSolvedSpan);
   if (solvedSpans.length === 0)
     throw new CoasterFileError("solvedSpans: expected at least one span");
-  const canonicalTrack = compileTrack(solvedSpans, { samples: 32 });
+  // Canonical adaptive checksum (deterministic, no wall clock)
+  let canonicalTrack: ReturnType<typeof compileTrack>;
+  try {
+    canonicalTrack = compileTrack(solvedSpans, CANONICAL_TRACK_COMPILE_OPTIONS);
+  } catch (error) {
+    throw new CoasterFileError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  let fileForReturn: CoasterFileV1 = parsed;
+  let checksumMatched = false;
   if (
-    canonicalTrack.checksum.toLowerCase() !==
+    canonicalTrack.checksum.toLowerCase() ===
     parsed.compiledDataChecksum.toLowerCase()
-  )
+  ) {
+    checksumMatched = true;
+  } else {
+    // Historical decoder-only migration: try fixed 32 fallback, preserve coefficients
+    let legacyTrack: ReturnType<typeof compileTrack> | undefined;
+    try {
+      legacyTrack = compileTrack(solvedSpans, { samples: 32 });
+    } catch {
+      legacyTrack = undefined;
+    }
+    if (
+      legacyTrack &&
+      legacyTrack.checksum.toLowerCase() ===
+        parsed.compiledDataChecksum.toLowerCase()
+    ) {
+      checksumMatched = true;
+      // Preserve coefficients, update in-memory checksum to canonical
+      const migrated = {
+        ...parsed,
+        compiledDataChecksum: canonicalTrack.checksum,
+      } as CoasterFileV1;
+      // Re-validate migrated file shape without re-checking legacy checksum
+      // Keep original validated intent/solvedSpans; only checksum updated in memory
+      fileForReturn = Object.freeze(
+        Object.defineProperty({ ...migrated }, "design", {
+          value: (parsed as unknown as { design: unknown }).design,
+          enumerable: false,
+        }) as unknown as CoasterFileV1,
+      );
+    }
+  }
+  if (!checksumMatched)
     throw new CoasterFileError(
       `compiledDataChecksum: checksum mismatch (expected ${parsed.compiledDataChecksum}, reconstructed ${canonicalTrack.checksum})`,
     );
+  // Preview fixed sampling cannot weaken stored checksum; track returned may be preview, but file's stored checksum remains canonical
+  const previewTrack =
+    options.samples === undefined
+      ? canonicalTrack
+      : compileTrack(solvedSpans, options);
   return {
-    file: parsed,
+    file: fileForReturn,
     solvedSpans,
-    track: compileTrack(
-      solvedSpans,
-      options.samples === undefined ? { samples: 32 } : options,
-    ),
+    track: previewTrack,
   };
 };
 export const loadCoasterFile = compileCoasterFile;

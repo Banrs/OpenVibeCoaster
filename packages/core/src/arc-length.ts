@@ -1,6 +1,7 @@
 import type { ParametricSpan } from "./spans";
 import { vec3Length } from "./math";
 import type { Vec3 } from "./math";
+import { TrackCompileError } from "./compile-error";
 
 const nodes: readonly [number, number, number, number, number] = [
   0.0, -0.5384693101056831, 0.5384693101056831, -0.906179845938664,
@@ -229,3 +230,248 @@ export function invertArcLength(
 export const arcLengthToParameter = invertArcLength;
 export const integrateArcLength = arcLength;
 export const buildArcLengthLUT = buildArcLengthLut;
+
+// --- Checked Gauss integration & bracketed Newton/bisection inversion (fail-closed) ---
+
+const finiteChecked = (value: number, label: string): number => {
+  if (!Number.isFinite(value))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      `${label} must be finite`,
+    );
+  return value;
+};
+
+const checkedSpeed = (span: PositionSpan, u: number): number => {
+  let derivative: Vec3;
+  try {
+    derivative = span.derivative(u, 1);
+  } catch (error) {
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (
+    !Array.isArray(derivative) ||
+    derivative.length !== 3 ||
+    !derivative.every(Number.isFinite)
+  )
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Span derivative must be finite 3-vector",
+    );
+  const value = Math.hypot(derivative[0], derivative[1], derivative[2]);
+  if (!Number.isFinite(value) || !(value > MIN_SPEED))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "A span derivative must be finite and non-zero",
+    );
+  return value;
+};
+
+const checkedGauss5 = (span: PositionSpan, a: number, b: number): number => {
+  if (!Number.isFinite(a) || !Number.isFinite(b))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Integration interval must be finite",
+    );
+  const half = (b - a) / 2;
+  const mid = (a + b) / 2;
+  if (!Number.isFinite(half) || !Number.isFinite(mid))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Integration interval is non-finite",
+    );
+  let sum = 0;
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index]!;
+    const weight = weights[index]!;
+    const u = mid + half * node;
+    if (!Number.isFinite(u) || u < a - 1e-12 || u > b + 1e-12) {
+      // clamp but still evaluate; Gauss nodes are inside (a,b)
+    }
+    const v = checkedSpeed(span, u);
+    sum += weight * v;
+  }
+  const result = half * sum;
+  return finiteChecked(result, "Gauss quadrature");
+};
+
+const checkedAdaptive = (
+  span: PositionSpan,
+  a: number,
+  b: number,
+  tolerance: number,
+  whole: number,
+  depth: number,
+): number => {
+  if (!Number.isFinite(tolerance) || !(tolerance > 0))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Integration tolerance must be positive and finite",
+    );
+  const mid = (a + b) / 2;
+  if (!Number.isFinite(mid) || mid <= a || mid >= b) {
+    if (depth <= 0)
+      throw new TrackCompileError(
+        "INTEGRATION_FAILED",
+        "Arc length integration reached parameter resolution",
+      );
+    // degenerate interval due to floating point, treat as whole
+    return whole;
+  }
+  const left = checkedGauss5(span, a, mid);
+  const right = checkedGauss5(span, mid, b);
+  const err = Math.abs(left + right - whole);
+  const tol = tolerance * (1 + Math.abs(left + right));
+  if (!Number.isFinite(err) || !Number.isFinite(tol))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Arc length integration error is non-finite",
+    );
+  if (depth <= 0) {
+    if (err <= tol) return left + right;
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Arc length integration failed to converge",
+    );
+  }
+  if (err <= tol) return left + right;
+  return (
+    checkedAdaptive(span, a, mid, tolerance / 2, left, depth - 1) +
+    checkedAdaptive(span, mid, b, tolerance / 2, right, depth - 1)
+  );
+};
+
+export const checkedArcLength = (
+  span: PositionSpan,
+  a = 0,
+  b = 1,
+  tolerance = 1e-9,
+): number => {
+  if (!Number.isFinite(a) || !Number.isFinite(b))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Arc length interval must be finite",
+    );
+  if (b < a) return checkedArcLength(span, b, a, tolerance);
+  if (a === b) return 0;
+  if (a < 0 || b > 1 || a > b)
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Arc length interval must be in [0,1]",
+    );
+  // Validate speed regularity over interval (reuse existing helper but map error)
+  try {
+    validateSpeedRegularity(span, a, b);
+  } catch (error) {
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  // Also validate endpoints
+  checkedSpeed(span, a);
+  checkedSpeed(span, b);
+  const whole = checkedGauss5(span, a, b);
+  return checkedAdaptive(span, a, b, Math.max(tolerance, 1e-14), whole, 18);
+};
+
+export const checkedInvertArcLength = (
+  span: PositionSpan,
+  targetDistance: number,
+  options: { readonly totalLength?: number; readonly tolerance?: number } = {},
+): number => {
+  const tolerance = options.tolerance ?? 1e-10;
+  if (!Number.isFinite(targetDistance))
+    throw new TrackCompileError(
+      "INVERSION_FAILED",
+      "Target distance must be finite",
+    );
+  if (!Number.isFinite(tolerance) || !(tolerance > 0))
+    throw new TrackCompileError(
+      "INVERSION_FAILED",
+      "Inversion tolerance must be positive and finite",
+    );
+  let totalLength = options.totalLength;
+  if (totalLength === undefined)
+    totalLength = checkedArcLength(span, 0, 1, 1e-9);
+  if (!Number.isFinite(totalLength) || !(totalLength > 0))
+    throw new TrackCompileError(
+      "INVERSION_FAILED",
+      "Total length must be finite and positive",
+    );
+  if (targetDistance <= 0) return 0;
+  if (targetDistance >= totalLength) return 1;
+  // Validate bracket
+  let low = 0;
+  let high = 1;
+  let lowDist = 0;
+  let highDist = totalLength;
+  // Ensure speed valid at bracket ends
+  checkedSpeed(span, low);
+  checkedSpeed(span, high);
+  // Initial guess linear
+  let u =
+    low + ((targetDistance - lowDist) / (highDist - lowDist)) * (high - low);
+  if (!Number.isFinite(u)) u = (low + high) / 2;
+  u = Math.max(low, Math.min(high, u));
+  for (let iteration = 0; iteration < 40; iteration += 1) {
+    let travelled: number;
+    try {
+      travelled = checkedArcLength(span, 0, u, 1e-11);
+    } catch (error) {
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const error = travelled - targetDistance;
+    if (!Number.isFinite(error))
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        "Inversion error is non-finite",
+      );
+    if (Math.abs(error) <= tolerance * Math.max(1, totalLength)) return u;
+    if (error > 0) {
+      high = u;
+      highDist = travelled;
+    } else {
+      low = u;
+      lowDist = travelled;
+    }
+    if (!(high > low))
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        "Inversion bracket collapsed",
+      );
+    if (high - low < 1e-14)
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        "Inversion reached parameter resolution",
+      );
+    let derivative: number;
+    try {
+      derivative = checkedSpeed(span, u);
+    } catch {
+      derivative = Number.NaN;
+    }
+    const candidate =
+      Number.isFinite(derivative) && Math.abs(derivative) > MIN_NEWTON_SPEED
+        ? u - error / derivative
+        : Number.NaN;
+    if (Number.isFinite(candidate) && candidate > low && candidate < high)
+      u = candidate;
+    else u = (low + high) / 2;
+    if (!Number.isFinite(u))
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        "Inversion candidate is non-finite",
+      );
+  }
+  throw new TrackCompileError(
+    "INVERSION_FAILED",
+    "Arc length inversion failed to converge",
+  );
+};

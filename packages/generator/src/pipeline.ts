@@ -1,7 +1,9 @@
 import {
+  CANONICAL_TRACK_COMPILE_OPTIONS,
   CoasterFileError,
   SeventhOrderHermiteSpan,
   QuinticScalarSpan,
+  TrackCompileError,
   Xoshiro128ss,
   arcLength,
   compileCoasterFile,
@@ -64,6 +66,22 @@ import type {
   HardTarget,
   ElementParameterMap,
 } from "./types";
+
+const toCompileFatalDiagnostic = (
+  error: unknown,
+  relatedIds: readonly string[] = [],
+): Diagnostic => {
+  const code =
+    error instanceof TrackCompileError ? error.code : "COMPILE_FAILED";
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    code,
+    severity: "fatal",
+    provenance: "PROJECT_ENGINEERING_LIMIT",
+    message,
+    relatedIds,
+  };
+};
 
 const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
   const rng = new Xoshiro128ss(seed);
@@ -1415,12 +1433,19 @@ const evaluateCandidate = (
     )
     .map((constraint) => (constraint.target ?? constraint.value) as number)
     .reduce((maximum, value) => Math.max(maximum, value), 0);
-  const track = intent.targets.some((target) => target.kind === "total-length")
-    ? compileTrack(spans, { samples: options.samples ?? 128 })
-    : undefined;
+  let track: ReturnType<typeof compileTrack> | undefined;
+  if (intent.targets.some((target) => target.kind === "total-length")) {
+    try {
+      track = compileTrack(spans, { samples: options.samples ?? 128 });
+    } catch (error) {
+      diagnostics.push(toCompileFatalDiagnostic(error));
+      failedHardRequirementIds.add("track-compile");
+      track = undefined;
+    }
+  }
   for (const target of intent.targets) {
-    if (target.kind === "total-length") {
-      const actual = track!.totalLength;
+    if (target.kind === "total-length" && track) {
+      const actual = track.totalLength;
       const limit = typeof target.target === "number" ? target.target : 0;
       const error = Math.abs(actual - limit);
       if (error > 1e-4) {
@@ -1530,7 +1555,41 @@ const buildFileResult = (
     return serializeSolvedSpanV1(span, element.type, length);
   });
   const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
-  const canonicalTrack = compileTrack(canonicalSpans, { samples: 32 });
+  let canonicalTrack: ReturnType<typeof compileTrack>;
+  try {
+    canonicalTrack = compileTrack(
+      canonicalSpans,
+      CANONICAL_TRACK_COMPILE_OPTIONS,
+    );
+  } catch (error) {
+    const diagnostic = toCompileFatalDiagnostic(error);
+    // Return early generation result with fatal diagnostic if canonical compilation fails
+    const fallbackResult: GenerationResult = {
+      feasible: false,
+      intent: canonicalIntentCopy(intent),
+      elements: ownedElements(evaluation.elements),
+      solvedSpans: Object.freeze(canonicalSpans),
+      track: undefined as unknown as ReturnType<typeof compileTrack>,
+      file: undefined as unknown as CoasterFileV1,
+      serializedFile: "",
+      diagnostics: Object.freeze([...evaluation.diagnostics, diagnostic]),
+      relaxations: Object.freeze(relaxationEvidence.map((item) => item.change)),
+      relaxationEvidence: Object.freeze(relaxationEvidence),
+      candidatesTested,
+      selectedLmIterations: evaluation.solved.lmIterations,
+      candidateLmIterations: Object.freeze([...candidateLmIterations]),
+      candidateLmWork: candidateLmIterations.reduce((sum, it) => sum + it, 0),
+      relaxationLmIterations: Object.freeze([...relaxationLmIterations]),
+      relaxationLmWork: relaxationLmIterations.reduce((sum, it) => sum + it, 0),
+      lmIterations:
+        candidateLmIterations.reduce((sum, it) => sum + it, 0) +
+        relaxationLmIterations.reduce((sum, it) => sum + it, 0),
+      spanHashes: {},
+      spanBytes: {},
+      options: ownedGenerationOptions(options),
+    };
+    return deepFreeze(fallbackResult);
+  }
   const isRequirementIntent = isRequirementStyleDirectedIntent(intent);
   const effectiveIntent: DesignIntentV1 =
     isRequirementIntent || intent.mode !== "directed"
@@ -1572,12 +1631,20 @@ const buildFileResult = (
       hashes[element.id] = hashSpan(first);
     }
   }
-  const track =
-    options.samples === undefined || options.samples === 32
-      ? canonicalTrack
-      : compileTrack(canonicalSpans, { samples: options.samples });
+  let track: ReturnType<typeof compileTrack>;
+  let compileDiagnostics: readonly Diagnostic[] = evaluation.diagnostics;
+  try {
+    track =
+      options.samples === undefined
+        ? canonicalTrack
+        : compileTrack(canonicalSpans, { samples: options.samples });
+  } catch (error) {
+    const diagnostic = toCompileFatalDiagnostic(error);
+    compileDiagnostics = Object.freeze([...evaluation.diagnostics, diagnostic]);
+    track = canonicalTrack;
+  }
   const result: GenerationResult = {
-    feasible: !evaluation.diagnostics.some(
+    feasible: !compileDiagnostics.some(
       (diagnostic) =>
         diagnostic.severity === "error" || diagnostic.severity === "fatal",
     ),
@@ -1587,7 +1654,7 @@ const buildFileResult = (
     track,
     file,
     serializedFile,
-    diagnostics: Object.freeze(evaluation.diagnostics),
+    diagnostics: Object.freeze(compileDiagnostics),
     relaxations: Object.freeze(relaxationEvidence.map((item) => item.change)),
     relaxationEvidence: Object.freeze(relaxationEvidence),
     candidatesTested,
@@ -1689,7 +1756,8 @@ const generateCoasterInternal = (
     const actual =
       target.kind === "total-length"
         ? (rerun.track?.totalLength ??
-          compileTrack(rerun.spans, { samples: 32 }).totalLength)
+          compileTrack(rerun.spans, CANONICAL_TRACK_COMPILE_OPTIONS)
+            .totalLength)
         : targetError(
             target,
             rerun.solved.endPose.position,
@@ -1790,7 +1858,17 @@ const generationWithSpans = (
     return serializeSolvedSpanV1(span, element.type, length);
   });
   const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
-  const canonicalTrack = compileTrack(canonicalSpans, { samples: 32 });
+  let canonicalTrack: ReturnType<typeof compileTrack>;
+  try {
+    canonicalTrack = compileTrack(
+      canonicalSpans,
+      CANONICAL_TRACK_COMPILE_OPTIONS,
+    );
+  } catch (error) {
+    throw new CoasterFileError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
   const ownedIntent = canonicalIntentCopy(intent);
   const resultElements = ownedElements(candidate.elements);
   const file = createCoasterFileV1({
@@ -1823,7 +1901,7 @@ const generationWithSpans = (
     }
   }
   const track =
-    candidate.options.samples === undefined || candidate.options.samples === 32
+    candidate.options.samples === undefined
       ? canonicalTrack
       : compileTrack(canonicalSpans, { samples: candidate.options.samples });
   const result: GenerationResult = {

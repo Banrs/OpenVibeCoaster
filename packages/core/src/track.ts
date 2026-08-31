@@ -1,6 +1,12 @@
-import { buildArcLengthLut, invertArcLength } from "./arc-length";
+import {
+  buildArcLengthLut,
+  checkedArcLength,
+  invertArcLength,
+} from "./arc-length";
+import { TrackCompileError } from "./compile-error";
 import { transportFramesAlongPath } from "./frames";
 import { vec3, vec3Cross, vec3Dot, vec3Length, vec3Normalize } from "./math";
+import { SeventhOrderHermiteSpan } from "./spans";
 import type { Frame } from "./frames";
 import type { Vec3 } from "./math";
 import type { ParametricSpan } from "./spans";
@@ -22,6 +28,316 @@ export interface CompileTrackOptions {
    */
   readonly initialNormal?: Vec3;
 }
+
+export const CANONICAL_TRACK_COMPILE_OPTIONS: Readonly<CompileTrackOptions> =
+  Object.freeze({});
+
+export { TrackCompileError };
+
+const ADAPTIVE_MIN_SAMPLES_PER_ELEMENT = 32;
+const ADAPTIVE_MAX_CHORD_ERROR_M = 0.0005;
+const ADAPTIVE_MAX_DEPTH = 32;
+const ADAPTIVE_MAX_SAMPLES_PER_ELEMENT = 65536;
+const ADAPTIVE_MAX_TOTAL_SAMPLES = 262144;
+
+// outward-rounded helpers for chord certificate
+const arcBits = new DataView(new ArrayBuffer(8));
+const nextUp = (value: number): number => {
+  if (Number.isNaN(value))
+    throw new TrackCompileError("INTEGRATION_FAILED", "nextUp received NaN");
+  if (value === Number.POSITIVE_INFINITY) return value;
+  if (value === 0) return Number.MIN_VALUE;
+  arcBits.setFloat64(0, value, false);
+  let word = arcBits.getBigUint64(0, false);
+  word = value > 0 ? word + 1n : word - 1n;
+  arcBits.setBigUint64(0, word, false);
+  return arcBits.getFloat64(0, false);
+};
+
+const binomial = (n: number, k: number): number => {
+  if (k < 0 || k > n) return 0;
+  let result = 1;
+  for (let i = 1; i <= k; i += 1) result = (result * (n - k + i)) / i;
+  return result;
+};
+
+const restrictPowerCoefficients = (
+  coefficients: readonly number[],
+  a: number,
+  b: number,
+): number[] => {
+  const w = b - a;
+  const aPowers: number[] = [1];
+  for (let i = 1; i < coefficients.length; i += 1)
+    aPowers.push(aPowers[i - 1]! * a);
+  const result: number[] = Array(coefficients.length).fill(0);
+  for (let k = 0; k < coefficients.length; k += 1) {
+    let sum = 0;
+    const wPow = w ** k;
+    for (let i = k; i < coefficients.length; i += 1) {
+      sum += coefficients[i]! * binomial(i, k) * aPowers[i - k]!;
+    }
+    result[k] = wPow * sum;
+  }
+  return result;
+};
+
+const powerToBernstein = (q: readonly number[]): number[] => {
+  const n = q.length - 1;
+  const b: number[] = Array(n + 1).fill(0);
+  for (let k = 0; k <= n; k += 1) {
+    let acc = q[k]!;
+    for (let j = 0; j < k; j += 1) {
+      const sign = (k - j) % 2 === 0 ? 1 : -1;
+      const mij = binomial(n, j) * binomial(n - j, k - j) * sign;
+      acc -= b[j]! * mij;
+    }
+    const diag = binomial(n, k);
+    if (diag === 0)
+      throw new TrackCompileError(
+        "INTEGRATION_FAILED",
+        "Bernstein diagonal zero",
+      );
+    b[k] = acc / diag;
+  }
+  return b;
+};
+
+const chordErrorUpperBoundSeventhOrder = (
+  span: SeventhOrderHermiteSpan<Vec3>,
+  start: number,
+  end: number,
+): number => {
+  if (!(start >= 0 && end <= 1 && start < end))
+    throw new TrackCompileError("INTEGRATION_FAILED", "Invalid chord interval");
+  const rows = span.coefficients as readonly (readonly number[])[];
+  if (rows.length !== 3 || rows.some((r) => r.length !== 8))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Seventh-order coefficients invalid",
+    );
+  const restrictedRows = rows.map((row) =>
+    restrictPowerCoefficients(row, start, end),
+  );
+  const bernsteinRows = restrictedRows.map((q) => powerToBernstein(q));
+  // Reconstruct 8 control points
+  const controls: Vec3[] = [];
+  for (let i = 0; i < 8; i += 1) {
+    controls.push(
+      vec3(bernsteinRows[0]![i]!, bernsteinRows[1]![i]!, bernsteinRows[2]![i]!),
+    );
+  }
+  const p0 = controls[0]!;
+  const p1 = controls[7]!;
+  const v: Vec3 = vec3(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+  const vDot = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+  if (!(vDot > 1e-24)) {
+    // degenerate segment: distance to p0
+    let max = 0;
+    for (let i = 1; i < 7; i += 1) {
+      const d = Math.hypot(
+        controls[i]![0] - p0[0],
+        controls[i]![1] - p0[1],
+        controls[i]![2] - p0[2],
+      );
+      const up = nextUp(d);
+      if (up > max) max = up;
+    }
+    return max;
+  }
+  let max = 0;
+  for (let i = 1; i < 7; i += 1) {
+    const diff: Vec3 = vec3(
+      controls[i]![0] - p0[0],
+      controls[i]![1] - p0[1],
+      controls[i]![2] - p0[2],
+    );
+    const t = (diff[0] * v[0] + diff[1] * v[1] + diff[2] * v[2]) / vDot;
+    const clamped = Math.max(0, Math.min(1, t));
+    const closest: Vec3 = vec3(
+      p0[0] + v[0] * clamped,
+      p0[1] + v[1] * clamped,
+      p0[2] + v[2] * clamped,
+    );
+    const d = Math.hypot(
+      controls[i]![0] - closest[0],
+      controls[i]![1] - closest[1],
+      controls[i]![2] - closest[2],
+    );
+    const up = nextUp(d);
+    if (up > max) max = up;
+  }
+  return max;
+};
+
+const chordErrorUpperBound = (
+  span: ParametricSpan<Vec3>,
+  start: number,
+  end: number,
+  elementId: string,
+): number => {
+  if (span instanceof SeventhOrderHermiteSpan) {
+    return chordErrorUpperBoundSeventhOrder(
+      span as SeventhOrderHermiteSpan<Vec3>,
+      start,
+      end,
+    );
+  }
+  const maybe = span as unknown as {
+    chordErrorUpperBound?: (a: number, b: number) => number;
+  };
+  if (typeof maybe.chordErrorUpperBound === "function") {
+    const value = maybe.chordErrorUpperBound(start, end);
+    if (!Number.isFinite(value) || value < 0)
+      throw new TrackCompileError(
+        "INTEGRATION_FAILED",
+        `Chord error certifier returned non-finite for ${elementId}`,
+      );
+    // outward round
+    return nextUp(value);
+  }
+  throw new TrackCompileError(
+    "UNBOUNDED_SPAN",
+    `Span ${elementId} has no chord error certificate`,
+  );
+};
+
+const checkedSpeedLocal = (span: ParametricSpan<Vec3>, u: number): number => {
+  let d: Vec3;
+  try {
+    d = span.derivative(u, 1);
+  } catch (error) {
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (!Array.isArray(d) || d.length !== 3 || !d.every(Number.isFinite))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Span derivative must be finite 3-vector",
+    );
+  const v = Math.hypot(d[0], d[1], d[2]);
+  if (!Number.isFinite(v) || !(v > 1e-12))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "A span derivative must be finite and non-zero",
+    );
+  return v;
+};
+
+const buildCheckedLut = (
+  span: ParametricSpan<Vec3>,
+  segments = 32,
+): {
+  parameters: Float64Array;
+  distances: Float64Array;
+  totalLength: number;
+} => {
+  if (!Number.isInteger(segments) || segments < 1)
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "LUT segments must be positive integer",
+    );
+  const parameters = new Float64Array(segments + 1);
+  const distances = new Float64Array(segments + 1);
+  for (let i = 0; i <= segments; i += 1) {
+    parameters[i] = i / segments;
+    if (i > 0) {
+      const segLen = checkedArcLength(
+        span,
+        parameters[i - 1]!,
+        parameters[i]!,
+        1e-9,
+      );
+      distances[i] = distances[i - 1]! + segLen;
+    }
+  }
+  return { parameters, distances, totalLength: distances[segments]! };
+};
+
+const checkedInvertWithLut = (
+  span: ParametricSpan<Vec3>,
+  target: number,
+  lut: {
+    parameters: Float64Array;
+    distances: Float64Array;
+    totalLength: number;
+  },
+  tolerance = 1e-10,
+): number => {
+  if (!Number.isFinite(target))
+    throw new TrackCompileError(
+      "INVERSION_FAILED",
+      "Target distance must be finite",
+    );
+  if (target <= 0) return 0;
+  if (target >= lut.totalLength) return 1;
+  // binary search for bracket
+  let lowIdx = 0;
+  let highIdx = lut.distances.length - 1;
+  while (lowIdx + 1 < highIdx) {
+    const mid = Math.floor((lowIdx + highIdx) / 2);
+    if (lut.distances[mid]! <= target) lowIdx = mid;
+    else highIdx = mid;
+  }
+  let low = lut.parameters[lowIdx]!;
+  let high = lut.parameters[lowIdx + 1]!;
+  let lowDist = lut.distances[lowIdx]!;
+  let highDist = lut.distances[lowIdx + 1]!;
+  let u = low + ((target - lowDist) / (highDist - lowDist)) * (high - low);
+  if (!Number.isFinite(u)) u = (low + high) / 2;
+  u = Math.max(low, Math.min(high, u));
+  for (let iter = 0; iter < 30; iter += 1) {
+    const travelled = lowDist + checkedArcLength(span, low, u, 1e-11);
+    const error = travelled - target;
+    if (!Number.isFinite(error))
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        "Inversion error non-finite",
+      );
+    if (Math.abs(error) <= tolerance * Math.max(1, lut.totalLength)) return u;
+    if (error > 0) {
+      high = u;
+      highDist = travelled;
+    } else {
+      low = u;
+      lowDist = travelled;
+    }
+    if (!(high > low))
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        "Inversion bracket collapsed",
+      );
+    if (high - low < 1e-14)
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        "Inversion reached parameter resolution",
+      );
+    let speed: number;
+    try {
+      speed = checkedSpeedLocal(span, u);
+    } catch {
+      speed = Number.NaN;
+    }
+    const candidate =
+      Number.isFinite(speed) && Math.abs(speed) > 1e-10
+        ? u - error / speed
+        : Number.NaN;
+    if (Number.isFinite(candidate) && candidate > low && candidate < high)
+      u = candidate;
+    else u = (low + high) / 2;
+    if (!Number.isFinite(u))
+      throw new TrackCompileError(
+        "INVERSION_FAILED",
+        "Inversion candidate non-finite",
+      );
+  }
+  throw new TrackCompileError(
+    "INVERSION_FAILED",
+    "Arc length inversion failed to converge",
+  );
+};
 export interface CompiledTrackDataInput {
   readonly positions: Float64Array;
   readonly tangents: Float64Array;
@@ -428,13 +744,11 @@ const bankDerivative = (element: TrackElement, u: number): number =>
       })()
     : (element.bank?.derivative(u, 1) ?? 0);
 
-export const compileTrack = (
+const compileTrackFixed = (
   elements: readonly TrackElement[],
-  options: CompileTrackOptions = {},
+  options: CompileTrackOptions,
 ): CompiledTrackData => {
-  if (elements.length === 0)
-    throw new RangeError("A track needs at least one element");
-  const perElement = Math.max(2, Math.floor(options.samples ?? 128));
+  const perElement = Math.max(2, Math.floor(options.samples!));
   const count = elements.length * (perElement - 1) + 1;
   const positions = new Float64Array(count * 3);
   const tangents = new Float64Array(count * 3);
@@ -454,8 +768,6 @@ export const compileTrack = (
     validSpanSpeed(element.span, 1);
     return buildArcLengthLut(
       element.span,
-      // The LUT is an integration aid, not the published sample grid. Keep
-      // its bounded resolution independent of a caller's render sample count.
       Math.max(32, Math.min(64, perElement)),
       options.tolerance ?? 1e-8,
     );
@@ -559,6 +871,271 @@ export const compileTrack = (
     parameters,
     totalLength: offsets[elements.length]!,
   });
+};
+
+const compileTrackAdaptive = (
+  elements: readonly TrackElement[],
+  options: CompileTrackOptions,
+): CompiledTrackData => {
+  // Early total budget check using minimum samples (avoids heavy work for huge element counts)
+  const minTotal =
+    elements.length * ADAPTIVE_MIN_SAMPLES_PER_ELEMENT - (elements.length - 1);
+  if (minTotal > ADAPTIVE_MAX_TOTAL_SAMPLES)
+    throw new TrackCompileError(
+      "BUDGET_EXCEEDED",
+      `Track minimum ${minTotal} exceeds total ${ADAPTIVE_MAX_TOTAL_SAMPLES}`,
+    );
+  // First pass: determine variable sample layouts via checked adaptive subdivision
+  const perElementUs: number[][] = [];
+  const perElementSs: number[][] = [];
+  const perElementLengths: number[] = [];
+  for (const element of elements) {
+    validSpanSpeed(element.span, 0);
+    validSpanSpeed(element.span, 1);
+  }
+  for (const element of elements) {
+    const lut = buildCheckedLut(element.span, 32);
+    const L = lut.totalLength;
+    if (!Number.isFinite(L) || !(L > 0))
+      throw new TrackCompileError(
+        "INTEGRATION_FAILED",
+        `Element ${element.id} has non-positive length`,
+      );
+    perElementLengths.push(L);
+    const seedCount = ADAPTIVE_MIN_SAMPLES_PER_ELEMENT;
+    const seedUs: number[] = Array.from({ length: seedCount }) as number[];
+    const seedSs: number[] = Array.from({ length: seedCount }) as number[];
+    for (let k = 0; k < seedCount; k += 1) {
+      const s = (L * k) / (seedCount - 1);
+      seedSs[k] = s;
+      if (k === 0) seedUs[k] = 0;
+      else if (k === seedCount - 1) seedUs[k] = 1;
+      else {
+        const u = checkedInvertWithLut(element.span, s, lut, 1e-10);
+        if (!(u > seedUs[k - 1]! && u < 1))
+          throw new TrackCompileError(
+            "INVERSION_FAILED",
+            `Inversion bracketing failed on ${element.id}`,
+          );
+        seedUs[k] = u;
+      }
+    }
+    // Validate monotonic
+    for (let k = 1; k < seedCount; k += 1)
+      if (!(seedUs[k]! > seedUs[k - 1]!))
+        throw new TrackCompileError(
+          "INVERSION_FAILED",
+          `Seed monotonicity failed on ${element.id}`,
+        );
+
+    const expand = (
+      aU: number,
+      bU: number,
+      aS: number,
+      bS: number,
+      depth: number,
+    ): Array<{ u: number; s: number }> => {
+      const err = chordErrorUpperBound(element.span, aU, bU, element.id);
+      if (err <= ADAPTIVE_MAX_CHORD_ERROR_M) return [{ u: bU, s: bS }];
+      if (depth >= ADAPTIVE_MAX_DEPTH)
+        throw new TrackCompileError(
+          "BUDGET_EXCEEDED",
+          `Element ${element.id} exceeded adaptive depth ${ADAPTIVE_MAX_DEPTH}`,
+        );
+      const sMid = (aS + bS) / 2;
+      if (sMid === aS || sMid === bS)
+        throw new TrackCompileError(
+          "INVERSION_FAILED",
+          `Arc length resolution on ${element.id}`,
+        );
+      const midU = checkedInvertWithLut(element.span, sMid, lut, 1e-10);
+      if (!(midU > aU && midU < bU))
+        throw new TrackCompileError(
+          "INVERSION_FAILED",
+          `Inversion bracketing failed on ${element.id} at depth ${depth}`,
+        );
+      const left = expand(aU, midU, aS, sMid, depth + 1);
+      const right = expand(midU, bU, sMid, bS, depth + 1);
+      // left already contains points after aU up to midU, right after midU up to bU
+      return [...left, ...right];
+    };
+
+    const resultUs: number[] = [seedUs[0]!];
+    const resultSs: number[] = [seedSs[0]!];
+    for (let i = 0; i < seedCount - 1; i += 1) {
+      const aU = seedUs[i]!;
+      const bU = seedUs[i + 1]!;
+      const aS = seedSs[i]!;
+      const bS = seedSs[i + 1]!;
+      const expanded = expand(aU, bU, aS, bS, 0);
+      for (const pt of expanded) {
+        resultUs.push(pt.u);
+        resultSs.push(pt.s);
+        if (resultUs.length > ADAPTIVE_MAX_SAMPLES_PER_ELEMENT)
+          throw new TrackCompileError(
+            "BUDGET_EXCEEDED",
+            `Element ${element.id} exceeded ${ADAPTIVE_MAX_SAMPLES_PER_ELEMENT} samples`,
+          );
+      }
+    }
+    if (resultUs.length < ADAPTIVE_MIN_SAMPLES_PER_ELEMENT)
+      throw new TrackCompileError(
+        "BUDGET_EXCEEDED",
+        `Element ${element.id} below minimum samples`,
+      );
+    if (resultUs.length > ADAPTIVE_MAX_SAMPLES_PER_ELEMENT)
+      throw new TrackCompileError(
+        "BUDGET_EXCEEDED",
+        `Element ${element.id} exceeded ${ADAPTIVE_MAX_SAMPLES_PER_ELEMENT} samples`,
+      );
+    perElementUs.push(resultUs);
+    perElementSs.push(resultSs);
+  }
+
+  const totalSamples =
+    perElementUs.reduce((sum, us) => sum + us.length, 0) -
+    (elements.length - 1);
+  if (totalSamples > ADAPTIVE_MAX_TOTAL_SAMPLES)
+    throw new TrackCompileError(
+      "BUDGET_EXCEEDED",
+      `Track exceeded total ${ADAPTIVE_MAX_TOTAL_SAMPLES} samples`,
+    );
+  if (totalSamples < 2)
+    throw new TrackCompileError(
+      "BUDGET_EXCEEDED",
+      "Track needs at least two samples",
+    );
+
+  // Second pass: allocate once and share seams (preceding ownership) – two-pass variable layout
+  const count = totalSamples;
+  const positions = new Float64Array(count * 3);
+  const tangents = new Float64Array(count * 3);
+  const elementIndices = new Uint32Array(count);
+  const elementBoundaries = new Uint32Array(elements.length * 2);
+  const parameters = new Float64Array(count);
+  const localDistances = new Float64Array(count);
+  const speeds = new Float64Array(count);
+  const banks = new Float64Array(count);
+  const bankDerivatives = new Float64Array(count);
+  const zoneSets = new Set<string>();
+  for (const element of elements)
+    for (const zone of element.zones ?? []) zoneSets.add(zone);
+  const zoneNames = [...zoneSets];
+
+  const offsets = new Float64Array(elements.length + 1);
+  for (let i = 0; i < elements.length; i += 1)
+    offsets[i + 1] = offsets[i]! + perElementLengths[i]!;
+
+  // Compute boundaries contiguously sharing seams
+  let accBoundary = 0;
+  for (let ei = 0; ei < elements.length; ei += 1) {
+    const us = perElementUs[ei]!;
+    elementBoundaries[ei * 2] = accBoundary;
+    elementBoundaries[ei * 2 + 1] = accBoundary + us.length - 1;
+    accBoundary += us.length - 1;
+  }
+
+  // Fill arrays deterministically left-before-right, preceding ownership for seams
+  for (let ei = 0; ei < elements.length; ei += 1) {
+    const us = perElementUs[ei]!;
+    const ss = perElementSs[ei]!;
+    const element = elements[ei]!;
+    const start = elementBoundaries[ei * 2]!;
+    for (let j = 0; j < us.length; j += 1) {
+      if (ei > 0 && j === 0) continue; // seam shared, keep preceding element's values
+      const g = start + j;
+      const u = us[j]!;
+      const s = ss[j]!;
+      localDistances[g] = s;
+      writeVec3(positions, g, element.span.position(u));
+      const d1 = element.span.derivative(u, 1);
+      speeds[g] = requireValidSpeed(Math.hypot(d1[0], d1[1], d1[2]));
+      writeVec3(tangents, g, vec3Normalize(d1));
+      parameters[g] = u;
+      elementIndices[g] = ei;
+      banks[g] = bankValue(element, u);
+    }
+  }
+
+  const frameInputs = Array.from({ length: count }, (_, index) =>
+    readVec3(tangents, index),
+  );
+  const frameParameters = Array.from(
+    { length: count },
+    (_, index) => index / (count - 1),
+  );
+  const pathPositions = Array.from({ length: count }, (_, index) =>
+    readVec3(positions, index),
+  );
+  const frames: readonly Frame[] = transportFramesAlongPath(
+    pathPositions,
+    frameInputs,
+    frameParameters,
+    banks,
+    options.initialNormal,
+  );
+  const normals = new Float64Array(count * 3);
+  const binormals = new Float64Array(count * 3);
+  const distances = new Float64Array(count);
+  const curvature = new Float64Array(count);
+  const curvatureVector = new Float64Array(count * 3);
+  const zoneMasks = new Uint32Array(count);
+  for (let index = 0; index < count; index += 1) {
+    const frame = frames[index]!;
+    writeVec3(normals, index, frame.normal);
+    writeVec3(binormals, index, frame.binormal);
+    const elementIndex = elementIndices[index]!;
+    distances[index] = offsets[elementIndex]! + localDistances[index]!;
+    const element = elements[elementIndex]!;
+    const u = parameters[index]!;
+    const d1 = element.span.derivative(u, 1);
+    const d2 = element.span.derivative(u, 2);
+    const speed = speeds[index]!;
+    const speedSquared = speed ** 2;
+    const tangentSpeedDerivative =
+      (d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]) / speed;
+    const vector = vec3(
+      d2[0] / speedSquared - (d1[0] * tangentSpeedDerivative) / speed ** 3,
+      d2[1] / speedSquared - (d1[1] * tangentSpeedDerivative) / speed ** 3,
+      d2[2] / speedSquared - (d1[2] * tangentSpeedDerivative) / speed ** 3,
+    );
+    writeVec3(curvatureVector, index, vector);
+    curvature[index] = Math.hypot(vector[0], vector[1], vector[2]);
+    bankDerivatives[index] = bankDerivative(element, u) / speeds[index]!;
+    for (const zone of element.zones ?? [])
+      zoneMasks[index] = zoneMasks[index]! | (1 << zoneNames.indexOf(zone));
+  }
+  return new CompiledTrackData({
+    positions,
+    tangents,
+    normals,
+    binormals,
+    distances,
+    curvature,
+    curvatureVector,
+    bank: banks,
+    bankDerivative: bankDerivatives,
+    zoneMasks,
+    zoneNames: Object.freeze(zoneNames),
+    elementIndices,
+    elementBoundaries,
+    parameters,
+    totalLength: offsets[elements.length]!,
+  });
+};
+
+export const compileTrack = (
+  elements: readonly TrackElement[],
+  options: CompileTrackOptions = {},
+): CompiledTrackData => {
+  if (elements.length === 0)
+    throw new RangeError("A track needs at least one element");
+  if (options.samples !== undefined) {
+    if (!Number.isInteger(options.samples) || options.samples < 2)
+      throw new RangeError("samples must be an integer >= 2");
+    return compileTrackFixed(elements, options);
+  }
+  return compileTrackAdaptive(elements, options);
 };
 
 export interface TrackSample {
