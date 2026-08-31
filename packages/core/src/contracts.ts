@@ -89,7 +89,11 @@ export interface Diagnostic {
   readonly message: string;
   readonly elementId?: string;
   readonly suggestedRelaxation?: string;
-  readonly location?: { readonly s: number; readonly position?: Vec3 };
+  readonly location?: {
+    readonly s: number;
+    readonly position?: Vec3;
+    readonly time?: number;
+  };
   readonly actual?: number;
   readonly limit?: number;
   readonly margin?: number;

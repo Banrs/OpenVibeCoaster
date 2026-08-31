@@ -53,7 +53,7 @@ w.terminate();
 
       await build({
         root: projectRoot,
-        configFile: join(projectRoot, "vite.config.ts"),
+        configFile: false,
         logLevel: "silent",
         build: {
           outDir,

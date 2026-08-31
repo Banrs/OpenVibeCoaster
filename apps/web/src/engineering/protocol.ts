@@ -34,36 +34,22 @@ export interface CompiledTrackTransfer {
   readonly checksum: string;
 }
 
-export interface ProjectEngineeringLimits {
-  readonly profileId: string;
-  readonly provenance: "PROJECT_ENGINEERING_LIMIT";
-  readonly verticalG: { readonly minimum: number; readonly maximum: number };
-  readonly maximumAbsoluteLateralG: number;
-  readonly maximumAbsoluteLongitudinalG: number;
-  readonly maximumJerkMps3: number;
-  readonly maximumRollRateRadPerSecond: number;
-  readonly clearanceMarginM?: number;
-}
-
 export type EngineeringWorkerRequest =
   | {
       readonly type: "generate";
       readonly requestId: string;
       readonly intent: DesignIntentV1;
-      readonly engineeringLimits?: ProjectEngineeringLimits;
     }
   | {
       readonly type: "regenerate";
       readonly requestId: string;
       readonly file: unknown;
       readonly elementId: string;
-      readonly engineeringLimits?: ProjectEngineeringLimits;
     }
   | {
       readonly type: "compile-simulate";
       readonly requestId: string;
       readonly file: unknown;
-      readonly engineeringLimits?: ProjectEngineeringLimits;
     }
   | { readonly type: "cancel"; readonly requestId: string };
 
@@ -138,63 +124,8 @@ export function validateEngineeringWorkerRequest(
   )
     fail("request.type", "generate | regenerate | compile-simulate | cancel");
   validateRequestId(rec.requestId, "request.requestId");
-  const validateEngineeringLimits = (value: unknown, path: string): void => {
-    if (value === undefined) return;
-    if (!isRecord(value)) fail(path, "object");
-    const v = value as Record<string, unknown>;
-    const allowed = new Set([
-      "profileId",
-      "provenance",
-      "verticalG",
-      "maximumAbsoluteLateralG",
-      "maximumAbsoluteLongitudinalG",
-      "maximumJerkMps3",
-      "maximumRollRateRadPerSecond",
-      "clearanceMarginM",
-    ]);
-    for (const key of Object.keys(v))
-      if (!allowed.has(key)) fail(`${path}.${key}`, "no extra field");
-    stringNonEmpty(v.profileId, `${path}.profileId`);
-    if (v.provenance !== "PROJECT_ENGINEERING_LIMIT")
-      fail(`${path}.provenance`, "PROJECT_ENGINEERING_LIMIT");
-    if (!isRecord(v.verticalG)) fail(`${path}.verticalG`, "object");
-    const vg = v.verticalG as Record<string, unknown>;
-    const vgAllowed = new Set(["minimum", "maximum"]);
-    for (const key of Object.keys(vg))
-      if (!vgAllowed.has(key))
-        fail(`${path}.verticalG.${key}`, "no extra field");
-    if (typeof vg.minimum !== "number" || !Number.isFinite(vg.minimum))
-      fail(`${path}.verticalG.minimum`, "finite number");
-    if (typeof vg.maximum !== "number" || !Number.isFinite(vg.maximum))
-      fail(`${path}.verticalG.maximum`, "finite number");
-    if ((vg.minimum as number) > (vg.maximum as number))
-      fail(`${path}.verticalG`, "minimum <= maximum");
-    for (const key of [
-      "maximumAbsoluteLateralG",
-      "maximumAbsoluteLongitudinalG",
-      "maximumJerkMps3",
-      "maximumRollRateRadPerSecond",
-    ] as const) {
-      const val = v[key];
-      if (typeof val !== "number" || !Number.isFinite(val) || val < 0)
-        fail(`${path}.${key}`, "finite non-negative number");
-    }
-    if (
-      v.clearanceMarginM !== undefined &&
-      (typeof v.clearanceMarginM !== "number" ||
-        !Number.isFinite(v.clearanceMarginM) ||
-        v.clearanceMarginM < 0)
-    )
-      fail(`${path}.clearanceMarginM`, "finite non-negative number");
-  };
-
   if (type === "generate") {
-    const allowed = new Set([
-      "type",
-      "requestId",
-      "intent",
-      "engineeringLimits",
-    ]);
+    const allowed = new Set(["type", "requestId", "intent"]);
     for (const key of Object.keys(rec))
       if (!allowed.has(key)) fail(`request.${key}`, "no extra field");
     if (!isRecord(rec.intent)) fail("request.intent", "object");
@@ -203,18 +134,8 @@ export function validateEngineeringWorkerRequest(
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
-    validateEngineeringLimits(
-      rec.engineeringLimits,
-      "request.engineeringLimits",
-    );
   } else if (type === "regenerate") {
-    const allowed = new Set([
-      "type",
-      "requestId",
-      "file",
-      "elementId",
-      "engineeringLimits",
-    ]);
+    const allowed = new Set(["type", "requestId", "file", "elementId"]);
     for (const key of Object.keys(rec))
       if (!allowed.has(key)) fail(`request.${key}`, "no extra field");
     stringNonEmpty(rec.elementId, "request.elementId");
@@ -231,12 +152,8 @@ export function validateEngineeringWorkerRequest(
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
-    validateEngineeringLimits(
-      rec.engineeringLimits,
-      "request.engineeringLimits",
-    );
   } else if (type === "compile-simulate") {
-    const allowed = new Set(["type", "requestId", "file", "engineeringLimits"]);
+    const allowed = new Set(["type", "requestId", "file"]);
     for (const key of Object.keys(rec))
       if (!allowed.has(key)) fail(`request.${key}`, "no extra field");
     if (rec.file === undefined) fail("request.file", "file value");
@@ -252,10 +169,6 @@ export function validateEngineeringWorkerRequest(
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
-    validateEngineeringLimits(
-      rec.engineeringLimits,
-      "request.engineeringLimits",
-    );
   } else {
     const allowed = new Set(["type", "requestId"]);
     for (const key of Object.keys(rec))

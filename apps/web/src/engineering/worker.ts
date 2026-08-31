@@ -15,12 +15,9 @@ import {
   simulateRide,
   RideTimeline,
   validateEngineeringLimits,
-  defaultProjectEngineeringLimits,
 } from "@openvibecoaster/simulator";
-import type {
-  OperationZone,
-  ProjectEngineeringLimits,
-} from "@openvibecoaster/simulator";
+import type { OperationZone } from "@openvibecoaster/simulator";
+import { engineeringLimitsProfile } from "./engineering-profile.js";
 import { resolveTerrainEnvironment } from "../terrain/environment.js";
 import type {
   CompiledTrackTransfer,
@@ -101,42 +98,6 @@ function trackToTransfer(track: CompiledTrackData): CompiledTrackTransfer {
     totalLength: track.totalLength,
     checksum: track.checksum,
   };
-}
-
-const permissiveTestDefaults: ProjectEngineeringLimits = {
-  profileId: "permissive-test-default",
-  provenance: "PROJECT_ENGINEERING_LIMIT",
-  verticalG: { minimum: -10, maximum: 40 },
-  maximumAbsoluteLateralG: 50,
-  maximumAbsoluteLongitudinalG: 50,
-  maximumJerkMps3: 5000,
-  maximumRollRateRadPerSecond: 100,
-};
-
-function resolveEngineeringLimits(explicit: unknown): ProjectEngineeringLimits {
-  if (
-    explicit &&
-    typeof explicit === "object" &&
-    "provenance" in (explicit as Record<string, unknown>)
-  ) {
-    return explicit as ProjectEngineeringLimits;
-  }
-  // For production the main thread passes an explicit strict profile.
-  // For legacy test callers that do not pass a profile, use permissive
-  // defaults to keep existing success expectations stable while still
-  // supporting strict validation when an explicit profile is supplied.
-  return permissiveTestDefaults;
-}
-
-export const strictEngineeringLimitsForTests = defaultProjectEngineeringLimits;
-
-function validateTimelineEngineeringLimits(
-  timeline: RideTimeline,
-  track: CompiledTrackData,
-  limits: ProjectEngineeringLimits,
-): readonly Diagnostic[] {
-  // explicit typed profile passed at worker boundary – pure deterministic validation, no filesystem read
-  return validateEngineeringLimits(timeline, track, limits);
 }
 
 function resolveEnvForProfile(
@@ -350,6 +311,7 @@ function simulateForTrack(track: CompiledTrackData):
   | {
       ok: true;
       timeline: RideTimeline;
+      frames: readonly import("@openvibecoaster/simulator").SimulationFrame[];
       diagnostics: readonly Diagnostic[];
       simulationMs: number;
     }
@@ -383,13 +345,18 @@ function simulateForTrack(track: CompiledTrackData):
   const simulationMs = Math.max(0, end - start);
   const diagnostics: Diagnostic[] =
     (result.diagnostics as unknown as Diagnostic[]) ?? [];
-  return { ok: true, timeline: result.timeline, diagnostics, simulationMs };
+  return {
+    ok: true,
+    timeline: result.timeline,
+    frames: result.frames,
+    diagnostics,
+    simulationMs,
+  };
 }
 
 export function handleGenerate(
   requestId: string,
   intent: unknown,
-  engineeringLimits?: ProjectEngineeringLimits,
 ): EngineeringWorkerSuccess | EngineeringWorkerFailure {
   try {
     validateDesignIntentV1(intent as DesignIntentV1);
@@ -453,23 +420,21 @@ export function handleGenerate(
       [...generation.relaxations],
     );
   }
-  // Deterministic engineering-limits validation on authoritative timeline series
-  const limits = resolveEngineeringLimits(engineeringLimits);
-  const limitDiags = validateTimelineEngineeringLimits(
-    sim.timeline,
+  const spanIds = generation.file.solvedSpans.map((s) => s.id);
+  const limitDiags = validateEngineeringLimits(
+    sim.frames,
     track,
-    limits,
+    engineeringLimitsProfile,
+    spanIds,
   );
-  const hasLimitError = limitDiags.some(
-    (d) => d.severity === "error" || d.severity === "fatal",
-  );
-  if (hasLimitError) {
+  const hasFatal = limitDiags.some((d) => d.severity === "fatal");
+  if (hasFatal) {
     return failure(
       requestId,
       [
         ...(generation.diagnostics as Diagnostic[]),
         ...(sim.diagnostics as Diagnostic[]),
-        ...(limitDiags as Diagnostic[]),
+        ...limitDiags,
       ],
       [...generation.relaxations],
     );
@@ -492,7 +457,7 @@ export function handleGenerate(
     diagnostics: [
       ...(generation.diagnostics as Diagnostic[]),
       ...(sim.diagnostics as Diagnostic[]),
-      ...(limitDiags as Diagnostic[]),
+      ...limitDiags,
     ],
     relaxations: [...generation.relaxations],
     spanHashes: generation.spanHashes,
@@ -504,7 +469,6 @@ export function handleRegenerate(
   requestId: string,
   fileInput: unknown,
   elementId: unknown,
-  engineeringLimits?: ProjectEngineeringLimits,
 ): EngineeringWorkerSuccess | EngineeringWorkerFailure {
   if (typeof elementId !== "string" || elementId.trim().length === 0) {
     return failure(requestId, [
@@ -574,22 +538,21 @@ export function handleRegenerate(
       [...generation.relaxations],
     );
   }
-  const limitsReg = resolveEngineeringLimits(engineeringLimits);
-  const limitDiagsReg = validateTimelineEngineeringLimits(
-    sim.timeline,
+  const spanIdsReg = generation.file.solvedSpans.map((s) => s.id);
+  const limitDiagsReg = validateEngineeringLimits(
+    sim.frames,
     track,
-    limitsReg,
+    engineeringLimitsProfile,
+    spanIdsReg,
   );
-  const hasLimitErrorReg = limitDiagsReg.some(
-    (d) => d.severity === "error" || d.severity === "fatal",
-  );
-  if (hasLimitErrorReg) {
+  const hasFatalReg = limitDiagsReg.some((d) => d.severity === "fatal");
+  if (hasFatalReg) {
     return failure(
       requestId,
       [
         ...(generation.diagnostics as Diagnostic[]),
         ...(sim.diagnostics as Diagnostic[]),
-        ...(limitDiagsReg as Diagnostic[]),
+        ...limitDiagsReg,
       ],
       [...generation.relaxations],
     );
@@ -612,7 +575,7 @@ export function handleRegenerate(
     diagnostics: [
       ...(generation.diagnostics as Diagnostic[]),
       ...(sim.diagnostics as Diagnostic[]),
-      ...(limitDiagsReg as Diagnostic[]),
+      ...limitDiagsReg,
     ],
     relaxations: [...generation.relaxations],
     spanHashes: generation.spanHashes,
@@ -623,7 +586,6 @@ export function handleRegenerate(
 export function handleCompileSimulate(
   requestId: string,
   fileInput: unknown,
-  engineeringLimits?: ProjectEngineeringLimits,
 ): EngineeringWorkerSuccess | EngineeringWorkerFailure {
   let loaded: ReturnType<typeof compileCoasterFile>;
   try {
@@ -651,19 +613,18 @@ export function handleCompileSimulate(
   ) {
     return failure(requestId, sim.diagnostics as Diagnostic[], []);
   }
-  const limitsCs = resolveEngineeringLimits(engineeringLimits);
-  const limitDiagsCs = validateTimelineEngineeringLimits(
-    sim.timeline,
+  const spanIdsCs = loaded.file.solvedSpans.map((s) => s.id);
+  const limitDiagsCs = validateEngineeringLimits(
+    sim.frames,
     track,
-    limitsCs,
+    engineeringLimitsProfile,
+    spanIdsCs,
   );
-  const hasLimitErrorCs = limitDiagsCs.some(
-    (d) => d.severity === "error" || d.severity === "fatal",
-  );
-  if (hasLimitErrorCs) {
+  const hasFatalCs = limitDiagsCs.some((d) => d.severity === "fatal");
+  if (hasFatalCs) {
     return failure(
       requestId,
-      [...(sim.diagnostics as Diagnostic[]), ...(limitDiagsCs as Diagnostic[])],
+      [...(sim.diagnostics as Diagnostic[]), ...limitDiagsCs],
       [],
     );
   }
@@ -689,10 +650,7 @@ export function handleCompileSimulate(
     track: trackToTransfer(track),
     timeline:
       sim.timeline.toTransferable() as unknown as RideTimelineCompactTransfer,
-    diagnostics: [
-      ...(sim.diagnostics as Diagnostic[]),
-      ...(limitDiagsCs as Diagnostic[]),
-    ],
+    diagnostics: [...(sim.diagnostics as Diagnostic[]), ...limitDiagsCs],
     relaxations: [],
     spanHashes,
     timings: createTimings(sim.simulationMs),
@@ -730,24 +688,10 @@ if (
     try {
       let response: EngineeringWorkerSuccess | EngineeringWorkerFailure;
       if (req.type === "generate")
-        response = handleGenerate(
-          req.requestId,
-          req.intent,
-          req.engineeringLimits as ProjectEngineeringLimits | undefined,
-        );
+        response = handleGenerate(req.requestId, req.intent);
       else if (req.type === "regenerate")
-        response = handleRegenerate(
-          req.requestId,
-          req.file,
-          req.elementId,
-          req.engineeringLimits as ProjectEngineeringLimits | undefined,
-        );
-      else
-        response = handleCompileSimulate(
-          req.requestId,
-          req.file,
-          req.engineeringLimits as ProjectEngineeringLimits | undefined,
-        );
+        response = handleRegenerate(req.requestId, req.file, req.elementId);
+      else response = handleCompileSimulate(req.requestId, req.file);
 
       if (response.type === "success") {
         // Build transfer list first so the send-epoch timestamp is captured

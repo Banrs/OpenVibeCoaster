@@ -306,51 +306,31 @@ export class EngineeringWorkerClient {
   public generate(
     requestId: string,
     intent: DesignIntentV1,
-    engineeringLimits?: import("./protocol").ProjectEngineeringLimits,
   ): Promise<EngineeringWorkerSuccess> {
-    return this.enqueue({
-      type: "generate",
-      requestId,
-      intent,
-      ...(engineeringLimits ? { engineeringLimits } : {}),
-    } as EngineeringWorkerRequest);
+    return this.enqueue({ type: "generate", requestId, intent });
   }
 
   public regenerate(
     requestId: string,
     file: unknown,
     elementId: string,
-    engineeringLimits?: import("./protocol").ProjectEngineeringLimits,
   ): Promise<EngineeringWorkerSuccess> {
-    return this.enqueue({
-      type: "regenerate",
-      requestId,
-      file,
-      elementId,
-      ...(engineeringLimits ? { engineeringLimits } : {}),
-    } as EngineeringWorkerRequest);
+    return this.enqueue({ type: "regenerate", requestId, file, elementId });
   }
 
   public compileSimulate(
     requestId: string,
     file: unknown,
-    engineeringLimits?: import("./protocol").ProjectEngineeringLimits,
   ): Promise<EngineeringWorkerSuccess> {
-    return this.enqueue({
-      type: "compile-simulate",
-      requestId,
-      file,
-      ...(engineeringLimits ? { engineeringLimits } : {}),
-    } as EngineeringWorkerRequest);
+    return this.enqueue({ type: "compile-simulate", requestId, file });
   }
 
   // Alias for spec naming: compile-simulate hyphen
   public ["compile-simulate"](
     requestId: string,
     file: unknown,
-    engineeringLimits?: import("./protocol").ProjectEngineeringLimits,
   ): Promise<EngineeringWorkerSuccess> {
-    return this.compileSimulate(requestId, file, engineeringLimits);
+    return this.compileSimulate(requestId, file);
   }
 
   public cancel(requestId: string): void {
