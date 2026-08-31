@@ -119,7 +119,7 @@ npm run build
 
 ## Commit
 
-SHA: _to be filled after commit_ – concise message: `fix(web): snapshot defensive getters to eliminate copy amplification`
+SHA: `e0bc9b8a14207e8fa539b425b55b3a6b9c26a3eb` – concise message: `fix(web): snapshot defensive getters to eliminate copy amplification`
 
 ## Concerns
 
