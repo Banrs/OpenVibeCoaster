@@ -182,6 +182,168 @@ describe("footprint polygon validation", () => {
   });
 });
 
+describe("edge-case honesty", () => {
+  it("valid n=3 triangle and n=32 max polygon preserve order", () => {
+    const tri: Vec3[] = [vec3(0, 0, 0), vec3(10, 0, 0), vec3(5, 0, 8)];
+    expect(validateFootprintPolygon(tri, "footprint")).toEqual(tri);
+    const poly32: Vec3[] = Array.from({ length: 32 }, (_, i) => {
+      const ang = (i * 2 * Math.PI) / 32;
+      return vec3(50 + 30 * Math.cos(ang), 0, 50 + 30 * Math.sin(ang));
+    });
+    const out32 = validateFootprintPolygon(poly32, "footprint");
+    expect(out32).toHaveLength(32);
+    expect(out32[0]).toEqual(poly32[0]);
+    expect(out32[31]).toEqual(poly32[31]);
+  });
+
+  it("invalid n=2 and n=33 are rejected", () => {
+    const two: Vec3[] = [vec3(0, 0, 0), vec3(1, 0, 0)];
+    expect(() => validateFootprintPolygon(two, "footprint")).toThrow(
+      /at least 3/,
+    );
+    const thirtyThree: Vec3[] = Array.from({ length: 33 }, (_, i) =>
+      vec3(i, 0, (i % 2) * 10),
+    );
+    expect(() => validateFootprintPolygon(thirtyThree, "footprint")).toThrow(
+      /at most 32/,
+    );
+  });
+
+  it("finite X/Z NaN/Infinity are rejected", () => {
+    expect(() =>
+      validateFootprintPolygon(
+        [vec3(0, 0, 0), vec3(NaN, 0, 0), vec3(0, 0, 10)],
+        "footprint",
+      ),
+    ).toThrow(/finite/);
+    expect(() =>
+      validateFootprintPolygon(
+        [vec3(0, 0, 0), vec3(Infinity, 0, 0), vec3(0, 0, 10)],
+        "footprint",
+      ),
+    ).toThrow(/finite/);
+    expect(() =>
+      validateFootprintPolygon(
+        [vec3(0, 0, 0), vec3(10, 0, 0), vec3(10, 0, NaN)],
+        "footprint",
+      ),
+    ).toThrow(/finite/);
+  });
+
+  it("non-array and wrong vector length are rejected", () => {
+    expect(() =>
+      validateFootprintPolygon("not-array" as unknown as Vec3[], "footprint"),
+    ).toThrow(/expected polygon array/);
+    expect(() =>
+      validateFootprintPolygon(
+        [[0, 0] as unknown as Vec3, vec3(10, 0, 0), vec3(0, 0, 10)],
+        "footprint",
+      ),
+    ).toThrow(/3-vector/);
+    expect(() =>
+      validateFootprintPolygon(
+        [vec3(0, 0, 0), [0, 0, 0, 0] as unknown as Vec3, vec3(0, 0, 10)],
+        "footprint",
+      ),
+    ).toThrow(/3-vector/);
+  });
+
+  it("isolated adjacent zero-length edge reports zero-length even with differing Y", () => {
+    const isolated: Vec3[] = [
+      vec3(0, 0, 0),
+      vec3(0, 999, 0),
+      vec3(10, 0, 0),
+      vec3(10, 0, 10),
+      vec3(0, 0, 10),
+    ];
+    expect(() => validateFootprintPolygon(isolated, "footprint")).toThrow(
+      /zero-length/,
+    );
+  });
+
+  it("45-degree transform near tolerance band preserves classification and distance magnitude", () => {
+    const square: Vec3[] = [
+      vec3(0, 0, 0),
+      vec3(10, 0, 0),
+      vec3(10, 0, 10),
+      vec3(0, 0, 10),
+    ];
+    const inside = vec3(5, 0, 5);
+    const epsNear = 5e-10;
+    const boundaryNear = vec3(5, 0, 0 + epsNear);
+    const outsideNear = vec3(5, 0, -5e-8);
+    const dInside = signedDistanceXZ(square, inside);
+    const dBoundary = signedDistanceXZ(square, boundaryNear);
+    const dOutside = signedDistanceXZ(square, outsideNear);
+    expect(dBoundary).toBe(0);
+    expect(dInside).toBeLessThan(0);
+    expect(dOutside).toBeGreaterThan(0);
+
+    const ang = Math.PI / 4;
+    const cos = Math.cos(ang);
+    const sin = Math.sin(ang);
+    const rotate = (p: Vec3): Vec3 =>
+      vec3(p[0] * cos - p[2] * sin, p[1], p[0] * sin + p[2] * cos);
+    const squareR = square.map(rotate) as Vec3[];
+    const insideR = rotate(inside);
+    const boundaryR = rotate(boundaryNear);
+    const outsideR = rotate(outsideNear);
+    expect(isPointInsidePolygon(squareR, insideR)).toBe(true);
+    expect(isPointInsidePolygon(squareR, boundaryR)).toBe(true);
+    expect(isPointInsidePolygon(squareR, outsideR)).toBe(false);
+    const dInsideR = signedDistanceXZ(squareR, insideR);
+    const dOutsideR = signedDistanceXZ(squareR, outsideR);
+    expect(Math.abs(Math.abs(dInsideR) - Math.abs(dInside))).toBeLessThan(1e-8);
+    expect(Math.abs(Math.abs(dOutsideR) - Math.abs(dOutside))).toBeLessThan(
+      1e-8,
+    );
+    expect(signedDistanceXZ(squareR, boundaryR)).toBe(0);
+  });
+
+  it("nonfinite segment endpoints fail closed without NaN witness", () => {
+    const square: Vec3[] = [
+      vec3(0, 0, 0),
+      vec3(10, 0, 0),
+      vec3(10, 0, 10),
+      vec3(0, 0, 10),
+    ];
+    const badA = vec3(NaN, 0, 0);
+    const badB = vec3(Infinity, 0, 0);
+    const res1 = segmentWithinPolygon(square, badA, vec3(5, 0, 5));
+    const res2 = segmentWithinPolygon(square, vec3(5, 0, 5), badB);
+    const res3 = segmentWithinPolygon(
+      square,
+      vec3(0, 0, 0) as unknown as Vec3,
+      vec3(5, 0, 5),
+    );
+    expect(res1.inside).toBe(false);
+    expect(res2.inside).toBe(false);
+    expect(res1.witness === undefined || Number.isFinite(res1.witness[0])).toBe(
+      true,
+    );
+    expect(
+      res2.witness === undefined || Number.isFinite(res2.witness![0]),
+    ).toBe(true);
+    if (res1.witness) {
+      expect(
+        Number.isFinite(res1.witness[0]) &&
+          Number.isFinite(res1.witness[1]) &&
+          Number.isFinite(res1.witness[2]),
+      ).toBe(true);
+    }
+    if (res2.witness) {
+      expect(
+        Number.isFinite(res2.witness[0]) &&
+          Number.isFinite(res2.witness[1]) &&
+          Number.isFinite(res2.witness[2]),
+      ).toBe(true);
+    }
+    expect(res3.witness === undefined || Number.isFinite(res3.witness[0])).toBe(
+      true,
+    );
+  });
+});
+
 describe("point classification and signed distance", () => {
   const poly = pentagon;
   it("boundary/vertex/inside/outside half-open inclusive", () => {

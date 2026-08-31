@@ -4,20 +4,21 @@ import type { Aabb, Vec3 } from "./math";
 export type FootprintPolygon = readonly Vec3[];
 
 /** Scale-aware epsilon for XZ geometry. Deterministic. */
-const epsForExtent = (extent: number): number => Math.max(1e-12, extent * 1e-9);
+const epsForDiameter = (diameter: number): number =>
+  Math.max(1e-12, diameter * 1e-9);
 
-const extentOf = (polygon: readonly Vec3[]): number => {
-  let minX = Infinity,
-    maxX = -Infinity,
-    minZ = Infinity,
-    maxZ = -Infinity;
-  for (const p of polygon) {
-    minX = Math.min(minX, p[0]);
-    maxX = Math.max(maxX, p[0]);
-    minZ = Math.min(minZ, p[2]);
-    maxZ = Math.max(maxZ, p[2]);
+const diameterXZ = (polygon: readonly Vec3[]): number => {
+  let maxSq = 0;
+  const n = polygon.length;
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      const dx = polygon[i]![0] - polygon[j]![0];
+      const dz = polygon[i]![2] - polygon[j]![2];
+      const d2 = dx * dx + dz * dz;
+      if (d2 > maxSq) maxSq = d2;
+    }
   }
-  return Math.max(maxX - minX, maxZ - minZ, 1);
+  return Math.max(Math.sqrt(maxSq), 1);
 };
 
 const shoelaceAbsArea = (polygon: readonly Vec3[]): number => {
@@ -64,19 +65,9 @@ export function validateFootprintPolygon(
       throw new Error(`${p}[2]: expected finite number`);
     polygon.push(vec3(x, y, z));
   }
-  // extent for tolerances
-  let minX = Infinity,
-    maxX = -Infinity,
-    minZ = Infinity,
-    maxZ = -Infinity;
-  for (const p of polygon) {
-    minX = Math.min(minX, p[0]);
-    maxX = Math.max(maxX, p[0]);
-    minZ = Math.min(minZ, p[2]);
-    maxZ = Math.max(maxZ, p[2]);
-  }
-  const extent = Math.max(maxX - minX, maxZ - minZ, 1);
-  const eps = epsForExtent(extent);
+  // characteristic length (rotation-invariant diameter) for tolerances
+  const diameter = diameterXZ(polygon);
+  const eps = epsForDiameter(diameter);
   const epsSq = eps * eps;
 
   // explicit repeated closing vertex: last XZ equals first XZ
@@ -90,18 +81,7 @@ export function validateFootprintPolygon(
         `${path}[${polygon.length - 1}]: explicit repeated closing vertex (duplicates ${path}[0] in X/Z)`,
       );
   }
-  // any duplicate projected X/Z vertex (adjacent or non-adjacent)
-  for (let i = 0; i < polygon.length; i += 1) {
-    for (let j = i + 1; j < polygon.length; j += 1) {
-      const dx = polygon[i]![0] - polygon[j]![0];
-      const dz = polygon[i]![2] - polygon[j]![2];
-      if (dx * dx + dz * dz <= epsSq)
-        throw new Error(
-          `${path}[${j}]: duplicate projected X/Z vertex duplicates ${path}[${i}]`,
-        );
-    }
-  }
-  // zero-length projected edge
+  // zero-length projected edge (adjacent) before duplicate so adjacent collapse reports as zero-length
   for (let i = 0; i < polygon.length; i += 1) {
     const a = polygon[i]!;
     const b = polygon[(i + 1) % polygon.length]!;
@@ -112,13 +92,23 @@ export function validateFootprintPolygon(
         `${path}[${i}]: zero-length projected edge to ${path}[${(i + 1) % polygon.length}]`,
       );
   }
-  // zero projected shoelace area (scale-aware)
+  // any duplicate projected X/Z vertex (nonadjacent now, adjacent already handled as zero-length)
+  for (let i = 0; i < polygon.length; i += 1) {
+    for (let j = i + 1; j < polygon.length; j += 1) {
+      const dx = polygon[i]![0] - polygon[j]![0];
+      const dz = polygon[i]![2] - polygon[j]![2];
+      if (dx * dx + dz * dz <= epsSq)
+        throw new Error(
+          `${path}[${j}]: duplicate projected X/Z vertex duplicates ${path}[${i}]`,
+        );
+    }
+  }
+  // zero projected shoelace area (scale-aware, diameter^2)
   {
     const area = shoelaceAbsArea(polygon);
-    // scale-aware tolerance: extent^2 * EPS * n *4, plus absolute floor
     const tol = Math.max(
       1e-12,
-      extent * extent * Number.EPSILON * polygon.length * 4,
+      diameter * diameter * Number.EPSILON * polygon.length * 4,
     );
     if (area <= tol) throw new Error(`${path}: zero projected shoelace area`);
   }
@@ -134,7 +124,7 @@ export function validateFootprintPolygon(
     cz: number,
   ): number => cross2D(bx - ax, bz - az, cx - ax, cz - az);
 
-  const epsOrient = Math.max(1e-12, extent * extent * 1e-12);
+  const epsOrient = Math.max(1e-12, diameter * diameter * 1e-12);
   const isZero = (v: number): boolean => Math.abs(v) <= epsOrient;
   const sign = (v: number): number => (isZero(v) ? 0 : v > 0 ? 1 : -1);
   const onSegment = (
@@ -254,8 +244,8 @@ export function isPointInsidePolygon(
     !Number.isFinite(point[2])
   )
     return false;
-  const extent = extentOf(polygon);
-  const eps = epsForExtent(extent);
+  const diameter = diameterXZ(polygon);
+  const eps = epsForDiameter(diameter);
   const x = point[0];
   const z = point[2];
   const n = polygon.length;
@@ -293,8 +283,8 @@ export function signedDistanceXZ(
     !Number.isFinite(point[2])
   )
     return Number.NaN;
-  const extent = extentOf(polygon);
-  const eps = epsForExtent(extent);
+  const diameter = diameterXZ(polygon);
+  const eps = epsForDiameter(diameter);
   const x = point[0];
   const z = point[2];
   let minDist = Infinity;
@@ -329,8 +319,23 @@ export function segmentWithinPolygon(
   a: Vec3,
   b: Vec3,
 ): { readonly inside: boolean; readonly witness?: Vec3 } {
-  const extent = extentOf(polygon);
-  const eps = epsForExtent(extent);
+  // fail closed on nonfinite segment endpoints without NaN witness
+  if (
+    !Array.isArray(a) ||
+    !Array.isArray(b) ||
+    a.length !== 3 ||
+    b.length !== 3 ||
+    !Number.isFinite(a[0]) ||
+    !Number.isFinite(a[1]) ||
+    !Number.isFinite(a[2]) ||
+    !Number.isFinite(b[0]) ||
+    !Number.isFinite(b[1]) ||
+    !Number.isFinite(b[2])
+  ) {
+    return { inside: false };
+  }
+  const diameter = diameterXZ(polygon);
+  const eps = epsForDiameter(diameter);
   const ax = a[0];
   const az = a[2];
   const bx = b[0];
@@ -338,7 +343,11 @@ export function segmentWithinPolygon(
   const dx = bx - ax;
   const dz = bz - az;
   const len2 = dx * dx + dz * dz;
-  const epsT = 1e-12;
+  const segLen = Math.sqrt(len2);
+  // parametric tolerance derived from world epsilon divided by segment length, bounded safely
+  const rawTEps = segLen > 1e-18 ? eps / segLen : 1e-12;
+  const epsT = Math.max(1e-12, Math.min(rawTEps, 1e-3));
+  const dedupEps = Math.max(epsT * 0.5, 1e-12);
   // degenerate point segment
   if (len2 <= eps * eps) {
     const inside = isPointInsidePolygon(polygon, a);
@@ -367,7 +376,7 @@ export function segmentWithinPolygon(
     const rxs = cross(rX, rZ, sX, sZ);
     const qpx = q1x - ax;
     const qpz = q1z - az;
-    const epsOrient = Math.max(1e-12, extent * extent * 1e-12);
+    const epsOrient = Math.max(1e-12, diameter * diameter * 1e-12);
     if (Math.abs(rxs) <= epsOrient) {
       // parallel
       const qpr = cross(qpx, qpz, rX, rZ);
@@ -403,10 +412,10 @@ export function segmentWithinPolygon(
   }
 
   tValues.sort((l, r) => l - r);
-  // deduplicate
+  // deduplicate using parametric epsilon derived from world scale
   const dedup: number[] = [];
   for (const t of tValues) {
-    if (dedup.length === 0 || Math.abs(t - dedup[dedup.length - 1]!) > 1e-9)
+    if (dedup.length === 0 || Math.abs(t - dedup[dedup.length - 1]!) > dedupEps)
       dedup.push(t);
   }
 
