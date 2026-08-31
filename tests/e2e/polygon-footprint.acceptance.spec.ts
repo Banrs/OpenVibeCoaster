@@ -219,45 +219,66 @@ test.describe("polygon – save/load and directed concave", () => {
     const obs = attachObservability(page);
     await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
-    const result = await page.evaluate(() => {
-      const detect = window.__vibecoasterDetectGate;
-      if (!detect) throw new Error("detectGate missing");
-      const input = {
-        seed: 1,
-        gates: [{ position: [8, 12, 8] }],
-        footprint: {
-          polygon: [
-            [0, 0],
-            [10, 0],
-            [10, 6],
-            [6, 6],
-            [6, 10],
-            [0, 10],
-          ],
-          maxHeightM: 20,
-          minHeightM: 0,
-        },
-        terrainProfileId: "rolling-highlands-v1",
-        requiredElements: ["stall"],
-        hardTargets: [],
-        softTargets: [],
-        pinnedElementIds: [],
-      };
-      const diags = detect(input);
-      const boundary = detect({
-        seed: input.seed,
-        gates: [{ position: [6, 12, 6] }],
-        footprint: input.footprint,
-        terrainProfileId: input.terrainProfileId,
-        requiredElements: input.requiredElements,
-        hardTargets: [],
-        softTargets: [],
-        pinnedElementIds: [],
-      });
-      return { notch: diags, boundary };
+    const {
+      createDesignIntentV1,
+      vec3,
+      createCoasterFileV1,
+      serializeCoasterFileV1,
+    } = await import("@openvibecoaster/core");
+    const { generateCoaster } = await import("@openvibecoaster/generator");
+    const concavePolygon = [
+      vec3(0, 0, 0),
+      vec3(10, 0, 0),
+      vec3(10, 0, 6),
+      vec3(6, 0, 6),
+      vec3(6, 0, 10),
+      vec3(0, 0, 10),
+    ];
+    const baseIntent = createDesignIntentV1({
+      generatorVersion: "test-polygon",
+      seed: 7,
+      mode: "insta",
+      family: "steel-sitdown-lsm-v1",
+      elements: [],
+      gates: [],
+      targets: [],
+      constraints: [],
+      terrainProfileId: "rolling-highlands-v1",
+      pinnedElementIds: [],
     });
-    expect(result.notch.length).toBe(1);
-    const diag = result.notch[0];
+    const base = generateCoaster(baseIntent, { name: "gate-base" });
+    const gateFile = createCoasterFileV1({
+      name: base.file.name,
+      intent: {
+        ...base.file.intent,
+        footprint: concavePolygon,
+        heightRange: { min: 0, max: 20 },
+        gates: [
+          { id: "gate-000", position: vec3(8, 12, 8) },
+          { id: "gate-001", position: vec3(6, 12, 6) },
+        ],
+      },
+      solvedSpans: base.file.solvedSpans,
+      seed: base.file.seed,
+      generatorVersion: base.file.generatorVersion,
+      profileVersion: base.file.profileVersion,
+      researchSnapshotIds: base.file.researchSnapshotIds,
+      compiledDataChecksum: base.file.compiledDataChecksum,
+    });
+    const serialized = serializeCoasterFileV1(gateFile);
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "gate-"));
+    const tmpPath = path.join(tmp, "gate.json");
+    await fs.writeFile(tmpPath, serialized, "utf-8");
+    await page.locator("#load-file").setInputFiles(tmpPath);
+    await waitForReady(page);
+    const snapshot = await page.evaluate(() =>
+      window.__vibecoasterSnapshot?.(),
+    );
+    if (!snapshot) throw new Error("snapshot missing");
+    const diags = snapshot.gateContradictions;
+    expect(Array.isArray(diags)).toBe(true);
+    expect(diags.length).toBe(1);
+    const diag = diags[0];
     if (!diag) throw new Error("diag missing");
     expect(diag.code).toBe("GATE_OUTSIDE_FOOTPRINT");
     expect(diag.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
@@ -272,7 +293,10 @@ test.describe("polygon – save/load and directed concave", () => {
     expect(diag.limit).toBe(0);
     expect(diag.margin).toBe(-diag.actual);
     expect(Number.isFinite(diag.margin)).toBe(true);
-    expect(result.boundary.length).toBe(0);
+    expect(diag.message.includes("Gate 0")).toBe(true);
+    const hasBoundary = diags.some((d) => d.message.includes("Gate 1"));
+    expect(hasBoundary).toBe(false);
+    await fs.rm(tmp, { recursive: true, force: true });
     expect(
       obs.consoleAll.filter((m) => m.type === "error" || m.type === "warning"),
     ).toEqual([]);

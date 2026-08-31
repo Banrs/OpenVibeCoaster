@@ -28,6 +28,7 @@ import {
   validateDirectedInput,
   createDirectedDesignIntent,
   type DirectedEditorInput,
+  type DirectedGateInput,
 } from "./directedInput.js";
 import { buildDirectedInputFromDom } from "./app/directed.js";
 import { deriveMetricData, getMetricSeries } from "./app/metricData.js";
@@ -1140,36 +1141,6 @@ const controller = createExperienceController({
   },
 });
 
-declare global {
-  interface Window {
-    __vibecoasterSnapshot?: () => {
-      readonly intent: import("@openvibecoaster/core").DesignIntentV1 | null;
-      readonly intentFootprint:
-        readonly import("@openvibecoaster/core").Vec3[] | undefined;
-      readonly intentHeightRange:
-        import("@openvibecoaster/core").HeightRangeV1 | undefined;
-    };
-    __vibecoasterDetectGate?: (
-      input: DirectedEditorInput,
-    ) => readonly import("@openvibecoaster/core").Diagnostic[];
-  }
-}
-
-if (typeof window !== "undefined") {
-  window.__vibecoasterSnapshot = () => {
-    const result =
-      controller.getState().result ?? controller.getState().lastGoodResult;
-    const intent = result?.file.intent ?? null;
-    return {
-      intent,
-      intentFootprint: intent?.footprint,
-      intentHeightRange: intent?.heightRange,
-    };
-  };
-  window.__vibecoasterDetectGate = (input: DirectedEditorInput) =>
-    detectGateContradictions(input);
-}
-
 function syncTelemetryGraphA11y(): void {
   const auth = getAuthoritativeResult();
   const timeline = auth?.timeline ?? null;
@@ -1946,8 +1917,42 @@ function __vibecoasterSnapshot(): Readonly<{
   cameraX: number;
   cameraY: number;
   cameraZ: number;
+  intentFootprint: readonly import("@openvibecoaster/core").Vec3[] | undefined;
+  intentHeightRange: import("@openvibecoaster/core").HeightRangeV1 | undefined;
+  gateContradictions: readonly import("@openvibecoaster/core").Diagnostic[];
 }> {
   const cam = lifecycle.getCamera();
+  const loaded =
+    controller.getState().result ?? controller.getState().lastGoodResult;
+  const intent = loaded?.file.intent ?? null;
+  const intentFootprint = intent?.footprint;
+  const intentHeightRange = intent?.heightRange;
+  let gateContradictions: readonly import("@openvibecoaster/core").Diagnostic[] =
+    Object.freeze([]);
+  if (intent && intentFootprint && intentHeightRange) {
+    const polygon: [number, number][] = intentFootprint.map((v) => [
+      v[0],
+      v[2],
+    ]);
+    const gates: DirectedGateInput[] = intent.gates.map((g) => ({
+      position: [g.position[0], g.position[1], g.position[2]],
+    }));
+    const input: DirectedEditorInput = {
+      seed: intent.seed,
+      gates,
+      footprint: {
+        polygon,
+        maxHeightM: intentHeightRange.max,
+        minHeightM: intentHeightRange.min,
+      },
+      terrainProfileId: intent.terrainProfileId ?? "rolling-highlands-v1",
+      requiredElements: [],
+      hardTargets: [],
+      softTargets: [],
+      pinnedElementIds: [],
+    };
+    gateContradictions = detectGateContradictions(input);
+  }
   return Object.freeze({
     rendererReady: lifecycle.isRendererReady(),
     successfulRenderCount: lifecycle.getSuccessfulRenderCount(),
@@ -1958,6 +1963,9 @@ function __vibecoasterSnapshot(): Readonly<{
     cameraX: cam ? cam.position.x : 0,
     cameraY: cam ? cam.position.y : 0,
     cameraZ: cam ? cam.position.z : 0,
+    intentFootprint,
+    intentHeightRange,
+    gateContradictions,
   });
 }
 window.__vibecoasterSnapshot = __vibecoasterSnapshot;
