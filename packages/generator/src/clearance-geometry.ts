@@ -157,6 +157,25 @@ export function createOrientedBox(
     ],
   });
 }
+function createOrientedBoxFastInternal(
+  pose: ClearancePose,
+  geometry: ClearanceTrainGeometry,
+): OrientedBox {
+  const hx = geometry.halfWidthM;
+  const hy = (geometry.aboveRailM + geometry.belowRailM) / 2;
+  const hz = geometry.carPitchM / 2 + geometry.noseTailMarginM;
+  const off = (geometry.aboveRailM - geometry.belowRailM) / 2;
+  const center = add(pose.position, scale(pose.normal, off));
+  return {
+    center,
+    axes: [pose.binormal, pose.normal, pose.tangent] as const as readonly [
+      Vec3,
+      Vec3,
+      Vec3,
+    ],
+    halfExtents: [hx, hy, hz] as const,
+  };
+}
 function getVertices(box: OrientedBox): Vec3[] {
   const out: Vec3[] = [];
   for (const sx of [-1, 1] as const)
@@ -416,6 +435,81 @@ export function staticObbDistance(
   if (!intersectingProven) throw new RangeError("SAT ambiguous");
   throw new RangeError("SAT intersect but no witness");
 }
+function staticObbDistanceFast(
+  a: OrientedBox,
+  b: OrientedBox,
+): { distance: number; pointA: Vec3; pointB: Vec3 } {
+  const axes: Vec3[] = [];
+  for (let i = 0; i < 3; i += 1) axes.push(a.axes[i]!);
+  for (let i = 0; i < 3; i += 1) axes.push(b.axes[i]!);
+  for (let i = 0; i < 3; i += 1)
+    for (let j = 0; j < 3; j += 1) {
+      const cc = cross(a.axes[i]!, b.axes[j]!);
+      const l2 = dot(cc, cc);
+      if (l2 === 0) continue;
+      axes.push(scale(cc, 1 / Math.sqrt(l2)));
+    }
+  const delta = sub(b.center, a.center);
+  let separatedProven = false;
+  let intersectingProven = true;
+  for (const ax of axes) {
+    const l = len(ax);
+    if (l === 0) continue;
+    const n = scale(ax, 1 / l);
+    const dotDeltaIv = intervalDot(delta, n);
+    const absDotDelta = intervalAbs(dotDeltaIv);
+    let ra: Interval = { lo: 0, hi: 0 };
+    let rb: Interval = { lo: 0, hi: 0 };
+    for (let i = 0; i < 3; i += 1) {
+      const dotA = intervalDot(n, a.axes[i]!);
+      const absDotA = intervalAbs(dotA);
+      const termAlo = nextDown(a.halfExtents[i]! * absDotA.lo);
+      const termAhi = nextUp(a.halfExtents[i]! * absDotA.hi);
+      ra = { lo: nextDown(ra.lo + termAlo), hi: nextUp(ra.hi + termAhi) };
+      const dotB = intervalDot(n, b.axes[i]!);
+      const absDotB = intervalAbs(dotB);
+      const termBlo = nextDown(b.halfExtents[i]! * absDotB.lo);
+      const termBhi = nextUp(b.halfExtents[i]! * absDotB.hi);
+      rb = { lo: nextDown(rb.lo + termBlo), hi: nextUp(rb.hi + termBhi) };
+    }
+    const sumLo = nextDown(ra.lo + rb.lo);
+    const sumHi = nextUp(ra.hi + rb.hi);
+    if (absDotDelta.lo > sumHi) {
+      separatedProven = true;
+      break;
+    }
+    if (absDotDelta.hi < sumLo) continue;
+    intersectingProven = false;
+  }
+  if (separatedProven) {
+    const cf = closestFeature(a, b);
+    return { distance: cf.dist, pointA: cf.pa, pointB: cf.pb };
+  }
+  const vertsA = getVertices(a);
+  for (const va of vertsA)
+    if (pointInBox(va, b)) return { distance: 0, pointA: va, pointB: va };
+  const vertsB = getVertices(b);
+  for (const vb of vertsB)
+    if (pointInBox(vb, a)) return { distance: 0, pointA: vb, pointB: vb };
+  const edgesA = getEdges(a);
+  for (const [p0, p1] of edgesA) {
+    const ip = segmentObbIntersect(p0, p1, b);
+    if (ip && pointInBox(ip, a) && pointInBox(ip, b))
+      return { distance: 0, pointA: ip, pointB: ip };
+  }
+  const edgesB = getEdges(b);
+  for (const [q0, q1] of edgesB) {
+    const ip = segmentObbIntersect(q0, q1, a);
+    if (ip && pointInBox(ip, a) && pointInBox(ip, b))
+      return { distance: 0, pointA: ip, pointB: ip };
+  }
+  if (pointInBox(a.center, b) && pointInBox(a.center, a))
+    return { distance: 0, pointA: a.center, pointB: a.center };
+  if (pointInBox(b.center, a) && pointInBox(b.center, b))
+    return { distance: 0, pointA: b.center, pointB: b.center };
+  if (!intersectingProven) throw new RangeError("SAT ambiguous");
+  throw new RangeError("SAT intersect but no witness");
+}
 function closestFeature(
   a: OrientedBox,
   b: OrientedBox,
@@ -602,6 +696,50 @@ function totalAngle(seg: SweptClearanceSegment): number {
   const clampedDown = nextDown(Math.min(1, absDot));
   const th = 2 * Math.acos(Math.max(-1, clampedDown));
   return nextUp(th);
+}
+type SegmentInvariants = {
+  dPosUp: number;
+  rUp: number;
+  thUp: number;
+};
+function getSegmentInvariants(seg: SweptClearanceSegment): SegmentInvariants {
+  const dPos = len(sub(seg.end.position, seg.start.position));
+  const r = conservativeRadius(seg.geometry);
+  const qa = quatFromFrame(
+    seg.start.binormal,
+    seg.start.normal,
+    seg.start.tangent,
+  );
+  const qb = quatFromFrame(seg.end.binormal, seg.end.normal, seg.end.tangent);
+  const lenQa = Math.hypot(qa[0], qa[1], qa[2], qa[3]);
+  const lenQb = Math.hypot(qb[0], qb[1], qb[2], qb[3]);
+  if (Math.abs(lenQa - 1) > 1e-6 || Math.abs(lenQb - 1) > 1e-6)
+    throw new RangeError("quaternion not unit");
+  const d = quatDot(qa, qb);
+  if (!Number.isFinite(d)) throw new RangeError("quaternion dot not finite");
+  const absDot = Math.abs(d);
+  const clampedDown = nextDown(Math.min(1, absDot));
+  const th = nextUp(2 * Math.acos(Math.max(-1, clampedDown)));
+  return {
+    dPosUp: nextUp(dPos),
+    rUp: nextUp(r),
+    thUp: nextUp(th),
+  };
+}
+function motionBoundForDeltaFast(
+  inv: SegmentInvariants,
+  delta: number,
+): number {
+  if (!Number.isFinite(delta) || delta < 0)
+    throw new RangeError("delta must be finite non-negative");
+  const deltaUp = nextUp(delta);
+  const linear = nextUp(inv.dPosUp * deltaUp);
+  const thDeltaUp = nextUp(inv.thUp * deltaUp);
+  const halfUp = nextUp(thDeltaUp / 2);
+  const sinHalfUp = nextUp(Math.sin(halfUp));
+  const angular = nextUp(2 * nextUp(inv.rUp * sinHalfUp));
+  const rawUp = nextUp(linear + angular);
+  return nextUp(rawUp);
 }
 function motionBoundForDelta(
   seg: SweptClearanceSegment,
@@ -797,6 +935,8 @@ export function certifiedSweptDistance(
       return { ok: true, excluded: true, work: 0 };
     }
   }
+  const invA = getSegmentInvariants(segA);
+  const invB = getSegmentInvariants(segB);
   type QueueNode = {
     u0: number;
     u1: number;
@@ -916,9 +1056,15 @@ export function certifiedSweptDistance(
     work += 1;
     let sd: { distance: number; pointA: Vec3; pointB: Vec3 };
     try {
-      sd = staticObbDistance(
-        createOrientedBox(interpolatePose(segA, sample.u), segA.geometry),
-        createOrientedBox(interpolatePose(segB, sample.v), segB.geometry),
+      sd = staticObbDistanceFast(
+        createOrientedBoxFastInternal(
+          interpolatePose(segA, sample.u),
+          segA.geometry,
+        ),
+        createOrientedBoxFastInternal(
+          interpolatePose(segB, sample.v),
+          segB.geometry,
+        ),
       );
     } catch (e) {
       if (e instanceof RangeError && e.message.includes("SAT ambiguous")) {
@@ -928,8 +1074,8 @@ export function certifiedSweptDistance(
     }
     const deltaA = Math.max(Math.abs(sample.u - u0), Math.abs(sample.u - u1));
     const deltaB = Math.max(Math.abs(sample.v - v0), Math.abs(sample.v - v1));
-    const mA = motionBoundForDelta(segA, deltaA);
-    const mB = motionBoundForDelta(segB, deltaB);
+    const mA = motionBoundForDeltaFast(invA, deltaA);
+    const mB = motionBoundForDeltaFast(invB, deltaB);
     const lower = Math.max(0, nextDown(sd.distance - nextUp(mA + mB)));
     const upper = nextUp(len(sub(sd.pointA, sd.pointB)));
     // Upper must be at least the distance between the returned points, outward
@@ -965,8 +1111,8 @@ export function certifiedSweptDistance(
     // Treat uncertain root as needSubdivide
     const midU = 0.5;
     const midV = 0.5;
-    const mA0 = motionBoundForDelta(segA, 0.5);
-    const mB0 = motionBoundForDelta(segB, 0.5);
+    const mA0 = motionBoundForDeltaFast(invA, 0.5);
+    const mB0 = motionBoundForDeltaFast(invB, 0.5);
     const splitU = mA0 >= mB0;
     const children: Array<[number, number, number, number]> = splitU
       ? [
@@ -1028,8 +1174,8 @@ export function certifiedSweptDistance(
   } else if (rootEval.kind === "needSubdivide") {
     const midU = 0.5;
     const midV = 0.5;
-    const mA0 = motionBoundForDelta(segA, 0.5);
-    const mB0 = motionBoundForDelta(segB, 0.5);
+    const mA0 = motionBoundForDeltaFast(invA, 0.5);
+    const mB0 = motionBoundForDeltaFast(invB, 0.5);
     const splitU = mA0 >= mB0;
     const children: Array<[number, number, number, number]> = splitU
       ? [
@@ -1149,15 +1295,15 @@ export function certifiedSweptDistance(
     if (cur.hasWitness) {
       const dA = Math.max(Math.abs(cur.wU - cur.u0), Math.abs(cur.wU - cur.u1));
       const dB = Math.max(Math.abs(cur.wV - cur.v0), Math.abs(cur.wV - cur.v1));
-      mAcur = motionBoundForDelta(segA, dA);
-      mBcur = motionBoundForDelta(segB, dB);
+      mAcur = motionBoundForDeltaFast(invA, dA);
+      mBcur = motionBoundForDeltaFast(invB, dB);
     } else {
       const umid = (cur.u0 + cur.u1) / 2;
       const vmid = (cur.v0 + cur.v1) / 2;
       const dA = Math.max(Math.abs(umid - cur.u0), Math.abs(umid - cur.u1));
       const dB = Math.max(Math.abs(vmid - cur.v0), Math.abs(vmid - cur.v1));
-      mAcur = motionBoundForDelta(segA, dA);
-      mBcur = motionBoundForDelta(segB, dB);
+      mAcur = motionBoundForDeltaFast(invA, dA);
+      mBcur = motionBoundForDeltaFast(invB, dB);
     }
     const splitU = mAcur >= mBcur;
     const midU = (cur.u0 + cur.u1) / 2;
