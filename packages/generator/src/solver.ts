@@ -32,10 +32,11 @@ import type {
 
 const gravity = 9.80665;
 const worldGravity = vec3(0, -gravity, 0);
-const defaultTolerances: SeamTolerances = {
+export const defaultTolerances: SeamTolerances = {
   positionM: 1e-4,
   tangentRad: 1e-5,
   curvaturePerM: 1e-4,
+  curvatureVectorJumpPerM: 1e-4,
   curvatureGradientPerM2: 1e-4,
   bankRad: 1e-4,
   bankDerivativeRadPerM: 1e-4,
@@ -204,7 +205,7 @@ const forceFrame = (span: SolvedSpan, u: number, speed: number): ForceFrame => {
   };
 };
 
-const specificForceNormalG = (
+export const specificForceNormalG = (
   span: SolvedSpan,
   u: number,
   speed: number,
@@ -422,7 +423,7 @@ const exceedsHardTolerance = (
   residual.positionM > tolerances.positionM ||
   residual.tangentRad > tolerances.tangentRad ||
   residual.curvaturePerM > tolerances.curvaturePerM ||
-  residual.curvatureVectorJumpPerM > tolerances.curvaturePerM ||
+  residual.curvatureVectorJumpPerM > tolerances.curvatureVectorJumpPerM ||
   residual.curvatureGradientPerM2 > tolerances.curvatureGradientPerM2 ||
   residual.bankRad > tolerances.bankRad ||
   residual.bankDerivativeRadPerM > tolerances.bankDerivativeRadPerM ||
@@ -829,7 +830,7 @@ const diagnosticResiduals = (
       seam.positionM / tolerances.positionM,
       seam.tangentRad / tolerances.tangentRad,
       seam.curvaturePerM / tolerances.curvaturePerM,
-      seam.curvatureVectorJumpPerM / tolerances.curvaturePerM,
+      seam.curvatureVectorJumpPerM / tolerances.curvatureVectorJumpPerM,
       seam.curvatureGradientPerM2 / tolerances.curvatureGradientPerM2,
       seam.bankRad / tolerances.bankRad,
       seam.bankDerivativeRadPerM / tolerances.bankDerivativeRadPerM,
@@ -950,11 +951,11 @@ export const solveSemanticChain = (
                 tolerances.curvaturePerM,
               ] as const)
             : undefined,
-          seam.curvatureVectorJumpPerM > tolerances.curvaturePerM
+          seam.curvatureVectorJumpPerM > tolerances.curvatureVectorJumpPerM
             ? ([
                 "curvature vector",
                 seam.curvatureVectorJumpPerM,
-                tolerances.curvaturePerM,
+                tolerances.curvatureVectorJumpPerM,
               ] as const)
             : undefined,
           seam.curvatureGradientPerM2 > tolerances.curvatureGradientPerM2

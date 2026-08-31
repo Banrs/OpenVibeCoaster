@@ -263,7 +263,7 @@ const polynomialDerivative = (
 const bumpCoefficients = [0, 0, 0, 0, 256, -1024, 1536, -1024, 256] as const;
 const smoothRampCoefficients = [0, 0, 0, 0, 35, -84, 70, -20] as const;
 
-const sustainedForceProfile = (u: number, order = 0): number => {
+export const sustainedForceProfile = (u: number, order = 0): number => {
   const ramp = (value: number, derivativeOrder: number): number =>
     polynomialDerivative(smoothRampCoefficients, value, derivativeOrder);
   if (u <= 0.15 || u >= 0.85) return 0;

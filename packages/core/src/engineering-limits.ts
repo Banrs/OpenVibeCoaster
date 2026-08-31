@@ -13,9 +13,11 @@ export interface EngineeringLimitsProfile {
     readonly positionM: number;
     readonly tangentRad: number;
     readonly curvaturePerM: number;
+    readonly curvatureVectorJumpPerM: number;
     readonly curvatureGradientPerM2: number;
     readonly bankRad: number;
     readonly bankDerivativeRadPerM: number;
+    readonly bankSecondDerivativeRadPerM2: number;
     readonly specificForceJumpG: number;
     readonly sustainedForceDeviationG: number;
   };
@@ -70,15 +72,17 @@ export function validateEngineeringLimitsProfile(
     "positionM",
     "tangentRad",
     "curvaturePerM",
+    "curvatureVectorJumpPerM",
     "curvatureGradientPerM2",
     "bankRad",
     "bankDerivativeRadPerM",
+    "bankSecondDerivativeRadPerM2",
     "specificForceJumpG",
     "sustainedForceDeviationG",
   ] as const;
   for (const k of seamKeys) nonNegative(seams[k], `profile.seams.${k}`);
   if (Object.keys(seams).length !== seamKeys.length)
-    fail("profile.seams", "exact 8 seam fields");
+    fail("profile.seams", "exact 10 seam fields");
   const allowed = new Set([
     "schemaVersion",
     "profileId",

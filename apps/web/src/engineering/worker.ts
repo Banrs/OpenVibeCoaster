@@ -503,7 +503,11 @@ export function handleRegenerate(
     localResult = regenerateCoasterFileLocal(
       fileInput as CoasterFileV1 | string | Uint8Array,
       elementId as string,
-      env ? { environment: env } : {},
+      {
+        ...(env ? { environment: env } : {}),
+        seams: engineeringLimitsProfile.seams,
+        referenceSpeed: 44,
+      },
     );
   } catch (err) {
     return failure(requestId, [

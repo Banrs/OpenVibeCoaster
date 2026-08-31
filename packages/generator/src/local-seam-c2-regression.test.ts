@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { generateCoaster, regenerateLocal } from "./pipeline";
 import * as solver from "./solver";
+import rawProfile from "../../../data/profiles/engineering-limits-v1.json";
+import {
+  parseEngineeringLimitsProfile,
+  validateEngineeringLimitsProfile,
+} from "@openvibecoaster/core";
 
 describe("local seam C2 regression", () => {
   it("rejects local regeneration when only bankSecondDerivative exceeds tolerance", () => {
@@ -80,13 +85,23 @@ describe("local seam C2 regression", () => {
     }) as typeof solver.diagnoseSeams);
 
     try {
-      const result = regenerateLocal(generated, "s2");
+      validateEngineeringLimitsProfile(rawProfile);
+      const seams = parseEngineeringLimitsProfile(rawProfile).seams;
+      const result = regenerateLocal(generated, "s2", {
+        seams,
+        referenceSpeed: 44,
+      });
       expect(result.feasible).toBe(false);
       const local = result.diagnostics.find(
-        (item) => item.code === "LOCAL_REGENERATION",
+        (item) =>
+          item.code === "LOCAL_REGENERATION_SEAM_BANK_SECOND_DERIVATIVE",
       );
       expect(local).toBeDefined();
       expect(local!.actual).toBeCloseTo(2e-4, 6);
+      expect(local!.limit).toBe(1e-4);
+      expect(local!.margin).toBeCloseTo(-1e-4, 6);
+      expect(local!.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
+      expect(local!.relatedIds).toEqual(["s1", "s2"]);
     } finally {
       spy.mockRestore();
     }

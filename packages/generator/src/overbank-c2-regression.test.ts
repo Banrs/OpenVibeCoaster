@@ -15,6 +15,9 @@ import {
   regenerateLocal,
 } from "./index";
 import * as solver from "./solver";
+import rawProfile from "../../../data/profiles/engineering-limits-v1.json";
+import { parseEngineeringLimitsProfile } from "@openvibecoaster/core";
+const testSeams = parseEngineeringLimitsProfile(rawProfile).seams;
 
 const authoredBank = Math.PI * 0.6;
 
@@ -318,6 +321,8 @@ describe("overbank C2 regression", () => {
 
       // owner mapping supports local regeneration/pin paths
       const local = regenerateLocal(first, "station-003", {
+        seams: testSeams,
+        referenceSpeed: 44,
         pinnedElementIds: ["overbank-001"],
       });
       expect(local.feasible).toBe(true);
@@ -336,6 +341,8 @@ describe("overbank C2 regression", () => {
       );
       // also verify a regeneration window that includes overbank still keeps other pins stable
       const local2 = regenerateLocal(first, "brake-002", {
+        seams: testSeams,
+        referenceSpeed: 44,
         pinnedElementIds: ["station-000"],
       });
       expect(local2.feasible).toBe(true);
@@ -344,6 +351,8 @@ describe("overbank C2 regression", () => {
       );
       // pinned guard
       const pinnedFail = regenerateLocal(first, "station-000", {
+        seams: testSeams,
+        referenceSpeed: 44,
         pinnedElementIds: ["station-000"],
       });
       expect(pinnedFail.feasible).toBe(false);
@@ -412,6 +421,8 @@ describe("overbank C2 regression", () => {
 
       // owner mapping supports local regeneration in flagship
       const local = regenerateLocal(first, "stall-007", {
+        seams: testSeams,
+        referenceSpeed: 44,
         pinnedElementIds: ["station-000"],
       });
       // flagship has station-000 pinned scenario; ensure overbank untouched stays stable when window excludes it

@@ -6,6 +6,9 @@ import {
   regenerateLocal,
   validateClearance,
 } from "./index";
+import rawProfile from "../../../data/profiles/engineering-limits-v1.json";
+import { parseEngineeringLimitsProfile } from "@openvibecoaster/core";
+const testSeams = parseEngineeringLimitsProfile(rawProfile).seams;
 import {
   CompiledTrackData,
   aabbFromPoints,
@@ -469,6 +472,8 @@ describe("wave 3 deterministic generator", () => {
   it("regenerates only the selected neighborhood and keeps pinned spans bitwise stable", () => {
     const generated = generateCoaster(directedIntent);
     const result = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       pinnedElementIds: ["station-000"],
     });
     expect(result.feasible).toBe(true);
@@ -480,6 +485,8 @@ describe("wave 3 deterministic generator", () => {
   it("widens a changed local solve without changing an upstream pin", () => {
     const generated = generateCoaster(directedIntent);
     const result = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-001": { length: 40 } },
       pinnedElementIds: ["station-000"],
     });
@@ -1068,6 +1075,8 @@ describe("wave 3 deterministic generator", () => {
       pinnedElementIds: ["station-000", "brake-003"],
     });
     const result = regenerateLocal(generated, "stall-002", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-002": { height: 22 } },
       pinnedElementIds: ["station-000", "brake-003"],
     });
@@ -1103,6 +1112,8 @@ describe("wave 3 deterministic generator", () => {
     };
     const solveSpy = vi.spyOn(solver, "solveSemanticChain");
     const result = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-001": { height: 26 } },
     });
     expect(solveSpy).toHaveBeenCalled();
@@ -1134,6 +1145,8 @@ describe("wave 3 deterministic generator", () => {
     expect(generated.selectedLmIterations).toBeGreaterThan(0);
     const solveSpy = vi.spyOn(solver, "solveSemanticChain");
     const result = regenerateLocal(generated, "launch-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "launch-001": { length: 261 } },
     });
     const localCall = solveSpy.mock.calls.find(
@@ -1199,6 +1212,8 @@ describe("wave 3 deterministic generator", () => {
       pinnedElementIds: [],
     });
     const result = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-001": { height: 1 } },
       intent: {
         ...generated.intent,
@@ -1239,6 +1254,8 @@ describe("wave 3 deterministic generator", () => {
       ],
     });
     const result = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       intent: generated.intent,
       changes: { "stall-001": { length: 40 } },
     });
@@ -1265,6 +1282,8 @@ describe("wave 3 deterministic generator", () => {
       pinnedElementIds: [],
     });
     const result = regenerateLocal(generated, "s1", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { s4: { length: 20 } },
     });
     const saved = result.generation.file.solvedSpans.find(
@@ -1307,6 +1326,8 @@ describe("wave 3 deterministic generator", () => {
       ),
     };
     const result = regenerateLocal(generated, "s1", {
+      seams: testSeams,
+      referenceSpeed: 44,
       intent: replacementIntent,
     });
     const runtime = result.generation.solvedSpans.find(
@@ -1334,6 +1355,8 @@ describe("wave 3 deterministic generator", () => {
       pinnedElementIds: [],
     });
     const missing = regenerateLocal(generated, "s1", {
+      seams: testSeams,
+      referenceSpeed: 44,
       intent: {
         ...generated.intent,
         elements: generated.intent.elements.slice(0, -1),
@@ -1341,6 +1364,8 @@ describe("wave 3 deterministic generator", () => {
       changes: { s4: { length: 20 } },
     });
     const reordered = regenerateLocal(generated, "s1", {
+      seams: testSeams,
+      referenceSpeed: 44,
       intent: {
         ...generated.intent,
         elements: [
@@ -1376,6 +1401,8 @@ describe("wave 3 deterministic generator", () => {
       pinnedElementIds: ["s4"],
     });
     const result = regenerateLocal(generated, "s1", {
+      seams: testSeams,
+      referenceSpeed: 44,
       intent: {
         ...generated.intent,
         elements: generated.intent.elements.map((element) =>
@@ -1414,6 +1441,8 @@ describe("wave 3 deterministic generator", () => {
       pinnedElementIds: ["s3"],
     });
     const result = regenerateLocal(generated, "s1", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { s4: { length: 20 } },
     });
 
@@ -1576,7 +1605,10 @@ describe("wave 3 deterministic generator", () => {
         (span) => span.id,
       ),
     ).toEqual(childIds);
-    const local = regenerateLocal(generated, id);
+    const local = regenerateLocal(generated, id, {
+      seams: testSeams,
+      referenceSpeed: 44,
+    });
     expect(local.feasible).toBe(true);
     expect(local.generation.solvedSpans.map((span) => span.id)).toEqual(
       childIds,
@@ -1762,17 +1794,19 @@ describe("wave 3 deterministic generator", () => {
       pinnedElementIds: [],
     });
     const result = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-001": { height: 19 } },
     });
     const closure = result.diagnostics.find(
       (item) =>
-        item.code === "LOCAL_REGENERATION" &&
+        item.code.startsWith("LOCAL_REGENERATION_SEAM_") &&
         item.message.includes("->station-000"),
     );
     expect(result.feasible).toBe(false);
     expect(closure?.message).toContain("brake-002->station-000");
     expect(closure?.relatedIds).toEqual(
-      expect.arrayContaining(["brake-002", "station-000#0"]),
+      expect.arrayContaining(["brake-002", "station-000"]),
     );
     expect(closure?.location?.s).toBeDefined();
   }, 120000);
@@ -1805,6 +1839,8 @@ describe("wave 3 deterministic generator", () => {
     expect(generated.diagnostics).toEqual([]);
     const solveSpy = vi.spyOn(solver, "solveSemanticChain");
     const result = regenerateLocal(generated, "stall-002", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-002": { height: 19 } },
       pinnedElementIds: ["station-000", "transition-001"],
     });
@@ -1897,6 +1933,8 @@ describe("wave 3 deterministic generator", () => {
     expect(generated.diagnostics).toEqual([]);
     const solveSpy = vi.spyOn(solver, "solveSemanticChain");
     const original = regenerateLocal(generated, "stall-002", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-002": { height: 19 } },
       pinnedElementIds: ["station-000", "transition-001"],
     });
@@ -1915,6 +1953,8 @@ describe("wave 3 deterministic generator", () => {
       track: rigidlyTransformTrack(generated.track),
     };
     const transformed = regenerateLocal(transformedGenerated, "stall-002", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-002": { height: 19 } },
       pinnedElementIds: ["station-000", "transition-001"],
     });
@@ -2148,6 +2188,8 @@ describe("wave 3 deterministic generator", () => {
       targets: [{ id: "impossible-z", kind: "end-z", target: 999, hard: true }],
     });
     const result = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       environment: {
         signedDistance: () => {
           queryCalls += 1;
@@ -2212,6 +2254,8 @@ describe("wave 3 deterministic generator", () => {
     );
     const callsAfterGeneration = environment.signedDistanceCalls;
     const withEnvironment = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       environment,
       changes: { "stall-001": { length: 40 } },
     });
@@ -2229,9 +2273,13 @@ describe("wave 3 deterministic generator", () => {
     });
 
     const withoutEnvironment = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-001": { length: 40 } },
     });
     const repeatedWithoutEnvironment = regenerateLocal(generated, "stall-001", {
+      seams: testSeams,
+      referenceSpeed: 44,
       changes: { "stall-001": { length: 40 } },
     });
     expect(environment.signedDistanceCalls).toBe(callsAfterLocal);

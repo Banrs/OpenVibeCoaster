@@ -113,6 +113,7 @@ export interface SeamTolerances {
   readonly positionM: number;
   readonly tangentRad: number;
   readonly curvaturePerM: number;
+  readonly curvatureVectorJumpPerM: number;
   readonly curvatureGradientPerM2: number;
   readonly bankRad: number;
   readonly bankDerivativeRadPerM: number;
@@ -238,6 +239,8 @@ export interface LocalRegenerationOptions {
   readonly changes?: Readonly<
     Record<string, Partial<Record<string, number | string | boolean>>>
   >;
+  readonly seams?: unknown;
+  readonly referenceSpeed?: number;
 }
 
 export interface LocalRegenerationResult {

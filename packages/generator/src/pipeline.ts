@@ -6,6 +6,8 @@ import {
   TrackCompileError,
   Xoshiro128ss,
   arcLength,
+  buildArcLengthLut,
+  invertArcLength,
   compileCoasterFile,
   createCoasterFileV1,
   canonicalJson,
@@ -45,6 +47,7 @@ import {
   createAnyElement,
   createElement,
   defaultPose,
+  sustainedForceProfile,
 } from "./elements";
 import { ELEMENT_KINDS } from "./types";
 import {
@@ -2013,58 +2016,398 @@ const coefficientBoundaryPose = (
   };
 };
 
-const localSeamDiagnostics = (
+type SeamMetricDef = {
+  readonly name: string;
+  readonly key: keyof import("./types").ResidualSet;
+  readonly limitKey: keyof import("./types").SeamTolerances;
+};
+
+const SEAM_METRIC_TABLE: readonly SeamMetricDef[] = [
+  { name: "POSITION", key: "positionM", limitKey: "positionM" },
+  { name: "TANGENT", key: "tangentRad", limitKey: "tangentRad" },
+  { name: "CURVATURE", key: "curvaturePerM", limitKey: "curvaturePerM" },
+  {
+    name: "CURVATURE_VECTOR",
+    key: "curvatureVectorJumpPerM",
+    limitKey: "curvatureVectorJumpPerM",
+  },
+  {
+    name: "CURVATURE_GRADIENT",
+    key: "curvatureGradientPerM2",
+    limitKey: "curvatureGradientPerM2",
+  },
+  { name: "BANK", key: "bankRad", limitKey: "bankRad" },
+  {
+    name: "BANK_DERIVATIVE",
+    key: "bankDerivativeRadPerM",
+    limitKey: "bankDerivativeRadPerM",
+  },
+  {
+    name: "BANK_SECOND_DERIVATIVE",
+    key: "bankSecondDerivativeRadPerM2",
+    limitKey: "bankSecondDerivativeRadPerM2",
+  },
+  {
+    name: "SPECIFIC_FORCE_JUMP",
+    key: "specificForceJumpG",
+    limitKey: "specificForceJumpG",
+  },
+  {
+    name: "SUSTAINED_FORCE_DEVIATION",
+    key: "sustainedForceDeviationG",
+    limitKey: "sustainedForceDeviationG",
+  },
+] as const;
+
+const REQUIRED_SEAM_KEYS = [
+  "positionM",
+  "tangentRad",
+  "curvaturePerM",
+  "curvatureVectorJumpPerM",
+  "curvatureGradientPerM2",
+  "bankRad",
+  "bankDerivativeRadPerM",
+  "bankSecondDerivativeRadPerM2",
+  "specificForceJumpG",
+  "sustainedForceDeviationG",
+] as const;
+
+const validateSeamsForLocal = (
+  seams: unknown,
+):
+  | { ok: true; value: import("./types").SeamTolerances }
+  | { ok: false; diagnostic: Diagnostic } => {
+  if (typeof seams !== "object" || seams === null || Array.isArray(seams)) {
+    return {
+      ok: false,
+      diagnostic: {
+        code: "SEAM_LIMITS_UNCERTIFIED",
+        severity: "fatal",
+        provenance: "PROJECT_ENGINEERING_LIMIT",
+        message: "seams: expected object with exact 10 seam fields",
+        relatedIds: [],
+      },
+    };
+  }
+  const obj = seams as Record<string, unknown>;
+  if (Object.keys(obj).length !== REQUIRED_SEAM_KEYS.length) {
+    return {
+      ok: false,
+      diagnostic: {
+        code: "SEAM_LIMITS_UNCERTIFIED",
+        severity: "fatal",
+        provenance: "PROJECT_ENGINEERING_LIMIT",
+        message: `seams: expected exact ${REQUIRED_SEAM_KEYS.length} fields, got ${Object.keys(obj).length}`,
+        relatedIds: [],
+      },
+    };
+  }
+  for (const k of REQUIRED_SEAM_KEYS) {
+    const v = obj[k];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      return {
+        ok: false,
+        diagnostic: {
+          code: "SEAM_LIMITS_UNCERTIFIED",
+          severity: "fatal",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: `seams.${k}: expected non-negative finite number`,
+          relatedIds: [],
+        },
+      };
+    }
+  }
+  for (const k of Object.keys(obj)) {
+    if (!(REQUIRED_SEAM_KEYS as readonly string[]).includes(k)) {
+      return {
+        ok: false,
+        diagnostic: {
+          code: "SEAM_LIMITS_UNCERTIFIED",
+          severity: "fatal",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: `seams.${k}: unexpected field`,
+          relatedIds: [],
+        },
+      };
+    }
+  }
+  return {
+    ok: true,
+    value: obj as unknown as import("./types").SeamTolerances,
+  };
+};
+
+const expectedGForSample = (
+  element: AnySemanticElement | undefined,
+  t: number,
+): number | undefined => {
+  if (!element) return undefined;
+  if (t < 0.25 || t > 0.75) return undefined;
+  if (element.type === "airtimeHill") {
+    const p =
+      element.parameters as import("./types").ElementParameterMap["airtimeHill"];
+    return 1 + (p.targetForceG - 1) * sustainedForceProfile(t);
+  }
+  if (element.type === "zeroGRoll") {
+    return 1 - sustainedForceProfile(t);
+  }
+  return undefined;
+};
+
+const deriveSustainedTarget = (
+  element: AnySemanticElement | undefined,
+  chainReferenceSpeed: number,
+):
+  | { expectedForT: (t: number) => number | undefined; referenceSpeed: number }
+  | undefined => {
+  if (!element) return undefined;
+  if (element.type === "airtimeHill") {
+    const p =
+      element.parameters as import("./types").ElementParameterMap["airtimeHill"];
+    return {
+      expectedForT: (t: number) => expectedGForSample(element, t),
+      referenceSpeed: p.referenceSpeed,
+    };
+  }
+  if (element.type === "zeroGRoll") {
+    return {
+      expectedForT: (t: number) => expectedGForSample(element, t),
+      referenceSpeed: chainReferenceSpeed,
+    };
+  }
+  return undefined;
+};
+
+const lutCache = new WeakMap<
+  ParametricSpan<Vec3>,
+  ReturnType<typeof buildArcLengthLut>
+>();
+const locateSpanAtS = (
+  spans: readonly SolvedSpan[],
+  cumulative: readonly number[],
+  targetS: number,
+): { span: SolvedSpan; u: number; index: number } => {
+  for (let i = 0; i < spans.length; i += 1) {
+    const start = i === 0 ? 0 : cumulative[i - 1]!;
+    const end = cumulative[i]!;
+    if (targetS >= start - 1e-9 && targetS <= end + 1e-9) {
+      const span = spans[i]!;
+      const localS = Math.max(0, Math.min(end - start, targetS - start));
+      const totalLen = end - start;
+      if (totalLen <= 1e-12) return { span, u: 0, index: i };
+      let lut = lutCache.get(span.span);
+      if (!lut) {
+        lut = buildArcLengthLut(span.span);
+        lutCache.set(span.span, lut);
+      }
+      const u = invertArcLength(span.span, lut, localS);
+      return { span, u: Math.max(0, Math.min(1, u)), index: i };
+    }
+  }
+  const last = spans[spans.length - 1]!;
+  return { span: last, u: 1, index: spans.length - 1 };
+};
+
+const elementGlobalT = (
+  sampleS: number,
+  owningElementId: string,
+  spans: readonly SolvedSpan[],
+  cumulative: readonly number[],
+  elementById: ReadonlyMap<string, AnySemanticElement>,
+): number => {
+  const ownedIndices: number[] = [];
+  for (let i = 0; i < spans.length; i += 1) {
+    if (ownerForSpan(spans[i]!.id, elementById) === owningElementId)
+      ownedIndices.push(i);
+  }
+  if (ownedIndices.length === 0) return 0;
+  const firstIdx = ownedIndices[0]!;
+  const lastIdx = ownedIndices[ownedIndices.length - 1]!;
+  const elementStartS = firstIdx === 0 ? 0 : cumulative[firstIdx - 1]!;
+  const elementEndS = cumulative[lastIdx]!;
+  const elementLen = elementEndS - elementStartS;
+  if (elementLen <= 1e-12) return 0;
+  return Math.max(0, Math.min(1, (sampleS - elementStartS) / elementLen));
+};
+
+const evaluateSustainedForSeam = (
+  spans: readonly SolvedSpan[],
+  cumulative: readonly number[],
+  totalLength: number,
+  seamS: number,
+  leftOwner: string | undefined,
+  rightOwner: string | undefined,
+  elementById: ReadonlyMap<string, AnySemanticElement>,
+  closed: boolean,
+  chainReferenceSpeed: number,
+): { actual: number; location: { s: number; position: Vec3 } } | undefined => {
+  const leftElement = leftOwner ? elementById.get(leftOwner) : undefined;
+  const rightElement = rightOwner ? elementById.get(rightOwner) : undefined;
+  const leftDerived = deriveSustainedTarget(leftElement, chainReferenceSpeed);
+  const rightDerived = deriveSustainedTarget(rightElement, chainReferenceSpeed);
+  if (!leftDerived && !rightDerived) return undefined;
+  let worstActual = -Infinity;
+  let worstLocation: { s: number; position: Vec3 } | undefined;
+  const considerForT = (
+    canonicalS: number,
+    derived: {
+      expectedForT: (t: number) => number | undefined;
+      referenceSpeed: number;
+    },
+    owner: string,
+  ): void => {
+    const located = locateSpanAtS(spans, cumulative, canonicalS);
+    const t = elementGlobalT(canonicalS, owner, spans, cumulative, elementById);
+    const expected = derived.expectedForT(t);
+    if (expected === undefined) return;
+    const actualForce = solver.specificForceNormalG(
+      located.span,
+      located.u,
+      derived.referenceSpeed,
+    );
+    const dev = Math.abs(actualForce - expected);
+    if (dev > worstActual) {
+      worstActual = dev;
+      worstLocation = {
+        s: canonicalS,
+        position: located.span.span.position(located.u),
+      };
+    }
+  };
+  const steps = 10;
+  if (leftDerived) {
+    if (closed) {
+      for (let i = 0; i <= steps; i += 1) {
+        const offset = (5 * i) / steps;
+        const raw = seamS - offset;
+        const canonical = ((raw % totalLength) + totalLength) % totalLength;
+        considerForT(canonical, leftDerived, leftOwner!);
+      }
+    } else {
+      const startS = Math.max(0, seamS - 5);
+      for (let i = 0; i <= steps; i += 1) {
+        const s = startS + ((seamS - startS) * i) / steps;
+        considerForT(s, leftDerived, leftOwner!);
+      }
+    }
+  }
+  if (rightDerived) {
+    if (closed) {
+      for (let i = 0; i <= steps; i += 1) {
+        const offset = (5 * i) / steps;
+        const raw = seamS + offset;
+        const canonical = raw % totalLength;
+        considerForT(canonical, rightDerived, rightOwner!);
+      }
+    } else {
+      const endS = Math.min(totalLength, seamS + 5);
+      for (let i = 1; i <= steps; i += 1) {
+        const s = seamS + ((endS - seamS) * i) / steps;
+        considerForT(s, rightDerived, rightOwner!);
+      }
+      // also include seam itself for right side if left not already (to avoid duplicate at seam)
+      if (!leftDerived) {
+        considerForT(seamS, rightDerived, rightOwner!);
+      }
+    }
+  }
+  if (worstLocation === undefined) return undefined;
+  return { actual: worstActual, location: worstLocation };
+};
+
+export const localSeamDiagnostics = (
   spans: readonly SolvedSpan[],
   elements: readonly AnySemanticElement[],
   closed: boolean,
+  seams: unknown,
+  chainReferenceSpeed: number,
 ): readonly Diagnostic[] => {
-  const diagnostics: Diagnostic[] = [];
-  const elementById = new Map(elements.map((element) => [element.id, element]));
-  for (const seam of solver.diagnoseSeams(spans, { closed })) {
-    const [leftId, rightId] = seam.seamId.split("->");
-    if (
-      ownerForSpan(leftId!, elementById) === ownerForSpan(rightId!, elementById)
-    )
-      continue;
-    const failure =
-      seam.positionM > 1e-4 ||
-      seam.tangentRad > 1e-5 ||
-      seam.curvaturePerM > 1e-4 ||
-      seam.curvatureVectorJumpPerM > 1e-4 ||
-      seam.curvatureGradientPerM2 > 1e-4 ||
-      seam.bankRad > 1e-4 ||
-      seam.bankDerivativeRadPerM > 1e-4 ||
-      seam.bankSecondDerivativeRadPerM2 > 1e-4 ||
-      seam.specificForceJumpG > 0.05;
-    if (failure)
-      diagnostics.push(
-        hardDiagnostic(
-          "LOCAL_REGENERATION",
-          `Merged seam ${seam.seamId} remains outside hard tolerances`,
-          [leftId!, rightId!],
-          Math.max(
-            seam.positionM,
-            seam.tangentRad,
-            seam.curvaturePerM,
-            seam.curvatureVectorJumpPerM,
-            seam.curvatureGradientPerM2,
-            seam.bankRad,
-            seam.bankDerivativeRadPerM,
-            seam.bankSecondDerivativeRadPerM2,
-            seam.specificForceJumpG,
-          ),
-          1e-4,
-          {
-            s: spans
-              .slice(0, spans.findIndex((span) => span.id === leftId) + 1)
-              .reduce((sum, span) => sum + arcLength(span.span), 0),
-            position: spans
-              .find((span) => span.id === leftId)!
-              .span.position(1),
-          },
-        ),
-      );
+  const validated = validateSeamsForLocal(seams);
+  if (!validated.ok) {
+    return [sanitizeDiagnostic({ ...validated.diagnostic, relatedIds: [] })];
   }
+  const tolerances = validated.value;
+  const elementById = new Map(elements.map((element) => [element.id, element]));
+  const cumulative: number[] = [];
+  let acc = 0;
+  for (const span of spans) {
+    acc += arcLength(span.span);
+    cumulative.push(acc);
+  }
+  const totalLength = acc;
+  const spanIndexById = new Map(spans.map((s, i) => [s.id, i] as const));
+  const diagnostics: Diagnostic[] = [];
+  for (const seam of solver.diagnoseSeams(spans, {
+    closed,
+    referenceSpeed: chainReferenceSpeed,
+  })) {
+    const [leftId, rightId] = seam.seamId.split("->");
+    const leftOwner = ownerForSpan(leftId!, elementById);
+    const rightOwner = ownerForSpan(rightId!, elementById);
+    if (leftOwner !== undefined && leftOwner === rightOwner) continue;
+    const relatedIds: readonly string[] = [
+      leftOwner ?? leftId!,
+      rightOwner ?? rightId!,
+    ];
+    const leftIndex = spanIndexById.get(leftId!) ?? -1;
+    const seamS = leftIndex >= 0 ? cumulative[leftIndex]! : 0;
+    for (const metric of SEAM_METRIC_TABLE) {
+      if (metric.name === "SUSTAINED_FORCE_DEVIATION") continue;
+      const actual = seam[metric.key] as number;
+      const limit = tolerances[metric.limitKey] as number;
+      if (actual > limit) {
+        diagnostics.push(
+          hardDiagnostic(
+            `LOCAL_REGENERATION_SEAM_${metric.name}`,
+            `Merged seam ${seam.seamId} ${metric.name.toLowerCase()} ${actual.toExponential(3)} exceeds ${limit.toExponential(3)}`,
+            relatedIds,
+            actual,
+            limit,
+            { s: seamS, position: spans[leftIndex]!.span.position(1) },
+          ),
+        );
+      }
+    }
+    const evaluated = evaluateSustainedForSeam(
+      spans,
+      cumulative,
+      totalLength,
+      seamS,
+      leftOwner,
+      rightOwner,
+      elementById,
+      closed,
+      chainReferenceSpeed,
+    );
+    if (evaluated) {
+      const limit = tolerances.sustainedForceDeviationG as number;
+      if (evaluated.actual > limit) {
+        diagnostics.push(
+          hardDiagnostic(
+            `LOCAL_REGENERATION_SEAM_SUSTAINED_FORCE_DEVIATION`,
+            `Merged seam ${seam.seamId} sustained-force deviation ${evaluated.actual.toExponential(3)} exceeds ${limit.toExponential(3)}`,
+            relatedIds,
+            evaluated.actual,
+            limit,
+            evaluated.location,
+          ),
+        );
+      }
+    }
+  }
+  diagnostics.sort((a, b) => {
+    const order = (code: string): number => {
+      const suffix = code.replace("LOCAL_REGENERATION_SEAM_", "");
+      const idx = SEAM_METRIC_TABLE.findIndex((m) => m.name === suffix);
+      return idx < 0 ? 999 : idx;
+    };
+    const oa = order(a.code);
+    const ob = order(b.code);
+    if (oa !== ob) return oa - ob;
+    if (a.relatedIds?.[0] !== b.relatedIds?.[0])
+      return (a.relatedIds?.[0] ?? "").localeCompare(b.relatedIds?.[0] ?? "");
+    return a.code.localeCompare(b.code);
+  });
   return sanitizeDiagnostics(diagnostics);
 };
 
@@ -2075,10 +2418,18 @@ const mergedDiagnostics = (
   options: StoredGenerationOptions,
   environment: EnvironmentQuery | undefined,
   localDiagnostics: readonly Diagnostic[],
+  seams: unknown,
+  chainReferenceSpeed: number,
 ): readonly Diagnostic[] => {
   const diagnostics = [
     ...localDiagnostics,
-    ...localSeamDiagnostics(spans, elements, isClosedChain(elements)),
+    ...localSeamDiagnostics(
+      spans,
+      elements,
+      isClosedChain(elements),
+      seams,
+      chainReferenceSpeed,
+    ),
     ...gateDiagnostics(spans, intent),
     ...validateGenerationConstraints(elements, spans, intent, environment),
   ];
@@ -2183,6 +2534,8 @@ export const regenerateLocal = (
   selectedElementId: string,
   options: LocalRegenerationOptions = {},
 ): LocalRegenerationResult => {
+  const seams = options.seams;
+  const chainReferenceSpeed = options.referenceSpeed ?? 44;
   const baseIntent = options.intent ?? generated.intent;
   const pinned = new Set([
     ...(generated.intent.pinnedElementIds ?? []),
@@ -2416,7 +2769,7 @@ export const regenerateLocal = (
           ...(localEnd === generated.elements.length - 1
             ? {}
             : { endPose: coefficientBoundaryPose(generated, localEnd + 1) }),
-          referenceSpeed: 44,
+          referenceSpeed: chainReferenceSpeed,
           maxIterations: 32,
         },
       );
@@ -2476,6 +2829,8 @@ export const regenerateLocal = (
         generated.options,
         options.environment,
         localSolved.diagnostics,
+        seams,
+        chainReferenceSpeed,
       );
       lastDiagnostics = diagnostics;
       const candidate = {

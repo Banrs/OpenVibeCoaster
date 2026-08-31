@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   compileCoasterFile,
   createDesignIntentV1,
+  parseEngineeringLimitsProfile,
 } from "@openvibecoaster/core";
 import { generateCoaster, regenerateCoasterFileLocal } from "./pipeline";
+import rawProfile from "../../../data/profiles/engineering-limits-v1.json";
+
+const testSeams = parseEngineeringLimitsProfile(rawProfile).seams;
 
 const baseIntent = createDesignIntentV1({
   generatorVersion: "test-v1",
@@ -64,7 +68,10 @@ describe("regenerateCoasterFileLocal canonical 32", () => {
     expect(origSpan).toBeDefined();
 
     // File-local regeneration must use canonical adaptive explicitly
-    const local = regenerateCoasterFileLocal(file64, "launch-1");
+    const local = regenerateCoasterFileLocal(file64, "launch-1", {
+      seams: testSeams,
+      referenceSpeed: 44,
+    });
     expect(local.feasible).toBe(true);
     const newFile = local.generation.file;
     // New file's checksum must still be canonical adaptive
@@ -121,7 +128,10 @@ describe("regenerateCoasterFileLocal canonical 32", () => {
       file.solvedSpans.filter((s) => s.id.startsWith("topHat-1")).length,
     ).toBe(2);
     const origStart = file.solvedSpans.find((s) => s.id === "station-0")!;
-    const res = regenerateCoasterFileLocal(file, "topHat-1");
+    const res = regenerateCoasterFileLocal(file, "topHat-1", {
+      seams: testSeams,
+      referenceSpeed: 44,
+    });
     // Should preserve station-0
     if (res.feasible) {
       const newStart = res.generation.file.solvedSpans.find(
