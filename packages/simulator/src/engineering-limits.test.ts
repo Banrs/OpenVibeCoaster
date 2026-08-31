@@ -275,7 +275,52 @@ describe("engineering limits - frames table-driven", () => {
     expect(
       diags.find((d) => d.code === "ENGINEERING_LIMIT_VERTICAL_G_MAX")
         ?.elementId,
+    ).toBe("a");
+  });
+
+  it("RED: seam-boundary ownership – exact seam owned by preceding", () => {
+    const { track, spanIds } = trackWithSpans(["a", "b"]);
+    // track is 0-10 (a) and 10-20 (b); s=10 is seam, should be a (preceding)
+    const f1 = frame(0, [car(10, [10, 0, 0], tel({ verticalG: 6 }))]);
+    const d1 = validateEngineeringLimits([f1], track, profile, spanIds).find(
+      (d) => d.code === "ENGINEERING_LIMIT_VERTICAL_G_MAX",
+    );
+    expect(d1?.elementId).toBe("a");
+    // s just beyond seam belongs to next
+    const f2 = frame(0, [car(10.0001, [10.0001, 0, 0], tel({ verticalG: 6 }))]);
+    const d2 = validateEngineeringLimits([f2], track, profile, spanIds).find(
+      (d) => d.code === "ENGINEERING_LIMIT_VERTICAL_G_MAX",
+    );
+    expect(d2?.elementId).toBe("b");
+    // first start and final end
+    const f3 = frame(0, [car(0, [0, 0, 0], tel({ verticalG: 6 }))]);
+    expect(
+      validateEngineeringLimits([f3], track, profile, spanIds).find(
+        (d) => d.code === "ENGINEERING_LIMIT_VERTICAL_G_MAX",
+      )?.elementId,
+    ).toBe("a");
+    const f4 = frame(0, [car(20, [20, 0, 0], tel({ verticalG: 6 }))]);
+    expect(
+      validateEngineeringLimits([f4], track, profile, spanIds).find(
+        (d) => d.code === "ENGINEERING_LIMIT_VERTICAL_G_MAX",
+      )?.elementId,
     ).toBe("b");
+  });
+
+  it("RED: nonmonotonic distances is fatal", () => {
+    const { track, spanIds } = trackWithSpans(["a", "b"]);
+    // create a fake track with nonmonotonic distances
+    const badTrack = {
+      distances: new Float64Array([0, 5, 3, 20]),
+      elementBoundaries: track.elementBoundaries,
+      totalLength: track.totalLength,
+    } as unknown as import("@openvibecoaster/core").CompiledTrackData;
+    const frames = [frame(0, [car(5, [5, 0, 0], tel({}))])];
+    const diags = validateEngineeringLimits(frames, badTrack, profile, spanIds);
+    expect(diags[0]?.severity).toBe("fatal");
+    expect(diags[0]?.code).toBe("ENGINEERING_LIMITS_UNCERTIFIED");
+    expect(diags[0]?.actual).toBeUndefined();
+    expect(diags[0]?.limit).toBeUndefined();
   });
 
   it("missing/non-finite evidence is fatal, no fabrication", () => {
@@ -304,5 +349,62 @@ describe("engineering limits - frames table-driven", () => {
       spanIds,
     );
     expect(diags[0]?.severity).toBe("fatal");
+  });
+
+  it("RED: missing spanIds is fatal with clean evidence", () => {
+    const { track } = trackWithSpans(["a"]);
+    const frames = [frame(0, [car(5, [5, 0, 0], tel({}))])];
+    const diags = validateEngineeringLimits(
+      frames,
+      track,
+      profile,
+      undefined as unknown as string[],
+    );
+    const d = diags[0]!;
+    expect(d.severity).toBe("fatal");
+    expect(d.code).toBe("ENGINEERING_LIMITS_UNCERTIFIED");
+    expect(d.actual).toBeUndefined();
+    expect(d.limit).toBeUndefined();
+    expect(d.margin).toBeUndefined();
+  });
+
+  it("RED: cardinality mismatch is fatal", () => {
+    const { track } = trackWithSpans(["a", "b"]);
+    const frames = [frame(0, [car(5, [5, 0, 0], tel({}))])];
+    const diags = validateEngineeringLimits(frames, track, profile, [
+      "only-one",
+    ]);
+    expect(diags[0]?.severity).toBe("fatal");
+    expect(diags[0]?.actual).toBeUndefined();
+  });
+
+  it("RED: unmappable s is fatal and uses location not synthesis", () => {
+    const { track, spanIds } = trackWithSpans(["a"]);
+    const frames = [frame(0, [car(100, [100, 0, 0], tel({ verticalG: 6 }))])];
+    const diags = validateEngineeringLimits(frames, track, profile, spanIds);
+    const d = diags.find(
+      (x) =>
+        x.code === "ENGINEERING_LIMITS_UNCERTIFIED" &&
+        x.message.includes("cannot be mapped"),
+    );
+    expect(d).toBeDefined();
+    expect(d!.severity).toBe("fatal");
+    expect(d!.location?.s).toBe(100);
+    expect(d!.location?.time).toBe(0);
+    expect(d!.elementId).toBeUndefined();
+    expect(d!.actual).toBeUndefined();
+  });
+
+  it("RED: fatal does not fabricate actual/limit/margin from time", () => {
+    const { track, spanIds } = trackWithSpans(["a"]);
+    const badCar = car(5, [5, 0, 0], tel({ verticalG: Number.NaN }));
+    const frames = [frame(1.5, [badCar])];
+    const diags = validateEngineeringLimits(frames, track, profile, spanIds);
+    const d = diags.find((x) => x.severity === "fatal")!;
+    expect(d.actual).toBeUndefined();
+    expect(d.limit).toBeUndefined();
+    expect(d.margin).toBeUndefined();
+    expect(d.location?.time).toBe(1.5);
+    expect(d.location?.s).toBe(5);
   });
 });
