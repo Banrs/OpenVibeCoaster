@@ -23,6 +23,10 @@ export default defineConfig({
       name: "chromium",
       use: {
         ...devices["Desktop Chrome"],
+        // Exercise full Chromium's production headless path. The legacy
+        // chrome-headless-shell process is not stable for the hour-long,
+        // SwiftShader-backed 53-seed benchmark on Windows.
+        channel: "chromium",
         launchOptions: {
           args: [
             "--use-gl=angle",
