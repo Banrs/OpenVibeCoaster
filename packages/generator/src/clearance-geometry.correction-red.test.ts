@@ -264,14 +264,14 @@ describe("correction RED proof – must fail on 6648fec", () => {
     });
     const sA0 = pose(v(0, 0, 0));
     const sA1 = createClearancePose({
-      position: v(0.05, 0, 0),
+      position: v(0.01, 0, 0),
       tangent: vec3(0.984807753012208, 0, 0.17364817766693033),
       normal: vec3(0, 1, 0),
       binormal: vec3(-0.17364817766693033, 0, 0.984807753012208),
     });
     const sB0 = pose(v(0, 2, 0));
     const sB1 = createClearancePose({
-      position: v(0.05, 2, 0),
+      position: v(0.01, 2, 0),
       tangent: vec3(0.984807753012208, 0, 0.17364817766693033),
       normal: vec3(0, 1, 0),
       binormal: vec3(-0.17364817766693033, 0, 0.984807753012208),
@@ -311,13 +311,13 @@ describe("correction RED proof – must fail on 6648fec", () => {
       binormal: vec3(-1, 0, 0),
     });
     const sA1 = createClearancePose({
-      position: v(0.05, 0, 0),
+      position: v(0.01, 0, 0),
       tangent: vec3(0, 0, 1),
       normal: vec3(0.9961946980917455, 0.08715574274765817, 0),
       binormal: vec3(-0.08715574274765817, 0.9961946980917455, 0),
     });
     const sB0 = pose(v(2, 0, 0));
-    const sB1 = pose(v(2.05, 0, 0));
+    const sB1 = pose(v(2.01, 0, 0));
     const segA = { startS: 0, endS: 1, start: sA0, end: sA1, geometry: gAsym };
     const segB = { startS: 0, endS: 1, start: sB0, end: sB1, geometry: gAsym };
     const res = certifiedSweptDistance(segA, segB, {

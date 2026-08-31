@@ -78,6 +78,24 @@ function scale(a: Vec3, s: number): Vec3 {
 function len(v: Vec3): number {
   return Math.hypot(v[0], v[1], v[2]);
 }
+type Interval = { lo: number; hi: number };
+function intervalDot(a: Vec3, b: Vec3): Interval {
+  const p0lo = nextDown(a[0]! * b[0]!);
+  const p0hi = nextUp(a[0]! * b[0]!);
+  const p1lo = nextDown(a[1]! * b[1]!);
+  const p1hi = nextUp(a[1]! * b[1]!);
+  const p2lo = nextDown(a[2]! * b[2]!);
+  const p2hi = nextUp(a[2]! * b[2]!);
+  const lo = nextDown(nextDown(p0lo + p1lo) + p2lo);
+  const hi = nextUp(nextUp(p0hi + p1hi) + p2hi);
+  return { lo, hi };
+}
+function intervalAbs(iv: Interval): Interval {
+  if (iv.lo >= 0) return { lo: nextDown(iv.lo), hi: nextUp(iv.hi) };
+  if (iv.hi <= 0) return { lo: nextDown(-iv.hi), hi: nextUp(-iv.lo) };
+  const hi = Math.max(-iv.lo, iv.hi);
+  return { lo: 0, hi: nextUp(hi) };
+}
 export function createClearanceTrainGeometry(
   i: ClearanceTrainGeometry,
 ): ClearanceTrainGeometry {
@@ -173,11 +191,20 @@ function pointToBoxClosest(p: Vec3, box: OrientedBox): Vec3 {
   }
   return r;
 }
-function pointInBox(p: Vec3, box: OrientedBox, eps = 1e-9): boolean {
+function pointInBox(p: Vec3, box: OrientedBox): boolean {
   const d = sub(p, box.center);
   for (let i = 0; i < 3; i += 1) {
-    const proj = dot(d, box.axes[i]!);
-    if (Math.abs(proj) > box.halfExtents[i]! + eps) return false;
+    const iv = intervalDot(d, box.axes[i]!);
+    const absIv = intervalAbs(iv);
+    // Need to check if |proj| <= h + outward? For strictly verified containment, we need projHi <= h and projLo >= -h
+    // Use interval: if absIv.hi <= box.halfExtents[i]! (with nextDown for hi), then definitely inside
+    // If absIv.lo > box.halfExtents[i]! then definitely outside
+    // Otherwise ambiguous -> not strictly verified, return false for fail-closed
+    // For pointInBox used for witness, we need strict verification: only return true if definitely inside
+    const h = box.halfExtents[i]!;
+    if (absIv.hi <= nextUp(h)) continue;
+    if (absIv.lo > nextUp(h)) return false;
+    return false;
   }
   return true;
 }
@@ -190,13 +217,22 @@ function segmentObbIntersect(
   const diff = sub(p0, box.center);
   let tMin = 0;
   let tMax = 1;
-  const EPS_F = 1e-12;
   for (let i = 0; i < 3; i += 1) {
     const ax = box.axes[i]!;
-    const e = dot(ax, diff);
-    const f = dot(ax, dir);
+    const eIv = intervalDot(diff, ax);
+    const fIv = intervalDot(dir, ax);
     const h = box.halfExtents[i]!;
-    if (Math.abs(f) < EPS_F) {
+    // If f interval straddles 0, check if e interval is definitely outside
+    if (fIv.lo <= 0 && fIv.hi >= 0) {
+      // f ~0, need e interval within [-h, h] to be potentially intersecting
+      if (eIv.hi < nextDown(-h) || eIv.lo > nextUp(h)) return null;
+      // Ambiguous: if e interval straddles boundary within outward, cannot prove, treat as no intersect for witness
+      if (eIv.lo < nextDown(-h) || eIv.hi > nextUp(h)) return null;
+      continue;
+    }
+    const f = dot(dir, ax);
+    const e = dot(diff, ax);
+    if (Math.abs(f) < 1e-12) {
       if (e < -h || e > h) return null;
       continue;
     }
@@ -207,8 +243,8 @@ function segmentObbIntersect(
       t1 = t2;
       t2 = tmp;
     }
-    if (t1 > tMin) tMin = t1;
-    if (t2 < tMax) tMax = t2;
+    if (t1 > tMin) tMin = nextDown(t1) > tMin ? nextDown(t1) : tMin;
+    if (t2 < tMax) tMax = nextUp(t2) < tMax ? nextUp(t2) : tMax;
     if (tMin > tMax) return null;
   }
   if (tMin < 0 || tMin > 1) {
@@ -309,44 +345,76 @@ export function staticObbDistance(
       axes.push(scale(cc, 1 / Math.sqrt(l2)));
     }
   const delta = sub(b.center, a.center);
-  let separated = false;
+  let separatedProven = false;
+  let intersectingProven = true;
   for (const ax of axes) {
     const l = len(ax);
     if (l === 0) continue;
     const n = scale(ax, 1 / l);
-    let ra = 0;
-    let rb = 0;
-    for (let i = 0; i < 3; i += 1)
-      ra += a.halfExtents[i]! * Math.abs(dot(n, a.axes[i]!));
-    for (let i = 0; i < 3; i += 1)
-      rb += b.halfExtents[i]! * Math.abs(dot(n, b.axes[i]!));
-    if (Math.abs(dot(delta, n)) > ra + rb) separated = true;
-  }
-  if (!separated) {
-    const vertsA = getVertices(a);
-    for (const va of vertsA)
-      if (pointInBox(va, b)) return { distance: 0, pointA: va, pointB: va };
-    const vertsB = getVertices(b);
-    for (const vb of vertsB)
-      if (pointInBox(vb, a)) return { distance: 0, pointA: vb, pointB: vb };
-    const edgesA = getEdges(a);
-    for (const [p0, p1] of edgesA) {
-      const ip = segmentObbIntersect(p0, p1, b);
-      if (ip) return { distance: 0, pointA: ip, pointB: ip };
+    // Interval-based separation test
+    const dotDeltaIv = intervalDot(delta, n);
+    const absDotDelta = intervalAbs(dotDeltaIv);
+    let ra: Interval = { lo: 0, hi: 0 };
+    let rb: Interval = { lo: 0, hi: 0 };
+    for (let i = 0; i < 3; i += 1) {
+      const dotA = intervalDot(n, a.axes[i]!);
+      const absDotA = intervalAbs(dotA);
+      const termAlo = nextDown(a.halfExtents[i]! * absDotA.lo);
+      const termAhi = nextUp(a.halfExtents[i]! * absDotA.hi);
+      ra = { lo: nextDown(ra.lo + termAlo), hi: nextUp(ra.hi + termAhi) };
+      const dotB = intervalDot(n, b.axes[i]!);
+      const absDotB = intervalAbs(dotB);
+      const termBlo = nextDown(b.halfExtents[i]! * absDotB.lo);
+      const termBhi = nextUp(b.halfExtents[i]! * absDotB.hi);
+      rb = { lo: nextDown(rb.lo + termBlo), hi: nextUp(rb.hi + termBhi) };
     }
-    const edgesB = getEdges(b);
-    for (const [q0, q1] of edgesB) {
-      const ip = segmentObbIntersect(q0, q1, a);
-      if (ip) return { distance: 0, pointA: ip, pointB: ip };
+    const sumLo = nextDown(ra.lo + rb.lo);
+    const sumHi = nextUp(ra.hi + rb.hi);
+    if (absDotDelta.lo > sumHi) {
+      separatedProven = true;
+      break;
     }
-    if (pointInBox(a.center, b))
-      return { distance: 0, pointA: a.center, pointB: a.center };
-    if (pointInBox(b.center, a))
-      return { distance: 0, pointA: b.center, pointB: b.center };
-    throw new RangeError("SAT intersect but no witness");
+    if (absDotDelta.hi < sumLo) {
+      // Definitely not separated on this axis, continue checking other axes
+      continue;
+    }
+    // Ambiguous on this axis: cannot prove separated nor definitely overlapping
+    intersectingProven = false;
   }
-  const cf = closestFeature(a, b);
-  return { distance: cf.dist, pointA: cf.pa, pointB: cf.pb };
+  if (separatedProven) {
+    const cf = closestFeature(a, b);
+    return { distance: cf.dist, pointA: cf.pa, pointB: cf.pb };
+  }
+  // Not proven separated: try to find a strictly verified common point for intersecting
+  const vertsA = getVertices(a);
+  for (const va of vertsA)
+    if (pointInBox(va, b)) return { distance: 0, pointA: va, pointB: va };
+  const vertsB = getVertices(b);
+  for (const vb of vertsB)
+    if (pointInBox(vb, a)) return { distance: 0, pointA: vb, pointB: vb };
+  const edgesA = getEdges(a);
+  for (const [p0, p1] of edgesA) {
+    const ip = segmentObbIntersect(p0, p1, b);
+    if (ip) {
+      // Verify ip is indeed inside both boxes with strict pointInBox
+      if (pointInBox(ip, a) && pointInBox(ip, b))
+        return { distance: 0, pointA: ip, pointB: ip };
+    }
+  }
+  const edgesB = getEdges(b);
+  for (const [q0, q1] of edgesB) {
+    const ip = segmentObbIntersect(q0, q1, a);
+    if (ip) {
+      if (pointInBox(ip, a) && pointInBox(ip, b))
+        return { distance: 0, pointA: ip, pointB: ip };
+    }
+  }
+  if (pointInBox(a.center, b) && pointInBox(a.center, a))
+    return { distance: 0, pointA: a.center, pointB: a.center };
+  if (pointInBox(b.center, a) && pointInBox(b.center, b))
+    return { distance: 0, pointA: b.center, pointB: b.center };
+  if (!intersectingProven) throw new RangeError("SAT ambiguous");
+  throw new RangeError("SAT intersect but no witness");
 }
 function closestFeature(
   a: OrientedBox,
@@ -359,18 +427,18 @@ function closestFeature(
   const vertsB = getVertices(b);
   for (const va of vertsA) {
     const cb = pointToBoxClosest(va, b);
-    const d = len(sub(va, cb));
-    if (d < bestDist) {
-      bestDist = d;
+    const raw = len(sub(va, cb));
+    if (raw < bestDist) {
+      bestDist = raw;
       bestA = va;
       bestB = cb;
     }
   }
   for (const vb of vertsB) {
     const ca = pointToBoxClosest(vb, a);
-    const d = len(sub(vb, ca));
-    if (d < bestDist) {
-      bestDist = d;
+    const raw = len(sub(vb, ca));
+    if (raw < bestDist) {
+      bestDist = raw;
       bestA = ca;
       bestB = vb;
     }
@@ -515,7 +583,7 @@ function conservativeRadius(g: ClearanceTrainGeometry): number {
   const hx = g.halfWidthM;
   const maxY = Math.max(g.aboveRailM, g.belowRailM);
   const hz = g.carPitchM / 2 + g.noseTailMarginM;
-  return Math.sqrt(hx * hx + maxY * maxY + hz * hz);
+  return nextUp(Math.sqrt(nextUp(hx * hx + maxY * maxY + hz * hz)));
 }
 function totalAngle(seg: SweptClearanceSegment): number {
   const qa = quatFromFrame(
@@ -531,7 +599,6 @@ function totalAngle(seg: SweptClearanceSegment): number {
   const d = quatDot(qa, qb);
   if (!Number.isFinite(d)) throw new RangeError("quaternion dot not finite");
   const absDot = Math.abs(d);
-  // Conservative: nextDown(absDot) gives larger acos, so angle is overestimated
   const clampedDown = nextDown(Math.min(1, absDot));
   const th = 2 * Math.acos(Math.max(-1, clampedDown));
   return nextUp(th);
@@ -577,13 +644,21 @@ export function openArcIntervalDistance(
   for (const v of [a0, a1, b0, b1] as const) finiteScalar(v, "arc");
   if (a0 > a1 || b0 > b1) throw new RangeError("interval must be ordered");
   const overlap = Math.max(a0, b0) <= Math.min(a1, b1);
-  const min = overlap ? 0 : Math.min(Math.abs(b0 - a1), Math.abs(a0 - b1));
-  const max = Math.max(
+  let min: number;
+  if (overlap) {
+    min = 0;
+  } else {
+    const d1 = Math.abs(b0 - a1);
+    const d2 = Math.abs(a0 - b1);
+    min = nextDown(Math.min(d1, d2));
+  }
+  const cands = [
     Math.abs(a0 - b0),
     Math.abs(a0 - b1),
     Math.abs(a1 - b0),
     Math.abs(a1 - b1),
-  );
+  ].map((v) => nextUp(v));
+  const max = nextUp(Math.max(...cands));
   return { min, max };
 }
 export function closedArcIntervalDistance(
@@ -609,9 +684,21 @@ export function closedArcIntervalDistance(
       kHigh = Math.floor((hi - off) / L + 1e-9);
     return kLow <= kHigh;
   };
-  const min = contains(0) ? 0 : Math.min(fold(lo), fold(hi));
-  const half = L / 2,
-    max = contains(half) ? half : Math.max(fold(lo), fold(hi));
+  let min: number;
+  if (contains(0)) min = 0;
+  else {
+    const fLo = fold(lo);
+    const fHi = fold(hi);
+    min = nextDown(Math.min(fLo, fHi));
+  }
+  const half = L / 2;
+  let max: number;
+  if (contains(half)) max = nextUp(half);
+  else {
+    const fLo = fold(lo);
+    const fHi = fold(hi);
+    max = nextUp(Math.max(fLo, fHi));
+  }
   return { min, max };
 }
 export function sweptAabb(seg: SweptClearanceSegment): {
@@ -619,16 +706,17 @@ export function sweptAabb(seg: SweptClearanceSegment): {
   max: Vec3;
 } {
   const r = conservativeRadius(seg.geometry);
+  const rUp = nextUp(r);
   return {
     min: vec3(
-      Math.min(seg.start.position[0], seg.end.position[0]) - r,
-      Math.min(seg.start.position[1], seg.end.position[1]) - r,
-      Math.min(seg.start.position[2], seg.end.position[2]) - r,
+      nextDown(Math.min(seg.start.position[0], seg.end.position[0]) - rUp),
+      nextDown(Math.min(seg.start.position[1], seg.end.position[1]) - rUp),
+      nextDown(Math.min(seg.start.position[2], seg.end.position[2]) - rUp),
     ),
     max: vec3(
-      Math.max(seg.start.position[0], seg.end.position[0]) + r,
-      Math.max(seg.start.position[1], seg.end.position[1]) + r,
-      Math.max(seg.start.position[2], seg.end.position[2]) + r,
+      nextUp(Math.max(seg.start.position[0], seg.end.position[0]) + rUp),
+      nextUp(Math.max(seg.start.position[1], seg.end.position[1]) + rUp),
+      nextUp(Math.max(seg.start.position[2], seg.end.position[2]) + rUp),
     ),
   };
 }
@@ -637,9 +725,11 @@ function sInterval(
   u0: number,
   u1: number,
 ): [number, number] {
-  const a = s.startS + (s.endS - s.startS) * u0,
-    b = s.startS + (s.endS - s.startS) * u1;
-  return [Math.min(a, b), Math.max(a, b)];
+  const aLo = nextDown(s.startS + nextDown(nextDown(s.endS - s.startS) * u0));
+  const aHi = nextUp(s.startS + nextUp(nextUp(s.endS - s.startS) * u0));
+  const bLo = nextDown(s.startS + nextDown(nextDown(s.endS - s.startS) * u1));
+  const bHi = nextUp(s.startS + nextUp(nextUp(s.endS - s.startS) * u1));
+  return [nextDown(Math.min(aLo, bLo)), nextUp(Math.max(aHi, bHi))];
 }
 function pointArcDistance(
   segA: SweptClearanceSegment,
@@ -651,10 +741,10 @@ function pointArcDistance(
 ): number {
   const sA = segA.startS + (segA.endS - segA.startS) * u;
   const sB = segB.startS + (segB.endS - segB.startS) * v;
-  if (!closed) return Math.abs(sA - sB);
-  const d = sA - sB;
+  if (!closed) return nextUp(Math.abs(nextUp(sA) - nextDown(sB)));
+  const d = nextUp(sA - nextDown(sB));
   const r = ((d % L) + L) % L;
-  return Math.min(r, L - r);
+  return nextUp(Math.min(nextUp(r), nextUp(L - r)));
 }
 export function certifiedSweptDistance(
   segA: SweptClearanceSegment,
@@ -809,7 +899,8 @@ export function certifiedSweptDistance(
     | { kind: "excluded" }
     | { kind: "needSubdivide" }
     | { kind: "ok"; node: QueueNode }
-    | { kind: "budget" } => {
+    | { kind: "budget" }
+    | { kind: "uncertain" } => {
     const sample = findFeasibleSample(u0, u1, v0, v1);
     if (sample === null) {
       const [a0, a1] = sInterval(segA, u0, u1);
@@ -823,27 +914,32 @@ export function certifiedSweptDistance(
     if (work + 1 > opts.maxWork) return { kind: "budget" };
     if (heap.length >= opts.maxWork) return { kind: "budget" };
     work += 1;
-    const boxA = createOrientedBox(
-      interpolatePose(segA, sample.u),
-      segA.geometry,
-    );
-    const boxB = createOrientedBox(
-      interpolatePose(segB, sample.v),
-      segB.geometry,
-    );
-    const sd = staticObbDistance(boxA, boxB);
+    let sd: { distance: number; pointA: Vec3; pointB: Vec3 };
+    try {
+      sd = staticObbDistance(
+        createOrientedBox(interpolatePose(segA, sample.u), segA.geometry),
+        createOrientedBox(interpolatePose(segB, sample.v), segB.geometry),
+      );
+    } catch (e) {
+      if (e instanceof RangeError && e.message.includes("SAT ambiguous")) {
+        return { kind: "uncertain" };
+      }
+      throw e;
+    }
     const deltaA = Math.max(Math.abs(sample.u - u0), Math.abs(sample.u - u1));
     const deltaB = Math.max(Math.abs(sample.v - v0), Math.abs(sample.v - v1));
     const mA = motionBoundForDelta(segA, deltaA);
     const mB = motionBoundForDelta(segB, deltaB);
-    const lower = Math.max(0, sd.distance - mA - mB);
+    const lower = Math.max(0, nextDown(sd.distance - nextUp(mA + mB)));
+    const upper = nextUp(len(sub(sd.pointA, sd.pointB)));
+    // Upper must be at least the distance between the returned points, outward
     const node: QueueNode = {
       u0,
       u1,
       v0,
       v1,
       lower,
-      upper: sd.distance,
+      upper,
       wU: sample.u,
       wV: sample.v,
       pa: sd.pointA,
@@ -865,7 +961,8 @@ export function certifiedSweptDistance(
   if (rootEval.kind === "excluded") {
     return { ok: true, excluded: true, work };
   }
-  if (rootEval.kind === "needSubdivide") {
+  if (rootEval.kind === "uncertain") {
+    // Treat uncertain root as needSubdivide
     const midU = 0.5;
     const midV = 0.5;
     const mA0 = motionBoundForDelta(segA, 0.5);
@@ -890,7 +987,70 @@ export function certifiedSweptDistance(
           work,
         };
       if (ev.kind === "excluded") continue;
-      if (ev.kind === "needSubdivide") {
+      if (ev.kind === "needSubdivide" || ev.kind === "uncertain") {
+        const ph: QueueNode = {
+          u0,
+          u1,
+          v0,
+          v1,
+          lower: 0,
+          upper: Infinity,
+          wU: (u0 + u1) / 2,
+          wV: (v0 + v1) / 2,
+          pa: vec3(0, 0, 0),
+          pb: vec3(0, 0, 0),
+          seq: seq++,
+          hasWitness: false,
+        };
+        if (!heapPush(ph))
+          return {
+            ok: false,
+            code: "CLEARANCE_UNCERTIFIED",
+            message: "budget",
+            work,
+          };
+        continue;
+      }
+      if (ev.node.upper < bestUpper) {
+        bestUpper = ev.node.upper;
+        bestWitness = ev.node;
+      }
+      if (ev.node.lower < bestUpper) {
+        if (!heapPush(ev.node))
+          return {
+            ok: false,
+            code: "CLEARANCE_UNCERTIFIED",
+            message: "budget",
+            work,
+          };
+      }
+    }
+  } else if (rootEval.kind === "needSubdivide") {
+    const midU = 0.5;
+    const midV = 0.5;
+    const mA0 = motionBoundForDelta(segA, 0.5);
+    const mB0 = motionBoundForDelta(segB, 0.5);
+    const splitU = mA0 >= mB0;
+    const children: Array<[number, number, number, number]> = splitU
+      ? [
+          [0, midU, 0, 1],
+          [midU, 1, 0, 1],
+        ]
+      : [
+          [0, 1, 0, midV],
+          [0, 1, midV, 1],
+        ];
+    for (const [u0, u1, v0, v1] of children) {
+      const ev = evaluate(u0, u1, v0, v1);
+      if (ev.kind === "budget")
+        return {
+          ok: false,
+          code: "CLEARANCE_UNCERTIFIED",
+          message: "budget",
+          work,
+        };
+      if (ev.kind === "excluded") continue;
+      if (ev.kind === "needSubdivide" || ev.kind === "uncertain") {
         const ph: QueueNode = {
           u0,
           u1,
@@ -941,8 +1101,8 @@ export function certifiedSweptDistance(
         work,
       };
   }
-  // Initial heap-empty: heap empty implies every enqueued node's lower >= bestUpper was pruned,
-  // or no feasible witness exists. If bestWitness exists, globalLower = bestUpper is proven and width 0 <= resolution.
+  // Initial heap-empty: either root was needSubdivide with both children excluded (no feasible witness)
+  // or budget prevented any push. If bestWitness exists, globalLower = bestUpper is proven with width 0.
   if (heap.length === 0) {
     if (bestWitness) {
       const globalLower = bestUpper;
@@ -1029,7 +1189,7 @@ export function certifiedSweptDistance(
           work,
         };
       if (ev.kind === "excluded") continue;
-      if (ev.kind === "needSubdivide") {
+      if (ev.kind === "needSubdivide" || ev.kind === "uncertain") {
         const ph: QueueNode = {
           u0,
           u1,

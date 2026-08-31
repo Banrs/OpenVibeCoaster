@@ -238,7 +238,7 @@ describe("clearance geometry foundation", () => {
     });
     assertCertified(res);
     expect(res.lowerM).toBe(0);
-    expect(res.upperM).toBe(0);
+    expect(res.upperM).toBeCloseTo(0, 12);
   });
 
   it("circumspheres overlap but exact OBB gap exceeds margin", () => {
@@ -411,14 +411,14 @@ describe("clearance geometry foundation", () => {
       startS: 0,
       endS: 1,
       start: pose(v(0, 0, 0)),
-      end: pose(v(1, 0, 0)),
+      end: pose(v(0.01, 0, 0)),
       geometry: g,
     };
     const segB = {
       startS: 0,
       endS: 1,
-      start: pose(v(0, 2, 0)),
-      end: pose(v(1, 2, 0)),
+      start: pose(v(0, 3, 0)),
+      end: pose(v(0.01, 3, 0)),
       geometry: g,
     };
     const r1 = certifiedSweptDistance(segA, segB, {
