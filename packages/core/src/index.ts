@@ -1,5 +1,6 @@
 export * from "./units";
 export * from "./math";
+export * from "./footprint-polygon";
 export * from "./random";
 export * from "./spans";
 export * from "./arc-length";

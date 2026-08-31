@@ -1,4 +1,5 @@
-import type { Aabb, Vec3 } from "./math";
+import type { Vec3 } from "./math";
+import type { Aabb } from "./math";
 import type { ParametricSpan } from "./spans";
 
 export type DesignModeV1 = "insta" | "full-auto" | "directed";
@@ -55,7 +56,7 @@ export interface DesignIntentV1 {
   readonly gates: readonly GateV1[];
   readonly targets: readonly TargetV1[];
   readonly constraints: readonly ConstraintV1[];
-  readonly footprint?: Aabb;
+  readonly footprint?: readonly Vec3[];
   readonly heightRange?: HeightRangeV1;
   readonly terrainProfileId?: string;
   readonly pinnedElementIds: readonly string[];

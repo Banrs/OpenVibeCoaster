@@ -1,6 +1,7 @@
 import { CANONICAL_TRACK_COMPILE_OPTIONS, compileTrack } from "./track";
 import { SeventhOrderHermiteSpan, QuinticScalarSpan } from "./spans";
-import type { Aabb, Vec3 } from "./math";
+import { vec3 } from "./math";
+import type { Vec3 } from "./math";
 import type {
   ConstraintV1,
   DesignElementV1,
@@ -11,6 +12,7 @@ import type {
   SolvedSpan,
 } from "./contracts";
 import type { CompiledTrackData, CompileTrackOptions } from "./track";
+import { validateFootprintPolygon } from "./footprint-polygon";
 
 const encodeUtf8 = (text: string): Uint8Array => {
   const bytes: number[] = [];
@@ -310,14 +312,37 @@ const validateConstraint = (value: unknown, path: string): void => {
   if (constraint.pinned !== undefined)
     boolean(constraint.pinned, `${path}.pinned`);
 };
-const validateAabb = (value: unknown, path: string): Aabb => {
+const validateLegacyAabbForMigration = (
+  value: unknown,
+  path: string,
+): { min: Vec3; max: Vec3 } => {
   const box = record(value, path);
   exactKeys(box, ["min", "max"], path);
   const min = vector(box.min, `${path}.min`);
   const max = vector(box.max, `${path}.max`);
-  if (min.some((value, index) => value > max[index]!))
-    fail(path, "ordered bounds");
+  if (min.some((v, i) => v > max[i]!)) fail(path, "ordered bounds");
   return { min, max };
+};
+
+const migrateLegacyFootprintInRecord = (
+  intentRecord: Record<string, unknown>,
+): void => {
+  const fp = intentRecord.footprint;
+  if (fp === undefined) return;
+  if (Array.isArray(fp)) return;
+  if (isRecord(fp) && "min" in fp && "max" in fp) {
+    const { min, max } = validateLegacyAabbForMigration(fp, "footprint");
+    const polygon: Vec3[] = [
+      vec3(min[0], 0, min[2]),
+      vec3(max[0], 0, min[2]),
+      vec3(max[0], 0, max[2]),
+      vec3(min[0], 0, max[2]),
+    ];
+    intentRecord.footprint = polygon;
+    if (intentRecord.heightRange === undefined) {
+      intentRecord.heightRange = { min: min[1], max: max[1] };
+    }
+  }
 };
 
 export function validateDesignIntentV1(
@@ -404,8 +429,15 @@ export function validateDesignIntentV1(
         );
       allIds.add(id);
     }
-  if (intent.footprint !== undefined)
-    validateAabb(intent.footprint, "footprint");
+  if (intent.footprint !== undefined) {
+    try {
+      validateFootprintPolygon(intent.footprint, "footprint");
+    } catch (error) {
+      throw new CoasterFileError(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
   if (intent.heightRange !== undefined) {
     const heightRange = record(intent.heightRange, "heightRange");
     exactKeys(heightRange, ["min", "max"], "heightRange");
@@ -591,6 +623,10 @@ export const parseDesignIntentV1 = (
     throw new CoasterFileError(
       `Invalid design intent JSON: ${error instanceof Error ? error.message : "unknown error"}`,
     );
+  }
+  if (isRecord(value)) {
+    // decoder-only legacy AABB migration before exact-key validation
+    migrateLegacyFootprintInRecord(value as unknown as Record<string, unknown>);
   }
   validateDesignIntentV1(value);
   return value;
@@ -837,6 +873,14 @@ export const deserializeCoasterFileV1 = (
         `Unsupported coaster schema version: ${String(value.schemaVersion)}`,
       );
     if (isRecord(value) && !("intent" in value)) uint32(value.seed, "seed");
+    if (
+      isRecord(value) &&
+      isRecord((value as Record<string, unknown>).intent)
+    ) {
+      migrateLegacyFootprintInRecord(
+        (value as Record<string, unknown>).intent as Record<string, unknown>,
+      );
+    }
     validateCoasterFile(value);
     return createCoasterFileV1(value as unknown as CoasterFileCreateInput);
   } catch (error) {
@@ -898,10 +942,39 @@ export const compileCoasterFile = (
   file: CoasterFileV1 | string | Uint8Array,
   options: CompileTrackOptions = {},
 ): LoadedCoasterFile => {
-  const parsed =
+  let parsed =
     typeof file === "string" || file instanceof Uint8Array
       ? deserializeCoasterFileV1(file)
       : file;
+  // decoder-only legacy migration for runtime object (canonical TS type bypass)
+  if (
+    !(typeof file === "string" || file instanceof Uint8Array) &&
+    isRecord((parsed as unknown as Record<string, unknown>).intent)
+  ) {
+    const intentRec = (parsed as unknown as Record<string, unknown>)
+      .intent as Record<string, unknown>;
+    if (
+      isRecord(intentRec.footprint) &&
+      "min" in (intentRec.footprint as Record<string, unknown>)
+    ) {
+      // shallow clone to avoid mutating caller, then migrate
+      const clonedIntent = { ...intentRec } as Record<string, unknown>;
+      migrateLegacyFootprintInRecord(clonedIntent);
+      // heightRange already handled; need to ensure footprint is polygon now
+      const clonedFile = {
+        ...(parsed as unknown as Record<string, unknown>),
+        intent: clonedIntent,
+      } as unknown as CoasterFileV1;
+      // preserve design property if exists
+      if ((parsed as unknown as Record<string, unknown>).design !== undefined) {
+        Object.defineProperty(clonedFile, "design", {
+          value: (parsed as unknown as { design: unknown }).design,
+          enumerable: false,
+        });
+      }
+      parsed = clonedFile;
+    }
+  }
   validateCoasterFile(parsed);
   const solvedSpans = parsed.solvedSpans.map(reconstructSolvedSpan);
   if (solvedSpans.length === 0)

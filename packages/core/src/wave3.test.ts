@@ -34,7 +34,12 @@ const intent = {
   gates: [{ id: "start", position: [0, 0, 0] as const }],
   targets: [{ id: "length", kind: "total-length", target: 12, hard: false }],
   constraints: [],
-  footprint: { min: [-10, -1, -10] as const, max: [20, 10, 10] as const },
+  footprint: [
+    [-10, 0, -10] as const,
+    [20, 0, -10] as const,
+    [20, 0, 10] as const,
+    [-10, 0, 10] as const,
+  ] as const,
   heightRange: { min: -1, max: 100 },
   terrainProfileId: "flat",
   pinnedElementIds: ["station-000"],
