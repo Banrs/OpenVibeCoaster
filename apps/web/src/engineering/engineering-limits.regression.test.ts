@@ -5,7 +5,7 @@ import { handleGenerate } from "./worker";
 describe("engineering limits final regression", () => {
   it(
     "production seed-42 Insta with bundled JSON returns success and warning diagnostics with exact evidence",
-    { timeout: 60000 },
+    { timeout: 20000 },
     () => {
       const intent = createDesignIntentV1({
         generatorVersion: "generator-v1",
