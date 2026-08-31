@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { generateCoaster } from "./index";
 import {
   generateCoasterForBenchmark,
@@ -106,7 +106,6 @@ const timedGeneration = (
   readonly timings: Readonly<
     Record<
       | "candidateSearchInclusiveMs"
-      | "searchOverheadMs"
       | "solvingMs"
       | "compilationMs"
       | "validationMs"
@@ -118,55 +117,102 @@ const timedGeneration = (
   const starts = new Map<string, number>();
   const timings = {
     candidateSearchInclusiveMs: 0,
-    searchOverheadMs: 0,
     solvingMs: 0,
     compilationMs: 0,
     validationMs: 0,
     totalMs: 0,
   };
   const observer = (event: GenerationBenchmarkEvent): void => {
-    // Nesting contract: candidateSearchInclusive nests solving and validation.
-    // search is a legacy alias for candidateSearchInclusive and maps to the same inclusive interval.
-    // Never present overlapping inclusive vs nested values as additive.
+    // Honest design: pipeline emits single `search:start/end` which is the
+    // inclusive candidate-search interval. Bench treats it as
+    // `candidateSearchInclusive` (inclusive nests solving+validation).
+    // Do not derive an exclusive overhead; timer nesting makes that misleading.
     const separator = event.lastIndexOf(":");
     const stage = event.slice(0, separator);
     const boundary = event.slice(separator + 1) as "start" | "end";
-    const normalizedStage =
-      stage === "search" ? "candidateSearchInclusive" : stage;
+    const mapped = stage === "search" ? "candidateSearchInclusive" : stage;
     if (
-      normalizedStage !== "candidateSearchInclusive" &&
-      normalizedStage !== "solving" &&
-      normalizedStage !== "compilation" &&
-      normalizedStage !== "validation" &&
-      normalizedStage !== "total"
+      mapped !== "candidateSearchInclusive" &&
+      mapped !== "solving" &&
+      mapped !== "compilation" &&
+      mapped !== "validation" &&
+      mapped !== "total"
     ) {
       return;
     }
-    const key = `${normalizedStage}Ms` as keyof typeof timings;
+    const key = `${mapped}Ms` as keyof typeof timings;
     if (boundary === "start") {
-      starts.set(normalizedStage, now());
+      starts.set(mapped, now());
       return;
     }
-    const start = starts.get(normalizedStage);
+    const start = starts.get(mapped);
     if (start === undefined)
-      throw new Error(`Missing benchmark stage ${normalizedStage}`);
+      throw new Error(`Missing benchmark stage ${mapped}`);
     timings[key] += now() - start;
   };
   const result = generateCoasterForBenchmark(measuredIntent, options, observer);
-  // Honest exclusive search overhead: inclusive interval minus nested solving/validation.
-  // Validation here is fully nested inside candidateSearchInclusive for the candidate loop;
-  // compilation is outside inclusive and not subtracted.
-  const overhead = Math.max(
-    0,
-    timings.candidateSearchInclusiveMs -
-      timings.solvingMs -
-      timings.validationMs,
-  );
-  return {
-    result,
-    timings: { ...timings, searchOverheadMs: overhead },
-  };
+  return { result, timings };
 };
+
+describe("generation benchmark observer – inclusive search", () => {
+  it("emits exactly one search interval per generation (candidateSearchInclusive not doubled)", () => {
+    const events: GenerationBenchmarkEvent[] = [];
+    generateCoasterForBenchmark({ ...intent, seed: 1 }, { samples: 32 }, (e) =>
+      events.push(e),
+    );
+    expect(events.filter((e) => e === "search:start").length).toBe(1);
+    expect(events.filter((e) => e === "search:end").length).toBe(1);
+    // Pipeline must not emit the duplicated candidateSearchInclusive alias that caused double-count.
+    expect(
+      events.filter((e) => (e as string) === "candidateSearchInclusive:start")
+        .length,
+    ).toBe(0);
+    expect(
+      events.filter((e) => (e as string) === "candidateSearchInclusive:end")
+        .length,
+    ).toBe(0);
+    // Nesting contract: solving and validation are nested inside search (appear after search:start and before search:end).
+    const searchStart = events.indexOf("search:start");
+    const searchEnd = events.indexOf("search:end");
+    expect(searchStart).toBeGreaterThanOrEqual(0);
+    expect(searchEnd).toBeGreaterThan(searchStart);
+    for (const nested of [
+      "solving:start",
+      "solving:end",
+      "validation:start",
+      "validation:end",
+    ] as const) {
+      for (const occurrence of events
+        .map((e, i) => (e === nested ? i : -1))
+        .filter((i) => i >= 0)) {
+        expect(occurrence).toBeGreaterThan(searchStart);
+        expect(occurrence).toBeLessThan(searchEnd);
+      }
+    }
+    // One start/end must contribute exactly once: simulated observer with synthetic clock shows no double.
+    let fakeNow = 0;
+    const starts = new Map<string, number>();
+    const counts = new Map<string, number>();
+    const inclusiveObserver = (event: GenerationBenchmarkEvent): void => {
+      const [stage, boundary] = event.split(":") as [string, "start" | "end"];
+      const mapped = stage === "search" ? "candidateSearchInclusive" : stage;
+      if (mapped !== "candidateSearchInclusive") return;
+      if (boundary === "start") {
+        starts.set(mapped, fakeNow);
+        fakeNow += 10;
+        counts.set(mapped, (counts.get(mapped) ?? 0) + 1);
+        return;
+      }
+      fakeNow += 60;
+      const s = starts.get(mapped);
+      if (s === undefined) throw new Error("missing");
+      counts.set(mapped, (counts.get(mapped) ?? 0) + 1);
+    };
+    for (const e of events) inclusiveObserver(e);
+    // Exactly 2 events (one start, one end) for inclusive interval.
+    expect(counts.get("candidateSearchInclusive")).toBe(2);
+  });
+});
 
 it("runs the deterministic generation benchmark", () => {
   const wallStart = now();
@@ -296,13 +342,12 @@ it("runs the deterministic generation benchmark", () => {
     p95Ms,
     stages: {
       candidateSearchInclusive: stage("candidateSearchInclusiveMs"),
-      searchOverhead: stage("searchOverheadMs"),
       solving: stage("solvingMs"),
       compilation: stage("compilationMs"),
       validation: stage("validationMs"),
       total: stage("totalMs"),
-      // Nesting note: candidateSearchInclusive nests solving + validation plus exclusive searchOverhead;
-      // do not sum candidateSearchInclusive with its nested stages as independent additive contributions.
+      // Nesting note: candidateSearchInclusive (search) nests solving + validation.
+      // Do not sum candidateSearchInclusive with its nested stages as independent additive contributions.
       // total = candidateSearchInclusive + compilation (+ negligible dispatch).
       browser: "not-measured-here",
       simulation: "not-measured-here",
@@ -321,13 +366,6 @@ it("runs the deterministic generation benchmark", () => {
   console.log(
     `bench: ${summary.seeds} seeds; total p50=${summary.p50Ms.toFixed(3)}ms p95=${summary.p95Ms.toFixed(3)}ms; duration=${summary.durationMs.toFixed(3)}ms; misses=${summary.target.misses.length}; 1s p95 target=${summary.target.met ? "met" : "not-met"}`,
   );
-  // Honest nesting check: exclusive overhead must be non-negative and inclusive must cover nested work
-  for (const { timings } of measured) {
-    expect(timings.searchOverheadMs).toBeGreaterThanOrEqual(0);
-    expect(timings.candidateSearchInclusiveMs).toBeGreaterThanOrEqual(
-      timings.solvingMs + timings.validationMs - 1e-6,
-    );
-  }
   expect(summary.seeds).toBeGreaterThanOrEqual(50);
   expect(
     results.every(

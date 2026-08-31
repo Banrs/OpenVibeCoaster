@@ -66,12 +66,16 @@ non-finite evidence yields `CLEARANCE_UNCERTIFIED` or
 
 Deterministic benchmark stages use nearest-rank p50/p95. The engineering
 benchmark (3 warm-up + 50 measured seeds) reports `candidateSearchInclusive`
-which nests `solving` and `validation` (exclusive `searchOverhead` =
-inclusive − nested) plus `compilation` and `total`; `candidateSearchInclusive`
-and its nested stages are not additive. `npm run bench` orchestrates the
-engineering benchmark and the production Chromium browser benchmark (3 warm-up
-seeds each asserting `Ready` and mandatory `ovc:generation-total`, then 50
-measured seeds via `ovc:generation-total`/`ovc:simulation`/`ovc:worker-transfer`/`ovc:mesh-create`/steady-state 1080p `ovc:frame`) and reports honest target misses. `npm run bench:engineering` and `npm run bench:browser` are the individual cross-platform gates; `npm run test:e2e` remains the full E2E gate.
+(the pipeline `search:start`/`search:end` inclusive interval, which nests
+`solving` and `validation`) plus `compilation` and `total`;
+`candidateSearchInclusive` and its nested stages are not additive. `npm run
+bench` orchestrates the engineering benchmark and the production Chromium
+browser benchmark (3 warm-up seeds each asserting `Ready` and mandatory
+`ovc:generation-total`, then 50 measured seeds via
+`ovc:generation-total`/`ovc:simulation`/`ovc:worker-transfer`/`ovc:mesh-create`/steady-state
+1080p `ovc:frame`) and reports honest target misses. `npm run bench:engineering`
+and `npm run bench:browser` are the individual cross-platform gates; `npm run
+test:e2e` remains the full E2E gate.
 
 ## Simulation and environment
 
