@@ -1002,46 +1002,6 @@ const worldAcceleration = (
   );
 };
 
-const telemetryAxes = (sample: TrackSample, gravity: Vec3): TrackSample => {
-  const up = scale(
-    gravity,
-    -1 / Math.max(Math.hypot(gravity[0], gravity[1], gravity[2]), 1e-30),
-  );
-  const tangentProjection = dot(up, sample.tangent);
-  const projectedUp = subtract(up, scale(sample.tangent, tangentProjection));
-  const projectedLength = Math.hypot(
-    projectedUp[0],
-    projectedUp[1],
-    projectedUp[2],
-  );
-  if (projectedLength <= 1e-12) return sample;
-  const unbankedNormal = scale(projectedUp, 1 / projectedLength);
-  const unbankedBinormal = vec3Normalize(
-    vec3(
-      sample.tangent[1] * unbankedNormal[2] -
-        sample.tangent[2] * unbankedNormal[1],
-      sample.tangent[2] * unbankedNormal[0] -
-        sample.tangent[0] * unbankedNormal[2],
-      sample.tangent[0] * unbankedNormal[1] -
-        sample.tangent[1] * unbankedNormal[0],
-    ),
-  );
-  const normal = vec3Normalize(
-    add(
-      scale(unbankedNormal, Math.cos(sample.bank)),
-      scale(unbankedBinormal, Math.sin(sample.bank)),
-    ),
-  );
-  const binormal = vec3Normalize(
-    vec3(
-      sample.tangent[1] * normal[2] - sample.tangent[2] * normal[1],
-      sample.tangent[2] * normal[0] - sample.tangent[0] * normal[2],
-      sample.tangent[0] * normal[1] - sample.tangent[1] * normal[0],
-    ),
-  );
-  return { ...sample, normal, binormal };
-};
-
 const carTelemetry = (
   sample: TrackSample,
   worldAccelerationMps2: Vec3,
@@ -1054,11 +1014,10 @@ const carTelemetry = (
     "telemetry.specificForceMps2",
     "Specific force must be finite",
   );
-  const axes = telemetryAxes(sample, gravity);
-  const right = scale(axes.binormal, -1);
+  const right = scale(sample.binormal, -1);
   const telemetry = {
     longitudinalG: checkedFinite(
-      dot(specific, axes.tangent) / gravityMps2,
+      dot(specific, sample.tangent) / gravityMps2,
       "telemetry.longitudinalG",
       "Longitudinal G must be finite",
     ),
@@ -1068,13 +1027,13 @@ const carTelemetry = (
       "Lateral G must be finite",
     ),
     verticalG: checkedFinite(
-      dot(specific, axes.normal) / gravityMps2,
+      dot(specific, sample.normal) / gravityMps2,
       "telemetry.verticalG",
       "Vertical G must be finite",
     ),
     specificForceMps2: specific,
     jerkMps3: vec3(),
-    bankRad: axes.bank,
+    bankRad: sample.bank,
     rollRateRadPerSec: sample.bankDerivative * speedMps,
   };
   checkedFinite(
