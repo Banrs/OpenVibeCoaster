@@ -5,8 +5,6 @@ import {
   compileTrack,
   sampleTrackAtDistance,
   vec3,
-  vec3Dot,
-  vec3Scale,
 } from "@openvibecoaster/core";
 import {
   RideTimeline,
@@ -1195,19 +1193,7 @@ describe("pure multi-car simulator", () => {
   });
 
   it("preserves dynamics under arbitrary rigid 3D rotation", () => {
-    const original = compileTrack(
-      [
-        {
-          id: "3d",
-          span: {
-            position: (u: number) => vec3(u * 10, u * u * 3, u * 2),
-            derivative: (u: number, order = 1) =>
-              order === 1 ? vec3(10, 6 * u, 2) : vec3(0, 6, 0),
-          },
-        },
-      ],
-      { samples: 129 },
-    );
+    const initialNormal = vec3(0, 1, 0);
     const rotateVector = (point: ReturnType<typeof vec3>) => {
       const [x, y, z] = point;
       const axis = vec3(
@@ -1238,6 +1224,19 @@ describe("pure multi-car simulator", () => {
       const rotated = rotateVector(point);
       return vec3(rotated[0] + 3, rotated[1] - 4, rotated[2] + 7);
     };
+    const original = compileTrack(
+      [
+        {
+          id: "3d",
+          span: {
+            position: (u: number) => vec3(u * 10, u * u * 3, u * 2),
+            derivative: (u: number, order = 1) =>
+              order === 1 ? vec3(10, 6 * u, 2) : vec3(0, 6, 0),
+          },
+        },
+      ],
+      { samples: 129, initialNormal },
+    );
     const transformed = compileTrack(
       [
         {
@@ -1249,7 +1248,7 @@ describe("pure multi-car simulator", () => {
           },
         },
       ],
-      { samples: 129 },
+      { samples: 129, initialNormal: rotateVector(initialNormal) },
     );
     const initial = { headDistanceM: 4, speedMps: 6 };
     const a = simulateRide(original, {
@@ -1311,23 +1310,14 @@ describe("pure multi-car simulator", () => {
     );
     const originalFrame = a.frames.at(-1)!;
     const transformedFrame = b.frames.at(-1)!;
-    // Lateral/vertical G are projections onto the authoritative RMF sample frame (right=-binormal).
-    // Recompiling a rotated span does not preserve the gravity-aligned base, so cross-frame
-    // equality is not invariant; verify direct projection instead.
-    for (const frame of [originalFrame, transformedFrame] as const) {
-      const sample = frame.cars[0]!.frame;
-      const specific = frame.telemetry.specificForceMps2;
-      const g = 9.80665;
-      const right = vec3Scale(sample.binormal, -1);
-      expect(frame.telemetry.lateralG).toBeCloseTo(
-        vec3Dot(specific, right) / g,
-        6,
-      );
-      expect(frame.telemetry.verticalG).toBeCloseTo(
-        vec3Dot(specific, sample.normal) / g,
-        6,
-      );
-    }
+    expect(transformedFrame.telemetry.lateralG).toBeCloseTo(
+      originalFrame.telemetry.lateralG,
+      5,
+    );
+    expect(transformedFrame.telemetry.verticalG).toBeCloseTo(
+      originalFrame.telemetry.verticalG,
+      5,
+    );
     expect(transformedFrame.telemetry.bankRad).toBeCloseTo(
       originalFrame.telemetry.bankRad,
       8,
@@ -1358,18 +1348,14 @@ describe("pure multi-car simulator", () => {
         originalCar.telemetry.longitudinalG,
         5,
       );
-      // Per-car lateral/vertical are direct RMF projections; verify internally, not cross-frame equality
-      for (const tracked of [car, originalCar] as const) {
-        const s = tracked.frame;
-        const spec = tracked.telemetry.specificForceMps2;
-        const g = 9.80665;
-        const r = vec3Scale(s.binormal, -1);
-        expect(tracked.telemetry.lateralG).toBeCloseTo(vec3Dot(spec, r) / g, 6);
-        expect(tracked.telemetry.verticalG).toBeCloseTo(
-          vec3Dot(spec, s.normal) / g,
-          6,
-        );
-      }
+      expect(car.telemetry.lateralG).toBeCloseTo(
+        originalCar.telemetry.lateralG,
+        5,
+      );
+      expect(car.telemetry.verticalG).toBeCloseTo(
+        originalCar.telemetry.verticalG,
+        5,
+      );
       expect(car.telemetry.bankRad).toBeCloseTo(
         originalCar.telemetry.bankRad,
         8,
@@ -1382,17 +1368,14 @@ describe("pure multi-car simulator", () => {
         originalCar.seats[0]!.telemetry.longitudinalG,
         5,
       );
-      for (const seat of [car.seats[0]!, originalCar.seats[0]!] as const) {
-        const s = seat.frame;
-        const spec = seat.telemetry.specificForceMps2;
-        const g = 9.80665;
-        const r = vec3Scale(s.binormal, -1);
-        expect(seat.telemetry.lateralG).toBeCloseTo(vec3Dot(spec, r) / g, 6);
-        expect(seat.telemetry.verticalG).toBeCloseTo(
-          vec3Dot(spec, s.normal) / g,
-          6,
-        );
-      }
+      expect(car.seats[0]!.telemetry.lateralG).toBeCloseTo(
+        originalCar.seats[0]!.telemetry.lateralG,
+        5,
+      );
+      expect(car.seats[0]!.telemetry.verticalG).toBeCloseTo(
+        originalCar.seats[0]!.telemetry.verticalG,
+        5,
+      );
       expect(car.seats[0]!.telemetry.bankRad).toBeCloseTo(
         originalCar.seats[0]!.telemetry.bankRad,
         8,

@@ -6,9 +6,13 @@ import {
   vec3Dot,
   vec3Scale,
 } from "@openvibecoaster/core";
-import { createDefaultSimulatorConfig, simulateRide } from "./index";
+import {
+  createDefaultSimulatorConfig,
+  simulateRide,
+  type SimulatorConfig,
+} from "./index";
 
-const cfg = () => ({
+const cfg = (): SimulatorConfig => ({
   ...createDefaultSimulatorConfig(),
   rollingResistanceCoefficient: 0,
   staticStictionCoefficient: 0,
@@ -52,7 +56,7 @@ describe("telemetry frame correction RED", () => {
     const speed = 9;
     const result = simulateRide(track, {
       durationSeconds: 0,
-      config: cfg() as any,
+      config: cfg(),
       initial: { headDistanceM: distanceM, speedMps: speed },
     });
     const telemetry = result.frames[0]!.cars[0]!.telemetry;
@@ -113,12 +117,12 @@ describe("telemetry frame correction RED", () => {
     const distN = nearVertical.totalLength * 0.5;
     const resV = simulateRide(vertical, {
       durationSeconds: 0,
-      config: cfg() as any,
+      config: cfg(),
       initial: { headDistanceM: distV, speedMps: speed },
     });
     const resN = simulateRide(nearVertical, {
       durationSeconds: 0,
-      config: cfg() as any,
+      config: cfg(),
       initial: { headDistanceM: distN, speedMps: speed },
     });
     const telV = resV.frames[0]!.cars[0]!.telemetry;

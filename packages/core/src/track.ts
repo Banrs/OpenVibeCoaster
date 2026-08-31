@@ -14,6 +14,7 @@ export interface TrackElement {
 export interface CompileTrackOptions {
   readonly samples?: number;
   readonly tolerance?: number;
+  readonly initialNormal?: Vec3;
 }
 export interface CompiledTrackDataInput {
   readonly positions: Float64Array;
@@ -502,6 +503,7 @@ export const compileTrack = (
     frameInputs,
     frameParameters,
     banks,
+    options.initialNormal,
   );
   const normals = new Float64Array(count * 3);
   const binormals = new Float64Array(count * 3);
