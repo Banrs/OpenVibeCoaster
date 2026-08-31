@@ -1,50 +1,37 @@
 import type { Diagnostic } from "@openvibecoaster/core";
+import {
+  isPointInsidePolygon,
+  signedDistanceXZ,
+  vec3,
+} from "@openvibecoaster/core";
 import type { DirectedEditorInput } from "../directedInput.js";
 
-function getFootprintBounds(footprint: DirectedEditorInput["footprint"]): {
-  minX: number;
-  maxX: number;
-  minZ: number;
-  maxZ: number;
-  minY: number;
-  maxY: number;
-} | null {
-  const polygon = footprint.polygon;
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
-  let hasFinite = false;
-  for (const point of polygon) {
-    const x = point[0];
-    const z = point[1];
-    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
-    hasFinite = true;
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minZ = Math.min(minZ, z);
-    maxZ = Math.max(maxZ, z);
-  }
-  if (
-    !hasFinite ||
-    !Number.isFinite(minX) ||
-    !Number.isFinite(maxX) ||
-    !Number.isFinite(minZ) ||
-    !Number.isFinite(maxZ)
-  ) {
-    return null;
+function getPolygonAndHeight(
+  footprint: DirectedEditorInput["footprint"],
+): { polygon: ReturnType<typeof vec3>[]; minY: number; maxY: number } | null {
+  const raw = footprint.polygon;
+  if (!Array.isArray(raw) || raw.length < 3) return null;
+  const polygon: ReturnType<typeof vec3>[] = [];
+  for (const point of raw) {
+    if (!Array.isArray(point) || point.length !== 2) return null;
+    const x = (point as unknown[])[0] as number;
+    const z = (point as unknown[])[1] as number;
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+    polygon.push(vec3(x, 0, z));
   }
   const minY = footprint.minHeightM ?? 0;
   const maxY = footprint.maxHeightM;
   if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return null;
-  return { minX, maxX, minZ, maxZ, minY, maxY };
+  if (polygon.length < 3) return null;
+  return { polygon, minY, maxY };
 }
 
 export function detectGateContradictions(
   input: DirectedEditorInput,
 ): Diagnostic[] {
-  const bounds = getFootprintBounds(input.footprint);
-  if (!bounds) return [];
+  const parsed = getPolygonAndHeight(input.footprint);
+  if (!parsed) return [];
+  const { polygon, minY, maxY } = parsed;
   const diagnostics: Diagnostic[] = [];
   for (let i = 0; i < input.gates.length; i++) {
     const gate = input.gates[i]!;
@@ -55,43 +42,35 @@ export function detectGateContradictions(
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
       continue;
 
-    if (x < bounds.minX || x > bounds.maxX) {
-      const limit = x < bounds.minX ? bounds.minX : bounds.maxX;
-      const actual = x;
+    // Boundary-inclusive polygon classification — uses reviewed core with signed distance.
+    const point = vec3(x, 0, z);
+    const inside = isPointInsidePolygon(polygon, point);
+    if (!inside) {
+      const dist = signedDistanceXZ(polygon, point);
+      const distance = Number.isFinite(dist) && dist > 0 ? dist : 0;
+      // Stable evidence: signed distance positive outside, limit 0 at boundary, margin negative.
+      const actual = distance > 0 ? distance : 0;
+      const limit = 0;
       const margin = -Math.abs(actual - limit);
       diagnostics.push({
         code: "GATE_OUTSIDE_FOOTPRINT",
         severity: "error",
         provenance: "PROJECT_ENGINEERING_LIMIT",
-        message: `Gate ${i} X=${x} outside footprint X [${bounds.minX},${bounds.maxX}]`,
+        message: `Gate ${i} XZ outside footprint polygon (distance ${actual.toFixed(3)} m)`,
         actual,
         limit,
         margin,
       });
     }
-    if (z < bounds.minZ || z > bounds.maxZ) {
-      const limit = z < bounds.minZ ? bounds.minZ : bounds.maxZ;
-      const actual = z;
-      const margin = -Math.abs(actual - limit);
-      diagnostics.push({
-        code: "GATE_OUTSIDE_FOOTPRINT",
-        severity: "error",
-        provenance: "PROJECT_ENGINEERING_LIMIT",
-        message: `Gate ${i} Z=${z} outside footprint Z [${bounds.minZ},${bounds.maxZ}]`,
-        actual,
-        limit,
-        margin,
-      });
-    }
-    if (y < bounds.minY || y > bounds.maxY) {
-      const limit = y < bounds.minY ? bounds.minY : bounds.maxY;
+    if (y < minY || y > maxY) {
+      const limit = y < minY ? minY : maxY;
       const actual = y;
       const margin = -Math.abs(actual - limit);
       diagnostics.push({
         code: "GATE_OUTSIDE_HEIGHT",
         severity: "error",
         provenance: "PROJECT_ENGINEERING_LIMIT",
-        message: `Gate ${i} Y=${y} outside height range [${bounds.minY},${bounds.maxY}]`,
+        message: `Gate ${i} Y=${y} outside height range [${minY},${maxY}]`,
         actual,
         limit,
         margin,

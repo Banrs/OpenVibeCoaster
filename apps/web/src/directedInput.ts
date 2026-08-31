@@ -1,11 +1,12 @@
 import {
   createDesignIntentV1,
-  type Aabb,
+  validateFootprintPolygon,
   type DesignIntentV1,
   type GateV1,
   type Vec3,
   type QuaternionV1,
 } from "@openvibecoaster/core";
+import { vec3 } from "@openvibecoaster/core";
 import { ELEMENT_KINDS, type ElementKind } from "@openvibecoaster/generator";
 
 // Re-export for tests convenience
@@ -31,7 +32,7 @@ export interface DirectedTargetInput {
 }
 
 export interface DirectedFootprintInput {
-  // Polygon in XZ plane (meters), closed loop implied. Maps to Aabb footprint.
+  // Polygon in XZ plane (meters), closed loop implied. Maps to canonical Vec3 polygon [x,0,z].
   readonly polygon: readonly (readonly [number, number])[];
   readonly maxHeightM: number;
   readonly minHeightM?: number;
@@ -99,125 +100,6 @@ function exactKeys(
   }
 }
 
-function shoelaceArea(points: readonly (readonly [number, number])[]): number {
-  let sum = 0;
-  const n = points.length;
-  for (let i = 0; i < n; i += 1) {
-    const [x1, z1] = points[i]!;
-    const [x2, z2] = points[(i + 1) % n]!;
-    sum += x1 * z2 - x2 * z1;
-  }
-  return sum / 2;
-}
-
-function orientation(
-  ax: number,
-  az: number,
-  bx: number,
-  bz: number,
-  cx: number,
-  cz: number,
-): number {
-  const v = (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
-  if (v > 0) return 1;
-  if (v < 0) return -1;
-  return 0;
-}
-
-function onSegment(
-  ax: number,
-  az: number,
-  bx: number,
-  bz: number,
-  cx: number,
-  cz: number,
-): boolean {
-  return (
-    Math.min(ax, cx) <= bx &&
-    bx <= Math.max(ax, cx) &&
-    Math.min(az, cz) <= bz &&
-    bz <= Math.max(az, cz)
-  );
-}
-
-function segmentsIntersect(
-  p1: readonly [number, number],
-  p2: readonly [number, number],
-  q1: readonly [number, number],
-  q2: readonly [number, number],
-): boolean {
-  const o1 = orientation(p1[0], p1[1], p2[0], p2[1], q1[0], q1[1]);
-  const o2 = orientation(p1[0], p1[1], p2[0], p2[1], q2[0], q2[1]);
-  const o3 = orientation(q1[0], q1[1], q2[0], q2[1], p1[0], p1[1]);
-  const o4 = orientation(q1[0], q1[1], q2[0], q2[1], p2[0], p2[1]);
-  if (o1 !== o2 && o3 !== o4) return true;
-  if (o1 === 0 && onSegment(p1[0], p1[1], q1[0], q1[1], p2[0], p2[1]))
-    return true;
-  if (o2 === 0 && onSegment(p1[0], p1[1], q2[0], q2[1], p2[0], p2[1]))
-    return true;
-  if (o3 === 0 && onSegment(q1[0], q1[1], p1[0], p1[1], q2[0], q2[1]))
-    return true;
-  if (o4 === 0 && onSegment(q1[0], q1[1], p2[0], p2[1], q2[0], q2[1]))
-    return true;
-  return false;
-}
-
-function getBounds(points: readonly (readonly [number, number])[]): {
-  minX: number;
-  maxX: number;
-  minZ: number;
-  maxZ: number;
-  extent: number;
-} {
-  let minX = Infinity,
-    maxX = -Infinity,
-    minZ = Infinity,
-    maxZ = -Infinity;
-  for (const [x, z] of points) {
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minZ = Math.min(minZ, z);
-    maxZ = Math.max(maxZ, z);
-  }
-  const extent = Math.max(maxX - minX, maxZ - minZ);
-  return { minX, maxX, minZ, maxZ, extent };
-}
-
-function isAxisAlignedRectangle(
-  points: readonly (readonly [number, number])[],
-  bounds?: ReturnType<typeof getBounds>,
-): boolean {
-  if (points.length !== 4) return false;
-  const b = bounds ?? getBounds(points);
-  if (!(b.maxX > b.minX && b.maxZ > b.minZ)) return false;
-  // No repeated closing vertex already checked via duplicate, but ensure first != last
-  // Only four unique corners in CW or CCW order, no bow-tie (already checked), no rotated
-  const cornersCCW: [number, number][] = [
-    [b.minX, b.minZ],
-    [b.maxX, b.minZ],
-    [b.maxX, b.maxZ],
-    [b.minX, b.maxZ],
-  ];
-  const cornersCW = [...cornersCCW].reverse();
-  // Check rotational equality for both directions (allow any starting offset)
-  const matches = (expected: [number, number][]): boolean => {
-    for (let offset = 0; offset < 4; offset += 1) {
-      let ok = true;
-      for (let i = 0; i < 4; i += 1) {
-        const p = points[i]!;
-        const e = expected[(offset + i) % 4]!;
-        if (p[0] !== e[0] || p[1] !== e[1]) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) return true;
-    }
-    return false;
-  };
-  return matches(cornersCCW) || matches(cornersCW);
-}
-
 function validatePolygon(
   value: unknown,
   field: string,
@@ -253,70 +135,14 @@ function validatePolygon(
   }
   if (result.length !== polygon.length) return null;
 
-  // Duplicate vertices
-  for (let i = 0; i < result.length; i += 1) {
-    for (let j = i + 1; j < result.length; j += 1) {
-      if (result[i]![0] === result[j]![0] && result[i]![1] === result[j]![1]) {
-        addError(
-          errors,
-          `${field}[${j}]`,
-          `duplicate vertex ${j} duplicates ${i}`,
-        );
-      }
-    }
-  }
-
-  // Zero-length edges (consecutive duplicates, including closing edge)
-  for (let i = 0; i < result.length; i += 1) {
-    const a = result[i]!;
-    const b = result[(i + 1) % result.length]!;
-    if (a[0] === b[0] && a[1] === b[1]) {
-      addError(errors, `${field}[${i}]`, "zero-length edge");
-    }
-  }
-
-  // Zero-area with scale-aware tolerance (covers large and near-collinear)
-  const bounds = getBounds(result);
-  const area = shoelaceArea(result);
-  const tolerance =
-    bounds.extent * bounds.extent * Number.EPSILON * result.length * 4;
-  const effectiveTolerance = Math.max(tolerance, Number.EPSILON * 8);
-  if (Math.abs(area) <= effectiveTolerance) {
-    addError(errors, field, "polygon must have non-zero area");
-  }
-
-  // Self-intersections (including bow-tie) – labeled break, no i=n hack
-  const n = result.length;
-  outer: for (let i = 0; i < n; i += 1) {
-    const p1 = result[i]!;
-    const p2 = result[(i + 1) % n]!;
-    for (let j = i + 1; j < n; j += 1) {
-      const q1 = result[j]!;
-      const q2 = result[(j + 1) % n]!;
-      if (i === j || (i + 1) % n === j || i === (j + 1) % n) continue;
-      if (
-        (p1[0] === q1[0] && p1[1] === q1[1]) ||
-        (p1[0] === q2[0] && p1[1] === q2[1]) ||
-        (p2[0] === q1[0] && p2[1] === q1[1]) ||
-        (p2[0] === q2[0] && p2[1] === q2[1])
-      )
-        continue;
-      if (segmentsIntersect(p1, p2, q1, q2)) {
-        addError(errors, field, "polygon self-intersects");
-        break outer;
-      }
-    }
-  }
-
-  if (errors.some((e) => e.field.startsWith(field))) return null;
-
-  // Preserve core contract: only four unique axis-aligned corners in CW/CCW order
-  if (!isAxisAlignedRectangle(result, bounds)) {
-    addError(
-      errors,
-      field,
-      "unsupported non-rectangular polygon: core contract supports only axis-aligned rectangles via AABB; provide 4 corners of the bounding rectangle",
-    );
+  // Delegate to reviewed core polygon validation/classification as semantic source.
+  // Map [x,z] -> [x,0,z] Vec3 preserving order; core handles duplicate/zero/crossing/area.
+  const asVec3: Vec3[] = result.map(([x, z]) => vec3(x, 0, z));
+  try {
+    validateFootprintPolygon(asVec3, field);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    addError(errors, field, message);
     return null;
   }
 
@@ -773,24 +599,15 @@ export function createDirectedDesignIntent(input: DirectedEditorInput): {
   const errors = validateDirectedInput(copy);
   if (errors.length > 0) return { intent: null, errors };
 
-  // Build footprint Aabb from polygon XZ + height
-  const polygon = copy.footprint.polygon;
-  let minX = Infinity,
-    maxX = -Infinity,
-    minZ = Infinity,
-    maxZ = -Infinity;
-  for (const [x, z] of polygon) {
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minZ = Math.min(minZ, z);
-    maxZ = Math.max(maxZ, z);
-  }
+  // Build canonical footprint polygon [x,0,z] preserving order; Y always zero.
+  // Four min/max inputs remain as rectangle authoring convenience via frozen order.
+  const footprint: readonly Vec3[] = Object.freeze(
+    copy.footprint.polygon.map(
+      ([x, z]) => Object.freeze(vec3(x, 0, z)) as Vec3,
+    ),
+  );
   const minY = copy.footprint.minHeightM ?? 0;
   const maxY = copy.footprint.maxHeightM;
-  const footprint: Aabb = Object.freeze({
-    min: Object.freeze([minX, minY, minZ] as Vec3),
-    max: Object.freeze([maxX, maxY, maxZ] as Vec3),
-  });
 
   // Build gates with stable ids
   const gates: GateV1[] = copy.gates.map((gate, index) => {

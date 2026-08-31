@@ -569,6 +569,25 @@ test.describe("vertical-slice – persistence", () => {
     const dlChecksum = (json.compiledDataChecksum as string) ?? "";
     expect(dlChecksum).toMatch(/^[0-9a-f]{8}$/i);
     expect(dlChecksum.toLowerCase()).toBe(preChecksum.toLowerCase());
+    // Polygon footprint: save preserves order and never emits {min,max} AABB; heightRange separate
+    const intent = (json as { intent: Record<string, unknown> }).intent;
+    if (intent.footprint !== undefined) {
+      expect(Array.isArray(intent.footprint)).toBe(true);
+      const fp = intent.footprint as unknown[];
+      expect(fp.length).toBeGreaterThan(0);
+      // First vertex should be Vec3 with Y=0
+      const first = fp[0] as number[];
+      expect(Array.isArray(first)).toBe(true);
+      expect(first[1]).toBe(0);
+      // Never emits AABB object
+      expect(JSON.stringify(intent.footprint)).not.toContain('"min"');
+      expect(JSON.stringify(intent.footprint)).not.toContain('"max"');
+      if (intent.heightRange !== undefined) {
+        const hr = intent.heightRange as Record<string, unknown>;
+        expect(typeof hr.min).toBe("number");
+        expect(typeof hr.max).toBe("number");
+      }
+    }
 
     await page.locator("#load-file").setInputFiles(dlPath as string);
     await waitForReady(page, 90_000);
