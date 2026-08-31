@@ -62,8 +62,49 @@ All RED cases GREEN after fixes above. No full browser E2E benchmark or Chromium
 ## 4. Concerns / residual risk
 
 - 240 Hz detailed `SimulationResult.frames` graph remains retained for fidelity; browser path no longer retains/clones/transfers 120 Hz graph, reducing transfer to ~30 MB, but detailed graph size is unchanged.
-- Real Chromium OOM proof is still pending root rerun of the full browser benchmark with Playwright Chromium after fresh review.
+- The browser generation target remains missed in the production Chromium benchmark even though the headless engineering benchmark meets its target. This is reported as a performance limitation; validation, seed count, and acceptance coverage were not reduced.
 
-## 5. Commit
+## 5. Root final Chromium proof (2026-09-01)
 
-Single concise final-hardening commit containing source/tests/report, tree left clean on `main`, not pushed, not amending `575484b`/`8d22d3f`, no seat buffers, no embedded SHA, no seed/target/rate/dependency/browser-harness changes.
+Root reran the exact final gate sequence on `main@be18a19` after the independent
+boundary reviews:
+
+```text
+npm ci                 PASS (87 packages)
+npm run typecheck      PASS (4 workspaces)
+npm run lint           PASS (0 warnings)
+npm run format:check   PASS
+npm run test           PASS (56 files, 731 tests)
+npm run test:e2e       PASS (28/28 Chromium tests, 21.1 minutes)
+npm run build          PASS (standalone HTML 942,888 bytes)
+npm run bench          PASS (3 warmups + 50 measured seeds)
+```
+
+The production-browser benchmark kept the required 3 warmups, 50 measured
+seeds, 1,500 steady-state frame samples, and all validation. Its p50/p95 results
+were:
+
+| Stage | p50 | p95 |
+| --- | ---: | ---: |
+| Generation total | 16,315.8 ms | 16,940.5 ms |
+| Simulation | 10,855.4 ms | 11,462.8 ms |
+| Worker transfer | 0.3999 ms | 0.6001 ms |
+| Initial mesh creation | 1,441.5 ms | 1,486.9 ms |
+| Steady-state frame | 0.6 ms | 0.8 ms |
+
+The 1 s production-browser generation target is therefore missed; the 16.7 ms
+frame target is met. Renderer working-set observations started near 1.53 GB,
+dropped near 0.99 GB, and then oscillated between roughly 0.8 and 1.69 GB for
+about ten minutes without the previous monotonic growth or renderer crash. The
+benchmark renderer exited normally and Playwright completed the remaining
+acceptance tests in a fresh renderer.
+
+The headless engineering benchmark reported generation-total p50 173.301 ms and
+p95 185.054 ms, meeting its 1 s target. Its deliberate infeasible rejection took
+12,822.972 ms and remains disclosed as the benchmark's only target miss.
+
+## 6. Commit history
+
+The implementation and review corrections are recorded in `575484b`, `8d22d3f`,
+and `be18a19`. No seat buffers, seed/target/rate changes, dependency changes, or
+browser-harness weakening were introduced.
