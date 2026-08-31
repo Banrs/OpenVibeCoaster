@@ -679,7 +679,6 @@ export function certifiedSweptDistance(
   createClearanceTrainGeometry(segB.geometry);
   const localityM = opts.localityM;
   const trackLen = opts.trackLengthM ?? 0;
-  // root wholly local check
   if (localityM !== undefined) {
     const [a0, a1] = sInterval(segA, 0, 1);
     const [b0, b1] = sInterval(segB, 0, 1);
@@ -708,14 +707,47 @@ export function certifiedSweptDistance(
   let seq = 0;
   let bestUpper = Infinity;
   let bestWitness: QueueNode | null = null;
-  const queue: QueueNode[] = [];
-  const push = (n: QueueNode): boolean => {
-    if (queue.length >= opts.maxWork) return false;
-    queue.push(n);
-    queue.sort((x, y) =>
-      x.lower === y.lower ? x.seq - y.seq : x.lower - y.lower,
-    );
+  const heap: QueueNode[] = [];
+  const heapLess = (a: QueueNode, b: QueueNode): boolean =>
+    a.lower !== b.lower ? a.lower < b.lower : a.seq < b.seq;
+  const heapPush = (n: QueueNode): boolean => {
+    if (heap.length >= opts.maxWork) return false;
+    heap.push(n);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (!heapLess(heap[i]!, heap[p]!)) break;
+      const tmp = heap[i]!;
+      heap[i] = heap[p]!;
+      heap[p] = tmp;
+      i = p;
+    }
     return true;
+  };
+  const heapPeek = (): QueueNode | undefined => heap[0];
+  const heapPop = (): QueueNode | undefined => {
+    if (heap.length === 0) return undefined;
+    const top = heap[0]!;
+    const last = heap.pop()!;
+    if (heap.length > 0) {
+      heap[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1;
+        const r = l + 1;
+        let smallest = i;
+        if (l < heap.length && heapLess(heap[l]!, heap[smallest]!))
+          smallest = l;
+        if (r < heap.length && heapLess(heap[r]!, heap[smallest]!))
+          smallest = r;
+        if (smallest === i) break;
+        const tmp = heap[i]!;
+        heap[i] = heap[smallest]!;
+        heap[smallest] = tmp;
+        i = smallest;
+      }
+    }
+    return top;
   };
   const findFeasibleSample = (
     u0: number,
@@ -763,7 +795,6 @@ export function certifiedSweptDistance(
     | { kind: "budget" } => {
     const sample = findFeasibleSample(u0, u1, v0, v1);
     if (sample === null) {
-      // check if wholly local already handled; if straddling with no feasible sample, need subdivide with lower 0
       const [a0, a1] = sInterval(segA, u0, u1);
       const [b0, b1] = sInterval(segB, v0, v1);
       const d = closed
@@ -773,7 +804,7 @@ export function certifiedSweptDistance(
       return { kind: "needSubdivide" };
     }
     if (work + 1 > opts.maxWork) return { kind: "budget" };
-    if (queue.length >= opts.maxWork) return { kind: "budget" };
+    if (heap.length >= opts.maxWork) return { kind: "budget" };
     work += 1;
     const boxA = createOrientedBox(
       interpolatePose(segA, sample.u),
@@ -820,7 +851,6 @@ export function certifiedSweptDistance(
   if (rootEval.kind === "needSubdivide") {
     const midU = 0.5;
     const midV = 0.5;
-    // Choose split dimension by larger motion potential from midpoint sample to interval
     const mA0 = motionBoundForDelta(segA, 0.5);
     const mB0 = motionBoundForDelta(segB, 0.5);
     const splitU = mA0 >= mB0;
@@ -858,7 +888,7 @@ export function certifiedSweptDistance(
           seq: seq++,
           hasWitness: false,
         };
-        if (!push(ph))
+        if (!heapPush(ph))
           return {
             ok: false,
             code: "CLEARANCE_UNCERTIFIED",
@@ -871,8 +901,8 @@ export function certifiedSweptDistance(
         bestUpper = ev.node.upper;
         bestWitness = ev.node;
       }
-      if (ev.node.lower < bestUpper - 1e-12) {
-        if (!push(ev.node))
+      if (ev.node.lower < bestUpper) {
+        if (!heapPush(ev.node))
           return {
             ok: false,
             code: "CLEARANCE_UNCERTIFIED",
@@ -886,7 +916,7 @@ export function certifiedSweptDistance(
       bestUpper = rootEval.node.upper;
       bestWitness = rootEval.node;
     }
-    if (!push(rootEval.node))
+    if (!heapPush(rootEval.node))
       return {
         ok: false,
         code: "CLEARANCE_UNCERTIFIED",
@@ -894,7 +924,7 @@ export function certifiedSweptDistance(
         work,
       };
   }
-  if (queue.length === 0) {
+  if (heap.length === 0) {
     if (bestWitness) {
       return {
         ok: true,
@@ -915,10 +945,9 @@ export function certifiedSweptDistance(
       work,
     };
   }
-  // best-first loop
-  while (queue.length > 0) {
-    const globalLower = queue[0]!.lower;
-    if (bestWitness && bestUpper - globalLower <= opts.resolutionM + 1e-12) {
+  while (heap.length > 0) {
+    const globalLower = heapPeek()!.lower;
+    if (bestWitness && bestUpper - globalLower <= opts.resolutionM) {
       return {
         ok: true,
         excluded: false,
@@ -931,12 +960,8 @@ export function certifiedSweptDistance(
         work,
       };
     }
-    const cur = queue.shift()!;
-    if (cur.hasWitness && cur.lower >= bestUpper - 1e-12) continue;
-    if (!cur.hasWitness && cur.lower >= bestUpper - 1e-12) continue;
-    // split cur
-    // compute motion potentials for cur
-    // Use deltas from its witness if has witness else from midpoint
+    const cur = heapPop()!;
+    if (cur.lower >= bestUpper) continue;
     let mAcur: number;
     let mBcur: number;
     if (cur.hasWitness) {
@@ -997,8 +1022,8 @@ export function certifiedSweptDistance(
           seq: seq++,
           hasWitness: false,
         };
-        if (ph.lower >= bestUpper - 1e-12) continue;
-        if (!push(ph))
+        if (ph.lower >= bestUpper) continue;
+        if (!heapPush(ph))
           return {
             ok: false,
             code: "CLEARANCE_UNCERTIFIED",
@@ -1011,8 +1036,8 @@ export function certifiedSweptDistance(
         bestUpper = ev.node.upper;
         bestWitness = ev.node;
       }
-      if (ev.node.lower >= bestUpper - 1e-12) continue;
-      if (!push(ev.node))
+      if (ev.node.lower >= bestUpper) continue;
+      if (!heapPush(ev.node))
         return {
           ok: false,
           code: "CLEARANCE_UNCERTIFIED",
@@ -1027,7 +1052,7 @@ export function certifiedSweptDistance(
         message: "budget",
         work,
       };
-    if (queue.length > opts.maxWork)
+    if (heap.length > opts.maxWork)
       return {
         ok: false,
         code: "CLEARANCE_UNCERTIFIED",
@@ -1037,7 +1062,7 @@ export function certifiedSweptDistance(
   }
   if (bestWitness) {
     const globalLower = bestUpper;
-    if (bestUpper - globalLower <= opts.resolutionM + 1e-12) {
+    if (bestUpper - globalLower <= opts.resolutionM) {
       return {
         ok: true,
         excluded: false,

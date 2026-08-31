@@ -10,8 +10,21 @@ import {
   staticObbDistance,
   sweptAabb,
   sweptMotionBound,
+  type CertifiedDistanceResult,
 } from "./clearance-geometry";
 import { vec3, type Vec3 } from "@openvibecoaster/core";
+
+function assertCertified(
+  res: CertifiedDistanceResult,
+): asserts res is Extract<
+  CertifiedDistanceResult,
+  { ok: true; excluded: false }
+> {
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("expected certified");
+  expect(res.excluded).toBe(false);
+  if (res.excluded) throw new Error("expected not excluded");
+}
 
 const pose = (
   position: Vec3,
@@ -223,11 +236,9 @@ describe("clearance geometry foundation", () => {
       maxWork: 5000,
       resolutionM: 0.01,
     });
-    expect(res.ok).toBe(true);
-    if (res.ok && !res.excluded) {
-      expect(res.lowerM).toBe(0);
-      expect(res.upperM).toBe(0);
-    }
+    assertCertified(res);
+    expect(res.lowerM).toBe(0);
+    expect(res.upperM).toBe(0);
   });
 
   it("circumspheres overlap but exact OBB gap exceeds margin", () => {
@@ -398,39 +409,52 @@ describe("clearance geometry foundation", () => {
     const g = geom();
     const segA = {
       startS: 0,
+      endS: 1,
+      start: pose(v(0, 0, 0)),
+      end: pose(v(1, 0, 0)),
+      geometry: g,
+    };
+    const segB = {
+      startS: 0,
+      endS: 1,
+      start: pose(v(0, 2, 0)),
+      end: pose(v(1, 2, 0)),
+      geometry: g,
+    };
+    const r1 = certifiedSweptDistance(segA, segB, {
+      maxWork: 5000,
+      resolutionM: 0.01,
+    });
+    const r2 = certifiedSweptDistance(segA, segB, {
+      maxWork: 5000,
+      resolutionM: 0.01,
+    });
+    expect(r1).toEqual(r2);
+    assertCertified(r1);
+    expect(r1.upperM - r1.lowerM).toBeLessThanOrEqual(0.01);
+    const segTinyA = {
+      startS: 0,
       endS: 5,
       start: pose(v(0, 0, 0)),
       end: pose(v(5, 0, 0)),
       geometry: g,
     };
-    const segB = {
+    const segTinyB = {
       startS: 0,
       endS: 5,
       start: pose(v(0, 5, 0)),
       end: pose(v(5, 5, 0)),
       geometry: g,
     };
-    const r1 = certifiedSweptDistance(segA, segB, {
-      maxWork: 3000,
-      resolutionM: 0.01,
-    });
-    const r2 = certifiedSweptDistance(segA, segB, {
-      maxWork: 3000,
-      resolutionM: 0.01,
-    });
-    expect(r1).toEqual(r2);
-    if (r1.ok && !r1.excluded)
-      expect(r1.upperM - r1.lowerM).toBeLessThanOrEqual(0.01 + 1e-9);
-    const tiny = certifiedSweptDistance(segA, segB, {
+    const tiny = certifiedSweptDistance(segTinyA, segTinyB, {
       maxWork: 1,
       resolutionM: 0.01,
     });
     expect(tiny.ok).toBe(false);
     if (!tiny.ok) {
       expect(tiny.code).toBe("CLEARANCE_UNCERTIFIED");
-      expect(
-        (tiny as unknown as Record<string, unknown>).lowerM,
-      ).toBeUndefined();
+      expect("lowerM" in tiny).toBe(false);
+      expect("upperM" in tiny).toBe(false);
     }
   });
 
