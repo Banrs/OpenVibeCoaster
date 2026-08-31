@@ -1943,6 +1943,7 @@ const localSeamDiagnostics = (
       seam.curvatureGradientPerM2 > 1e-4 ||
       seam.bankRad > 1e-4 ||
       seam.bankDerivativeRadPerM > 1e-4 ||
+      seam.bankSecondDerivativeRadPerM2 > 1e-4 ||
       seam.specificForceJumpG > 0.05;
     if (failure)
       diagnostics.push(
@@ -1958,6 +1959,7 @@ const localSeamDiagnostics = (
             seam.curvatureGradientPerM2,
             seam.bankRad,
             seam.bankDerivativeRadPerM,
+            seam.bankSecondDerivativeRadPerM2,
             seam.specificForceJumpG,
           ),
           1e-4,
