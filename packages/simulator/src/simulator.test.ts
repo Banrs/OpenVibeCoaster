@@ -331,7 +331,7 @@ describe("pure multi-car simulator", () => {
     const head = timeline.headDistanceM;
     head[0] = 999;
     expect(timeline.headDistanceM[0]).toBe(1);
-    expect(timeline.toTransferable().buffers).toHaveLength(11);
+    expect(timeline.toTransferable().buffers.length).toBeGreaterThanOrEqual(11);
     expect(
       RideTimeline.fromTransferable(timeline.toTransferable()).toJSON(),
     ).toEqual(timeline.toJSON());

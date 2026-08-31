@@ -71,10 +71,15 @@ describe("full-ride simulation", () => {
         (v, i) => i > 0 && Math.abs(v - head[0]!) > 1,
       );
       expect(hasMovement).toBe(true);
-      const frames = hydrated.timeline.frames;
-      expect(frames.length).toBeGreaterThan(0);
-      const hasLaunch = frames.some((f) => f.telemetry.launchActivity);
-      const hasBrake = frames.some((f) => f.telemetry.brakeActivity);
+      // Compact timeline has zero nested frames; check SoA activity instead
+      const hasLaunch =
+        hydrated.timeline.frames.length > 0
+          ? hydrated.timeline.frames.some((f) => f.telemetry.launchActivity)
+          : Array.from(hydrated.timeline.launchActivity).some((v) => v >= 0.5);
+      const hasBrake =
+        hydrated.timeline.frames.length > 0
+          ? hydrated.timeline.frames.some((f) => f.telemetry.brakeActivity)
+          : Array.from(hydrated.timeline.brakeActivity).some((v) => v >= 0.5);
       expect(hasLaunch).toBe(true);
       expect(hasBrake).toBe(true);
     },
@@ -160,7 +165,8 @@ describe("full-ride simulation", () => {
       expect(hydrated.track.totalLength).toBeLessThanOrEqual(2200);
       const timeline = hydrated.timeline;
       expect(timeline.length).toBeGreaterThan(15 * 120);
-      expect(timeline.frames.length).toBeGreaterThan(0);
+      // Compact timelines have zero nested frames; direct simulator full frames available via SimulationResult.frames
+      expect(timeline.length).toBeGreaterThan(0);
       const head = timeline.headDistanceM;
       const lastHead = head[head.length - 1]!;
       expect(lastHead).toBeGreaterThan(hydrated.track.totalLength * 0.85);
@@ -181,9 +187,16 @@ describe("full-ride simulation", () => {
       expect(lastHead).toBeGreaterThanOrEqual(finalStartDist);
       expect(lastHead).toBeLessThanOrEqual(finalEndDist);
       expect(lastHead).toBeGreaterThanOrEqual(finalStartDist + 1);
-      const frames = timeline.frames;
-      expect(frames.some((f) => f.telemetry.launchActivity)).toBe(true);
-      expect(frames.some((f) => f.telemetry.brakeActivity)).toBe(true);
+      const hasLaunchFlag =
+        timeline.frames.length > 0
+          ? timeline.frames.some((f) => f.telemetry.launchActivity)
+          : Array.from(timeline.launchActivity).some((v) => v >= 0.5);
+      const hasBrakeFlag =
+        timeline.frames.length > 0
+          ? timeline.frames.some((f) => f.telemetry.brakeActivity)
+          : Array.from(timeline.brakeActivity).some((v) => v >= 0.5);
+      expect(hasLaunchFlag).toBe(true);
+      expect(hasBrakeFlag).toBe(true);
       // Head movement meaningful
       expect(Math.abs(head[head.length - 1]! - head[0]!)).toBeGreaterThan(100);
       // Fixed steps proven via sampleRate

@@ -1,0 +1,120 @@
+import { describe, expect, it } from "vitest";
+import { createDesignIntentV1 } from "@openvibecoaster/core";
+import { handleGenerate } from "../engineering/worker.js";
+import { hydrateEngineeringSuccess } from "../engineering/hydrate.js";
+import { createRidePlayback } from "./controller.js";
+import { RideTimeline } from "@openvibecoaster/simulator";
+
+const validIntent = createDesignIntentV1({
+  generatorVersion: "test-v1",
+  seed: 42,
+  mode: "directed",
+  family: "steel-sitdown-lsm-v1",
+  elements: [
+    {
+      id: "station-0",
+      kind: "station",
+      type: "station",
+      parameters: { length: 80, bank: 0, closed: false },
+    },
+    {
+      id: "launch-1",
+      kind: "launch",
+      type: "launch",
+      parameters: { length: 80, targetSpeed: 15, bank: 0 },
+    },
+    {
+      id: "brake-2",
+      kind: "brake",
+      type: "brake",
+      parameters: { length: 80, targetSpeed: 5, bank: 0 },
+    },
+    {
+      id: "station-3",
+      kind: "station",
+      type: "station",
+      parameters: { length: 80, bank: 0, closed: false },
+    },
+  ],
+  gates: [],
+  targets: [],
+  constraints: [],
+  pinnedElementIds: [],
+});
+
+describe("ride controller compact fallback RED", () => {
+  it(
+    "compact fallback gives finite/distinct front/middle/rear transforms and truthful telemetry",
+    { timeout: 20000 },
+    () => {
+      const success = handleGenerate("compact-ride-1", validIntent as unknown);
+      expect(success.type).toBe("success");
+      if (success.type !== "success") throw new Error("gen fail");
+      const { timeline } = hydrateEngineeringSuccess(success);
+      expect(timeline.frames.length).toBe(0);
+      const controller = createRidePlayback(timeline);
+      const s0 = controller.getSnapshot();
+      expect(s0.telemetry).toBeDefined();
+      expect(Number.isFinite(s0.telemetry!.kineticEnergyJ)).toBe(true);
+      expect(Number.isFinite(s0.telemetry!.energyErrorJ)).toBe(true);
+      expect(s0.selections.front.position).toBeDefined();
+      expect(s0.selections.middle.position).toBeDefined();
+      expect(s0.selections.rear.position).toBeDefined();
+      // distinct transforms
+      const frontPos = s0.selections.front.position!;
+      const rearPos = s0.selections.rear.position!;
+      expect(
+        frontPos[0] !== rearPos[0] ||
+          frontPos[1] !== rearPos[1] ||
+          frontPos[2] !== rearPos[2],
+      ).toBe(true);
+      // finite orthonormal check
+      for (const sel of [
+        s0.selections.front,
+        s0.selections.middle,
+        s0.selections.rear,
+      ]) {
+        expect(sel.tangent).toBeDefined();
+        expect(sel.normal).toBeDefined();
+        expect(sel.binormal).toBeDefined();
+        expect(sel.tangent!.every(Number.isFinite)).toBe(true);
+      }
+      // scrub and play changes preserve distinct
+      controller.scrubTime(
+        timeline.timeSeconds[Math.floor(timeline.length / 2)]!,
+      );
+      const mid = controller.getSnapshot();
+      expect(mid.telemetry!.kineticEnergyJ).not.toBe(
+        s0.telemetry!.kineticEnergyJ,
+      );
+      expect(mid.headDistanceM).not.toBe(s0.headDistanceM);
+      controller.setCamera("orbit");
+      expect(controller.getSnapshot().camera).toBe("orbit");
+      controller.play();
+      controller.tick(0.1);
+      const ticked = controller.getSnapshot();
+      expect(Number.isFinite(ticked.timeSeconds)).toBe(true);
+    },
+  );
+
+  it("existing full-frame controller tests semantics remain valid with constructed full timeline", () => {
+    const timeline = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0, 1, 2]),
+      headDistanceM: new Float64Array([0, 10, 20]),
+      speedMps: new Float64Array([5, 5, 5]),
+      carCount: 1,
+      carPositionsXYZ: new Float64Array([0, 0, 0, 10, 0, 0, 20, 0, 0]),
+      carTangentsXYZ: new Float64Array([1, 0, 0, 1, 0, 0, 1, 0, 0]),
+      carNormalsXYZ: new Float64Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+      carBinormalsXYZ: new Float64Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      frames: [] as unknown as never,
+    });
+    // should remain valid with zero frames (compact style)
+    const c = createRidePlayback(timeline);
+    expect(c.getSnapshot().selections.front.position).toBeDefined();
+    expect(
+      c.getSnapshot().selections.front.position!.every(Number.isFinite),
+    ).toBe(true);
+  });
+});

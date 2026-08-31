@@ -1351,6 +1351,7 @@ const makeTimeline = (
   track: CompiledTrackData,
   frames: readonly SimulationFrame[],
   config: SimulatorConfig,
+  compact = false,
 ): RideTimeline => {
   if (frames.length === 0)
     return new RideTimeline({
@@ -1368,6 +1369,8 @@ const makeTimeline = (
   )
     outputTimes.push(index * config.timelineStepSeconds);
   outputTimes.push(durationSeconds);
+  const length = outputTimes.length;
+  const carCount = frames[0]?.cars.length ?? 0;
   const interpolateTelemetry = (
     left: CarTelemetry,
     right: CarTelemetry,
@@ -1389,126 +1392,316 @@ const makeTimeline = (
       rollRateRadPerSec: blend(left.rollRateRadPerSec, right.rollRateRadPerSec),
     };
   };
-  const interpolateFrame = (time: number): SimulationFrame => {
-    let upper = 0;
-    while (upper < frames.length - 1 && frames[upper]!.timeSeconds < time)
-      upper += 1;
-    const lower = Math.max(0, upper - 1);
-    const left = frames[lower]!;
-    const right = frames[upper]!;
-    const span = right.timeSeconds - left.timeSeconds;
-    const alpha = span > 0 ? (time - left.timeSeconds) / span : 0;
-    const blend = (a: number, b: number): number => a * (1 - alpha) + b * alpha;
-    const cars = left.cars.map((car, carIndex) => {
-      const other = right.cars[carIndex] ?? car;
-      const distanceM = blend(car.distanceM, other.distanceM);
-      const frame = sampleTrackAtDistance(
-        track,
-        trackDistance(track, config, distanceM),
+  // Linear bracket search and streaming SoA
+  if (compact) {
+    const timeSeconds = new Float64Array(outputTimes);
+    const headDistanceM = new Float64Array(length);
+    const speedMps = new Float64Array(length);
+    const longitudinalG = new Float64Array(length);
+    const lateralG = new Float64Array(length);
+    const verticalG = new Float64Array(length);
+    const jerkMps3 = new Float64Array(length * 3);
+    const launchActivity = new Float64Array(length);
+    const brakeActivity = new Float64Array(length);
+    const kineticEnergyJ = new Float64Array(length);
+    const potentialEnergyJ = new Float64Array(length);
+    const accumulatedDriveWorkJ = new Float64Array(length);
+    const accumulatedLossWorkJ = new Float64Array(length);
+    const energyErrorJ = new Float64Array(length);
+    const bankRad = new Float64Array(length);
+    const rollRateRadPerSec = new Float64Array(length);
+    const specificForceXYZ = new Float64Array(length * 3);
+    const carPositionsXYZ = new Float64Array(length * carCount * 3);
+    const carTangentsXYZ = new Float64Array(length * carCount * 3);
+    const carNormalsXYZ = new Float64Array(length * carCount * 3);
+    const carBinormalsXYZ = new Float64Array(length * carCount * 3);
+    const perCarLongitudinalG = new Float64Array(length * carCount);
+    const perCarLateralG = new Float64Array(length * carCount);
+    const perCarVerticalG = new Float64Array(length * carCount);
+    const perCarBankRad = new Float64Array(length * carCount);
+    const perCarRollRateRadPerSec = new Float64Array(length * carCount);
+    const perCarSpecificForceXYZ = new Float64Array(length * carCount * 3);
+    const perCarJerkXYZ = new Float64Array(length * carCount * 3);
+    let cursor = 0;
+    for (let outIndex = 0; outIndex < length; outIndex += 1) {
+      const time = outputTimes[outIndex]!;
+      while (cursor < frames.length - 1 && frames[cursor]!.timeSeconds < time)
+        cursor += 1;
+      const upper = cursor;
+      const lower = Math.max(0, upper - 1);
+      const left = frames[lower]!;
+      const right = frames[upper]!;
+      const span = right.timeSeconds - left.timeSeconds;
+      const alpha = span > 0 ? (time - left.timeSeconds) / span : 0;
+      const blend = (a: number, b: number): number =>
+        a * (1 - alpha) + b * alpha;
+      headDistanceM[outIndex] = blend(left.headDistanceM, right.headDistanceM);
+      speedMps[outIndex] = blend(left.speedMps, right.speedMps);
+      // ride telemetry blending
+      const firstLeft = left.telemetry.perCar[0] ?? left.telemetry;
+      const firstRight = right.telemetry.perCar[0] ?? right.telemetry;
+      const rideLeft = left.telemetry;
+      const rideRight = right.telemetry;
+      // front G
+      longitudinalG[outIndex] = blend(
+        firstLeft.longitudinalG,
+        firstRight.longitudinalG,
       );
-      const telemetry = interpolateTelemetry(
-        car.telemetry,
-        other.telemetry,
-        alpha,
-      );
-      const seats = car.seats.map((seat, seatIndex) => {
-        const otherSeat = other.seats[seatIndex] ?? seat;
-        const seatDistanceM = checkedFinite(
-          blend(seat.distanceM, otherSeat.distanceM),
-          `timeline.frames.cars[${carIndex}].seats[${seatIndex}].distanceM`,
-          "Seat distance must be finite",
+      lateralG[outIndex] = blend(firstLeft.lateralG, firstRight.lateralG);
+      verticalG[outIndex] = blend(firstLeft.verticalG, firstRight.verticalG);
+      // jerk
+      for (let k = 0; k < 3; k += 1)
+        jerkMps3[outIndex * 3 + k] = blend(
+          firstLeft.jerkMps3[k]!,
+          firstRight.jerkMps3[k]!,
         );
-        const seatFrame = sampleTrackAtDistance(
+      // energy & activity
+      launchActivity[outIndex] =
+        alpha < 0.5
+          ? rideLeft.launchActivity
+            ? 1
+            : 0
+          : rideRight.launchActivity
+            ? 1
+            : 0;
+      brakeActivity[outIndex] =
+        alpha < 0.5
+          ? rideLeft.brakeActivity
+            ? 1
+            : 0
+          : rideRight.brakeActivity
+            ? 1
+            : 0;
+      kineticEnergyJ[outIndex] = blend(
+        rideLeft.kineticEnergyJ,
+        rideRight.kineticEnergyJ,
+      );
+      potentialEnergyJ[outIndex] = blend(
+        rideLeft.potentialEnergyJ,
+        rideRight.potentialEnergyJ,
+      );
+      accumulatedDriveWorkJ[outIndex] = blend(
+        rideLeft.accumulatedDriveWorkJ,
+        rideRight.accumulatedDriveWorkJ,
+      );
+      accumulatedLossWorkJ[outIndex] = blend(
+        rideLeft.accumulatedLossWorkJ,
+        rideRight.accumulatedLossWorkJ,
+      );
+      energyErrorJ[outIndex] = blend(
+        rideLeft.energyErrorJ,
+        rideRight.energyErrorJ,
+      );
+      bankRad[outIndex] = blend(rideLeft.bankRad, rideRight.bankRad);
+      rollRateRadPerSec[outIndex] = blend(
+        rideLeft.rollRateRadPerSec,
+        rideRight.rollRateRadPerSec,
+      );
+      for (let k = 0; k < 3; k += 1)
+        specificForceXYZ[outIndex * 3 + k] = blend(
+          rideLeft.specificForceMps2[k]!,
+          rideRight.specificForceMps2[k]!,
+        );
+      // per-car transforms and telemetry
+      for (let carIndex = 0; carIndex < carCount; carIndex += 1) {
+        const leftCar = left.cars[carIndex]!;
+        const rightCar = right.cars[carIndex] ?? leftCar;
+        const distanceM = blend(leftCar.distanceM, rightCar.distanceM);
+        const sampled = sampleTrackAtDistance(
           track,
-          trackDistance(track, config, seatDistanceM),
+          trackDistance(track, config, distanceM),
         );
-        const offset = car.seatOffsets[seatIndex] ?? vec3();
+        const baseOffset = (outIndex * carCount + carIndex) * 3;
+        carPositionsXYZ[baseOffset] = sampled.position[0]!;
+        carPositionsXYZ[baseOffset + 1] = sampled.position[1]!;
+        carPositionsXYZ[baseOffset + 2] = sampled.position[2]!;
+        carTangentsXYZ[baseOffset] = sampled.tangent[0]!;
+        carTangentsXYZ[baseOffset + 1] = sampled.tangent[1]!;
+        carTangentsXYZ[baseOffset + 2] = sampled.tangent[2]!;
+        carNormalsXYZ[baseOffset] = sampled.normal[0]!;
+        carNormalsXYZ[baseOffset + 1] = sampled.normal[1]!;
+        carNormalsXYZ[baseOffset + 2] = sampled.normal[2]!;
+        carBinormalsXYZ[baseOffset] = sampled.binormal[0]!;
+        carBinormalsXYZ[baseOffset + 1] = sampled.binormal[1]!;
+        carBinormalsXYZ[baseOffset + 2] = sampled.binormal[2]!;
+        const carTele = interpolateTelemetry(
+          leftCar.telemetry,
+          rightCar.telemetry,
+          alpha,
+        );
+        const flatIdx = outIndex * carCount + carIndex;
+        perCarLongitudinalG[flatIdx] = carTele.longitudinalG;
+        perCarLateralG[flatIdx] = carTele.lateralG;
+        perCarVerticalG[flatIdx] = carTele.verticalG;
+        perCarBankRad[flatIdx] = carTele.bankRad;
+        perCarRollRateRadPerSec[flatIdx] = carTele.rollRateRadPerSec;
+        const vecBase = flatIdx * 3;
+        perCarSpecificForceXYZ[vecBase] = carTele.specificForceMps2[0]!;
+        perCarSpecificForceXYZ[vecBase + 1] = carTele.specificForceMps2[1]!;
+        perCarSpecificForceXYZ[vecBase + 2] = carTele.specificForceMps2[2]!;
+        perCarJerkXYZ[vecBase] = carTele.jerkMps3[0]!;
+        perCarJerkXYZ[vecBase + 1] = carTele.jerkMps3[1]!;
+        perCarJerkXYZ[vecBase + 2] = carTele.jerkMps3[2]!;
+      }
+    }
+    return new RideTimeline({
+      sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
+      timeSeconds,
+      headDistanceM,
+      speedMps,
+      longitudinalG,
+      lateralG,
+      verticalG,
+      jerkMps3,
+      carCount,
+      carPositionsXYZ,
+      carTangentsXYZ,
+      carNormalsXYZ,
+      carBinormalsXYZ,
+      launchActivity,
+      brakeActivity,
+      kineticEnergyJ,
+      potentialEnergyJ,
+      accumulatedDriveWorkJ,
+      accumulatedLossWorkJ,
+      energyErrorJ,
+      bankRad,
+      rollRateRadPerSec,
+      specificForceXYZ,
+      perCarLongitudinalG,
+      perCarLateralG,
+      perCarVerticalG,
+      perCarBankRad,
+      perCarRollRateRadPerSec,
+      perCarSpecificForceXYZ,
+      perCarJerkXYZ,
+      frames: [],
+    });
+  }
+  // Full path: monotonic cursor without streaming, retains frames
+  const interpolateFrame = (() => {
+    let cursor = 0;
+    return (time: number): SimulationFrame => {
+      while (cursor < frames.length - 1 && frames[cursor]!.timeSeconds < time)
+        cursor += 1;
+      const upper = cursor;
+      const lower = Math.max(0, upper - 1);
+      const left = frames[lower]!;
+      const right = frames[upper]!;
+      const span = right.timeSeconds - left.timeSeconds;
+      const alpha = span > 0 ? (time - left.timeSeconds) / span : 0;
+      const blend = (a: number, b: number): number =>
+        a * (1 - alpha) + b * alpha;
+      const cars = left.cars.map((car, carIndex) => {
+        const other = right.cars[carIndex] ?? car;
+        const distanceM = blend(car.distanceM, other.distanceM);
+        const frame = sampleTrackAtDistance(
+          track,
+          trackDistance(track, config, distanceM),
+        );
+        const telemetry = interpolateTelemetry(
+          car.telemetry,
+          other.telemetry,
+          alpha,
+        );
+        const seats = car.seats.map((seat, seatIndex) => {
+          const otherSeat = other.seats[seatIndex] ?? seat;
+          const seatDistanceM = checkedFinite(
+            blend(seat.distanceM, otherSeat.distanceM),
+            `timeline.frames.cars[${carIndex}].seats[${seatIndex}].distanceM`,
+            "Seat distance must be finite",
+          );
+          const seatFrame = sampleTrackAtDistance(
+            track,
+            trackDistance(track, config, seatDistanceM),
+          );
+          const offset = car.seatOffsets[seatIndex] ?? vec3();
+          return {
+            ...seat,
+            distanceM: seatDistanceM,
+            position: seatWorldPosition(
+              seatFrame,
+              offset,
+              `timeline.frames.cars[${carIndex}].seats[${seatIndex}].position`,
+            ),
+            frame: seatFrame,
+            telemetry: interpolateTelemetry(
+              seat.telemetry,
+              otherSeat.telemetry,
+              alpha,
+            ),
+          };
+        });
         return {
-          ...seat,
-          distanceM: seatDistanceM,
-          position: seatWorldPosition(
-            seatFrame,
-            offset,
-            `timeline.frames.cars[${carIndex}].seats[${seatIndex}].position`,
-          ),
-          frame: seatFrame,
-          telemetry: interpolateTelemetry(
-            seat.telemetry,
-            otherSeat.telemetry,
-            alpha,
-          ),
+          ...car,
+          distanceM,
+          position: frame.position,
+          tangent: frame.tangent,
+          normal: frame.normal,
+          binormal: frame.binormal,
+          frame,
+          telemetry,
+          seats,
+          seatPositions: seats.map((seat) => seat.position),
         };
       });
+      const perCar = cars.map((car) => car.telemetry);
+      const first = perCar[0] ?? left.telemetry;
       return {
-        ...car,
-        distanceM,
-        position: frame.position,
-        tangent: frame.tangent,
-        normal: frame.normal,
-        binormal: frame.binormal,
-        frame,
-        telemetry,
-        seats,
-        seatPositions: seats.map((seat) => seat.position),
+        ...left,
+        timeSeconds: time,
+        headDistanceM: blend(left.headDistanceM, right.headDistanceM),
+        speedMps: blend(left.speedMps, right.speedMps),
+        status: alpha < 0.5 ? left.status : right.status,
+        cars,
+        selection: {
+          front: cars[0] as CarState,
+          middle: cars[Math.floor((cars.length - 1) / 2)] as CarState,
+          rear: cars[cars.length - 1] as CarState,
+        },
+        telemetry: {
+          ...left.telemetry,
+          perCar,
+          longitudinalG: first.longitudinalG,
+          lateralG: first.lateralG,
+          verticalG: first.verticalG,
+          specificForceMps2: first.specificForceMps2,
+          bankRad: first.bankRad,
+          rollRateRadPerSec: first.rollRateRadPerSec,
+          jerkMps3: first.jerkMps3,
+          launchActivity:
+            alpha < 0.5
+              ? left.telemetry.launchActivity
+              : right.telemetry.launchActivity,
+          brakeActivity:
+            alpha < 0.5
+              ? left.telemetry.brakeActivity
+              : right.telemetry.brakeActivity,
+          kineticEnergyJ: blend(
+            left.telemetry.kineticEnergyJ,
+            right.telemetry.kineticEnergyJ,
+          ),
+          potentialEnergyJ: blend(
+            left.telemetry.potentialEnergyJ,
+            right.telemetry.potentialEnergyJ,
+          ),
+          accumulatedDriveWorkJ: blend(
+            left.telemetry.accumulatedDriveWorkJ,
+            right.telemetry.accumulatedDriveWorkJ,
+          ),
+          accumulatedLossWorkJ: blend(
+            left.telemetry.accumulatedLossWorkJ,
+            right.telemetry.accumulatedLossWorkJ,
+          ),
+          energyErrorJ: blend(
+            left.telemetry.energyErrorJ,
+            right.telemetry.energyErrorJ,
+          ),
+        },
       };
-    });
-    const perCar = cars.map((car) => car.telemetry);
-    const first = perCar[0] ?? left.telemetry;
-    return {
-      ...left,
-      timeSeconds: time,
-      headDistanceM: blend(left.headDistanceM, right.headDistanceM),
-      speedMps: blend(left.speedMps, right.speedMps),
-      status: alpha < 0.5 ? left.status : right.status,
-      cars,
-      selection: {
-        front: cars[0] as CarState,
-        middle: cars[Math.floor((cars.length - 1) / 2)] as CarState,
-        rear: cars[cars.length - 1] as CarState,
-      },
-      telemetry: {
-        ...left.telemetry,
-        perCar,
-        longitudinalG: first.longitudinalG,
-        lateralG: first.lateralG,
-        verticalG: first.verticalG,
-        specificForceMps2: first.specificForceMps2,
-        bankRad: first.bankRad,
-        rollRateRadPerSec: first.rollRateRadPerSec,
-        jerkMps3: first.jerkMps3,
-        launchActivity:
-          alpha < 0.5
-            ? left.telemetry.launchActivity
-            : right.telemetry.launchActivity,
-        brakeActivity:
-          alpha < 0.5
-            ? left.telemetry.brakeActivity
-            : right.telemetry.brakeActivity,
-        kineticEnergyJ: blend(
-          left.telemetry.kineticEnergyJ,
-          right.telemetry.kineticEnergyJ,
-        ),
-        potentialEnergyJ: blend(
-          left.telemetry.potentialEnergyJ,
-          right.telemetry.potentialEnergyJ,
-        ),
-        accumulatedDriveWorkJ: blend(
-          left.telemetry.accumulatedDriveWorkJ,
-          right.telemetry.accumulatedDriveWorkJ,
-        ),
-        accumulatedLossWorkJ: blend(
-          left.telemetry.accumulatedLossWorkJ,
-          right.telemetry.accumulatedLossWorkJ,
-        ),
-        energyErrorJ: blend(
-          left.telemetry.energyErrorJ,
-          right.telemetry.energyErrorJ,
-        ),
-      },
     };
-  };
+  })();
   const selected = outputTimes.map(interpolateFrame);
-  const carCount = selected[0]?.cars.length ?? 0;
   const flatten = (pick: (car: CarState) => Vec3): Float64Array => {
     const output = new Float64Array(selected.length * carCount * 3);
     selected.forEach((frame, frameIndex) =>
@@ -1519,6 +1712,67 @@ const makeTimeline = (
     );
     return output;
   };
+  // Populate compact arrays also for full path to allow identical SoA comparison
+  const fullLongitudinal = new Float64Array(
+    selected.map((frame) => frame.telemetry.longitudinalG),
+  );
+  const fullLateral = new Float64Array(
+    selected.map((frame) => frame.telemetry.lateralG),
+  );
+  const fullVertical = new Float64Array(
+    selected.map((frame) => frame.telemetry.verticalG),
+  );
+  const fullJerk = new Float64Array(
+    selected.flatMap((frame) => frame.telemetry.jerkMps3),
+  );
+  const fullLaunch = new Float64Array(
+    selected.map((f) => (f.telemetry.launchActivity ? 1 : 0)),
+  );
+  const fullBrake = new Float64Array(
+    selected.map((f) => (f.telemetry.brakeActivity ? 1 : 0)),
+  );
+  const fullKinetic = new Float64Array(
+    selected.map((f) => f.telemetry.kineticEnergyJ),
+  );
+  const fullPotential = new Float64Array(
+    selected.map((f) => f.telemetry.potentialEnergyJ),
+  );
+  const fullDrive = new Float64Array(
+    selected.map((f) => f.telemetry.accumulatedDriveWorkJ),
+  );
+  const fullLoss = new Float64Array(
+    selected.map((f) => f.telemetry.accumulatedLossWorkJ),
+  );
+  const fullResidual = new Float64Array(
+    selected.map((f) => f.telemetry.energyErrorJ),
+  );
+  const fullBank = new Float64Array(selected.map((f) => f.telemetry.bankRad));
+  const fullRoll = new Float64Array(
+    selected.map((f) => f.telemetry.rollRateRadPerSec),
+  );
+  const fullSpecific = new Float64Array(
+    selected.flatMap((f) => f.telemetry.specificForceMps2),
+  );
+  const perCarLen = selected.length * carCount;
+  const fullPerCarLong = new Float64Array(perCarLen);
+  const fullPerCarLat = new Float64Array(perCarLen);
+  const fullPerCarVert = new Float64Array(perCarLen);
+  const fullPerCarBank = new Float64Array(perCarLen);
+  const fullPerCarRoll = new Float64Array(perCarLen);
+  const fullPerCarSpec = new Float64Array(perCarLen * 3);
+  const fullPerCarJerk = new Float64Array(perCarLen * 3);
+  selected.forEach((frame, fi) =>
+    frame.cars.forEach((car, ci) => {
+      const idx = fi * carCount + ci;
+      fullPerCarLong[idx] = car.telemetry.longitudinalG;
+      fullPerCarLat[idx] = car.telemetry.lateralG;
+      fullPerCarVert[idx] = car.telemetry.verticalG;
+      fullPerCarBank[idx] = car.telemetry.bankRad;
+      fullPerCarRoll[idx] = car.telemetry.rollRateRadPerSec;
+      fullPerCarSpec.set(car.telemetry.specificForceMps2, idx * 3);
+      fullPerCarJerk.set(car.telemetry.jerkMps3, idx * 3);
+    }),
+  );
   return new RideTimeline({
     sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
     timeSeconds: new Float64Array(outputTimes),
@@ -1526,23 +1780,32 @@ const makeTimeline = (
       selected.map((frame) => frame.headDistanceM),
     ),
     speedMps: new Float64Array(selected.map((frame) => frame.speedMps)),
-    longitudinalG: new Float64Array(
-      selected.map((frame) => frame.telemetry.longitudinalG),
-    ),
-    lateralG: new Float64Array(
-      selected.map((frame) => frame.telemetry.lateralG),
-    ),
-    verticalG: new Float64Array(
-      selected.map((frame) => frame.telemetry.verticalG),
-    ),
-    jerkMps3: new Float64Array(
-      selected.flatMap((frame) => frame.telemetry.jerkMps3),
-    ),
+    longitudinalG: fullLongitudinal,
+    lateralG: fullLateral,
+    verticalG: fullVertical,
+    jerkMps3: fullJerk,
     carCount,
     carPositionsXYZ: flatten((car) => car.position),
     carTangentsXYZ: flatten((car) => car.tangent),
     carNormalsXYZ: flatten((car) => car.normal),
     carBinormalsXYZ: flatten((car) => car.binormal),
+    launchActivity: fullLaunch,
+    brakeActivity: fullBrake,
+    kineticEnergyJ: fullKinetic,
+    potentialEnergyJ: fullPotential,
+    accumulatedDriveWorkJ: fullDrive,
+    accumulatedLossWorkJ: fullLoss,
+    energyErrorJ: fullResidual,
+    bankRad: fullBank,
+    rollRateRadPerSec: fullRoll,
+    specificForceXYZ: fullSpecific,
+    perCarLongitudinalG: fullPerCarLong,
+    perCarLateralG: fullPerCarLat,
+    perCarVerticalG: fullPerCarVert,
+    perCarBankRad: fullPerCarBank,
+    perCarRollRateRadPerSec: fullPerCarRoll,
+    perCarSpecificForceXYZ: fullPerCarSpec,
+    perCarJerkXYZ: fullPerCarJerk,
     frames: selected,
   });
 };
@@ -1971,7 +2234,12 @@ export const simulateRide = (
   });
   let timeline: RideTimeline;
   try {
-    timeline = makeTimeline(track, completedFrames, config);
+    timeline = makeTimeline(
+      track,
+      completedFrames,
+      config,
+      Boolean(request.compactTimeline),
+    );
   } catch (error) {
     diagnostics.push(diagnosticFromError(error));
     timeline = new RideTimeline({

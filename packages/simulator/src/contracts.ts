@@ -169,6 +169,7 @@ export interface SimulationRequest {
   readonly durationSeconds: number;
   readonly config: SimulatorConfig;
   readonly initial: SimulationInitialState;
+  readonly compactTimeline?: boolean;
 }
 
 export interface SimulationResult {

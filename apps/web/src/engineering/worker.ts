@@ -335,6 +335,7 @@ function simulateForTrack(track: CompiledTrackData):
     durationSeconds,
     config,
     initial: { headDistanceM: headSelection.headDistanceM, speedMps: 5 },
+    compactTimeline: true,
   });
   const end = getNowMs();
   const simulationMs = Math.max(0, end - start);

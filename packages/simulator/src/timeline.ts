@@ -16,6 +16,23 @@ export interface RideTimelineInput {
   readonly carTangentsXYZ?: Float64Array;
   readonly carNormalsXYZ?: Float64Array;
   readonly carBinormalsXYZ?: Float64Array;
+  readonly launchActivity?: Float64Array;
+  readonly brakeActivity?: Float64Array;
+  readonly kineticEnergyJ?: Float64Array;
+  readonly potentialEnergyJ?: Float64Array;
+  readonly accumulatedDriveWorkJ?: Float64Array;
+  readonly accumulatedLossWorkJ?: Float64Array;
+  readonly energyErrorJ?: Float64Array;
+  readonly bankRad?: Float64Array;
+  readonly rollRateRadPerSec?: Float64Array;
+  readonly specificForceXYZ?: Float64Array;
+  readonly perCarLongitudinalG?: Float64Array;
+  readonly perCarLateralG?: Float64Array;
+  readonly perCarVerticalG?: Float64Array;
+  readonly perCarBankRad?: Float64Array;
+  readonly perCarRollRateRadPerSec?: Float64Array;
+  readonly perCarSpecificForceXYZ?: Float64Array;
+  readonly perCarJerkXYZ?: Float64Array;
   readonly frames?: readonly SimulationFrame[];
 }
 
@@ -197,6 +214,23 @@ export class RideTimeline {
   readonly #carTangentsXYZ: Float64Array;
   readonly #carNormalsXYZ: Float64Array;
   readonly #carBinormalsXYZ: Float64Array;
+  readonly #launchActivity: Float64Array;
+  readonly #brakeActivity: Float64Array;
+  readonly #kineticEnergyJ: Float64Array;
+  readonly #potentialEnergyJ: Float64Array;
+  readonly #accumulatedDriveWorkJ: Float64Array;
+  readonly #accumulatedLossWorkJ: Float64Array;
+  readonly #energyErrorJ: Float64Array;
+  readonly #bankRad: Float64Array;
+  readonly #rollRateRadPerSec: Float64Array;
+  readonly #specificForceXYZ: Float64Array;
+  readonly #perCarLongitudinalG: Float64Array;
+  readonly #perCarLateralG: Float64Array;
+  readonly #perCarVerticalG: Float64Array;
+  readonly #perCarBankRad: Float64Array;
+  readonly #perCarRollRateRadPerSec: Float64Array;
+  readonly #perCarSpecificForceXYZ: Float64Array;
+  readonly #perCarJerkXYZ: Float64Array;
   readonly #frames: readonly SimulationFrame[];
 
   public constructor(input: RideTimelineInput) {
@@ -216,6 +250,56 @@ export class RideTimeline {
         throw new RangeError(
           "RideTimeline metric arrays must match time length",
         );
+    for (const values of [
+      input.launchActivity,
+      input.brakeActivity,
+      input.kineticEnergyJ,
+      input.potentialEnergyJ,
+      input.accumulatedDriveWorkJ,
+      input.accumulatedLossWorkJ,
+      input.energyErrorJ,
+      input.bankRad,
+      input.rollRateRadPerSec,
+    ] as const)
+      if (values && values.length !== 0 && values.length !== length)
+        throw new RangeError(
+          "RideTimeline scalar energy/activity arrays must match time length",
+        );
+    if (
+      input.specificForceXYZ &&
+      input.specificForceXYZ.length !== 0 &&
+      input.specificForceXYZ.length !== length * 3
+    )
+      throw new RangeError(
+        "specificForceXYZ length must contain three components per time sample",
+      );
+    for (const values of [
+      input.perCarLongitudinalG,
+      input.perCarLateralG,
+      input.perCarVerticalG,
+      input.perCarBankRad,
+      input.perCarRollRateRadPerSec,
+    ] as const)
+      if (
+        values &&
+        values.length !== 0 &&
+        values.length !== length * (input.carCount ?? 0)
+      )
+        throw new RangeError(
+          "RideTimeline per-car scalar arrays must match time*carCount",
+        );
+    for (const values of [
+      input.perCarSpecificForceXYZ,
+      input.perCarJerkXYZ,
+    ] as const)
+      if (
+        values &&
+        values.length !== 0 &&
+        values.length !== length * (input.carCount ?? 0) * 3
+      )
+        throw new RangeError(
+          "RideTimeline per-car vector arrays must match time*carCount*3",
+        );
     for (const [field, values] of [
       ["longitudinalG", input.longitudinalG],
       ["lateralG", input.lateralG],
@@ -225,6 +309,23 @@ export class RideTimeline {
       ["carTangentsXYZ", input.carTangentsXYZ],
       ["carNormalsXYZ", input.carNormalsXYZ],
       ["carBinormalsXYZ", input.carBinormalsXYZ],
+      ["launchActivity", input.launchActivity],
+      ["brakeActivity", input.brakeActivity],
+      ["kineticEnergyJ", input.kineticEnergyJ],
+      ["potentialEnergyJ", input.potentialEnergyJ],
+      ["accumulatedDriveWorkJ", input.accumulatedDriveWorkJ],
+      ["accumulatedLossWorkJ", input.accumulatedLossWorkJ],
+      ["energyErrorJ", input.energyErrorJ],
+      ["bankRad", input.bankRad],
+      ["rollRateRadPerSec", input.rollRateRadPerSec],
+      ["specificForceXYZ", input.specificForceXYZ],
+      ["perCarLongitudinalG", input.perCarLongitudinalG],
+      ["perCarLateralG", input.perCarLateralG],
+      ["perCarVerticalG", input.perCarVerticalG],
+      ["perCarBankRad", input.perCarBankRad],
+      ["perCarRollRateRadPerSec", input.perCarRollRateRadPerSec],
+      ["perCarSpecificForceXYZ", input.perCarSpecificForceXYZ],
+      ["perCarJerkXYZ", input.perCarJerkXYZ],
     ] as const)
       if (values) requireFinite(values, field);
     this.#sampleRateHz = input.sampleRateHz;
@@ -240,6 +341,23 @@ export class RideTimeline {
     this.#carTangentsXYZ = clone(input.carTangentsXYZ);
     this.#carNormalsXYZ = clone(input.carNormalsXYZ);
     this.#carBinormalsXYZ = clone(input.carBinormalsXYZ);
+    this.#launchActivity = clone(input.launchActivity);
+    this.#brakeActivity = clone(input.brakeActivity);
+    this.#kineticEnergyJ = clone(input.kineticEnergyJ);
+    this.#potentialEnergyJ = clone(input.potentialEnergyJ);
+    this.#accumulatedDriveWorkJ = clone(input.accumulatedDriveWorkJ);
+    this.#accumulatedLossWorkJ = clone(input.accumulatedLossWorkJ);
+    this.#energyErrorJ = clone(input.energyErrorJ);
+    this.#bankRad = clone(input.bankRad);
+    this.#rollRateRadPerSec = clone(input.rollRateRadPerSec);
+    this.#specificForceXYZ = clone(input.specificForceXYZ);
+    this.#perCarLongitudinalG = clone(input.perCarLongitudinalG);
+    this.#perCarLateralG = clone(input.perCarLateralG);
+    this.#perCarVerticalG = clone(input.perCarVerticalG);
+    this.#perCarBankRad = clone(input.perCarBankRad);
+    this.#perCarRollRateRadPerSec = clone(input.perCarRollRateRadPerSec);
+    this.#perCarSpecificForceXYZ = clone(input.perCarSpecificForceXYZ);
+    this.#perCarJerkXYZ = clone(input.perCarJerkXYZ);
     this.#frames = Object.freeze(
       (input.frames ?? []).map((frame, frameIndex) => {
         validateFrame(frame, frameIndex);
@@ -291,6 +409,57 @@ export class RideTimeline {
   public get carBinormalsXYZ(): Float64Array {
     return new Float64Array(this.#carBinormalsXYZ);
   }
+  public get launchActivity(): Float64Array {
+    return new Float64Array(this.#launchActivity);
+  }
+  public get brakeActivity(): Float64Array {
+    return new Float64Array(this.#brakeActivity);
+  }
+  public get kineticEnergyJ(): Float64Array {
+    return new Float64Array(this.#kineticEnergyJ);
+  }
+  public get potentialEnergyJ(): Float64Array {
+    return new Float64Array(this.#potentialEnergyJ);
+  }
+  public get accumulatedDriveWorkJ(): Float64Array {
+    return new Float64Array(this.#accumulatedDriveWorkJ);
+  }
+  public get accumulatedLossWorkJ(): Float64Array {
+    return new Float64Array(this.#accumulatedLossWorkJ);
+  }
+  public get energyErrorJ(): Float64Array {
+    return new Float64Array(this.#energyErrorJ);
+  }
+  public get bankRad(): Float64Array {
+    return new Float64Array(this.#bankRad);
+  }
+  public get rollRateRadPerSec(): Float64Array {
+    return new Float64Array(this.#rollRateRadPerSec);
+  }
+  public get specificForceXYZ(): Float64Array {
+    return new Float64Array(this.#specificForceXYZ);
+  }
+  public get perCarLongitudinalG(): Float64Array {
+    return new Float64Array(this.#perCarLongitudinalG);
+  }
+  public get perCarLateralG(): Float64Array {
+    return new Float64Array(this.#perCarLateralG);
+  }
+  public get perCarVerticalG(): Float64Array {
+    return new Float64Array(this.#perCarVerticalG);
+  }
+  public get perCarBankRad(): Float64Array {
+    return new Float64Array(this.#perCarBankRad);
+  }
+  public get perCarRollRateRadPerSec(): Float64Array {
+    return new Float64Array(this.#perCarRollRateRadPerSec);
+  }
+  public get perCarSpecificForceXYZ(): Float64Array {
+    return new Float64Array(this.#perCarSpecificForceXYZ);
+  }
+  public get perCarJerkXYZ(): Float64Array {
+    return new Float64Array(this.#perCarJerkXYZ);
+  }
   public get frames(): readonly SimulationFrame[] {
     return this.#frames;
   }
@@ -312,6 +481,23 @@ export class RideTimeline {
         this.#carTangentsXYZ.slice().buffer,
         this.#carNormalsXYZ.slice().buffer,
         this.#carBinormalsXYZ.slice().buffer,
+        this.#launchActivity.slice().buffer,
+        this.#brakeActivity.slice().buffer,
+        this.#kineticEnergyJ.slice().buffer,
+        this.#potentialEnergyJ.slice().buffer,
+        this.#accumulatedDriveWorkJ.slice().buffer,
+        this.#accumulatedLossWorkJ.slice().buffer,
+        this.#energyErrorJ.slice().buffer,
+        this.#bankRad.slice().buffer,
+        this.#rollRateRadPerSec.slice().buffer,
+        this.#specificForceXYZ.slice().buffer,
+        this.#perCarLongitudinalG.slice().buffer,
+        this.#perCarLateralG.slice().buffer,
+        this.#perCarVerticalG.slice().buffer,
+        this.#perCarBankRad.slice().buffer,
+        this.#perCarRollRateRadPerSec.slice().buffer,
+        this.#perCarSpecificForceXYZ.slice().buffer,
+        this.#perCarJerkXYZ.slice().buffer,
       ],
       ...(this.#frames.length > 0 ? { frames: this.#frames } : {}),
     };
@@ -323,20 +509,40 @@ export class RideTimeline {
         "RideTimeline transfer is missing typed-array buffers",
       );
     const values = transfer.buffers.map((buffer) => new Float64Array(buffer));
+    const get = (index: number): Float64Array =>
+      values[index] ?? new Float64Array();
+    // Validate optional compact buffers finite and length correctness inside constructor
     return new RideTimeline({
       sampleRateHz: transfer.sampleRateHz,
       carCount: transfer.carCount,
-      timeSeconds: values[0]!,
-      headDistanceM: values[1]!,
-      speedMps: values[2]!,
-      longitudinalG: values[3]!,
-      lateralG: values[4]!,
-      verticalG: values[5]!,
-      jerkMps3: values[6]!,
-      carPositionsXYZ: values[7]!,
-      carTangentsXYZ: values[8]!,
-      carNormalsXYZ: values[9]!,
-      carBinormalsXYZ: values[10]!,
+      timeSeconds: get(0),
+      headDistanceM: get(1),
+      speedMps: get(2),
+      longitudinalG: get(3),
+      lateralG: get(4),
+      verticalG: get(5),
+      jerkMps3: get(6),
+      carPositionsXYZ: get(7),
+      carTangentsXYZ: get(8),
+      carNormalsXYZ: get(9),
+      carBinormalsXYZ: get(10),
+      launchActivity: get(11),
+      brakeActivity: get(12),
+      kineticEnergyJ: get(13),
+      potentialEnergyJ: get(14),
+      accumulatedDriveWorkJ: get(15),
+      accumulatedLossWorkJ: get(16),
+      energyErrorJ: get(17),
+      bankRad: get(18),
+      rollRateRadPerSec: get(19),
+      specificForceXYZ: get(20),
+      perCarLongitudinalG: get(21),
+      perCarLateralG: get(22),
+      perCarVerticalG: get(23),
+      perCarBankRad: get(24),
+      perCarRollRateRadPerSec: get(25),
+      perCarSpecificForceXYZ: get(26),
+      perCarJerkXYZ: get(27),
       ...(transfer.frames ? { frames: transfer.frames } : {}),
     });
   }
@@ -360,6 +566,23 @@ export class RideTimeline {
       carTangentsXYZ: Array.from(this.#carTangentsXYZ),
       carNormalsXYZ: Array.from(this.#carNormalsXYZ),
       carBinormalsXYZ: Array.from(this.#carBinormalsXYZ),
+      launchActivity: Array.from(this.#launchActivity),
+      brakeActivity: Array.from(this.#brakeActivity),
+      kineticEnergyJ: Array.from(this.#kineticEnergyJ),
+      potentialEnergyJ: Array.from(this.#potentialEnergyJ),
+      accumulatedDriveWorkJ: Array.from(this.#accumulatedDriveWorkJ),
+      accumulatedLossWorkJ: Array.from(this.#accumulatedLossWorkJ),
+      energyErrorJ: Array.from(this.#energyErrorJ),
+      bankRad: Array.from(this.#bankRad),
+      rollRateRadPerSec: Array.from(this.#rollRateRadPerSec),
+      specificForceXYZ: Array.from(this.#specificForceXYZ),
+      perCarLongitudinalG: Array.from(this.#perCarLongitudinalG),
+      perCarLateralG: Array.from(this.#perCarLateralG),
+      perCarVerticalG: Array.from(this.#perCarVerticalG),
+      perCarBankRad: Array.from(this.#perCarBankRad),
+      perCarRollRateRadPerSec: Array.from(this.#perCarRollRateRadPerSec),
+      perCarSpecificForceXYZ: Array.from(this.#perCarSpecificForceXYZ),
+      perCarJerkXYZ: Array.from(this.#perCarJerkXYZ),
       frames: this.#frames,
     };
   }

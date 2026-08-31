@@ -91,6 +91,26 @@ interface TimelineData {
   readonly normals: Float64Array;
   readonly binormals: Float64Array;
   readonly frames: readonly SimulationFrame[];
+  readonly longitudinalG: Float64Array;
+  readonly lateralG: Float64Array;
+  readonly verticalG: Float64Array;
+  readonly launchActivity: Float64Array;
+  readonly brakeActivity: Float64Array;
+  readonly kineticEnergyJ: Float64Array;
+  readonly potentialEnergyJ: Float64Array;
+  readonly accumulatedDriveWorkJ: Float64Array;
+  readonly accumulatedLossWorkJ: Float64Array;
+  readonly energyErrorJ: Float64Array;
+  readonly bankRad: Float64Array;
+  readonly rollRateRadPerSec: Float64Array;
+  readonly specificForceXYZ: Float64Array;
+  readonly perCarLongitudinalG: Float64Array;
+  readonly perCarLateralG: Float64Array;
+  readonly perCarVerticalG: Float64Array;
+  readonly perCarBankRad: Float64Array;
+  readonly perCarRollRateRadPerSec: Float64Array;
+  readonly perCarSpecificForceXYZ: Float64Array;
+  readonly perCarJerkXYZ: Float64Array;
 }
 
 const selectionIds: readonly RideSelectionId[] = ["front", "middle", "rear"];
@@ -217,6 +237,26 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
   const normals = timeline.carNormalsXYZ;
   const binormals = timeline.carBinormalsXYZ;
   const frames = timeline.frames;
+  const longitudinalG = timeline.longitudinalG;
+  const lateralG = timeline.lateralG;
+  const verticalG = timeline.verticalG;
+  const launchActivity = timeline.launchActivity;
+  const brakeActivity = timeline.brakeActivity;
+  const kineticEnergyJ = timeline.kineticEnergyJ;
+  const potentialEnergyJ = timeline.potentialEnergyJ;
+  const accumulatedDriveWorkJ = timeline.accumulatedDriveWorkJ;
+  const accumulatedLossWorkJ = timeline.accumulatedLossWorkJ;
+  const energyErrorJ = timeline.energyErrorJ;
+  const bankRad = timeline.bankRad;
+  const rollRateRadPerSec = timeline.rollRateRadPerSec;
+  const specificForceXYZ = timeline.specificForceXYZ;
+  const perCarLongitudinalG = timeline.perCarLongitudinalG;
+  const perCarLateralG = timeline.perCarLateralG;
+  const perCarVerticalG = timeline.perCarVerticalG;
+  const perCarBankRad = timeline.perCarBankRad;
+  const perCarRollRateRadPerSec = timeline.perCarRollRateRadPerSec;
+  const perCarSpecificForceXYZ = timeline.perCarSpecificForceXYZ;
+  const perCarJerkXYZ = timeline.perCarJerkXYZ;
 
   requireFiniteNumber(timeline.sampleRateHz, "RideTimeline sample rate");
   if (timeline.sampleRateHz <= 0)
@@ -270,9 +310,9 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
     }
   }
   for (const [name, values] of [
-    ["longitudinalG", timeline.longitudinalG],
-    ["lateralG", timeline.lateralG],
-    ["verticalG", timeline.verticalG],
+    ["longitudinalG", longitudinalG],
+    ["lateralG", lateralG],
+    ["verticalG", verticalG],
   ] as const) {
     if (values.length !== 0 && values.length !== times.length)
       throw new RangeError(`${name} length must match time length`);
@@ -288,6 +328,56 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
   jerkMps3.forEach((value, index) =>
     requireFiniteNumber(value, `jerkMps3[${index}]`),
   );
+  for (const [name, values] of [
+    ["launchActivity", launchActivity],
+    ["brakeActivity", brakeActivity],
+    ["kineticEnergyJ", kineticEnergyJ],
+    ["potentialEnergyJ", potentialEnergyJ],
+    ["accumulatedDriveWorkJ", accumulatedDriveWorkJ],
+    ["accumulatedLossWorkJ", accumulatedLossWorkJ],
+    ["energyErrorJ", energyErrorJ],
+    ["bankRad", bankRad],
+    ["rollRateRadPerSec", rollRateRadPerSec],
+  ] as const) {
+    if (values.length !== 0 && values.length !== times.length)
+      throw new RangeError(`${name} length must match time length`);
+    values.forEach((value, index) =>
+      requireFiniteNumber(value, `${name}[${index}]`),
+    );
+  }
+  if (
+    specificForceXYZ.length !== 0 &&
+    specificForceXYZ.length !== times.length * 3
+  )
+    throw new RangeError(
+      "specificForceXYZ length must contain three components per time sample",
+    );
+  specificForceXYZ.forEach((value, index) =>
+    requireFiniteNumber(value, `specificForceXYZ[${index}]`),
+  );
+  for (const [name, values] of [
+    ["perCarLongitudinalG", perCarLongitudinalG],
+    ["perCarLateralG", perCarLateralG],
+    ["perCarVerticalG", perCarVerticalG],
+    ["perCarBankRad", perCarBankRad],
+    ["perCarRollRateRadPerSec", perCarRollRateRadPerSec],
+  ] as const) {
+    if (values.length !== 0 && values.length !== times.length * carCount)
+      throw new RangeError(`${name} length must match time*carCount`);
+    values.forEach((value, index) =>
+      requireFiniteNumber(value, `${name}[${index}]`),
+    );
+  }
+  for (const [name, values] of [
+    ["perCarSpecificForceXYZ", perCarSpecificForceXYZ],
+    ["perCarJerkXYZ", perCarJerkXYZ],
+  ] as const) {
+    if (values.length !== 0 && values.length !== times.length * carCount * 3)
+      throw new RangeError(`${name} length must match time*carCount*3`);
+    values.forEach((value, index) =>
+      requireFiniteNumber(value, `${name}[${index}]`),
+    );
+  }
   if (frames.length !== 0 && frames.length !== times.length)
     throw new RangeError("RideTimeline frames length must match time length");
   frames.forEach((frame, index) => {
@@ -352,6 +442,26 @@ const validateTimeline = (timeline: RideTimeline): TimelineData => {
     normals,
     binormals,
     frames,
+    longitudinalG,
+    lateralG,
+    verticalG,
+    launchActivity,
+    brakeActivity,
+    kineticEnergyJ,
+    potentialEnergyJ,
+    accumulatedDriveWorkJ,
+    accumulatedLossWorkJ,
+    energyErrorJ,
+    bankRad,
+    rollRateRadPerSec,
+    specificForceXYZ,
+    perCarLongitudinalG,
+    perCarLateralG,
+    perCarVerticalG,
+    perCarBankRad,
+    perCarRollRateRadPerSec,
+    perCarSpecificForceXYZ,
+    perCarJerkXYZ,
   };
 };
 
@@ -720,6 +830,172 @@ export function createRidePlayback(
     };
   };
 
+  const compactTelemetryAt = (bracket: {
+    index: number;
+    nextIndex: number;
+    fraction: number;
+  }): RideTelemetry | undefined => {
+    if (
+      data.times.length === 0 ||
+      (data.launchActivity.length === 0 &&
+        data.kineticEnergyJ.length === 0 &&
+        data.longitudinalG.length === 0)
+    )
+      return undefined;
+    const lerpAt = (values: Float64Array): number =>
+      lerp(
+        values[bracket.index] ?? 0,
+        values[bracket.nextIndex] ?? 0,
+        bracket.fraction,
+      );
+    const vecAt = (values: Float64Array): Vec3 => [
+      lerp(
+        values[bracket.index * 3] ?? 0,
+        values[bracket.nextIndex * 3] ?? 0,
+        bracket.fraction,
+      ),
+      lerp(
+        values[bracket.index * 3 + 1] ?? 0,
+        values[bracket.nextIndex * 3 + 1] ?? 0,
+        bracket.fraction,
+      ),
+      lerp(
+        values[bracket.index * 3 + 2] ?? 0,
+        values[bracket.nextIndex * 3 + 2] ?? 0,
+        bracket.fraction,
+      ),
+    ];
+    const activityAt = (values: Float64Array): boolean => {
+      if (values.length === 0) return false;
+      return bracket.fraction < 0.5
+        ? (values[bracket.index] ?? 0) >= 0.5
+        : (values[bracket.nextIndex] ?? 0) >= 0.5;
+    };
+    const perCarTelemetry: CarTelemetry[] = [];
+    if (
+      data.perCarLongitudinalG.length === data.times.length * data.carCount &&
+      data.carCount > 0
+    ) {
+      for (let c = 0; c < data.carCount; c += 1) {
+        const sIdx = bracket.index * data.carCount + c;
+        const eIdx = bracket.nextIndex * data.carCount + c;
+        const sVec = sIdx * 3;
+        const eVec = eIdx * 3;
+        perCarTelemetry.push({
+          longitudinalG: lerp(
+            data.perCarLongitudinalG[sIdx] ?? 0,
+            data.perCarLongitudinalG[eIdx] ?? 0,
+            bracket.fraction,
+          ),
+          lateralG: lerp(
+            data.perCarLateralG[sIdx] ?? 0,
+            data.perCarLateralG[eIdx] ?? 0,
+            bracket.fraction,
+          ),
+          verticalG: lerp(
+            data.perCarVerticalG[sIdx] ?? 0,
+            data.perCarVerticalG[eIdx] ?? 0,
+            bracket.fraction,
+          ),
+          specificForceMps2:
+            data.perCarSpecificForceXYZ.length > 0
+              ? [
+                  lerp(
+                    data.perCarSpecificForceXYZ[sVec] ?? 0,
+                    data.perCarSpecificForceXYZ[eVec] ?? 0,
+                    bracket.fraction,
+                  ),
+                  lerp(
+                    data.perCarSpecificForceXYZ[sVec + 1] ?? 0,
+                    data.perCarSpecificForceXYZ[eVec + 1] ?? 0,
+                    bracket.fraction,
+                  ),
+                  lerp(
+                    data.perCarSpecificForceXYZ[sVec + 2] ?? 0,
+                    data.perCarSpecificForceXYZ[eVec + 2] ?? 0,
+                    bracket.fraction,
+                  ),
+                ]
+              : [0, 0, 0],
+          jerkMps3:
+            data.perCarJerkXYZ.length > 0
+              ? [
+                  lerp(
+                    data.perCarJerkXYZ[sVec] ?? 0,
+                    data.perCarJerkXYZ[eVec] ?? 0,
+                    bracket.fraction,
+                  ),
+                  lerp(
+                    data.perCarJerkXYZ[sVec + 1] ?? 0,
+                    data.perCarJerkXYZ[eVec + 1] ?? 0,
+                    bracket.fraction,
+                  ),
+                  lerp(
+                    data.perCarJerkXYZ[sVec + 2] ?? 0,
+                    data.perCarJerkXYZ[eVec + 2] ?? 0,
+                    bracket.fraction,
+                  ),
+                ]
+              : [0, 0, 0],
+          bankRad:
+            data.perCarBankRad.length > 0
+              ? lerp(
+                  data.perCarBankRad[sIdx] ?? 0,
+                  data.perCarBankRad[eIdx] ?? 0,
+                  bracket.fraction,
+                )
+              : lerpAt(data.bankRad),
+          rollRateRadPerSec:
+            data.perCarRollRateRadPerSec.length > 0
+              ? lerp(
+                  data.perCarRollRateRadPerSec[sIdx] ?? 0,
+                  data.perCarRollRateRadPerSec[eIdx] ?? 0,
+                  bracket.fraction,
+                )
+              : lerpAt(data.rollRateRadPerSec),
+        });
+      }
+    } else if (data.carCount > 0) {
+      // fallback duplicate front telemetry per car
+      const front: CarTelemetry = {
+        longitudinalG: lerpAt(data.longitudinalG),
+        lateralG: lerpAt(data.lateralG),
+        verticalG: lerpAt(data.verticalG),
+        specificForceMps2:
+          data.specificForceXYZ.length > 0
+            ? vecAt(data.specificForceXYZ)
+            : [0, 0, 0],
+        jerkMps3: jerkAtTime(bracket),
+        bankRad: lerpAt(data.bankRad),
+        rollRateRadPerSec: lerpAt(data.rollRateRadPerSec),
+      };
+      for (let c = 0; c < data.carCount; c += 1)
+        perCarTelemetry.push({ ...front });
+    }
+    const firstPerCar = perCarTelemetry[0];
+    return {
+      perCar: perCarTelemetry,
+      longitudinalG: firstPerCar?.longitudinalG ?? lerpAt(data.longitudinalG),
+      lateralG: firstPerCar?.lateralG ?? lerpAt(data.lateralG),
+      verticalG: firstPerCar?.verticalG ?? lerpAt(data.verticalG),
+      specificForceMps2:
+        data.specificForceXYZ.length > 0
+          ? vecAt(data.specificForceXYZ)
+          : (firstPerCar?.specificForceMps2 ?? [0, 0, 0]),
+      jerkMps3: jerkAtTime(bracket),
+      bankRad: firstPerCar?.bankRad ?? lerpAt(data.bankRad),
+      rollRateRadPerSec:
+        firstPerCar?.rollRateRadPerSec ?? lerpAt(data.rollRateRadPerSec),
+      launchActivity: activityAt(data.launchActivity),
+      brakeActivity: activityAt(data.brakeActivity),
+      kineticEnergyJ: lerpAt(data.kineticEnergyJ),
+      potentialEnergyJ: lerpAt(data.potentialEnergyJ),
+      accumulatedDriveWorkJ: lerpAt(data.accumulatedDriveWorkJ),
+      accumulatedLossWorkJ: lerpAt(data.accumulatedLossWorkJ),
+      energyErrorJ: lerpAt(data.energyErrorJ),
+    };
+  };
+
   const selectionFor = (
     id: RideSelectionId,
     bracket: { index: number; nextIndex: number; fraction: number },
@@ -783,7 +1059,8 @@ export function createRidePlayback(
     const sampleIndex = sampleIndexAtTime(timeSeconds);
     const bracket = timeBracket(timeSeconds);
     const frame = frameAtTime(bracket);
-    const telemetry = frame?.telemetry;
+    let telemetry = frame?.telemetry;
+    if (!telemetry) telemetry = compactTelemetryAt(bracket);
     const snapshotTelemetry =
       telemetry && data.jerkMps3.length > 0
         ? { ...telemetry, jerkMps3: jerkAtTime(bracket) }
