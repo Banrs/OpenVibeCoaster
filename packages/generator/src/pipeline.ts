@@ -1361,6 +1361,8 @@ export type GenerationBenchmarkEvent =
   | "total:end"
   | "search:start"
   | "search:end"
+  | "candidateSearchInclusive:start"
+  | "candidateSearchInclusive:end"
   | "solving:start"
   | "solving:end"
   | "compilation:start"
@@ -1779,6 +1781,7 @@ const generateCoasterInternal = (
 ): GenerationResult => {
   observer?.("total:start");
   observer?.("search:start");
+  observer?.("candidateSearchInclusive:start");
   validateDesignIntentV1(intent);
   const maxCandidates =
     intent.mode === "directed" ||
@@ -1892,6 +1895,7 @@ const generateCoasterInternal = (
       margins: finiteMargins(relaxationMargins(constraint, rerun)),
     });
   }
+  observer?.("candidateSearchInclusive:end");
   observer?.("search:end");
   const result = buildFileResult(
     evaluation,

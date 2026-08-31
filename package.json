@@ -21,7 +21,9 @@
     "lint": "oxlint --deny-warnings .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "bench": "npm run bench -w @openvibecoaster/generator",
+    "bench": "node scripts/bench.mjs",
+    "bench:engineering": "npm run bench -w @openvibecoaster/generator",
+    "bench:browser": "playwright test --project=chromium tests/e2e/browser-benchmark.acceptance.spec.ts",
     "verify": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build"
   },
   "devDependencies": {

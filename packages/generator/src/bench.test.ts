@@ -105,35 +105,67 @@ const timedGeneration = (
   readonly result: ReturnType<typeof generateCoaster>;
   readonly timings: Readonly<
     Record<
-      "searchMs" | "solvingMs" | "compilationMs" | "validationMs" | "totalMs",
+      | "candidateSearchInclusiveMs"
+      | "searchOverheadMs"
+      | "solvingMs"
+      | "compilationMs"
+      | "validationMs"
+      | "totalMs",
       number
     >
   >;
 } => {
   const starts = new Map<string, number>();
   const timings = {
-    searchMs: 0,
+    candidateSearchInclusiveMs: 0,
+    searchOverheadMs: 0,
     solvingMs: 0,
     compilationMs: 0,
     validationMs: 0,
     totalMs: 0,
   };
   const observer = (event: GenerationBenchmarkEvent): void => {
-    const [stage, boundary] = event.split(":") as [
-      "search" | "solving" | "compilation" | "validation" | "total",
-      "start" | "end",
-    ];
-    if (boundary === "start") {
-      starts.set(stage, now());
+    // Nesting contract: candidateSearchInclusive nests solving and validation.
+    // search is a legacy alias for candidateSearchInclusive and maps to the same inclusive interval.
+    // Never present overlapping inclusive vs nested values as additive.
+    const separator = event.lastIndexOf(":");
+    const stage = event.slice(0, separator);
+    const boundary = event.slice(separator + 1) as "start" | "end";
+    const normalizedStage =
+      stage === "search" ? "candidateSearchInclusive" : stage;
+    if (
+      normalizedStage !== "candidateSearchInclusive" &&
+      normalizedStage !== "solving" &&
+      normalizedStage !== "compilation" &&
+      normalizedStage !== "validation" &&
+      normalizedStage !== "total"
+    ) {
       return;
     }
-    const start = starts.get(stage);
+    const key = `${normalizedStage}Ms` as keyof typeof timings;
+    if (boundary === "start") {
+      starts.set(normalizedStage, now());
+      return;
+    }
+    const start = starts.get(normalizedStage);
     if (start === undefined)
-      throw new Error(`Missing benchmark stage ${stage}`);
-    timings[`${stage}Ms`] += now() - start;
+      throw new Error(`Missing benchmark stage ${normalizedStage}`);
+    timings[key] += now() - start;
   };
   const result = generateCoasterForBenchmark(measuredIntent, options, observer);
-  return { result, timings };
+  // Honest exclusive search overhead: inclusive interval minus nested solving/validation.
+  // Validation here is fully nested inside candidateSearchInclusive for the candidate loop;
+  // compilation is outside inclusive and not subtracted.
+  const overhead = Math.max(
+    0,
+    timings.candidateSearchInclusiveMs -
+      timings.solvingMs -
+      timings.validationMs,
+  );
+  return {
+    result,
+    timings: { ...timings, searchOverheadMs: overhead },
+  };
 };
 
 it("runs the deterministic generation benchmark", () => {
@@ -263,11 +295,15 @@ it("runs the deterministic generation benchmark", () => {
     p50Ms: percentile(totals, 0.5),
     p95Ms,
     stages: {
-      search: stage("searchMs"),
+      candidateSearchInclusive: stage("candidateSearchInclusiveMs"),
+      searchOverhead: stage("searchOverheadMs"),
       solving: stage("solvingMs"),
       compilation: stage("compilationMs"),
       validation: stage("validationMs"),
       total: stage("totalMs"),
+      // Nesting note: candidateSearchInclusive nests solving + validation plus exclusive searchOverhead;
+      // do not sum candidateSearchInclusive with its nested stages as independent additive contributions.
+      // total = candidateSearchInclusive + compilation (+ negligible dispatch).
       browser: "not-measured-here",
       simulation: "not-measured-here",
       transfer: "not-measured-here",
@@ -285,6 +321,13 @@ it("runs the deterministic generation benchmark", () => {
   console.log(
     `bench: ${summary.seeds} seeds; total p50=${summary.p50Ms.toFixed(3)}ms p95=${summary.p95Ms.toFixed(3)}ms; duration=${summary.durationMs.toFixed(3)}ms; misses=${summary.target.misses.length}; 1s p95 target=${summary.target.met ? "met" : "not-met"}`,
   );
+  // Honest nesting check: exclusive overhead must be non-negative and inclusive must cover nested work
+  for (const { timings } of measured) {
+    expect(timings.searchOverheadMs).toBeGreaterThanOrEqual(0);
+    expect(timings.candidateSearchInclusiveMs).toBeGreaterThanOrEqual(
+      timings.solvingMs + timings.validationMs - 1e-6,
+    );
+  }
   expect(summary.seeds).toBeGreaterThanOrEqual(50);
   expect(
     results.every(

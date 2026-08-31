@@ -64,7 +64,7 @@ export interface BenchmarkSummary {
     readonly frame: number;
   };
   readonly percentiles: {
-    readonly generationTotal?: BenchmarkPercentiles;
+    readonly generationTotal: BenchmarkPercentiles;
     readonly simulation: BenchmarkPercentiles;
     readonly workerTransfer: BenchmarkPercentiles;
     readonly meshCreate: BenchmarkPercentiles;
@@ -73,8 +73,8 @@ export interface BenchmarkSummary {
   readonly targets: {
     readonly generationP95TargetMs: number;
     readonly frameP95TargetMs: number;
-    readonly generationP95Met: boolean | null;
-    readonly frameP95Met: boolean | null;
+    readonly generationP95Met: boolean;
+    readonly frameP95Met: boolean;
   };
   readonly steadyFrameTotal: number;
 }

@@ -64,6 +64,15 @@ directional locality (`sqrt(3)`), and a bounded pair/node heap. Exhaustion or
 non-finite evidence yields `CLEARANCE_UNCERTIFIED` or
 `NUMERIC_UNCERTIFIED` diagnostics, not a silent pass.
 
+Deterministic benchmark stages use nearest-rank p50/p95. The engineering
+benchmark (3 warm-up + 50 measured seeds) reports `candidateSearchInclusive`
+which nests `solving` and `validation` (exclusive `searchOverhead` =
+inclusive − nested) plus `compilation` and `total`; `candidateSearchInclusive`
+and its nested stages are not additive. `npm run bench` orchestrates the
+engineering benchmark and the production Chromium browser benchmark (3 warm-up
+seeds each asserting `Ready` and mandatory `ovc:generation-total`, then 50
+measured seeds via `ovc:generation-total`/`ovc:simulation`/`ovc:worker-transfer`/`ovc:mesh-create`/steady-state 1080p `ovc:frame`) and reports honest target misses. `npm run bench:engineering` and `npm run bench:browser` are the individual cross-platform gates; `npm run test:e2e` remains the full E2E gate.
+
 ## Simulation and environment
 
 The simulator is a constrained point-train model with fixed `dt = 1/240 s`
@@ -127,7 +136,7 @@ The baseline is Node.js 24 LTS (Krypton) and npm 11.17.0, enforced with
 shell-native `node -p` assertions per OS in `.github/workflows/ci.yml`.
 
 - `quality` on `ubuntu-latest`: `npm ci`, `typecheck`, `lint`,
-  `format:check`, `test`, `build`, `bench`, Playwright Chromium `test:e2e`.
+  `format:check`, `test`, `build`, `bench` (engineering + production Chromium browser benchmark, honest misses), Playwright Chromium `test:e2e`.
 - `portable` on `windows-latest` and `macos-latest`: `npm ci`, `build`,
   artifact existence and non-emptiness checks for
   `apps/web/dist/OpenVibeCoaster.html`.

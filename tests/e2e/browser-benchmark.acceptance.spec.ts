@@ -5,7 +5,7 @@ import { percentilePair, type BenchmarkSummary } from "./benchmark-helpers.js";
 // Disable benchmark instrumentation that contends with measurement.
 test.use({ trace: "off", screenshot: "off" });
 
-// Real-browser benchmark acceptance contract – RED phase.
+// Real-browser benchmark acceptance contract.
 // Owns only browser-observable stages via Performance API measures.
 // Existing generator bench owns search/solving/compilation/validation and must remain untouched.
 
@@ -19,13 +19,14 @@ const MEASURE_FRAME = "ovc:frame";
 const MEASURE_GENERATION_TOTAL = "ovc:generation-total";
 
 const REQUIRED_MEASURES = [
+  MEASURE_GENERATION_TOTAL,
   MEASURE_SIMULATION,
   MEASURE_WORKER_TRANSFER,
   MEASURE_MESH_CREATE,
   MEASURE_FRAME,
 ] as const;
 
-const OPTIONAL_MEASURES = [MEASURE_GENERATION_TOTAL] as const;
+const OPTIONAL_MEASURES: readonly string[] = [] as const;
 
 // Deterministic distinct uint32 seeds.
 const WARMUP_SEEDS: readonly number[] = [7, 42, 1337] as const;
@@ -190,7 +191,7 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
       simulationMs: number;
       workerTransferMs: number;
       meshCreateMs: number;
-      generationTotalMs: number | null;
+      generationTotalMs: number;
       frameDurations: number[];
       lengthNum: number;
       checksum: string;
@@ -279,7 +280,7 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
         const values = measures[name] ?? [];
         expect(
           values.length,
-          `seed ${seed}: required measure "${name}" missing – future app must emit performance.measure("${name}") (cannot derive worker transfer from total latency)`,
+          `seed ${seed}: required measure "${name}" missing – app must emit performance.measure("${name}") (cannot derive worker transfer from total latency)`,
         ).toBeGreaterThan(0);
         // If multiple samples, take the last for per-seed stages (generation/simulation/mesh) – but forbid pretending total is a stage.
         const duration = values[values.length - 1] as number;
@@ -299,6 +300,7 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
       // Exact worker-transfer mark is required – fail RED rather than deriving from total.
       const workerTransferMs = requireOne(MEASURE_WORKER_TRANSFER);
       const meshCreateMs = requireOne(MEASURE_MESH_CREATE);
+      const generationTotalMs = requireOne(MEASURE_GENERATION_TOTAL);
       const frameList = measures[MEASURE_FRAME] ?? [];
       expect(
         frameList.length,
@@ -315,22 +317,8 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
         ).toBeGreaterThanOrEqual(0);
       }
 
-      let generationTotalMs: number | null = null;
-      const genValues = measures[MEASURE_GENERATION_TOTAL] ?? [];
-      if (genValues.length > 0) {
-        const duration = genValues[genValues.length - 1] as number;
-        expect(Number.isFinite(duration)).toBe(true);
-        expect(duration).toBeGreaterThanOrEqual(0);
-        generationTotalMs = duration;
-      }
-
       // Do not pretend a duration is a stage it does not measure – explicitly forbid counting generationTotal as simulation etc.
       // Already enforced by requiring each named measure individually.
-
-      // Clear frame measures after reading to avoid cross-seed double-count when we aggregate with per-seed slices?
-      // We keep per-seed frameList as the run's steady sample; aggregation will sum across seeds without re-reading old entries double.
-      // So clear only to isolate next run's generation/frame baseline.
-      // Not clearing here would cause next seed's frame count to include previous seed's frames; we clear at next seed's start.
 
       return {
         simulationMs,
@@ -343,11 +331,13 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
       };
     }
 
-    // Warm-up at least three deterministic seeds.
+    // Warm-up at least three deterministic seeds – every warm-up seed must assert Ready and real readouts.
     for (const seed of WARMUP_SEEDS) {
       await clearNamedMeasures();
       const seedInput = page.locator("#seed-input");
       const generateBtn = page.locator("#generate-btn");
+      await expect(seedInput).toBeVisible();
+      await expect(generateBtn).toBeVisible();
       await seedInput.fill(String(seed));
       await generateBtn.click();
       await page.waitForFunction(
@@ -359,8 +349,31 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
         null,
         { timeout: 90_000 },
       );
-      // Warm-up does not assert ready; it still exercises real path.
-      // Clear again to avoid warm-up measures leaking into measured window.
+      const warmState = await getReadyStateAndReadouts();
+      expect(
+        warmState.generationStatus,
+        `warmup seed ${seed}: generationStatus must be ready, got "${warmState.generationStatus}" statusText="${warmState.statusText}"`,
+      ).toBe("ready");
+      expect(
+        warmState.lengthNum,
+        `warmup seed ${seed}: data-length-m must be finite, got "${warmState.lengthM}"`,
+      ).not.toBeNull();
+      expect(warmState.lengthNum as number).toBeGreaterThanOrEqual(1600);
+      expect(warmState.lengthNum as number).toBeLessThanOrEqual(2200);
+      expect(warmState.checksum.trim()).not.toBe("");
+      expect(warmState.checksum.trim().length).toBeGreaterThanOrEqual(8);
+      // Warm-up must also emit mandatory ovc:generation-total and required browser stages – fail if absent.
+      const warmMeasures = await getMeasureDurations();
+      for (const name of REQUIRED_MEASURES) {
+        const values = warmMeasures[name] ?? [];
+        expect(
+          values.length,
+          `warmup seed ${seed}: required measure "${name}" missing`,
+        ).toBeGreaterThan(0);
+        const d = values[values.length - 1] as number;
+        expect(Number.isFinite(d) && d >= 0).toBe(true);
+      }
+      // Clear to avoid warm-up measures leaking into measured window.
       await clearNamedMeasures();
     }
 
@@ -385,11 +398,15 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
       simulationSamples.push(result.simulationMs);
       workerTransferSamples.push(result.workerTransferMs);
       meshCreateSamples.push(result.meshCreateMs);
-      if (result.generationTotalMs !== null) {
-        generationTotalSamples.push(result.generationTotalMs);
-      }
+      generationTotalSamples.push(result.generationTotalMs);
       allFrameDurations.push(...result.frameDurations);
     }
+
+    // Mandatory ovc:generation-total – every measured seed must have contributed one.
+    expect(
+      generationTotalSamples.length,
+      `generationTotal samples must be 50, got ${generationTotalSamples.length}`,
+    ).toBe(50);
 
     // Meaningful steady-frame percentile requires at least 120 frames total across measured run (actual ovc:frame measures).
     expect(
@@ -397,23 +414,15 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
       `steady frames total ${allFrameDurations.length} must be >=${MIN_STEADY_FRAMES_TOTAL} (actual ovc:frame measures at 1080p)`,
     ).toBeGreaterThanOrEqual(MIN_STEADY_FRAMES_TOTAL);
 
-    // Compute nearest-rank p50/p95 deterministically.
+    // Compute nearest-rank p50/p95 deterministically – all required stages mandatory.
     const simulationPct = percentilePair(simulationSamples);
     const workerTransferPct = percentilePair(workerTransferSamples);
     const meshCreatePct = percentilePair(meshCreateSamples);
     const framePct = percentilePair(allFrameDurations);
-    const generationTotalPct =
-      generationTotalSamples.length > 0
-        ? percentilePair(generationTotalSamples)
-        : undefined;
+    const generationTotalPct = percentilePair(generationTotalSamples);
 
     // Generation p95 and frame p95 are reporting targets – report misses honestly, do not fail solely for a target miss.
-    // Primary generation target is applied to end-to-end browser generation (generationTotal if present).
-    // To avoid pretending a stage, we only evaluate target against generationTotal when available; otherwise mark as null reporting.
-    const generationTargetEvaluated =
-      generationTotalPct !== undefined
-        ? generationTotalPct.p95 < GENERATION_P95_TARGET_MS
-        : null;
+    const generationP95Met = generationTotalPct.p95 < GENERATION_P95_TARGET_MS;
     const frameTargetMet = framePct.p95 < FRAME_P95_TARGET_MS;
 
     const summary: BenchmarkSummary = {
@@ -428,7 +437,7 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
         frame: allFrameDurations.length,
       },
       percentiles: {
-        ...(generationTotalPct ? { generationTotal: generationTotalPct } : {}),
+        generationTotal: generationTotalPct,
         simulation: simulationPct,
         workerTransfer: workerTransferPct,
         meshCreate: meshCreatePct,
@@ -437,7 +446,7 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
       targets: {
         generationP95TargetMs: GENERATION_P95_TARGET_MS,
         frameP95TargetMs: FRAME_P95_TARGET_MS,
-        generationP95Met: generationTargetEvaluated,
+        generationP95Met,
         frameP95Met: frameTargetMet,
       },
       steadyFrameTotal: allFrameDurations.length,
@@ -466,10 +475,10 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
     ).toEqual([]);
 
     // Honest reporting of target misses – warn but do not fail solely for target miss.
-    if (generationTargetEvaluated === false) {
+    if (!generationP95Met) {
       // eslint-disable-next-line no-console
       console.warn(
-        `generation p95 ${generationTotalPct?.p95}ms exceeds target ${GENERATION_P95_TARGET_MS}ms – reporting only`,
+        `generation p95 ${generationTotalPct.p95}ms exceeds target ${GENERATION_P95_TARGET_MS}ms – reporting only`,
       );
     }
     if (!frameTargetMet) {
