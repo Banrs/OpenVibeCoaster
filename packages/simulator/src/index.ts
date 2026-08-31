@@ -1347,6 +1347,24 @@ const timelineSampleRate = (timelineStepSeconds: number): number =>
     ? 1 / timelineStepSeconds
     : SAFE_TIMELINE_SAMPLE_RATE_HZ;
 
+/**
+ * Monotonic bracket locator shared by compact and full makeTimeline paths.
+ * Advances at most once per monotonic output time, guaranteeing O(frames+outputs).
+ */
+export function createMonotonicBracketLocator(
+  frames: readonly { readonly timeSeconds: number }[],
+): (timeSeconds: number) => number {
+  let cursor = 0;
+  return (timeSeconds: number): number => {
+    while (
+      cursor < frames.length - 1 &&
+      frames[cursor]!.timeSeconds < timeSeconds
+    )
+      cursor += 1;
+    return cursor;
+  };
+}
+
 const makeTimeline = (
   track: CompiledTrackData,
   frames: readonly SimulationFrame[],
@@ -1422,12 +1440,10 @@ const makeTimeline = (
     const perCarRollRateRadPerSec = new Float64Array(length * carCount);
     const perCarSpecificForceXYZ = new Float64Array(length * carCount * 3);
     const perCarJerkXYZ = new Float64Array(length * carCount * 3);
-    let cursor = 0;
+    const locateCompact = createMonotonicBracketLocator(frames);
     for (let outIndex = 0; outIndex < length; outIndex += 1) {
       const time = outputTimes[outIndex]!;
-      while (cursor < frames.length - 1 && frames[cursor]!.timeSeconds < time)
-        cursor += 1;
-      const upper = cursor;
+      const upper = locateCompact(time);
       const lower = Math.max(0, upper - 1);
       const left = frames[lower]!;
       const right = frames[upper]!;
@@ -1579,128 +1595,123 @@ const makeTimeline = (
     });
   }
   // Full path: monotonic cursor without streaming, retains frames
-  const interpolateFrame = (() => {
-    let cursor = 0;
-    return (time: number): SimulationFrame => {
-      while (cursor < frames.length - 1 && frames[cursor]!.timeSeconds < time)
-        cursor += 1;
-      const upper = cursor;
-      const lower = Math.max(0, upper - 1);
-      const left = frames[lower]!;
-      const right = frames[upper]!;
-      const span = right.timeSeconds - left.timeSeconds;
-      const alpha = span > 0 ? (time - left.timeSeconds) / span : 0;
-      const blend = (a: number, b: number): number =>
-        a * (1 - alpha) + b * alpha;
-      const cars = left.cars.map((car, carIndex) => {
-        const other = right.cars[carIndex] ?? car;
-        const distanceM = blend(car.distanceM, other.distanceM);
-        const frame = sampleTrackAtDistance(
+  const locateFull = createMonotonicBracketLocator(frames);
+  const interpolateFrame = (time: number): SimulationFrame => {
+    const upper = locateFull(time);
+    const lower = Math.max(0, upper - 1);
+    const left = frames[lower]!;
+    const right = frames[upper]!;
+    const span = right.timeSeconds - left.timeSeconds;
+    const alpha = span > 0 ? (time - left.timeSeconds) / span : 0;
+    const blend = (a: number, b: number): number => a * (1 - alpha) + b * alpha;
+    const cars = left.cars.map((car, carIndex) => {
+      const other = right.cars[carIndex] ?? car;
+      const distanceM = blend(car.distanceM, other.distanceM);
+      const frame = sampleTrackAtDistance(
+        track,
+        trackDistance(track, config, distanceM),
+      );
+      const telemetry = interpolateTelemetry(
+        car.telemetry,
+        other.telemetry,
+        alpha,
+      );
+      const seats = car.seats.map((seat, seatIndex) => {
+        const otherSeat = other.seats[seatIndex] ?? seat;
+        const seatDistanceM = checkedFinite(
+          blend(seat.distanceM, otherSeat.distanceM),
+          `timeline.frames.cars[${carIndex}].seats[${seatIndex}].distanceM`,
+          "Seat distance must be finite",
+        );
+        const seatFrame = sampleTrackAtDistance(
           track,
-          trackDistance(track, config, distanceM),
+          trackDistance(track, config, seatDistanceM),
         );
-        const telemetry = interpolateTelemetry(
-          car.telemetry,
-          other.telemetry,
-          alpha,
-        );
-        const seats = car.seats.map((seat, seatIndex) => {
-          const otherSeat = other.seats[seatIndex] ?? seat;
-          const seatDistanceM = checkedFinite(
-            blend(seat.distanceM, otherSeat.distanceM),
-            `timeline.frames.cars[${carIndex}].seats[${seatIndex}].distanceM`,
-            "Seat distance must be finite",
-          );
-          const seatFrame = sampleTrackAtDistance(
-            track,
-            trackDistance(track, config, seatDistanceM),
-          );
-          const offset = car.seatOffsets[seatIndex] ?? vec3();
-          return {
-            ...seat,
-            distanceM: seatDistanceM,
-            position: seatWorldPosition(
-              seatFrame,
-              offset,
-              `timeline.frames.cars[${carIndex}].seats[${seatIndex}].position`,
-            ),
-            frame: seatFrame,
-            telemetry: interpolateTelemetry(
-              seat.telemetry,
-              otherSeat.telemetry,
-              alpha,
-            ),
-          };
-        });
+        const offset = car.seatOffsets[seatIndex] ?? vec3();
         return {
-          ...car,
-          distanceM,
-          position: frame.position,
-          tangent: frame.tangent,
-          normal: frame.normal,
-          binormal: frame.binormal,
-          frame,
-          telemetry,
-          seats,
-          seatPositions: seats.map((seat) => seat.position),
+          ...seat,
+          distanceM: seatDistanceM,
+          position: seatWorldPosition(
+            seatFrame,
+            offset,
+            `timeline.frames.cars[${carIndex}].seats[${seatIndex}].position`,
+          ),
+          frame: seatFrame,
+          telemetry: interpolateTelemetry(
+            seat.telemetry,
+            otherSeat.telemetry,
+            alpha,
+          ),
         };
       });
-      const perCar = cars.map((car) => car.telemetry);
-      const first = perCar[0] ?? left.telemetry;
       return {
-        ...left,
-        timeSeconds: time,
-        headDistanceM: blend(left.headDistanceM, right.headDistanceM),
-        speedMps: blend(left.speedMps, right.speedMps),
-        status: alpha < 0.5 ? left.status : right.status,
-        cars,
-        selection: {
-          front: cars[0] as CarState,
-          middle: cars[Math.floor((cars.length - 1) / 2)] as CarState,
-          rear: cars[cars.length - 1] as CarState,
-        },
-        telemetry: {
-          ...left.telemetry,
-          perCar,
-          longitudinalG: first.longitudinalG,
-          lateralG: first.lateralG,
-          verticalG: first.verticalG,
-          specificForceMps2: first.specificForceMps2,
-          bankRad: first.bankRad,
-          rollRateRadPerSec: first.rollRateRadPerSec,
-          jerkMps3: first.jerkMps3,
-          launchActivity:
-            alpha < 0.5
-              ? left.telemetry.launchActivity
-              : right.telemetry.launchActivity,
-          brakeActivity:
-            alpha < 0.5
-              ? left.telemetry.brakeActivity
-              : right.telemetry.brakeActivity,
-          kineticEnergyJ: blend(
-            left.telemetry.kineticEnergyJ,
-            right.telemetry.kineticEnergyJ,
-          ),
-          potentialEnergyJ: blend(
-            left.telemetry.potentialEnergyJ,
-            right.telemetry.potentialEnergyJ,
-          ),
-          accumulatedDriveWorkJ: blend(
-            left.telemetry.accumulatedDriveWorkJ,
-            right.telemetry.accumulatedDriveWorkJ,
-          ),
-          accumulatedLossWorkJ: blend(
-            left.telemetry.accumulatedLossWorkJ,
-            right.telemetry.accumulatedLossWorkJ,
-          ),
-          energyErrorJ: blend(
-            left.telemetry.energyErrorJ,
-            right.telemetry.energyErrorJ,
-          ),
-        },
+        ...car,
+        distanceM,
+        position: frame.position,
+        tangent: frame.tangent,
+        normal: frame.normal,
+        binormal: frame.binormal,
+        frame,
+        telemetry,
+        seats,
+        seatPositions: seats.map((seat) => seat.position),
       };
+    });
+    const perCar = cars.map((car) => car.telemetry);
+    const first = perCar[0] ?? left.telemetry;
+    return {
+      ...left,
+      timeSeconds: time,
+      headDistanceM: blend(left.headDistanceM, right.headDistanceM),
+      speedMps: blend(left.speedMps, right.speedMps),
+      status: alpha < 0.5 ? left.status : right.status,
+      cars,
+      selection: {
+        front: cars[0] as CarState,
+        middle: cars[Math.floor((cars.length - 1) / 2)] as CarState,
+        rear: cars[cars.length - 1] as CarState,
+      },
+      telemetry: {
+        ...left.telemetry,
+        perCar,
+        longitudinalG: first.longitudinalG,
+        lateralG: first.lateralG,
+        verticalG: first.verticalG,
+        specificForceMps2: first.specificForceMps2,
+        bankRad: first.bankRad,
+        rollRateRadPerSec: first.rollRateRadPerSec,
+        jerkMps3: first.jerkMps3,
+        launchActivity:
+          alpha < 0.5
+            ? left.telemetry.launchActivity
+            : right.telemetry.launchActivity,
+        brakeActivity:
+          alpha < 0.5
+            ? left.telemetry.brakeActivity
+            : right.telemetry.brakeActivity,
+        kineticEnergyJ: blend(
+          left.telemetry.kineticEnergyJ,
+          right.telemetry.kineticEnergyJ,
+        ),
+        potentialEnergyJ: blend(
+          left.telemetry.potentialEnergyJ,
+          right.telemetry.potentialEnergyJ,
+        ),
+        accumulatedDriveWorkJ: blend(
+          left.telemetry.accumulatedDriveWorkJ,
+          right.telemetry.accumulatedDriveWorkJ,
+        ),
+        accumulatedLossWorkJ: blend(
+          left.telemetry.accumulatedLossWorkJ,
+          right.telemetry.accumulatedLossWorkJ,
+        ),
+        energyErrorJ: blend(
+          left.telemetry.energyErrorJ,
+          right.telemetry.energyErrorJ,
+        ),
+      },
     };
-  })();
+  };
   const selected = outputTimes.map(interpolateFrame);
   const flatten = (pick: (car: CarState) => Vec3): Float64Array => {
     const output = new Float64Array(selected.length * carCount * 3);

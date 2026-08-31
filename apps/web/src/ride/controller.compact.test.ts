@@ -97,7 +97,7 @@ describe("ride controller compact fallback RED", () => {
     },
   );
 
-  it("existing full-frame controller tests semantics remain valid with constructed full timeline", () => {
+  it("compact zero-frame timeline without telemetry still yields finite front position via SoA and undefined telemetry", () => {
     const timeline = new RideTimeline({
       sampleRateHz: 10,
       timeSeconds: new Float64Array([0, 1, 2]),
@@ -110,11 +110,11 @@ describe("ride controller compact fallback RED", () => {
       carBinormalsXYZ: new Float64Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
       frames: [] as unknown as never,
     });
-    // should remain valid with zero frames (compact style)
     const c = createRidePlayback(timeline);
     expect(c.getSnapshot().selections.front.position).toBeDefined();
     expect(
       c.getSnapshot().selections.front.position!.every(Number.isFinite),
     ).toBe(true);
+    expect(c.getSnapshot().telemetry).toBeUndefined();
   });
 });

@@ -29,7 +29,7 @@ describe("worker compact transfer RED", () => {
       expect(result.type).toBe("success");
       if (result.type !== "success") throw new Error("flagship fail");
       expect(result.timeline.frames).toBeUndefined();
-      expect(result.timeline.buffers.length).toBeGreaterThan(11);
+      expect(result.timeline.buffers.length).toBe(28);
       const hydrated = hydrateEngineeringSuccess(result);
       expect(hydrated.timeline.frames.length).toBe(0);
       expect(hydrated.timeline.sampleRateHz).toBe(120);
@@ -63,7 +63,7 @@ describe("worker compact transfer RED", () => {
   );
 
   it(
-    "actual worker post path never includes nested timeline frames",
+    "compact payload transfer-list contract: timeline buffers are 28 ArrayBuffers and collectTransferables contains only buffers",
     { timeout: 20000 },
     () => {
       const intent = createDesignIntentV1({
@@ -106,6 +106,7 @@ describe("worker compact transfer RED", () => {
       expect(result.type).toBe("success");
       if (result.type !== "success") return;
       expect(result.timeline.frames).toBeUndefined();
+      expect(result.timeline.buffers.length).toBe(28);
       const transfers = collectTransferables({
         track: result.track,
         timeline: result.timeline,

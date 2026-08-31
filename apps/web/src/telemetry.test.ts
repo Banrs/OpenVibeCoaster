@@ -592,3 +592,103 @@ describe("telemetry – defensive-copy amplification regression", () => {
     }
   });
 });
+
+describe("telemetry – compact series authoritative", () => {
+  function spyCompactGetters(_timeline: RideTimeline) {
+    const proto = RideTimeline.prototype as unknown as Record<string, unknown>;
+    const keys = ["rollRateRadPerSec", "energyErrorJ"] as const;
+    const descriptors: Record<string, PropertyDescriptor> = {};
+    const counts: Record<string, number> = {};
+    for (const key of keys) {
+      const desc = Object.getOwnPropertyDescriptor(proto as object, key);
+      if (!desc?.get) continue;
+      descriptors[key] = desc;
+      counts[key] = 0;
+      Object.defineProperty(proto, key, {
+        get(this: RideTimeline) {
+          counts[key]!++;
+          return (desc.get as () => Float64Array).call(this);
+        },
+        configurable: true,
+      });
+    }
+    return {
+      counts,
+      restore() {
+        for (const key of Object.keys(descriptors))
+          Object.defineProperty(proto, key, descriptors[key]!);
+      },
+    };
+  }
+
+  it("frame-empty compact timeline returns exact rollRate and energyResidual values, not fallback approximations", () => {
+    const track = straightTrack();
+    const compact = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0, 1, 2, 3]),
+      headDistanceM: new Float64Array([0, 10, 20, 30]),
+      speedMps: new Float64Array([5, 5, 5, 5]),
+      rollRateRadPerSec: new Float64Array([0.1, 0.2, 0.3, 0.4]),
+      energyErrorJ: new Float64Array([10, 20, 30, 40]),
+      frames: [],
+    });
+    const roll = getTimelineSeries(compact, "rollRate", track);
+    expect(roll.available).toBe(true);
+    expect(roll.values).toEqual([0.1, 0.2, 0.3, 0.4]);
+    const energy = getTimelineSeries(compact, "energyResidual", track);
+    expect(energy.available).toBe(true);
+    expect(energy.values).toEqual([10, 20, 30, 40]);
+    // ensure not derived fallback (bankDerivative*speed would be different at these distances)
+    const speedDerivedWouldBe = (() => {
+      // bank at 0-50 is 0, but at 50-100 bank ramps; our distances 0,10,20,30 are within flat 0 bank
+      // so derived would be ~0, not 0.1-0.4, proving we returned exact compact values
+      return 0;
+    })();
+    expect(roll.values[0]).not.toBe(speedDerivedWouldBe);
+  });
+
+  it("frame-empty compact getters are snapshotted at most once per series request", () => {
+    const track = straightTrack();
+    const compact = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0, 1, 2, 3]),
+      headDistanceM: new Float64Array([0, 10, 20, 30]),
+      speedMps: new Float64Array([5, 5, 5, 5]),
+      rollRateRadPerSec: new Float64Array([0.5, 0.6, 0.7, 0.8]),
+      energyErrorJ: new Float64Array([1, 2, 3, 4]),
+      frames: [],
+    });
+    const spyRoll = spyCompactGetters(compact);
+    try {
+      const r = getTimelineSeries(compact, "rollRate", track);
+      expect(r.available).toBe(true);
+      expect(spyRoll.counts.rollRateRadPerSec).toBeLessThanOrEqual(1);
+    } finally {
+      spyRoll.restore();
+    }
+    const spyEnergy = spyCompactGetters(compact);
+    try {
+      const e = getTimelineSeries(compact, "energyResidual", track);
+      expect(e.available).toBe(true);
+      expect(spyEnergy.counts.energyErrorJ).toBeLessThanOrEqual(1);
+    } finally {
+      spyEnergy.restore();
+    }
+  });
+
+  it("legacy 11-buffer shape with empty compact series reports unavailable rather than zero approximations", () => {
+    const track = straightTrack();
+    // legacy shape: no compact roll/energy arrays, frames empty
+    const legacy = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0, 1, 2, 3]),
+      headDistanceM: new Float64Array([0, 10, 20, 30]),
+      speedMps: new Float64Array([5, 5, 5, 5]),
+      frames: [],
+    });
+    expect(getTimelineSeries(legacy, "rollRate", null).available).toBe(false);
+    expect(getTimelineSeries(legacy, "energyResidual", track).available).toBe(
+      false,
+    );
+  });
+});

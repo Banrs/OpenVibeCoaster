@@ -7,7 +7,11 @@ import {
 } from "@openvibecoaster/core";
 import type { CompiledTrackData } from "@openvibecoaster/core";
 import { createDefaultSimulatorConfig, simulateRide } from "./index.js";
-import { RideTimeline } from "./timeline.js";
+import {
+  RideTimeline,
+  TIMELINE_CURRENT_BUFFER_COUNT,
+  TIMELINE_LEGACY_BUFFER_COUNT,
+} from "./timeline.js";
 
 function straightTrack(): CompiledTrackData {
   const mk = (p0: [number, number, number], p1: [number, number, number]) =>
@@ -51,8 +55,8 @@ function straightTrack(): CompiledTrackData {
   ]);
 }
 
-describe("compact vs full simulation parity RED", () => {
-  it("full/default vs compact: identical 120 Hz scalar, G, jerk, transforms, activity/energy; compact frames zero but SimulationResult.frames remains", () => {
+describe("compact vs full simulation parity", () => {
+  it("full/default vs compact: identical 120 Hz for all authoritative series; compact frames zero but SimulationResult.frames remains", () => {
     const track = straightTrack();
     const base = createDefaultSimulatorConfig();
     const config = {
@@ -93,76 +97,131 @@ describe("compact vs full simulation parity RED", () => {
     expect(compact.timeline.frames.length).toBe(0);
     expect(full.frames.length).toBeGreaterThan(0);
     expect(compact.frames.length).toBe(full.frames.length);
-    expect(Array.from(compact.timeline.timeSeconds)).toEqual(
-      Array.from(full.timeline.timeSeconds),
-    );
-    expect(Array.from(compact.timeline.headDistanceM)).toEqual(
-      Array.from(full.timeline.headDistanceM),
-    );
-    expect(Array.from(compact.timeline.speedMps)).toEqual(
-      Array.from(full.timeline.speedMps),
-    );
-    expect(Array.from(compact.timeline.longitudinalG)).toEqual(
-      Array.from(full.timeline.longitudinalG),
-    );
-    expect(Array.from(compact.timeline.lateralG)).toEqual(
-      Array.from(full.timeline.lateralG),
-    );
-    expect(Array.from(compact.timeline.verticalG)).toEqual(
-      Array.from(full.timeline.verticalG),
-    );
-    expect(Array.from(compact.timeline.jerkMps3)).toEqual(
-      Array.from(full.timeline.jerkMps3),
-    );
-    expect(Array.from(compact.timeline.carPositionsXYZ)).toEqual(
-      Array.from(full.timeline.carPositionsXYZ),
-    );
-    expect(Array.from(compact.timeline.carTangentsXYZ)).toEqual(
-      Array.from(full.timeline.carTangentsXYZ),
-    );
-    // activity/energy
-    const fullLaunch = full.timeline.frames.map((f) =>
-      f.telemetry.launchActivity ? 1 : 0,
-    );
-    const fullBrake = full.timeline.frames.map((f) =>
-      f.telemetry.brakeActivity ? 1 : 0,
-    );
-    const fullKinetic = full.timeline.frames.map(
-      (f) => f.telemetry.kineticEnergyJ,
-    );
-    expect(Array.from(compact.timeline.launchActivity)).toEqual(fullLaunch);
-    expect(Array.from(compact.timeline.brakeActivity)).toEqual(fullBrake);
-    expect(Array.from(compact.timeline.kineticEnergyJ)).toEqual(fullKinetic);
-    expect(Array.from(compact.timeline.potentialEnergyJ)).toEqual(
-      full.timeline.frames.map((f) => f.telemetry.potentialEnergyJ),
-    );
-    expect(Array.from(compact.timeline.accumulatedDriveWorkJ)).toEqual(
-      full.timeline.frames.map((f) => f.telemetry.accumulatedDriveWorkJ),
-    );
-    expect(Array.from(compact.timeline.accumulatedLossWorkJ)).toEqual(
-      full.timeline.frames.map((f) => f.telemetry.accumulatedLossWorkJ),
-    );
-    expect(Array.from(compact.timeline.energyErrorJ)).toEqual(
-      full.timeline.frames.map((f) => f.telemetry.energyErrorJ),
-    );
-    // per-car G truthful
-    expect(compact.timeline.perCarLongitudinalG.length).toBe(
-      compact.timeline.length * compact.timeline.carCount,
-    );
-    for (let i = 0; i < compact.timeline.length; i++) {
-      for (let c = 0; c < compact.timeline.carCount; c++) {
-        const idx = i * compact.timeline.carCount + c;
-        const frameVal =
-          full.timeline.frames[i]!.cars[c]!.telemetry.longitudinalG;
-        expect(compact.timeline.perCarLongitudinalG[idx]!).toBeCloseTo(
-          frameVal,
-          9,
-        );
-      }
+    // table-driven equality for every authoritative series
+    const cases: Array<[string, Float64Array, Float64Array]> = [
+      ["timeSeconds", full.timeline.timeSeconds, compact.timeline.timeSeconds],
+      [
+        "headDistanceM",
+        full.timeline.headDistanceM,
+        compact.timeline.headDistanceM,
+      ],
+      ["speedMps", full.timeline.speedMps, compact.timeline.speedMps],
+      [
+        "longitudinalG",
+        full.timeline.longitudinalG,
+        compact.timeline.longitudinalG,
+      ],
+      ["lateralG", full.timeline.lateralG, compact.timeline.lateralG],
+      ["verticalG", full.timeline.verticalG, compact.timeline.verticalG],
+      ["jerkMps3", full.timeline.jerkMps3, compact.timeline.jerkMps3],
+      [
+        "carPositionsXYZ",
+        full.timeline.carPositionsXYZ,
+        compact.timeline.carPositionsXYZ,
+      ],
+      [
+        "carTangentsXYZ",
+        full.timeline.carTangentsXYZ,
+        compact.timeline.carTangentsXYZ,
+      ],
+      [
+        "carNormalsXYZ",
+        full.timeline.carNormalsXYZ,
+        compact.timeline.carNormalsXYZ,
+      ],
+      [
+        "carBinormalsXYZ",
+        full.timeline.carBinormalsXYZ,
+        compact.timeline.carBinormalsXYZ,
+      ],
+      [
+        "launchActivity",
+        full.timeline.launchActivity,
+        compact.timeline.launchActivity,
+      ],
+      [
+        "brakeActivity",
+        full.timeline.brakeActivity,
+        compact.timeline.brakeActivity,
+      ],
+      [
+        "kineticEnergyJ",
+        full.timeline.kineticEnergyJ,
+        compact.timeline.kineticEnergyJ,
+      ],
+      [
+        "potentialEnergyJ",
+        full.timeline.potentialEnergyJ,
+        compact.timeline.potentialEnergyJ,
+      ],
+      [
+        "accumulatedDriveWorkJ",
+        full.timeline.accumulatedDriveWorkJ,
+        compact.timeline.accumulatedDriveWorkJ,
+      ],
+      [
+        "accumulatedLossWorkJ",
+        full.timeline.accumulatedLossWorkJ,
+        compact.timeline.accumulatedLossWorkJ,
+      ],
+      [
+        "energyErrorJ",
+        full.timeline.energyErrorJ,
+        compact.timeline.energyErrorJ,
+      ],
+      ["bankRad", full.timeline.bankRad, compact.timeline.bankRad],
+      [
+        "rollRateRadPerSec",
+        full.timeline.rollRateRadPerSec,
+        compact.timeline.rollRateRadPerSec,
+      ],
+      [
+        "specificForceXYZ",
+        full.timeline.specificForceXYZ,
+        compact.timeline.specificForceXYZ,
+      ],
+      [
+        "perCarLongitudinalG",
+        full.timeline.perCarLongitudinalG,
+        compact.timeline.perCarLongitudinalG,
+      ],
+      [
+        "perCarLateralG",
+        full.timeline.perCarLateralG,
+        compact.timeline.perCarLateralG,
+      ],
+      [
+        "perCarVerticalG",
+        full.timeline.perCarVerticalG,
+        compact.timeline.perCarVerticalG,
+      ],
+      [
+        "perCarBankRad",
+        full.timeline.perCarBankRad,
+        compact.timeline.perCarBankRad,
+      ],
+      [
+        "perCarRollRateRadPerSec",
+        full.timeline.perCarRollRateRadPerSec,
+        compact.timeline.perCarRollRateRadPerSec,
+      ],
+      [
+        "perCarSpecificForceXYZ",
+        full.timeline.perCarSpecificForceXYZ,
+        compact.timeline.perCarSpecificForceXYZ,
+      ],
+      [
+        "perCarJerkXYZ",
+        full.timeline.perCarJerkXYZ,
+        compact.timeline.perCarJerkXYZ,
+      ],
+    ];
+    for (const [name, fullArr, compactArr] of cases) {
+      expect(Array.from(compactArr), name).toEqual(Array.from(fullArr));
     }
   });
 
-  it("compact transfer omits frames, round-trips buffers with ownership and rejects malformed", () => {
+  it("compact transfer is exactly 28 buffers, omits frames, round-trips with transfer-buffer ownership and rejects malformed", () => {
     const track = straightTrack();
     const base = createDefaultSimulatorConfig();
     const config = {
@@ -184,53 +243,135 @@ describe("compact vs full simulation parity RED", () => {
     });
     const timeline = compact.timeline;
     const transfer = timeline.toTransferable();
+    expect(transfer.buffers.length).toBe(TIMELINE_CURRENT_BUFFER_COUNT);
+    expect(transfer.buffers.length).toBe(28);
     expect(transfer.frames).toBeUndefined();
-    expect(transfer.buffers.length).toBeGreaterThan(11);
-    // round-trip
+    // table-driven round-trip for all new fields
     const hydrated = RideTimeline.fromTransferable(transfer);
     expect(hydrated.frames.length).toBe(0);
-    expect(Array.from(hydrated.timeSeconds)).toEqual(
-      Array.from(timeline.timeSeconds),
-    );
-    expect(Array.from(hydrated.launchActivity)).toEqual(
-      Array.from(timeline.launchActivity),
-    );
-    expect(Array.from(hydrated.kineticEnergyJ)).toEqual(
-      Array.from(timeline.kineticEnergyJ),
-    );
-    expect(Array.from(hydrated.perCarLongitudinalG)).toEqual(
-      Array.from(timeline.perCarLongitudinalG),
-    );
-    // ownership: buffers are copies
-    const before = timeline.timeSeconds[0];
-    hydrated.timeSeconds[0] = 99999;
-    expect(timeline.timeSeconds[0]).toBe(before);
-    // determinism: second transfer identical
+    const roundTripCases: Array<[string, Float64Array, Float64Array]> = [
+      ["launchActivity", timeline.launchActivity, hydrated.launchActivity],
+      ["brakeActivity", timeline.brakeActivity, hydrated.brakeActivity],
+      ["kineticEnergyJ", timeline.kineticEnergyJ, hydrated.kineticEnergyJ],
+      [
+        "potentialEnergyJ",
+        timeline.potentialEnergyJ,
+        hydrated.potentialEnergyJ,
+      ],
+      [
+        "accumulatedDriveWorkJ",
+        timeline.accumulatedDriveWorkJ,
+        hydrated.accumulatedDriveWorkJ,
+      ],
+      [
+        "accumulatedLossWorkJ",
+        timeline.accumulatedLossWorkJ,
+        hydrated.accumulatedLossWorkJ,
+      ],
+      ["energyErrorJ", timeline.energyErrorJ, hydrated.energyErrorJ],
+      ["bankRad", timeline.bankRad, hydrated.bankRad],
+      [
+        "rollRateRadPerSec",
+        timeline.rollRateRadPerSec,
+        hydrated.rollRateRadPerSec,
+      ],
+      [
+        "specificForceXYZ",
+        timeline.specificForceXYZ,
+        hydrated.specificForceXYZ,
+      ],
+      [
+        "perCarLongitudinalG",
+        timeline.perCarLongitudinalG,
+        hydrated.perCarLongitudinalG,
+      ],
+      ["perCarLateralG", timeline.perCarLateralG, hydrated.perCarLateralG],
+      ["perCarVerticalG", timeline.perCarVerticalG, hydrated.perCarVerticalG],
+      ["perCarBankRad", timeline.perCarBankRad, hydrated.perCarBankRad],
+      [
+        "perCarRollRateRadPerSec",
+        timeline.perCarRollRateRadPerSec,
+        hydrated.perCarRollRateRadPerSec,
+      ],
+      [
+        "perCarSpecificForceXYZ",
+        timeline.perCarSpecificForceXYZ,
+        hydrated.perCarSpecificForceXYZ,
+      ],
+      ["perCarJerkXYZ", timeline.perCarJerkXYZ, hydrated.perCarJerkXYZ],
+    ];
+    for (const [name, a, b] of roundTripCases)
+      expect(Array.from(b), name).toEqual(Array.from(a));
+    // ownership: mutating actual transfer buffer after hydration does not affect original or hydrated copy
+    const originalFirstValue = new Float64Array(transfer.buffers[0]!)[0];
+    const mutBuf = transfer.buffers[0]!;
+    new Float64Array(mutBuf)[0] = 999999;
+    expect(timeline.timeSeconds[0]).toBe(originalFirstValue);
+    expect(hydrated.timeSeconds[0]).toBe(originalFirstValue);
+    // determinism: second transfer from original timeline is still original value, not mutated
     const transfer2 = timeline.toTransferable();
-    expect(transfer2.buffers.length).toBe(transfer.buffers.length);
-    for (let i = 0; i < transfer.buffers.length; i++)
-      expect(new Float64Array(transfer2.buffers[i]!)).toEqual(
-        new Float64Array(transfer.buffers[i]!),
-      );
-    // reject malformed shapes
+    expect(new Float64Array(transfer2.buffers[0]!)[0]).toBe(originalFirstValue);
+    expect(new Float64Array(transfer.buffers[0]!)[0]).toBe(999999);
+    expect(new Float64Array(transfer2.buffers[0]!)[0]).not.toBe(
+      new Float64Array(transfer.buffers[0]!)[0],
+    );
+    // table-driven shape / non-finite rejection for new fields
+    const badLengthTransfer = {
+      sampleRateHz: 120,
+      carCount: 6,
+      length: 2,
+      buffers: [
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 0, 0, 0, 0, 0]).buffer,
+        new Float64Array(2 * 6 * 3).buffer,
+        new Float64Array(2 * 6 * 3).buffer,
+        new Float64Array(2 * 6 * 3).buffer,
+        new Float64Array(2 * 6 * 3).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, Number.NaN]).buffer, // non-finite
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 1]).buffer,
+        new Float64Array([0, 0, 0, 0, 0, 0]).buffer,
+        new Float64Array(12).buffer,
+        new Float64Array(12).buffer,
+        new Float64Array(12).buffer,
+        new Float64Array(12).buffer,
+        new Float64Array(12).buffer,
+        new Float64Array(36).buffer,
+        new Float64Array(36).buffer,
+      ],
+    } as unknown as never;
+    expect(() => RideTimeline.fromTransferable(badLengthTransfer)).toThrow(
+      RangeError,
+    );
+    // wrong buffer count
     expect(() =>
       RideTimeline.fromTransferable({
         sampleRateHz: 120,
         carCount: 6,
         length: 1,
-        buffers: [new ArrayBuffer(8)],
+        buffers: Array.from({ length: 12 }, () => new ArrayBuffer(8)),
       } as unknown as never),
     ).toThrow(RangeError);
-    expect(
-      () =>
-        new RideTimeline({
-          sampleRateHz: 120,
-          timeSeconds: new Float64Array([0, 1]),
-          headDistanceM: new Float64Array([0]),
-          speedMps: new Float64Array([0, 1]),
-        } as unknown as never),
+    expect(() =>
+      RideTimeline.fromTransferable({
+        sampleRateHz: 120,
+        carCount: 6,
+        length: 1,
+        buffers: Array.from({ length: 27 }, () => new ArrayBuffer(8)),
+      } as unknown as never),
     ).toThrow(RangeError);
-    // finite validation
+    // finite and shape validation via constructor
     expect(
       () =>
         new RideTimeline({
@@ -240,5 +381,42 @@ describe("compact vs full simulation parity RED", () => {
           speedMps: new Float64Array([0, 1]),
         } as unknown as never),
     ).toThrow(RangeError);
+  });
+
+  it("legacy 11-buffer hydration remains supported with new compact series empty", () => {
+    const timeSeconds = new Float64Array([0, 1 / 120]);
+    const headDistanceM = new Float64Array([0, 10]);
+    const speedMps = new Float64Array([5, 5]);
+    const legacy = new RideTimeline({
+      sampleRateHz: 120,
+      timeSeconds,
+      headDistanceM,
+      speedMps,
+      longitudinalG: new Float64Array([0, 0]),
+      lateralG: new Float64Array([0, 0]),
+      verticalG: new Float64Array([1, 1]),
+      jerkMps3: new Float64Array([0, 0, 0, 0, 0, 0]),
+      carCount: 1,
+      carPositionsXYZ: new Float64Array([0, 0, 0, 10, 0, 0]),
+      carTangentsXYZ: new Float64Array([1, 0, 0, 1, 0, 0]),
+      carNormalsXYZ: new Float64Array([0, 1, 0, 0, 1, 0]),
+      carBinormalsXYZ: new Float64Array([0, 0, 1, 0, 0, 1]),
+    });
+    const transfer = legacy.toTransferable();
+    // fresh output is exactly 28, but legacy path via direct construction still round-trips via 28; for 11-count test, craft 11-buffer transfer
+    const legacyBuffers = transfer.buffers.slice(
+      0,
+      TIMELINE_LEGACY_BUFFER_COUNT,
+    );
+    expect(legacyBuffers.length).toBe(TIMELINE_LEGACY_BUFFER_COUNT);
+    const hydrated = RideTimeline.fromTransferable({
+      sampleRateHz: 120,
+      carCount: 1,
+      length: 2,
+      buffers: legacyBuffers as unknown as ArrayBuffer[],
+    });
+    expect(hydrated.launchActivity.length).toBe(0);
+    expect(hydrated.kineticEnergyJ.length).toBe(0);
+    expect(hydrated.perCarLongitudinalG.length).toBe(0);
   });
 });

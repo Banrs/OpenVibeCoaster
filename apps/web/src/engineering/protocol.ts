@@ -8,7 +8,12 @@ import type {
   DesignIntentV1,
   Diagnostic,
 } from "@openvibecoaster/core";
-import type { RideTimelineTransfer } from "@openvibecoaster/simulator";
+import {
+  TIMELINE_CURRENT_BUFFER_COUNT,
+  TIMELINE_LEGACY_BUFFER_COUNT,
+  validateRideTimelineTransfer,
+  type RideTimelineTransfer,
+} from "@openvibecoaster/simulator";
 
 export interface CompiledTrackTransfer {
   readonly positions: Float64Array;
@@ -277,7 +282,7 @@ export function validateEngineeringWorkerResponse(
       !/^[0-9a-f]{8}$/i.test(track.checksum)
     )
       fail("response.track.checksum", "8-char hex");
-    // timeline basic checks
+    // timeline strict checks via central validator
     const tl = rec.timeline as unknown as Record<string, unknown>;
     if (
       typeof tl.sampleRateHz !== "number" ||
@@ -294,6 +299,29 @@ export function validateEngineeringWorkerResponse(
     for (let i = 0; i < (tl.buffers as unknown[]).length; i++)
       if (!((tl.buffers as unknown[])[i] instanceof ArrayBuffer))
         fail(`response.timeline.buffers[${i}]`, "ArrayBuffer");
+    if (
+      typeof tl.carCount !== "number" ||
+      !Number.isInteger(tl.carCount as number)
+    )
+      fail("response.timeline.carCount", "non-negative integer");
+    // enforce exact buffer counts and nested frames rejection
+    const bufCount = (tl.buffers as unknown[]).length;
+    if (
+      bufCount !== TIMELINE_LEGACY_BUFFER_COUNT &&
+      bufCount !== TIMELINE_CURRENT_BUFFER_COUNT
+    )
+      fail(
+        "response.timeline.buffers",
+        `ArrayBuffer count must be exactly ${TIMELINE_LEGACY_BUFFER_COUNT} or ${TIMELINE_CURRENT_BUFFER_COUNT}`,
+      );
+    if ("frames" in tl && tl.frames !== undefined)
+      fail("response.timeline.frames", "must be absent for compact worker");
+    // central shape validation using views/byte lengths without copying payload
+    try {
+      validateRideTimelineTransfer(tl as unknown as RideTimelineTransfer);
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
   } else if (type === "failure") {
     if (!Array.isArray(rec.diagnostics)) fail("response.diagnostics", "array");
     if (!Array.isArray(rec.relaxations)) fail("response.relaxations", "array");

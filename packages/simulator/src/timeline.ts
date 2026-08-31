@@ -44,6 +44,69 @@ export interface RideTimelineTransfer {
   readonly frames?: readonly SimulationFrame[];
 }
 
+export const TIMELINE_LEGACY_BUFFER_COUNT = 11 as const;
+export const TIMELINE_CURRENT_BUFFER_COUNT = 28 as const;
+
+export function validateRideTimelineTransfer(
+  transfer: RideTimelineTransfer,
+): void {
+  const { sampleRateHz, carCount, length, buffers } = transfer;
+  if (!Number.isFinite(sampleRateHz) || sampleRateHz <= 0)
+    throw new RangeError("RideTimeline sample rate must be positive");
+  if (!Number.isInteger(carCount) || carCount < 0 || carCount > 6)
+    throw new RangeError("RideTimeline carCount must be integer 0..6");
+  if (!Number.isInteger(length) || length < 0)
+    throw new RangeError("RideTimeline length must be non-negative integer");
+  if (
+    buffers.length !== TIMELINE_LEGACY_BUFFER_COUNT &&
+    buffers.length !== TIMELINE_CURRENT_BUFFER_COUNT
+  )
+    throw new RangeError(
+      `RideTimeline transfer buffer count must be exactly ${TIMELINE_LEGACY_BUFFER_COUNT} or ${TIMELINE_CURRENT_BUFFER_COUNT}`,
+    );
+  const firstByteLength = buffers[0]?.byteLength ?? 0;
+  if (firstByteLength !== length * 8)
+    throw new RangeError(
+      "RideTimeline length inconsistent with timeSeconds buffer",
+    );
+  const expectedScalarBytes = length * 8;
+  const expectedVec3Bytes = length * 3 * 8;
+  const expectedPerCarScalarBytes = length * carCount * 8;
+  const expectedPerCarVec3Bytes = length * carCount * 3 * 8;
+  const scalarIndices = [
+    0, 1, 2, 3, 4, 5, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+  ] as const;
+  const vec3Indices = [6, 20] as const;
+  const carVec3Indices = [7, 8, 9, 10] as const;
+  const perCarScalarIndices = [21, 22, 23, 24, 25] as const;
+  const perCarVec3Indices = [26, 27] as const;
+  const checkBytes = (
+    indices: readonly number[],
+    expected: number,
+    label: string,
+  ): void => {
+    for (const idx of indices) {
+      if (idx >= buffers.length) continue;
+      const buf = buffers[idx]!;
+      if (buf.byteLength !== expected && buf.byteLength !== 0)
+        throw new RangeError(
+          `RideTimeline ${label} buffer ${idx} byte length mismatch`,
+        );
+      // non-finite check via view without copying payload
+      const view = new Float64Array(buf);
+      for (let i = 0; i < view.length; i += 1)
+        if (!Number.isFinite(view[i]!))
+          throw new RangeError(`RideTimeline buffer ${idx} must be finite`);
+    }
+  };
+  checkBytes(scalarIndices, expectedScalarBytes, "scalar");
+  checkBytes(vec3Indices, expectedVec3Bytes, "vec3");
+  checkBytes(carVec3Indices, expectedPerCarVec3Bytes, "carVec3");
+  checkBytes(perCarScalarIndices, expectedPerCarScalarBytes, "perCarScalar");
+  checkBytes(perCarVec3Indices, expectedPerCarVec3Bytes, "perCarVec3");
+  // also validate that buffers that exist are ArrayBuffers and finite already covered
+}
+
 const clone = (values: Float64Array | undefined): Float64Array =>
   values ? new Float64Array(values) : new Float64Array();
 const requireFinite = (values: Float64Array, field: string): void => {
@@ -504,14 +567,10 @@ export class RideTimeline {
   }
 
   public static fromTransferable(transfer: RideTimelineTransfer): RideTimeline {
-    if (transfer.buffers.length < 11)
-      throw new RangeError(
-        "RideTimeline transfer is missing typed-array buffers",
-      );
+    validateRideTimelineTransfer(transfer);
     const values = transfer.buffers.map((buffer) => new Float64Array(buffer));
     const get = (index: number): Float64Array =>
       values[index] ?? new Float64Array();
-    // Validate optional compact buffers finite and length correctness inside constructor
     return new RideTimeline({
       sampleRateHz: transfer.sampleRateHz,
       carCount: transfer.carCount,

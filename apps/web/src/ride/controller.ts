@@ -835,13 +835,34 @@ export function createRidePlayback(
     nextIndex: number;
     fraction: number;
   }): RideTelemetry | undefined => {
-    if (
-      data.times.length === 0 ||
-      (data.launchActivity.length === 0 &&
-        data.kineticEnergyJ.length === 0 &&
-        data.longitudinalG.length === 0)
-    )
-      return undefined;
+    if (data.times.length === 0) return undefined;
+    // Require complete current compact schema; legacy 11-buffer timelines return undefined
+    const expectedVec3 = data.times.length * 3;
+    const expectedPerCarScalar = data.times.length * data.carCount;
+    const expectedPerCarVec3 = data.times.length * data.carCount * 3;
+    const hasCompleteCompact =
+      data.launchActivity.length === data.times.length &&
+      data.brakeActivity.length === data.times.length &&
+      data.kineticEnergyJ.length === data.times.length &&
+      data.potentialEnergyJ.length === data.times.length &&
+      data.accumulatedDriveWorkJ.length === data.times.length &&
+      data.accumulatedLossWorkJ.length === data.times.length &&
+      data.energyErrorJ.length === data.times.length &&
+      data.bankRad.length === data.times.length &&
+      data.rollRateRadPerSec.length === data.times.length &&
+      data.specificForceXYZ.length === expectedVec3 &&
+      data.perCarLongitudinalG.length === expectedPerCarScalar &&
+      data.perCarLateralG.length === expectedPerCarScalar &&
+      data.perCarVerticalG.length === expectedPerCarScalar &&
+      data.perCarBankRad.length === expectedPerCarScalar &&
+      data.perCarRollRateRadPerSec.length === expectedPerCarScalar &&
+      data.perCarSpecificForceXYZ.length === expectedPerCarVec3 &&
+      data.perCarJerkXYZ.length === expectedPerCarVec3 &&
+      data.longitudinalG.length === data.times.length &&
+      data.lateralG.length === data.times.length &&
+      data.verticalG.length === data.times.length &&
+      data.jerkMps3.length === expectedVec3;
+    if (!hasCompleteCompact) return undefined;
     const lerpAt = (values: Float64Array): number =>
       lerp(
         values[bracket.index] ?? 0,
@@ -872,120 +893,83 @@ export function createRidePlayback(
         : (values[bracket.nextIndex] ?? 0) >= 0.5;
     };
     const perCarTelemetry: CarTelemetry[] = [];
-    if (
-      data.perCarLongitudinalG.length === data.times.length * data.carCount &&
-      data.carCount > 0
-    ) {
-      for (let c = 0; c < data.carCount; c += 1) {
-        const sIdx = bracket.index * data.carCount + c;
-        const eIdx = bracket.nextIndex * data.carCount + c;
-        const sVec = sIdx * 3;
-        const eVec = eIdx * 3;
-        perCarTelemetry.push({
-          longitudinalG: lerp(
-            data.perCarLongitudinalG[sIdx] ?? 0,
-            data.perCarLongitudinalG[eIdx] ?? 0,
+    for (let c = 0; c < data.carCount; c += 1) {
+      const sIdx = bracket.index * data.carCount + c;
+      const eIdx = bracket.nextIndex * data.carCount + c;
+      const sVec = sIdx * 3;
+      const eVec = eIdx * 3;
+      perCarTelemetry.push({
+        longitudinalG: lerp(
+          data.perCarLongitudinalG[sIdx] ?? 0,
+          data.perCarLongitudinalG[eIdx] ?? 0,
+          bracket.fraction,
+        ),
+        lateralG: lerp(
+          data.perCarLateralG[sIdx] ?? 0,
+          data.perCarLateralG[eIdx] ?? 0,
+          bracket.fraction,
+        ),
+        verticalG: lerp(
+          data.perCarVerticalG[sIdx] ?? 0,
+          data.perCarVerticalG[eIdx] ?? 0,
+          bracket.fraction,
+        ),
+        specificForceMps2: [
+          lerp(
+            data.perCarSpecificForceXYZ[sVec] ?? 0,
+            data.perCarSpecificForceXYZ[eVec] ?? 0,
             bracket.fraction,
           ),
-          lateralG: lerp(
-            data.perCarLateralG[sIdx] ?? 0,
-            data.perCarLateralG[eIdx] ?? 0,
+          lerp(
+            data.perCarSpecificForceXYZ[sVec + 1] ?? 0,
+            data.perCarSpecificForceXYZ[eVec + 1] ?? 0,
             bracket.fraction,
           ),
-          verticalG: lerp(
-            data.perCarVerticalG[sIdx] ?? 0,
-            data.perCarVerticalG[eIdx] ?? 0,
+          lerp(
+            data.perCarSpecificForceXYZ[sVec + 2] ?? 0,
+            data.perCarSpecificForceXYZ[eVec + 2] ?? 0,
             bracket.fraction,
           ),
-          specificForceMps2:
-            data.perCarSpecificForceXYZ.length > 0
-              ? [
-                  lerp(
-                    data.perCarSpecificForceXYZ[sVec] ?? 0,
-                    data.perCarSpecificForceXYZ[eVec] ?? 0,
-                    bracket.fraction,
-                  ),
-                  lerp(
-                    data.perCarSpecificForceXYZ[sVec + 1] ?? 0,
-                    data.perCarSpecificForceXYZ[eVec + 1] ?? 0,
-                    bracket.fraction,
-                  ),
-                  lerp(
-                    data.perCarSpecificForceXYZ[sVec + 2] ?? 0,
-                    data.perCarSpecificForceXYZ[eVec + 2] ?? 0,
-                    bracket.fraction,
-                  ),
-                ]
-              : [0, 0, 0],
-          jerkMps3:
-            data.perCarJerkXYZ.length > 0
-              ? [
-                  lerp(
-                    data.perCarJerkXYZ[sVec] ?? 0,
-                    data.perCarJerkXYZ[eVec] ?? 0,
-                    bracket.fraction,
-                  ),
-                  lerp(
-                    data.perCarJerkXYZ[sVec + 1] ?? 0,
-                    data.perCarJerkXYZ[eVec + 1] ?? 0,
-                    bracket.fraction,
-                  ),
-                  lerp(
-                    data.perCarJerkXYZ[sVec + 2] ?? 0,
-                    data.perCarJerkXYZ[eVec + 2] ?? 0,
-                    bracket.fraction,
-                  ),
-                ]
-              : [0, 0, 0],
-          bankRad:
-            data.perCarBankRad.length > 0
-              ? lerp(
-                  data.perCarBankRad[sIdx] ?? 0,
-                  data.perCarBankRad[eIdx] ?? 0,
-                  bracket.fraction,
-                )
-              : lerpAt(data.bankRad),
-          rollRateRadPerSec:
-            data.perCarRollRateRadPerSec.length > 0
-              ? lerp(
-                  data.perCarRollRateRadPerSec[sIdx] ?? 0,
-                  data.perCarRollRateRadPerSec[eIdx] ?? 0,
-                  bracket.fraction,
-                )
-              : lerpAt(data.rollRateRadPerSec),
-        });
-      }
-    } else if (data.carCount > 0) {
-      // fallback duplicate front telemetry per car
-      const front: CarTelemetry = {
-        longitudinalG: lerpAt(data.longitudinalG),
-        lateralG: lerpAt(data.lateralG),
-        verticalG: lerpAt(data.verticalG),
-        specificForceMps2:
-          data.specificForceXYZ.length > 0
-            ? vecAt(data.specificForceXYZ)
-            : [0, 0, 0],
-        jerkMps3: jerkAtTime(bracket),
-        bankRad: lerpAt(data.bankRad),
-        rollRateRadPerSec: lerpAt(data.rollRateRadPerSec),
-      };
-      for (let c = 0; c < data.carCount; c += 1)
-        perCarTelemetry.push({ ...front });
+        ],
+        jerkMps3: [
+          lerp(
+            data.perCarJerkXYZ[sVec] ?? 0,
+            data.perCarJerkXYZ[eVec] ?? 0,
+            bracket.fraction,
+          ),
+          lerp(
+            data.perCarJerkXYZ[sVec + 1] ?? 0,
+            data.perCarJerkXYZ[eVec + 1] ?? 0,
+            bracket.fraction,
+          ),
+          lerp(
+            data.perCarJerkXYZ[sVec + 2] ?? 0,
+            data.perCarJerkXYZ[eVec + 2] ?? 0,
+            bracket.fraction,
+          ),
+        ],
+        bankRad: lerp(
+          data.perCarBankRad[sIdx] ?? 0,
+          data.perCarBankRad[eIdx] ?? 0,
+          bracket.fraction,
+        ),
+        rollRateRadPerSec: lerp(
+          data.perCarRollRateRadPerSec[sIdx] ?? 0,
+          data.perCarRollRateRadPerSec[eIdx] ?? 0,
+          bracket.fraction,
+        ),
+      });
     }
-    const firstPerCar = perCarTelemetry[0];
+    const firstPerCar = perCarTelemetry[0]!;
     return {
       perCar: perCarTelemetry,
-      longitudinalG: firstPerCar?.longitudinalG ?? lerpAt(data.longitudinalG),
-      lateralG: firstPerCar?.lateralG ?? lerpAt(data.lateralG),
-      verticalG: firstPerCar?.verticalG ?? lerpAt(data.verticalG),
-      specificForceMps2:
-        data.specificForceXYZ.length > 0
-          ? vecAt(data.specificForceXYZ)
-          : (firstPerCar?.specificForceMps2 ?? [0, 0, 0]),
+      longitudinalG: firstPerCar.longitudinalG,
+      lateralG: firstPerCar.lateralG,
+      verticalG: firstPerCar.verticalG,
+      specificForceMps2: vecAt(data.specificForceXYZ),
       jerkMps3: jerkAtTime(bracket),
-      bankRad: firstPerCar?.bankRad ?? lerpAt(data.bankRad),
-      rollRateRadPerSec:
-        firstPerCar?.rollRateRadPerSec ?? lerpAt(data.rollRateRadPerSec),
+      bankRad: firstPerCar.bankRad,
+      rollRateRadPerSec: firstPerCar.rollRateRadPerSec,
       launchActivity: activityAt(data.launchActivity),
       brakeActivity: activityAt(data.brakeActivity),
       kineticEnergyJ: lerpAt(data.kineticEnergyJ),

@@ -321,7 +321,7 @@ describe("pure multi-car simulator", () => {
     expect(frame.cars[1]!.frame.distance).toBeCloseTo(track.totalLength - 2, 6);
   });
 
-  it("keeps RideTimeline immutable and copy-transferable", () => {
+  it("keeps RideTimeline immutable and copy-transferable with exactly 28 buffers", () => {
     const timeline = new RideTimeline({
       sampleRateHz: 120,
       timeSeconds: new Float64Array([0, 1 / 120]),
@@ -331,11 +331,32 @@ describe("pure multi-car simulator", () => {
     const head = timeline.headDistanceM;
     head[0] = 999;
     expect(timeline.headDistanceM[0]).toBe(1);
-    expect(timeline.toTransferable().buffers.length).toBeGreaterThanOrEqual(11);
+    expect(timeline.toTransferable().buffers.length).toBe(28);
     expect(
       RideTimeline.fromTransferable(timeline.toTransferable()).toJSON(),
     ).toEqual(timeline.toJSON());
     expect(Object.isFrozen(timeline)).toBe(true);
+  });
+
+  it("legacy 11-buffer hydration remains supported", () => {
+    const timeSeconds = new Float64Array([0, 1 / 120]);
+    const headDistanceM = new Float64Array([0, 1]);
+    const speedMps = new Float64Array([3, 4]);
+    const legacy = new RideTimeline({
+      sampleRateHz: 120,
+      timeSeconds,
+      headDistanceM,
+      speedMps,
+    });
+    const legacyBuffers = legacy.toTransferable().buffers.slice(0, 11);
+    const hydrated = RideTimeline.fromTransferable({
+      sampleRateHz: 120,
+      carCount: 0,
+      length: 2,
+      buffers: legacyBuffers as unknown as ArrayBuffer[],
+    });
+    expect(hydrated.launchActivity.length).toBe(0);
+    expect(hydrated.toTransferable().buffers.length).toBe(28);
   });
 
   it("rejects non-finite timeline data at the exported boundary", () => {

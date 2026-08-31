@@ -5,7 +5,11 @@ import {
   SeventhOrderHermiteSpan,
   vec3,
 } from "@openvibecoaster/core";
-import { createDefaultSimulatorConfig, simulateRide } from "./index.js";
+import {
+  createDefaultSimulatorConfig,
+  simulateRide,
+  createMonotonicBracketLocator,
+} from "./index.js";
 
 function straightTrack() {
   const span = new SeventhOrderHermiteSpan({
@@ -35,7 +39,7 @@ function straightTrack() {
   ]);
 }
 
-describe("resampling linear bracket regression RED", () => {
+describe("resampling linear bracket regression - production helper", () => {
   it("resampling output equality between compact and full", () => {
     const track = straightTrack();
     const config = createDefaultSimulatorConfig();
@@ -50,7 +54,6 @@ describe("resampling linear bracket regression RED", () => {
       durationSeconds: 1,
       compactTimeline: true,
     });
-    // numerical equality already covered, but here focus on headDistance and speed series
     expect(Array.from(compact.timeline.headDistanceM)).toEqual(
       Array.from(full.timeline.headDistanceM),
     );
@@ -60,36 +63,47 @@ describe("resampling linear bracket regression RED", () => {
     expect(compact.timeline.sampleRateHz).toBe(120);
   });
 
-  it("structural regression: bracket cursor is monotonic and does not restart per output", () => {
-    // Prove linear scan by counting bracket advancements vs naive restart
-    // Create synthetic frames with monotonic times and verify monotonic cursor would be linear
-    const frames = Array.from(
-      { length: 5000 },
-      (_, i) =>
-        ({ timeSeconds: i * (1 / 240) }) as unknown as { timeSeconds: number },
+  it("monotonic bracket locator on production helper is O(frames+outputs) via getter counting", () => {
+    const frameCount = 5000;
+    const outputCount = 2500;
+    let reads = 0;
+    const frames = Array.from({ length: frameCount }, (_, i) => {
+      const t = i * (1 / 240);
+      return {
+        get timeSeconds() {
+          reads += 1;
+          return t;
+        },
+      } as unknown as { timeSeconds: number };
+    });
+    const outputTimes = Array.from(
+      { length: outputCount },
+      (_, i) => i * (1 / 120),
     );
-    const outputTimes = Array.from({ length: 2500 }, (_, i) => i * (1 / 120));
-    // Count naive comparisons (reset per output)
-    let naiveComparisons = 0;
+    const locator = createMonotonicBracketLocator(frames);
     for (const t of outputTimes) {
-      let upper = 0;
-      while (upper < frames.length - 1 && frames[upper]!.timeSeconds < t) {
-        upper += 1;
-        naiveComparisons += 1;
-      }
+      locator(t);
     }
-    // Count linear comparisons (monotonic cursor)
-    let linearComparisons = 0;
-    let cursor = 0;
-    for (const t of outputTimes) {
-      while (cursor < frames.length - 1 && frames[cursor]!.timeSeconds < t) {
-        cursor += 1;
-        linearComparisons += 1;
-      }
-    }
-    // Naive should be ~6M, linear ~5k
-    expect(naiveComparisons).toBeGreaterThan(linearComparisons * 10);
-    expect(linearComparisons).toBeLessThan(6000);
-    expect(naiveComparisons).toBeGreaterThan(500000);
+    // Linear: at most frames + outputs + small overhead, not quadratic
+    // Quadratic would be ~6M reads; linear should be < 10000
+    expect(reads).toBeLessThan(frameCount + outputCount * 2);
+    expect(reads).toBeGreaterThan(frameCount - 100);
+    expect(reads).toBeLessThan(12000);
+    // Prove not quadratic
+    const quadraticThreshold = frameCount * outputCount * 0.1;
+    expect(reads).toBeLessThan(quadraticThreshold);
+  });
+
+  it("locator returns correct monotonic brackets for sorted times", () => {
+    const frames = Array.from({ length: 10 }, (_, i) => ({
+      timeSeconds: i,
+    }));
+    const locator = createMonotonicBracketLocator(frames);
+    expect(locator(0)).toBe(0);
+    expect(locator(0.1)).toBe(1);
+    expect(locator(1)).toBe(1);
+    expect(locator(5.5)).toBe(6);
+    expect(locator(9)).toBe(9);
+    expect(locator(100)).toBe(9);
   });
 });

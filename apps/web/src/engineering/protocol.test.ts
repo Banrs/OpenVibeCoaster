@@ -6,6 +6,7 @@ import {
   validateEngineeringWorkerRequest,
   validateEngineeringWorkerResponse,
 } from "./protocol";
+import { RideTimeline } from "@openvibecoaster/simulator";
 
 const validIntent = createDesignIntentV1({
   generatorVersion: "test-v1",
@@ -314,7 +315,39 @@ describe("EngineeringWorkerRequest validation", () => {
 describe("EngineeringWorkerResponse timings validation", () => {
   function validSuccessBase() {
     const g = generateCoaster(validIntent);
-    // Use real file/track/timeline via generator to satisfy strict track checks
+    // Use real file/track/timeline via generator to satisfy strict track checks; timeline is genuinely valid 28-buffer compact
+    const validTimeline = new RideTimeline({
+      sampleRateHz: 120,
+      timeSeconds: new Float64Array([0, 1 / 120]),
+      headDistanceM: new Float64Array([0, 10]),
+      speedMps: new Float64Array([5, 5]),
+      longitudinalG: new Float64Array([0, 0]),
+      lateralG: new Float64Array([0, 0]),
+      verticalG: new Float64Array([1, 1]),
+      jerkMps3: new Float64Array([0, 0, 0, 0, 0, 0]),
+      carCount: 1,
+      carPositionsXYZ: new Float64Array([0, 0, 0, 10, 0, 0]),
+      carTangentsXYZ: new Float64Array([1, 0, 0, 1, 0, 0]),
+      carNormalsXYZ: new Float64Array([0, 1, 0, 0, 1, 0]),
+      carBinormalsXYZ: new Float64Array([0, 0, 1, 0, 0, 1]),
+      launchActivity: new Float64Array([0, 0]),
+      brakeActivity: new Float64Array([0, 0]),
+      kineticEnergyJ: new Float64Array([0, 0]),
+      potentialEnergyJ: new Float64Array([0, 0]),
+      accumulatedDriveWorkJ: new Float64Array([0, 0]),
+      accumulatedLossWorkJ: new Float64Array([0, 0]),
+      energyErrorJ: new Float64Array([0, 0]),
+      bankRad: new Float64Array([0, 0]),
+      rollRateRadPerSec: new Float64Array([0, 0]),
+      specificForceXYZ: new Float64Array([0, 0, 0, 0, 0, 0]),
+      perCarLongitudinalG: new Float64Array([0, 0]),
+      perCarLateralG: new Float64Array([0, 0]),
+      perCarVerticalG: new Float64Array([1, 1]),
+      perCarBankRad: new Float64Array([0, 0]),
+      perCarRollRateRadPerSec: new Float64Array([0, 0]),
+      perCarSpecificForceXYZ: new Float64Array([0, 0, 0, 0, 0, 0]),
+      perCarJerkXYZ: new Float64Array([0, 0, 0, 0, 0, 0]),
+    }).toTransferable();
     return {
       type: "success" as const,
       requestId: "resp-1",
@@ -337,12 +370,7 @@ describe("EngineeringWorkerResponse timings validation", () => {
         totalLength: g.track.totalLength,
         checksum: g.track.checksum,
       },
-      timeline: {
-        sampleRateHz: 120,
-        length: 10,
-        buffers: [new ArrayBuffer(8)],
-        carCount: 1,
-      } as unknown as import("./protocol").EngineeringWorkerSuccess["timeline"],
+      timeline: validTimeline,
       diagnostics: [],
       relaxations: [],
       spanHashes: { a: "00000000" },

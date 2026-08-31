@@ -244,8 +244,14 @@ export function getTimelineSeries(
       break;
     }
     case "rollRate": {
-      // Authoritative: timeline frames rollRateRadPerSec if finite and length matches
-      if (timeline.frames.length === length) {
+      // Prefer finite exact-length compact snapshot, then full-frame, then geometric fallback
+      const compactRoll = timeline.rollRateRadPerSec;
+      if (
+        compactRoll.length === length &&
+        compactRoll.every((v) => Number.isFinite(v))
+      ) {
+        values = Array.from(compactRoll);
+      } else if (timeline.frames.length === length) {
         const candidate = timeline.frames.map(
           (f) => f.telemetry.rollRateRadPerSec,
         );
@@ -280,7 +286,13 @@ export function getTimelineSeries(
       break;
     }
     case "energyResidual": {
-      if (timeline.frames.length === length) {
+      const compactEnergy = timeline.energyErrorJ;
+      if (
+        compactEnergy.length === length &&
+        compactEnergy.every((v) => Number.isFinite(v))
+      ) {
+        values = Array.from(compactEnergy);
+      } else if (timeline.frames.length === length) {
         const candidate = timeline.frames.map((f) => f.telemetry.energyErrorJ);
         if (candidate.every((v) => Number.isFinite(v))) values = candidate;
         else reason = "The authoritative timeline does not contain this series";
