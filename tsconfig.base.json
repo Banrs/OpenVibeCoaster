@@ -12,6 +12,14 @@
     "noFallthroughCasesInSwitch": true,
     "noEmit": true,
     "verbatimModuleSyntax": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@openvibecoaster/core": ["./packages/core/src/index.ts"],
+      "@openvibecoaster/core/*": ["./packages/core/src/*"],
+      "@openvibecoaster/simulator": ["./packages/simulator/src/index.ts"],
+      "@openvibecoaster/simulator/*": ["./packages/simulator/src/*"],
+      "@openvibecoaster/generator": ["./packages/generator/src/index.ts"],
+      "@openvibecoaster/generator/*": ["./packages/generator/src/*"]
+    }
   }
 }

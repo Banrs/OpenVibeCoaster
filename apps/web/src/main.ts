@@ -19,6 +19,7 @@ import { createDesignIntentV1 } from "@openvibecoaster/core";
 import { EngineeringWorkerClient } from "./engineering/client.js";
 import { createEngineeringWorkerFactory } from "./engineering/factory.js";
 import { hydrateEngineeringSuccess } from "./engineering/hydrate.js";
+import { defaultProjectEngineeringLimits } from "@openvibecoaster/simulator";
 import {
   createExperienceController,
   type AuthoritativeExperienceResult,
@@ -894,8 +895,12 @@ const controller = createExperienceController({
         }
         intent = directedIntent;
       }
-      // Await worker
-      const response = await engineeringClient.generate(workerId, intent);
+      // Await worker - explicit typed engineering limits profile at worker boundary
+      const response = await engineeringClient.generate(
+        workerId,
+        intent,
+        defaultProjectEngineeringLimits,
+      );
       // Stale check already via controller, but also check activeWorkerRequestId
       const hydrated = hydrateEngineeringSuccess(response);
       const result: AuthoritativeExperienceResult = {
@@ -981,6 +986,7 @@ const controller = createExperienceController({
         workerId,
         workerFile,
         targetId,
+        defaultProjectEngineeringLimits,
       );
       const hydrated = hydrateEngineeringSuccess(response);
       let resultFile: typeof hydrated.file = hydrated.file;
@@ -1036,6 +1042,7 @@ const controller = createExperienceController({
       const response = await engineeringClient.compileSimulate(
         workerId,
         payload,
+        defaultProjectEngineeringLimits,
       );
       const hydrated = hydrateEngineeringSuccess(response);
       const result: AuthoritativeExperienceResult = {
