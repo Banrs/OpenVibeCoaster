@@ -303,7 +303,7 @@ function getEdges(box: OrientedBox): Array<[Vec3, Vec3]> {
     }
   return edges;
 }
-export function segmentClosest(
+function segmentClosestCore(
   p0: Vec3,
   p1: Vec3,
   q0: Vec3,
@@ -342,126 +342,69 @@ export function segmentClosest(
       s = Math.max(0, Math.min(1, (b - d) / a));
     }
   }
-  const paRaw = add(p0, scale(u, s));
-  const pbRaw = add(q0, scale(v, t));
-  const pa = vec3(paRaw[0], paRaw[1], paRaw[2]);
-  const pb = vec3(pbRaw[0], pbRaw[1], pbRaw[2]);
+  const pa = add(p0, scale(u, s));
+  const pb = add(q0, scale(v, t));
   return { pa, pb, dist: len(sub(pa, pb)) };
 }
-export function staticObbDistance(
+export function segmentClosest(
+  p0: Vec3,
+  p1: Vec3,
+  q0: Vec3,
+  q1: Vec3,
+): { pa: Vec3; pb: Vec3; dist: number } {
+  const { pa, pb, dist } = segmentClosestCore(p0, p1, q0, q1);
+  return { pa: vec3(pa[0], pa[1], pa[2]), pb: vec3(pb[0], pb[1], pb[2]), dist };
+}
+function closestFeature(
   a: OrientedBox,
   b: OrientedBox,
-): { distance: number; pointA: Vec3; pointB: Vec3 } {
-  for (const box of [a, b] as const) {
-    finiteVec(box.center, "center");
-    for (let i = 0; i < 3; i += 1) {
-      finiteScalar(box.halfExtents[i]!, `halfExtent${i}`);
-      if (box.halfExtents[i]! < 0)
-        throw new RangeError("halfExtent must be non-negative");
-      finiteVec(box.axes[i]!, `axis${i}`);
-      if (Math.abs(len(box.axes[i]!) - 1) > 1e-5)
-        throw new RangeError("axis must be unit");
-    }
-  }
-  const delta = sub(b.center, a.center);
-  let separatedProven = false;
-  let intersectingProven = true;
-  const testAxis = (ax: Vec3): boolean => {
-    const l = len(ax);
-    if (l === 0) return false;
-    const n = scale(ax, 1 / l);
-    const dotDeltaIv = intervalDot(delta, n);
-    const absDotDelta = intervalAbs(dotDeltaIv);
-    let ra: Interval = { lo: 0, hi: 0 };
-    let rb: Interval = { lo: 0, hi: 0 };
-    for (let i = 0; i < 3; i += 1) {
-      const dotA = intervalDot(n, a.axes[i]!);
-      const absDotA = intervalAbs(dotA);
-      const termAlo = nextDown(a.halfExtents[i]! * absDotA.lo);
-      const termAhi = nextUp(a.halfExtents[i]! * absDotA.hi);
-      ra = { lo: nextDown(ra.lo + termAlo), hi: nextUp(ra.hi + termAhi) };
-      const dotB = intervalDot(n, b.axes[i]!);
-      const absDotB = intervalAbs(dotB);
-      const termBlo = nextDown(b.halfExtents[i]! * absDotB.lo);
-      const termBhi = nextUp(b.halfExtents[i]! * absDotB.hi);
-      rb = { lo: nextDown(rb.lo + termBlo), hi: nextUp(rb.hi + termBhi) };
-    }
-    const sumLo = nextDown(ra.lo + rb.lo);
-    const sumHi = nextUp(ra.hi + rb.hi);
-    if (absDotDelta.lo > sumHi) {
-      separatedProven = true;
-      return true;
-    }
-    if (absDotDelta.hi < sumLo) return false;
-    intersectingProven = false;
-    return false;
-  };
-  for (let i = 0; i < 3; i += 1) if (testAxis(a.axes[i]!)) break;
-  if (!separatedProven)
-    for (let i = 0; i < 3; i += 1) if (testAxis(b.axes[i]!)) break;
-  if (!separatedProven)
-    for (let i = 0; i < 3; i += 1)
-      for (let j = 0; j < 3; j += 1) {
-        if (separatedProven) break;
-        const cc = cross(a.axes[i]!, b.axes[j]!);
-        const l2 = dot(cc, cc);
-        if (l2 === 0) continue;
-        if (testAxis(scale(cc, 1 / Math.sqrt(l2)))) break;
-      }
-  if (separatedProven) {
-    const cf = closestFeature(a, b);
-    return {
-      distance: cf.dist,
-      pointA: vec3(cf.pa[0], cf.pa[1], cf.pa[2]),
-      pointB: vec3(cf.pb[0], cf.pb[1], cf.pb[2]),
-    };
-  }
-  // Not proven separated: try to find a strictly verified common point for intersecting
+): { dist: number; pa: Vec3; pb: Vec3 } {
+  let bestDist = Infinity;
+  let bestA: Vec3 = a.center;
+  let bestB: Vec3 = b.center;
   const vertsA = getVertices(a);
-  for (const va of vertsA)
-    if (pointInBox(va, b)) {
-      const frozen = vec3(va[0], va[1], va[2]);
-      return { distance: 0, pointA: frozen, pointB: frozen };
-    }
   const vertsB = getVertices(b);
-  for (const vb of vertsB)
-    if (pointInBox(vb, a)) {
-      const frozen = vec3(vb[0], vb[1], vb[2]);
-      return { distance: 0, pointA: frozen, pointB: frozen };
+  for (let i = 0; i < vertsA.length; i += 1) {
+    const va = vertsA[i]!;
+    const cb = pointToBoxClosest(va, b);
+    const raw = len(sub(va, cb));
+    if (raw < bestDist) {
+      bestDist = raw;
+      bestA = va;
+      bestB = cb;
     }
+  }
+  for (let i = 0; i < vertsB.length; i += 1) {
+    const vb = vertsB[i]!;
+    const ca = pointToBoxClosest(vb, a);
+    const raw = len(sub(vb, ca));
+    if (raw < bestDist) {
+      bestDist = raw;
+      bestA = ca;
+      bestB = vb;
+    }
+  }
   const edgesA = getEdges(a);
-  for (const [p0, p1] of edgesA) {
-    const ip = segmentObbIntersect(p0, p1, b);
-    if (ip) {
-      // Verify ip is indeed inside both boxes with strict pointInBox
-      if (pointInBox(ip, a) && pointInBox(ip, b)) {
-        const frozen = vec3(ip[0], ip[1], ip[2]);
-        return { distance: 0, pointA: frozen, pointB: frozen };
-      }
-    }
-  }
   const edgesB = getEdges(b);
-  for (const [q0, q1] of edgesB) {
-    const ip = segmentObbIntersect(q0, q1, a);
-    if (ip) {
-      if (pointInBox(ip, a) && pointInBox(ip, b)) {
-        const frozen = vec3(ip[0], ip[1], ip[2]);
-        return { distance: 0, pointA: frozen, pointB: frozen };
+  for (let i = 0; i < edgesA.length; i += 1) {
+    const ea = edgesA[i]!;
+    const p0 = ea[0]!,
+      p1 = ea[1]!;
+    for (let j = 0; j < edgesB.length; j += 1) {
+      const eb = edgesB[j]!;
+      const q0 = eb[0]!,
+        q1 = eb[1]!;
+      const seg = segmentClosestCore(p0, p1, q0, q1);
+      if (seg.dist < bestDist) {
+        bestDist = seg.dist;
+        bestA = seg.pa;
+        bestB = seg.pb;
       }
     }
   }
-  if (pointInBox(a.center, b) && pointInBox(a.center, a)) {
-    const frozen = vec3(a.center[0], a.center[1], a.center[2]);
-    return { distance: 0, pointA: frozen, pointB: frozen };
-  }
-  if (pointInBox(b.center, a) && pointInBox(b.center, b)) {
-    const frozen = vec3(b.center[0], b.center[1], b.center[2]);
-    return { distance: 0, pointA: frozen, pointB: frozen };
-  }
-  if (!intersectingProven) throw new RangeError("SAT ambiguous");
-  throw new RangeError("SAT intersect but no witness");
+  return { dist: bestDist, pa: bestA, pb: bestB };
 }
-function staticObbDistanceFast(
+function obbDistanceCore(
   a: OrientedBox,
   b: OrientedBox,
 ): { distance: number; pointA: Vec3; pointB: Vec3 } {
@@ -539,56 +482,27 @@ function staticObbDistanceFast(
   if (!intersectingProven) throw new RangeError("SAT ambiguous");
   throw new RangeError("SAT intersect but no witness");
 }
-function closestFeature(
+export function staticObbDistance(
   a: OrientedBox,
   b: OrientedBox,
-): { dist: number; pa: Vec3; pb: Vec3 } {
-  let bestDist = Infinity;
-  let bestA: Vec3 = a.center;
-  let bestB: Vec3 = b.center;
-  // Hoist and cache vertices/edges once per call; iteration order and
-  // candidate tie order identical to original.
-  const vertsA = getVertices(a);
-  const vertsB = getVertices(b);
-  for (let i = 0; i < vertsA.length; i += 1) {
-    const va = vertsA[i]!;
-    const cb = pointToBoxClosest(va, b);
-    const raw = len(sub(va, cb));
-    if (raw < bestDist) {
-      bestDist = raw;
-      bestA = va;
-      bestB = cb;
+): { distance: number; pointA: Vec3; pointB: Vec3 } {
+  for (const box of [a, b] as const) {
+    finiteVec(box.center, "center");
+    for (let i = 0; i < 3; i += 1) {
+      finiteScalar(box.halfExtents[i]!, `halfExtent${i}`);
+      if (box.halfExtents[i]! < 0)
+        throw new RangeError("halfExtent must be non-negative");
+      finiteVec(box.axes[i]!, `axis${i}`);
+      if (Math.abs(len(box.axes[i]!) - 1) > 1e-5)
+        throw new RangeError("axis must be unit");
     }
   }
-  for (let i = 0; i < vertsB.length; i += 1) {
-    const vb = vertsB[i]!;
-    const ca = pointToBoxClosest(vb, a);
-    const raw = len(sub(vb, ca));
-    if (raw < bestDist) {
-      bestDist = raw;
-      bestA = ca;
-      bestB = vb;
-    }
-  }
-  const edgesA = getEdges(a);
-  const edgesB = getEdges(b);
-  for (let i = 0; i < edgesA.length; i += 1) {
-    const ea = edgesA[i]!;
-    const p0 = ea[0]!,
-      p1 = ea[1]!;
-    for (let j = 0; j < edgesB.length; j += 1) {
-      const eb = edgesB[j]!;
-      const q0 = eb[0]!,
-        q1 = eb[1]!;
-      const seg = segmentClosest(p0, p1, q0, q1);
-      if (seg.dist < bestDist) {
-        bestDist = seg.dist;
-        bestA = seg.pa;
-        bestB = seg.pb;
-      }
-    }
-  }
-  return { dist: bestDist, pa: bestA, pb: bestB };
+  const res = obbDistanceCore(a, b);
+  return {
+    distance: res.distance,
+    pointA: vec3(res.pointA[0], res.pointA[1], res.pointA[2]),
+    pointB: vec3(res.pointB[0], res.pointB[1], res.pointB[2]),
+  };
 }
 type Quat = readonly [number, number, number, number];
 function quatNormalize(q: Quat): Quat {
@@ -1096,7 +1010,7 @@ export function certifiedSweptDistance(
     work += 1;
     let sd: { distance: number; pointA: Vec3; pointB: Vec3 };
     try {
-      sd = staticObbDistanceFast(
+      sd = obbDistanceCore(
         createOrientedBoxFastInternal(
           interpolatePose(segA, sample.u),
           segA.geometry,

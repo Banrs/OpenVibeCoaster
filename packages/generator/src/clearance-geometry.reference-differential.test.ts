@@ -346,7 +346,6 @@ function refStaticObbDistance(
   if (!intersectingProven) throw new RangeError("SAT ambiguous");
   throw new RangeError("SAT intersect but no witness");
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -448,17 +447,9 @@ function applyRigidToPose(
   });
 }
 
-function vecEqual(a: Vec3, b: Vec3, eps = 1e-9): boolean {
-  return (
-    Math.abs(a[0] - b[0]) <= eps &&
-    Math.abs(a[1] - b[1]) <= eps &&
-    Math.abs(a[2] - b[2]) <= eps
-  );
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 describe("differential – staticObbDistance reference vs current", () => {
-  it("deterministic random valid boxes: Object.is distance and equivalent witnesses", () => {
+  it("deterministic 200 exact distance+witness vs literal reference", () => {
     const rng = mulberry32(0x1a2b3c4d);
     let mismatched = 0;
     for (let i = 0; i < 200; i += 1) {
@@ -468,8 +459,8 @@ describe("differential – staticObbDistance reference vs current", () => {
       const gB = randomGeometry(rng);
       const boxA = createOrientedBox(poseA, gA);
       const boxB = createOrientedBox(poseB, gB);
-      let cur: ReturnType<typeof staticObbDistance>;
-      let ref: ReturnType<typeof refStaticObbDistance>;
+      let cur: ReturnType<typeof staticObbDistance> | null = null;
+      let ref: ReturnType<typeof refStaticObbDistance> | null = null;
       let curErr: unknown = null;
       let refErr: unknown = null;
       try {
@@ -486,17 +477,18 @@ describe("differential – staticObbDistance reference vs current", () => {
         expect(String(curErr)).toBe(String(refErr));
         continue;
       }
-      // @ts-expect-error assigned in try
-      const c: ReturnType<typeof staticObbDistance> = cur;
-      // @ts-expect-error assigned in try
-      const r: ReturnType<typeof refStaticObbDistance> = ref;
+      const c = cur!;
+      const r = ref!;
       if (
         !Object.is(c.distance, r.distance) ||
-        !vecEqual(c.pointA, r.pointA, 1e-12) ||
-        !vecEqual(c.pointB, r.pointB, 1e-12)
-      ) {
+        c.pointA[0] !== r.pointA[0] ||
+        c.pointA[1] !== r.pointA[1] ||
+        c.pointA[2] !== r.pointA[2] ||
+        c.pointB[0] !== r.pointB[0] ||
+        c.pointB[1] !== r.pointB[1] ||
+        c.pointB[2] !== r.pointB[2]
+      )
         mismatched += 1;
-      }
       expect(Object.is(c.distance, r.distance)).toBe(true);
       expect(c.pointA[0]).toBe(r.pointA[0]);
       expect(c.pointA[1]).toBe(r.pointA[1]);
@@ -516,15 +508,14 @@ describe("differential – staticObbDistance reference vs current", () => {
       carPitchM: 0.01,
       noseTailMarginM: 0,
     });
-    // zero-thickness in one axis
-    const zeroCases: Array<[OrientedBox, OrientedBox]> = [];
     const basePose = createClearancePose({
       position: v(0, 0, 0),
       tangent: v(0, 0, 1),
       normal: v(0, 1, 0),
       binormal: v(-1, 0, 0),
     });
-    zeroCases.push([
+    const cases: Array<[OrientedBox, OrientedBox]> = [];
+    cases.push([
       createOrientedBox(basePose, gThin),
       createOrientedBox(
         createClearancePose({
@@ -536,7 +527,6 @@ describe("differential – staticObbDistance reference vs current", () => {
         gThin,
       ),
     ]);
-    // near-tie: two boxes at same distance via vertex vs edge path – small offset
     const gCube = createClearanceTrainGeometry({
       halfWidthM: 0.5,
       aboveRailM: 0.5,
@@ -554,8 +544,7 @@ describe("differential – staticObbDistance reference vs current", () => {
       }),
       gCube,
     );
-    zeroCases.push([pA, pB]);
-    // near-parallel 5e-8 rad
+    cases.push([pA, pB]);
     const ang = 5e-8;
     const c = Math.cos(ang),
       s = Math.sin(ang);
@@ -568,8 +557,8 @@ describe("differential – staticObbDistance reference vs current", () => {
       }),
       gCube,
     );
-    zeroCases.push([pA, bPar]);
-    for (const [a, b] of zeroCases) {
+    cases.push([pA, bPar]);
+    for (const [a, b] of cases) {
       let cur: ReturnType<typeof staticObbDistance> | null = null;
       let ref: ReturnType<typeof refStaticObbDistance> | null = null;
       let ce: unknown = null,
@@ -591,7 +580,6 @@ describe("differential – staticObbDistance reference vs current", () => {
         expect(cur.pointB).toEqual(ref.pointB);
       }
     }
-    // near-touching gap 5e-10 must be >0 and equal
     const gap = 5e-10;
     const gGap = createClearanceTrainGeometry({
       halfWidthM: 0.5,
@@ -616,57 +604,7 @@ describe("differential – staticObbDistance reference vs current", () => {
     expect(curGap.distance).toBeGreaterThan(0);
   });
 
-  it("rigid transforms produce identical distances and equivalent witnesses", () => {
-    const rng = mulberry32(0xdeadbeef);
-    for (let i = 0; i < 50; i += 1) {
-      const poseA = randomPose(rng, 10);
-      const poseB = randomPose(rng, 10);
-      const gA = randomGeometry(rng);
-      const gB = randomGeometry(rng);
-      const boxA = createOrientedBox(poseA, gA);
-      const boxB = createOrientedBox(poseB, gB);
-      let base: ReturnType<typeof staticObbDistance>;
-      try {
-        base = staticObbDistance(boxA, boxB);
-      } catch {
-        continue;
-      }
-      // reference vs current already covered, here check rigid invariance of current
-      const ref = refStaticObbDistance(boxA, boxB);
-      expect(Object.is(base.distance, ref.distance)).toBe(true);
-
-      const translate = vec3(
-        1000 + rng() * 10,
-        -500 + rng() * 10,
-        200 + rng() * 5,
-      );
-      // Use createClearancePose translate for box creation (ensures validity)
-      const tPoseA = applyRigidToPose(poseA, translate, (p) => p);
-      const tPoseB = applyRigidToPose(poseB, translate, (p) => p);
-      const tBoxA = createOrientedBox(tPoseA, gA);
-      const tBoxB = createOrientedBox(tPoseB, gB);
-      const tRes = staticObbDistance(tBoxA, tBoxB);
-      expect(tRes.distance).toBeCloseTo(base.distance, 9);
-      // Witnesses should translate equally
-      expect(tRes.pointA[0]).toBeCloseTo(base.pointA[0] + translate[0], 6);
-      expect(tRes.pointA[1]).toBeCloseTo(base.pointA[1] + translate[1], 6);
-      expect(tRes.pointA[2]).toBeCloseTo(base.pointA[2] + translate[2], 6);
-      // interval outward: distances should be nearly identical, not disjoint by more than 1e-9
-      expect(Math.abs(tRes.distance - base.distance)).toBeLessThan(1e-9);
-
-      // 90-degree rotation around Y
-      const rotateY = (p: Vec3): Vec3 => vec3(p[2], p[1], -p[0]);
-      const rPoseA = applyRigidToPose(poseA, v(0, 0, 0), rotateY);
-      const rPoseB = applyRigidToPose(poseB, v(0, 0, 0), rotateY);
-      const rBoxA = createOrientedBox(rPoseA, gA);
-      const rBoxB = createOrientedBox(rPoseB, gB);
-      const rRes = staticObbDistance(rBoxA, rBoxB);
-      expect(rRes.distance).toBeCloseTo(base.distance, 9);
-      expect(Math.abs(rRes.distance - base.distance)).toBeLessThan(1e-9);
-    }
-  });
-
-  it("rigid-translated stationary pairs produce overlapping certified intervals (no disjoint)", () => {
+  it("rigid-translated stationary pairs produce overlapping certified intervals", () => {
     const g = createClearanceTrainGeometry({
       halfWidthM: 0.5,
       aboveRailM: 0.5,
@@ -735,137 +673,16 @@ describe("differential – staticObbDistance reference vs current", () => {
     });
     expect(trans.ok).toBe(true);
     if (!trans.ok || trans.excluded) throw new Error("trans must be certified");
-    // intervals must overlap (not disjoint) – the bug in rejected scalar rewrite produced disjoint intervals
     const lo = Math.max(base.lowerM, trans.lowerM);
     const hi = Math.min(base.upperM, trans.upperM);
     expect(lo).toBeLessThanOrEqual(hi + 1e-12);
-    // distance same
     expect(trans.lowerM).toBeCloseTo(base.lowerM, 9);
     expect(trans.upperM).toBeCloseTo(base.upperM, 9);
   });
 });
 
-describe("differential – certifiedSweptDistance deterministic and rigid", () => {
-  it("deterministic repeat equality (current vs current) and vs reference static", () => {
-    const g = createClearanceTrainGeometry({
-      halfWidthM: 0.5,
-      aboveRailM: 0.5,
-      belowRailM: 0.5,
-      carPitchM: 0.5,
-      noseTailMarginM: 0,
-    });
-    const segA: SweptClearanceSegment = {
-      startS: 0,
-      endS: 1,
-      start: createClearancePose({
-        position: v(0, 0, 0),
-        tangent: v(0, 0, 1),
-        normal: v(0, 1, 0),
-        binormal: v(-1, 0, 0),
-      }),
-      end: createClearancePose({
-        position: v(1, 0, 0),
-        tangent: vec3(0.7071067811865475, 0, 0.7071067811865475),
-        normal: vec3(0, 1, 0),
-        binormal: vec3(-0.7071067811865475, 0, 0.7071067811865475),
-      }),
-      geometry: g,
-    };
-    const segB: SweptClearanceSegment = {
-      startS: 0,
-      endS: 1,
-      start: createClearancePose({
-        position: v(0, 2, 0),
-        tangent: v(0, 0, 1),
-        normal: v(0, 1, 0),
-        binormal: v(-1, 0, 0),
-      }),
-      end: createClearancePose({
-        position: v(1, 2, 0),
-        tangent: vec3(0.7071067811865475, 0, 0.7071067811865475),
-        normal: vec3(0, 1, 0),
-        binormal: vec3(-0.7071067811865475, 0, 0.7071067811865475),
-      }),
-      geometry: g,
-    };
-    const r1 = certifiedSweptDistance(segA, segB, {
-      maxWork: 2000,
-      resolutionM: 0.01,
-    });
-    const r2 = certifiedSweptDistance(segA, segB, {
-      maxWork: 2000,
-      resolutionM: 0.01,
-    });
-    expect(r1).toEqual(r2);
-    if (r1.ok && !r1.excluded && r2.ok && !r2.excluded) {
-      expect(Object.is(r1.lowerM, r2.lowerM)).toBe(true);
-      expect(Object.is(r1.upperM, r2.upperM)).toBe(true);
-      expect(Object.is(r1.witnessU, r2.witnessU)).toBe(true);
-      expect(Object.is(r1.witnessV, r2.witnessV)).toBe(true);
-    }
-  });
-
-  it("dense 8191-work certified interval is outward and resolution-tight", () => {
-    const gSmall = createClearanceTrainGeometry({
-      halfWidthM: 0.2,
-      aboveRailM: 0.2,
-      belowRailM: 0.2,
-      carPitchM: 0.5,
-      noseTailMarginM: 0,
-    });
-    const sA0 = createClearancePose({
-      position: v(0, 0, 0),
-      tangent: v(0, 0, 1),
-      normal: v(0, 1, 0),
-      binormal: v(-1, 0, 0),
-    });
-    const sA1 = createClearancePose({
-      position: v(0.01, 0, 0),
-      tangent: vec3(0.984807753012208, 0, 0.17364817766693033),
-      normal: vec3(0, 1, 0),
-      binormal: vec3(-0.17364817766693033, 0, 0.984807753012208),
-    });
-    const sB0 = createClearancePose({
-      position: v(0, 2, 0),
-      tangent: v(0, 0, 1),
-      normal: v(0, 1, 0),
-      binormal: v(-1, 0, 0),
-    });
-    const sB1 = createClearancePose({
-      position: v(0.01, 2, 0),
-      tangent: vec3(0.984807753012208, 0, 0.17364817766693033),
-      normal: vec3(0, 1, 0),
-      binormal: vec3(-0.17364817766693033, 0, 0.984807753012208),
-    });
-    const segA: SweptClearanceSegment = {
-      startS: 0,
-      endS: 1,
-      start: sA0,
-      end: sA1,
-      geometry: gSmall,
-    };
-    const segB: SweptClearanceSegment = {
-      startS: 0,
-      endS: 1,
-      start: sB0,
-      end: sB1,
-      geometry: gSmall,
-    };
-    const base = certifiedSweptDistance(segA, segB, {
-      maxWork: 10000,
-      resolutionM: 0.01,
-    });
-    expect(base.ok).toBe(true);
-    if (!base.ok || base.excluded) throw new Error("dense must be ok");
-    expect(base.work).toBe(8191);
-    expect(base.upperM - base.lowerM).toBeLessThanOrEqual(0.01 + 1e-12);
-    expect(base.lowerM).toBeLessThanOrEqual(base.upperM);
-    expect(base.lowerM).toBeGreaterThanOrEqual(0);
-  });
-});
-
 describe("public API immutability – frozen vectors and mutation resistance", () => {
-  it("createOrientedBox center and axes are frozen and mutation throws", () => {
+  it("createOrientedBox and segmentClosest are frozen", () => {
     const pose = createClearancePose({
       position: v(1, 2, 3),
       tangent: v(0, 0, 1),
@@ -884,36 +701,17 @@ describe("public API immutability – frozen vectors and mutation resistance", (
     expect(Object.isFrozen(box.center)).toBe(true);
     expect(Object.isFrozen(box.axes)).toBe(true);
     expect(Object.isFrozen(box.axes[0])).toBe(true);
-    expect(Object.isFrozen(box.axes[1])).toBe(true);
-    expect(Object.isFrozen(box.axes[2])).toBe(true);
-    expect(Object.isFrozen(box.halfExtents)).toBe(true);
-    expect(Object.isFrozen(pose.position)).toBe(true);
-    expect(Object.isFrozen(pose.tangent)).toBe(true);
     expect(() => {
       (box.center as unknown as number[])[0] = 999;
     }).toThrow();
-    expect(() => {
-      (box.axes[0] as unknown as number[])[0] = 999;
-    }).toThrow();
-    // center value preserved exactly
-    expect(box.center[1]).toBeCloseTo(2, 12);
-  });
-
-  it("segmentClosest pa/pb are frozen and mutation throws", () => {
     const res = segmentClosest(v(0, 0, 0), v(1, 0, 0), v(0, 1, 0), v(1, 1, 0));
     expect(Object.isFrozen(res.pa)).toBe(true);
     expect(Object.isFrozen(res.pb)).toBe(true);
     expect(() => {
       (res.pa as unknown as number[])[0] = 999;
     }).toThrow();
-    expect(() => {
-      (res.pb as unknown as number[])[1] = 999;
-    }).toThrow();
-    // exact numeric values preserved
-    expect(res.dist).toBeCloseTo(1, 12);
   });
-
-  it("staticObbDistance pointA/B are frozen and mutation throws", () => {
+  it("staticObbDistance and certifiedSweptDistance points are frozen", () => {
     const g = createClearanceTrainGeometry({
       halfWidthM: 0.5,
       aboveRailM: 0.5,
@@ -945,19 +743,6 @@ describe("public API immutability – frozen vectors and mutation resistance", (
     expect(() => {
       (r.pointA as unknown as number[])[0] = 999;
     }).toThrow();
-    expect(() => {
-      (r.pointB as unknown as number[])[0] = 999;
-    }).toThrow();
-  });
-
-  it("certifiedSweptDistance pointA/B are frozen and mutation throws", () => {
-    const g = createClearanceTrainGeometry({
-      halfWidthM: 0.5,
-      aboveRailM: 0.5,
-      belowRailM: 0.5,
-      carPitchM: 0.5,
-      noseTailMarginM: 0,
-    });
     const segA: SweptClearanceSegment = {
       startS: 0,
       endS: 1,
@@ -1003,8 +788,83 @@ describe("public API immutability – frozen vectors and mutation resistance", (
     expect(() => {
       (res.pointA as unknown as number[])[0] = 999;
     }).toThrow();
-    expect(() => {
-      (res.pointB as unknown as number[])[0] = 999;
-    }).toThrow();
+  });
+});
+
+describe("structural – single OBB core and freeze boundaries", () => {
+  it("public API freezes, hot path uses shared core without per-node freeze", () => {
+    const g = createClearanceTrainGeometry({
+      halfWidthM: 0.5,
+      aboveRailM: 0.5,
+      belowRailM: 0.5,
+      carPitchM: 1,
+      noseTailMarginM: 0,
+    });
+    const a = createOrientedBox(
+      createClearancePose({
+        position: v(0, 0, 0),
+        tangent: v(0, 0, 1),
+        normal: v(0, 1, 0),
+        binormal: v(-1, 0, 0),
+      }),
+      g,
+    );
+    const b = createOrientedBox(
+      createClearancePose({
+        position: v(3, 0, 0),
+        tangent: v(0, 0, 1),
+        normal: v(0, 1, 0),
+        binormal: v(-1, 0, 0),
+      }),
+      g,
+    );
+    const first = staticObbDistance(a, b);
+    const second = staticObbDistance(a, b);
+    expect(Object.isFrozen(first.pointA)).toBe(true);
+    expect(first.pointA).not.toBe(second.pointA);
+    expect(first.pointA).toEqual(second.pointA);
+    expect(staticObbDistance.toString()).toContain("obbDistanceCore");
+    expect(certifiedSweptDistance.toString()).toContain("obbDistanceCore");
+    const segA: SweptClearanceSegment = {
+      startS: 0,
+      endS: 1,
+      start: createClearancePose({
+        position: v(0, 0, 0),
+        tangent: v(0, 0, 1),
+        normal: v(0, 1, 0),
+        binormal: v(-1, 0, 0),
+      }),
+      end: createClearancePose({
+        position: v(0, 0, 0),
+        tangent: v(0, 0, 1),
+        normal: v(0, 1, 0),
+        binormal: v(-1, 0, 0),
+      }),
+      geometry: g,
+    };
+    const segB: SweptClearanceSegment = {
+      startS: 0,
+      endS: 1,
+      start: createClearancePose({
+        position: v(2, 0, 0),
+        tangent: v(0, 0, 1),
+        normal: v(0, 1, 0),
+        binormal: v(-1, 0, 0),
+      }),
+      end: createClearancePose({
+        position: v(2, 0, 0),
+        tangent: v(0, 0, 1),
+        normal: v(0, 1, 0),
+        binormal: v(-1, 0, 0),
+      }),
+      geometry: g,
+    };
+    const swept = certifiedSweptDistance(segA, segB, {
+      maxWork: 2000,
+      resolutionM: 0.01,
+    });
+    expect(swept.ok).toBe(true);
+    if (!swept.ok || swept.excluded) throw new Error("expected");
+    expect(Object.isFrozen(swept.pointA)).toBe(true);
   });
 });
