@@ -179,8 +179,54 @@ describe("certified adaptive track compilation (TDD)", () => {
     const hData = compileTrack([{ id: "helix", span: helixSpan }]);
     expect(cData.positions.length / 3).toBeGreaterThanOrEqual(32);
     expect(hData.positions.length / 3).toBeGreaterThanOrEqual(32);
-    // Both should be deterministic and have reasonable counts (< budget)
     expect(cData.positions.length / 3).toBeLessThan(65536);
+    // Verify certified bound and dense actual error both <=0.5mm
+    for (const [data, span] of [
+      [cData, circleSpan],
+      [hData, helixSpan],
+    ] as const) {
+      let maxCert = 0;
+      let maxActual = 0;
+      for (let s = 0; s < data.parameters.length - 1; s++) {
+        const a = data.parameters[s]!;
+        const b = data.parameters[s + 1]!;
+        const cert = span.chordErrorUpperBound(a, b);
+        expect(cert).toBeLessThanOrEqual(0.0005 + 1e-12);
+        if (cert > maxCert) maxCert = cert;
+        // dense actual: sample midpoint and compare to chord
+        const mid = (a + b) / 2;
+        const pMid = span.position(mid);
+        const pA = span.position(a);
+        const pB = span.position(b);
+        const ab = vec3(pB[0] - pA[0], pB[1] - pA[1], pB[2] - pA[2]);
+        const ap = vec3(pMid[0] - pA[0], pMid[1] - pA[1], pMid[2] - pA[2]);
+        const denom = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2;
+        const t =
+          denom === 0
+            ? 0
+            : Math.max(
+                0,
+                Math.min(
+                  1,
+                  (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / denom,
+                ),
+              );
+        const closest = vec3(
+          pA[0] + ab[0] * t,
+          pA[1] + ab[1] * t,
+          pA[2] + ab[2] * t,
+        );
+        const d = Math.hypot(
+          pMid[0] - closest[0],
+          pMid[1] - closest[1],
+          pMid[2] - closest[2],
+        );
+        if (d > maxActual) maxActual = d;
+        expect(d).toBeLessThanOrEqual(cert + 1e-9);
+      }
+      expect(maxActual).toBeLessThanOrEqual(0.0005 + 1e-9);
+      expect(maxCert).toBeLessThanOrEqual(0.0005 + 1e-12);
+    }
   });
 
   it("deterministic bytes/checksum (no wall clock, left-before-right)", () => {
@@ -317,7 +363,7 @@ describe("certified adaptive track compilation (TDD)", () => {
           data.normals[i * 3 + 2]!,
         ),
       );
-      expect(dot).toBeGreaterThan(-0.5); // no flip
+      expect(dot).toBeGreaterThan(0.9); // no flip, local continuity bound for this straight-to-bent seam
     }
   });
 
@@ -339,34 +385,30 @@ describe("certified adaptive track compilation (TDD)", () => {
     }
   });
 
-  it(
-    "budget fail: per-element and total budgets are enforced",
-    { timeout: 15000 },
-    () => {
-      // Per-element budget: opaque with always-large chord error forces subdivision beyond limit
-      const bigErrorSpan: ParametricSpan<Vec3> & {
-        chordErrorUpperBound: (a: number, b: number) => number;
-        speedLowerBound: (a: number, b: number) => number;
-      } = {
-        position: (u: number) => vec3(u * 10, 0, 0),
-        derivative: () => vec3(10, 0, 0),
-        chordErrorUpperBound: () => 1, // always >0.0005, will subdivide until budget
-        speedLowerBound: () => 10,
-      };
-      expect(() => compileTrack([{ id: "big", span: bigErrorSpan }])).toThrow(
-        expect.objectContaining({ code: "SAMPLE_BUDGET_EXCEEDED" }),
-      );
+  it("budget fail: per-element and total budgets are enforced", () => {
+    // Per-element budget: opaque with always-large chord error forces subdivision beyond limit
+    const bigErrorSpan: ParametricSpan<Vec3> & {
+      chordErrorUpperBound: (a: number, b: number) => number;
+      speedLowerBound: (a: number, b: number) => number;
+    } = {
+      position: (u: number) => vec3(u * 10, 0, 0),
+      derivative: () => vec3(10, 0, 0),
+      chordErrorUpperBound: () => 1, // always >0.0005, will subdivide until budget
+      speedLowerBound: () => 10,
+    };
+    expect(() => compileTrack([{ id: "big", span: bigErrorSpan }])).toThrow(
+      expect.objectContaining({ code: "SAMPLE_BUDGET_EXCEEDED" }),
+    );
 
-      // Total budget: use early min-total check to avoid heavy work – 9000 lines min total 31*9000+1 >262144, should throw quickly
-      const many = Array.from({ length: 9000 }, (_, i) => ({
-        id: `e${i}`,
-        span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(1, 0, 0)),
-      }));
-      expect(() => compileTrack(many)).toThrow(
-        expect.objectContaining({ code: "SAMPLE_BUDGET_EXCEEDED" }),
-      );
-    },
-  );
+    // Total budget: use early min-total check to avoid heavy work – 9000 lines min total 31*9000+1 >262144, should throw quickly
+    const many = Array.from({ length: 9000 }, (_, i) => ({
+      id: `e${i}`,
+      span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(1, 0, 0)),
+    }));
+    expect(() => compileTrack(many)).toThrow(
+      expect.objectContaining({ code: "SAMPLE_BUDGET_EXCEEDED" }),
+    );
+  });
 
   it("checked integration/inversion fail closed", () => {
     const stationary: ParametricSpan<Vec3> = {

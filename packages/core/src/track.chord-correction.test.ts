@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { compileTrack, CANONICAL_TRACK_COMPILE_OPTIONS } from "./track";
+import {
+  ADAPTIVE_MAX_CHORD_ERROR_M,
+  _checksumForTest,
+  chordErrorUpperBoundSeventhOrder,
+  compileTrack,
+} from "./track";
 import { SeventhOrderHermiteSpan } from "./spans";
 import { vec3 } from "./math";
 import { checkedArcLength } from "./arc-length";
@@ -116,7 +121,6 @@ describe("chord correction – genuinely conservative", () => {
     expect(countFor(t5e9)).toBe(baseCount);
     expect(countFor(t1e12)).toBe(baseCount);
     expect(() => compileTrack([{ id: "p", span: t1e12 }])).not.toThrow();
-    // Additional axes and translation invariance
     const axes: Vec3[] = [
       vec3(1, 0, 0),
       vec3(0, 1, 0),
@@ -127,10 +131,7 @@ describe("chord correction – genuinely conservative", () => {
       const s = makeParabolaGeneral(axis, 0.6, vec3(100, -200, 300));
       expect(countFor(s)).toBe(baseCount);
     }
-    // Threshold-adjacent: scale parabola height to near 0.5mm sagitta
-    // Base parabola sagitta ~0.416mm (parabola height 0.416). Scale to approach threshold 0.5mm
-    const scaleJustBelow = (0.0005 / 0.000416) * 0.99;
-    const scaleJustAbove = (0.0005 / 0.000416) * 1.01;
+    // Threshold-adjacent using actual certified bound: find scale where leaf bound crosses 0.0005
     const makeScaled = (scale: number) =>
       new SeventhOrderHermiteSpan<Vec3>({
         p0: vec3(0, 0, 0),
@@ -142,19 +143,43 @@ describe("chord correction – genuinely conservative", () => {
         d21: vec3(0, (-10 / 3) * scale, 0),
         d31: vec3(0, 0, 0),
       });
-    const below = makeScaled(scaleJustBelow);
-    const above = makeScaled(scaleJustAbove);
+    const probeA = 15 / 31;
+    const probeB = 16 / 31;
+    let lo = 0,
+      hi = 1;
+    while (
+      chordErrorUpperBoundSeventhOrder(makeScaled(hi), probeA, probeB) <=
+      ADAPTIVE_MAX_CHORD_ERROR_M
+    )
+      hi *= 2;
+    for (let iter = 0; iter < 30; iter++) {
+      const mid = (lo + hi) / 2;
+      const b = chordErrorUpperBoundSeventhOrder(
+        makeScaled(mid),
+        probeA,
+        probeB,
+      );
+      if (b <= ADAPTIVE_MAX_CHORD_ERROR_M) lo = mid;
+      else hi = mid;
+    }
+    const scaleBelow = lo * 0.995;
+    const scaleAbove = hi * 1.005;
+    const below = makeScaled(scaleBelow);
+    const above = makeScaled(scaleAbove);
+    const boundBelow = chordErrorUpperBoundSeventhOrder(below, probeA, probeB);
+    const boundAbove = chordErrorUpperBoundSeventhOrder(above, probeA, probeB);
+    expect(boundBelow).toBeLessThanOrEqual(ADAPTIVE_MAX_CHORD_ERROR_M);
+    expect(boundAbove).toBeGreaterThan(ADAPTIVE_MAX_CHORD_ERROR_M);
     const belowCount = countFor(below);
     const aboveCount = countFor(above);
     expect(belowCount).toBeGreaterThanOrEqual(32);
-    expect(aboveCount).toBeGreaterThanOrEqual(belowCount);
+    expect(aboveCount).toBeGreaterThan(belowCount);
     // Verify adaptive parameter topology identical after inverse transform within representable precision
     const rotAxis = vec3(0, 0, 1);
     const rotAngle = 0.9;
     const rot2 = makeParabolaGeneral(rotAxis, rotAngle, vec3(5, -3, 2));
     const orig = compileTrack([{ id: "s", span: base }]);
     const invTrans = vec3(-5, 3, -2);
-    // Inverse rotate check: compile rotated then verify geometry via manual inverse (same Z axis)
     const cos = Math.cos(rotAngle),
       sin = Math.sin(rotAngle);
     const invRotate = (v: Vec3): Vec3 =>
@@ -203,9 +228,13 @@ describe("chord correction – genuinely conservative", () => {
       const positions = data.positions;
       const count = positions.length / 3;
       let maxActual = 0;
+      let maxCertified = 0;
       for (let s = 0; s < count - 1; s++) {
         const a = data.parameters[s]!;
         const b = data.parameters[s + 1]!;
+        const cert = chordErrorUpperBoundSeventhOrder(span, a, b);
+        expect(cert).toBeLessThanOrEqual(ADAPTIVE_MAX_CHORD_ERROR_M + 1e-12);
+        if (cert > maxCertified) maxCertified = cert;
         for (let k = 0; k <= 10; k++) {
           const u = a + ((b - a) * k) / 10;
           const p = span.position(u);
@@ -246,9 +275,11 @@ describe("chord correction – genuinely conservative", () => {
             dz = p[2] - closest[2];
           const d = Math.hypot(dx, dy, dz);
           if (d > maxActual) maxActual = d;
+          expect(d).toBeLessThanOrEqual(cert + 1e-9);
         }
       }
-      expect(maxActual).toBeLessThanOrEqual(0.0005 + 1e-9);
+      expect(maxActual).toBeLessThanOrEqual(ADAPTIVE_MAX_CHORD_ERROR_M + 1e-9);
+      expect(maxActual).toBeLessThanOrEqual(maxCertified + 1e-9);
     }
   });
 
@@ -279,7 +310,6 @@ describe("chord correction – genuinely conservative", () => {
     expect(caught!.evidence.samples ?? caught!.evidence.work).toBeDefined();
     expect(leavesNeeded).toBeGreaterThan(0);
     expect(leavesNeeded).toBeLessThan(70000);
-    // Deterministic work: repeating should give same leavesNeeded
     let leavesNeeded2 = 0;
     const span2: ParametricSpan<Vec3> & {
       chordErrorUpperBound: (a: number, b: number) => number;
@@ -299,14 +329,12 @@ describe("chord correction – genuinely conservative", () => {
       expect.objectContaining({ code: "SAMPLE_BUDGET_EXCEEDED" }),
     );
     expect(leavesNeeded2).toBe(leavesNeeded);
-    // Bounded output: error evidence indicates limit
     expect(
       caught!.evidence.limitSamples ?? caught!.evidence.limit,
     ).toBeDefined();
   });
 
   it("singular polynomial x' = ((u-.03)(u-.095))^2 must fail checked integration with root interval", () => {
-    // Build integrated SeventhOrderHermiteSpan that has zero speed at u=0.03 and u=0.095
     const coeffsX = [
       0, 0.000081225, -0.0035625, 0.07108333333333333, -0.625, 2, 0, 0,
     ];
@@ -319,16 +347,14 @@ describe("chord correction – genuinely conservative", () => {
     ]);
     let err: TrackCompileError | undefined;
     try {
-      checkedArcLength(singularSpan as any, 0, 1);
+      checkedArcLength(singularSpan, 0, 1);
     } catch (e) {
       err = e as TrackCompileError;
     }
     expect(err).toBeDefined();
     expect(err!.code).toBe("SPEED_CERTIFICATION_FAILED");
     const iv = err!.evidence.uInterval!;
-    // Work evidence must be present and deterministic
     expect(err!.evidence.work).toBeDefined();
-    // Interval should be near a root (within 0.01 due to binary subdivision and outward rounding)
     const mid = (iv[0] + iv[1]) / 2;
     const nearFirst = Math.abs(mid - 0.03) < 0.01;
     const nearSecond = Math.abs(mid - 0.095) < 0.01;
@@ -356,22 +382,97 @@ describe("chord correction – genuinely conservative", () => {
     ).toThrow();
   });
 
-  it("streaming checksum near-cap bounded memory produces same canonical checksum", () => {
-    // Build a track with many elements but within cap, using deterministic spans
-    const many = Array.from({ length: 10 }, (_, i) => ({
-      id: `e${i}`,
-      span: SeventhOrderHermiteSpan.line(
-        vec3(i * 10, 0, 0),
-        vec3((i + 1) * 10, Math.sin(i) * 2, 0),
-      ),
-    }));
-    const a = compileTrack(many);
-    const b = compileTrack(many, CANONICAL_TRACK_COMPILE_OPTIONS);
-    expect(a.checksum).toBe(b.checksum);
-    expect(a.positions.length / 3).toBeGreaterThanOrEqual(32 * 10 - 9);
-    // Bounded output: total samples < global cap
-    expect(a.positions.length / 3).toBeLessThan(262144);
-    // Deterministic work: re-compile yields same work (same parameters)
-    expect(a.parameters).toEqual(b.parameters);
+  it("streaming checksum: byte-for-byte vs legacy and bounded large-array", () => {
+    const small = {
+      positions: new Float64Array([0, 0, 0, 10, 0, 0]),
+      tangents: new Float64Array([1, 0, 0, 1, 0, 0]),
+      normals: new Float64Array([0, 1, 0, 0, 1, 0]),
+      binormals: new Float64Array([0, 0, 1, 0, 0, 1]),
+      distances: new Float64Array([0, 10]),
+      curvature: new Float64Array([0, 0]),
+      curvatureVector: new Float64Array([0, 0, 0, 0, 0, 0]),
+      bank: new Float64Array([0, 0]),
+      bankDerivative: new Float64Array([0, 0]),
+      zoneMasks: new Uint32Array([0, 0]),
+      zoneNames: ["a"] as const,
+      elementIndices: new Uint32Array([0, 0]),
+      elementBoundaries: new Uint32Array([0, 1]),
+      parameters: new Float64Array([0, 1]),
+      totalLength: 10,
+    };
+    const encodeUtf8 = (text: string): Uint8Array => {
+      const bytes: number[] = [];
+      for (const ch of text) {
+        const code = ch.codePointAt(0) ?? 0;
+        if (code < 0x80) bytes.push(code);
+        else if (code < 0x800)
+          bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+        else if (code < 0x10000)
+          bytes.push(
+            0xe0 | (code >> 12),
+            0x80 | ((code >> 6) & 0x3f),
+            0x80 | (code & 0x3f),
+          );
+        else
+          bytes.push(
+            0xf0 | (code >> 18),
+            0x80 | ((code >> 12) & 0x3f),
+            0x80 | ((code >> 6) & 0x3f),
+            0x80 | (code & 0x3f),
+          );
+      }
+      return new Uint8Array(bytes);
+    };
+    const hashText = (text: string): string => {
+      const bytes = encodeUtf8(text);
+      let hash = 0x811c9dc5;
+      for (const b of bytes) hash = Math.imul(hash ^ b, 0x01000193);
+      return (hash >>> 0).toString(16).padStart(8, "0");
+    };
+    const legacy = hashText(
+      JSON.stringify({
+        positions: Array.from(small.positions),
+        tangents: Array.from(small.tangents),
+        normals: Array.from(small.normals),
+        binormals: Array.from(small.binormals),
+        distances: Array.from(small.distances),
+        curvature: Array.from(small.curvature),
+        curvatureVector: Array.from(small.curvatureVector),
+        bank: Array.from(small.bank),
+        bankDerivative: Array.from(small.bankDerivative),
+        zoneMasks: Array.from(small.zoneMasks),
+        zoneNames: [...small.zoneNames],
+        elementIndices: Array.from(small.elementIndices),
+        elementBoundaries: Array.from(small.elementBoundaries),
+        parameters: Array.from(small.parameters),
+        totalLength: small.totalLength,
+      }),
+    );
+    expect(_checksumForTest(small as any)).toBe(legacy);
+    // Large: 262144 numbers (positions 262144*3 would be huge, test with 262144 total numbers across one array)
+    const largePositions = new Float64Array(262144);
+    for (let i = 0; i < largePositions.length; i++)
+      largePositions[i] = i * 0.001;
+    const large: any = {
+      positions: largePositions,
+      tangents: new Float64Array(262144),
+      normals: new Float64Array(262144),
+      binormals: new Float64Array(262144),
+      distances: new Float64Array(262144 / 3),
+      curvature: new Float64Array(262144 / 3),
+      curvatureVector: new Float64Array(262144),
+      bank: new Float64Array(262144 / 3),
+      bankDerivative: new Float64Array(262144 / 3),
+      zoneMasks: new Uint32Array(262144 / 3),
+      zoneNames: [] as const,
+      elementIndices: new Uint32Array(262144 / 3),
+      elementBoundaries: new Uint32Array([0, 262144 / 3 - 1]),
+      parameters: new Float64Array(262144 / 3),
+      totalLength: 100,
+    };
+    const c1 = _checksumForTest(large);
+    const c2 = _checksumForTest(large);
+    expect(c1).toBe(c2);
+    expect(c1).toMatch(/^[0-9a-f]{8}$/);
   });
 });

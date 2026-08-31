@@ -109,42 +109,38 @@ describe("pinnedRegeneration helper", () => {
     }
   });
 
-  it(
-    "exactly selected pinned element changed: override preparation",
-    { timeout: 15000 },
-    () => {
-      const base = makeInstaResult();
-      const file = base.file;
-      const firstId = file.intent.elements[0]!.id;
-      const draftPinnedFile = makePinnedFile(file, [firstId]);
-      const draftFile = makeEditedFile(draftPinnedFile, firstId, 999);
-      const baseResult = { ...base, file };
-      const request = {
-        file: draftFile,
-        selectedElementId: firstId,
-        baseResult,
-      };
-      const res = preparePinnedRegeneration(request);
-      expect(res.kind).toBe("proceed");
-      if (res.kind === "proceed") {
-        expect(res.targetId).toBe(firstId);
-        expect(res.restoreId).toBe(firstId);
-        expect(res.workerFile.intent.pinnedElementIds).not.toContain(firstId);
-        expect(res.originalPinnedIds).toContain(firstId);
-        const restored = restorePinnedFileAfterRegeneration(
-          res.workerFile,
-          res.restoreId,
-          res.originalPinnedIds,
-        );
-        expect(restored.intent.pinnedElementIds).toContain(firstId);
-        expect(restored.solvedSpans).toEqual(res.workerFile.solvedSpans);
-        expect(restored.compiledDataChecksum).toBe(
-          res.workerFile.compiledDataChecksum,
-        );
-        expect(() => compileCoasterFile(restored)).not.toThrow();
-      }
-    },
-  );
+  it("exactly selected pinned element changed: override preparation", () => {
+    const base = makeInstaResult();
+    const file = base.file;
+    const firstId = file.intent.elements[0]!.id;
+    const draftPinnedFile = makePinnedFile(file, [firstId]);
+    const draftFile = makeEditedFile(draftPinnedFile, firstId, 999);
+    const baseResult = { ...base, file };
+    const request = {
+      file: draftFile,
+      selectedElementId: firstId,
+      baseResult,
+    };
+    const res = preparePinnedRegeneration(request);
+    expect(res.kind).toBe("proceed");
+    if (res.kind === "proceed") {
+      expect(res.targetId).toBe(firstId);
+      expect(res.restoreId).toBe(firstId);
+      expect(res.workerFile.intent.pinnedElementIds).not.toContain(firstId);
+      expect(res.originalPinnedIds).toContain(firstId);
+      const restored = restorePinnedFileAfterRegeneration(
+        res.workerFile,
+        res.restoreId,
+        res.originalPinnedIds,
+      );
+      expect(restored.intent.pinnedElementIds).toContain(firstId);
+      expect(restored.solvedSpans).toEqual(res.workerFile.solvedSpans);
+      expect(restored.compiledDataChecksum).toBe(
+        res.workerFile.compiledDataChecksum,
+      );
+      expect(() => compileCoasterFile(restored)).not.toThrow();
+    }
+  });
 
   it("remotely changed pinned element: fatal", () => {
     const base = makeInstaResult();

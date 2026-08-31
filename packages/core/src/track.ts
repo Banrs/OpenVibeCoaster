@@ -1,13 +1,25 @@
 import {
   buildArcLengthLut,
-  buildCheckedLut,
-  checkedInvertWithLut,
+  buildCheckedLutNoCert,
+  certifySpeedInterval,
+  checkedInvertWithLutNoCert,
   invertArcLength,
 } from "./arc-length";
 import { TrackCompileError } from "./compile-error";
 import { transportFramesAlongPath } from "./frames";
 import { vec3, vec3Cross, vec3Dot, vec3Length, vec3Normalize } from "./math";
 import { SeventhOrderHermiteSpan } from "./spans";
+import {
+  intervalAdd,
+  intervalExact,
+  intervalMid,
+  intervalMul,
+  intervalSub,
+  nextUp,
+  powerToBernsteinInterval,
+  restrictPowerCoefficientsInterval,
+  type Interval,
+} from "./interval";
 import type { Frame } from "./frames";
 import type { Vec3 } from "./math";
 import type { ParametricSpan } from "./spans";
@@ -35,141 +47,51 @@ export const CANONICAL_TRACK_COMPILE_OPTIONS: Readonly<CompileTrackOptions> =
 
 export { TrackCompileError };
 
-const ADAPTIVE_MIN_SAMPLES_PER_ELEMENT = 32;
-const ADAPTIVE_MAX_CHORD_ERROR_M = 0.0005;
-const ADAPTIVE_MAX_DEPTH = 32;
-const ADAPTIVE_MAX_SAMPLES_PER_ELEMENT = 65536;
-const ADAPTIVE_MAX_TOTAL_SAMPLES = 262144;
-// Deterministic node/work cap: each subdivision creates a node, each leaf emits a sample.
-// At max, 65536 samples => ~131k intervals, so cap 400k is safe and deterministic.
-const ADAPTIVE_MAX_NODES = 400000;
+export const ADAPTIVE_MIN_SAMPLES_PER_ELEMENT = 32;
+export const ADAPTIVE_MAX_CHORD_ERROR_M = 0.0005;
+export const ADAPTIVE_MAX_DEPTH = 32;
+export const ADAPTIVE_MAX_SAMPLES_PER_ELEMENT = 65536;
+export const ADAPTIVE_MAX_TOTAL_SAMPLES = 262144;
+// Fixed work caps independent of element count: binary subdivision visits <2*leaves
+export const ADAPTIVE_MAX_NODES_PER_ELEMENT =
+  2 * ADAPTIVE_MAX_SAMPLES_PER_ELEMENT;
+export const ADAPTIVE_MAX_TOTAL_NODES =
+  2 * ADAPTIVE_MAX_TOTAL_SAMPLES + ADAPTIVE_MIN_SAMPLES_PER_ELEMENT * 4;
 
-// outward-rounded helpers for chord certificate – genuine interval certificate
-const arcBits = new DataView(new ArrayBuffer(8));
-const nextUp = (value: number): number => {
-  if (Number.isNaN(value))
-    throw new TrackCompileError("INTEGRATION_FAILED", "nextUp received NaN", {
-      stage: "chord",
-    });
-  if (value === Number.POSITIVE_INFINITY) return value;
-  if (value === 0) return Number.MIN_VALUE;
-  arcBits.setFloat64(0, value, false);
-  let word = arcBits.getBigUint64(0, false);
-  word = value > 0 ? word + 1n : word - 1n;
-  arcBits.setBigUint64(0, word, false);
-  return arcBits.getFloat64(0, false);
-};
-const nextDown = (value: number): number => {
-  if (Number.isNaN(value))
-    throw new TrackCompileError("INTEGRATION_FAILED", "nextDown received NaN", {
-      stage: "chord",
-    });
-  if (value === Number.NEGATIVE_INFINITY) return value;
-  if (value === 0) return -Number.MIN_VALUE;
-  arcBits.setFloat64(0, value, false);
-  let word = arcBits.getBigUint64(0, false);
-  word = value > 0 ? word - 1n : word + 1n;
-  arcBits.setBigUint64(0, word, false);
-  return arcBits.getFloat64(0, false);
-};
-type Interval = { readonly lo: number; readonly hi: number };
-const intervalExact = (v: number): Interval => {
-  if (!Number.isFinite(v))
+const checkGlobalSampleBudget = (
+  totalAccepted: number,
+  currentLen: number,
+  elemIdx: number,
+  elements: readonly TrackElement[],
+  extra: number,
+  element: TrackElement,
+  cur: { aU: number; bU: number; aS: number; bS: number },
+  globalNodes: number,
+  nodes: number,
+): void => {
+  const remainingElements = elements.length - elemIdx - 1;
+  const projectedTotal =
+    totalAccepted +
+    (currentLen + extra) +
+    remainingElements * ADAPTIVE_MIN_SAMPLES_PER_ELEMENT -
+    (elements.length - 1);
+  if (projectedTotal > ADAPTIVE_MAX_TOTAL_SAMPLES)
     throw new TrackCompileError(
-      "INTEGRATION_FAILED",
-      "Interval exact requires finite",
-      { stage: "chord", actual: v, limit: 0 },
+      "SAMPLE_BUDGET_EXCEEDED",
+      `Track would exceed total ${ADAPTIVE_MAX_TOTAL_SAMPLES} on ${extra === 1 ? "leaf" : "subdivision"} of ${element.id}`,
+      {
+        elementId: element.id,
+        stage: "samples",
+        uInterval: [cur.aU, cur.bU],
+        sInterval: [cur.aS, cur.bS],
+        samples: projectedTotal,
+        limitSamples: ADAPTIVE_MAX_TOTAL_SAMPLES,
+        work: globalNodes + nodes,
+      },
     );
-  return { lo: v, hi: v };
-};
-const intervalAdd = (a: Interval, b: Interval): Interval => ({
-  lo: nextDown(a.lo + b.lo),
-  hi: nextUp(a.hi + b.hi),
-});
-const intervalSub = (a: Interval, b: Interval): Interval => ({
-  lo: nextDown(a.lo - b.hi),
-  hi: nextUp(a.hi - b.lo),
-});
-const intervalMul = (a: Interval, b: Interval): Interval => {
-  const vals = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi];
-  // each product is double rounded; outward already via min/max + next
-  return { lo: nextDown(Math.min(...vals)), hi: nextUp(Math.max(...vals)) };
 };
 
-const binomial = (n: number, k: number): number => {
-  if (k < 0 || k > n) return 0;
-  let result = 1;
-  for (let i = 1; i <= k; i += 1) result = (result * (n - k + i)) / i;
-  return result;
-};
-
-const restrictPowerCoefficientsInterval = (
-  coefficients: readonly Interval[],
-  a: number,
-  b: number,
-): Interval[] => {
-  const wInterval = intervalSub(intervalExact(b), intervalExact(a));
-  const aInterval = intervalExact(a);
-  const n = coefficients.length;
-  // aPowers[0]=1, aPowers[i]=a^i as interval
-  const aPowers: Interval[] = [intervalExact(1)];
-  for (let i = 1; i < n; i += 1)
-    aPowers.push(intervalMul(aPowers[i - 1]!, aInterval));
-  const result: Interval[] = Array.from({ length: n }, () => intervalExact(0));
-  for (let k = 0; k < n; k += 1) {
-    let sum: Interval = intervalExact(0);
-    // w^k as interval
-    let wPow: Interval = intervalExact(1);
-    for (let p = 0; p < k; p += 1) wPow = intervalMul(wPow, wInterval);
-    for (let i = k; i < n; i += 1) {
-      const bin = intervalExact(binomial(i, k));
-      const term = intervalMul(
-        intervalMul(coefficients[i]!, bin),
-        aPowers[i - k]!,
-      );
-      sum = intervalAdd(sum, term);
-    }
-    result[k] = intervalMul(sum, wPow);
-  }
-  return result;
-};
-
-const powerToBernsteinInterval = (q: readonly Interval[]): Interval[] => {
-  const n = q.length - 1;
-  const b: Interval[] = Array.from({ length: n + 1 }, () => intervalExact(0));
-  for (let k = 0; k <= n; k += 1) {
-    let acc: Interval = q[k]!;
-    for (let j = 0; j < k; j += 1) {
-      const sign = (k - j) % 2 === 0 ? 1 : -1;
-      const mij = binomial(n, j) * binomial(n - j, k - j) * sign;
-      const term = intervalMul(b[j]!, intervalExact(mij));
-      acc = intervalSub(acc, term);
-    }
-    const diag = binomial(n, k);
-    if (diag === 0)
-      throw new TrackCompileError(
-        "INTEGRATION_FAILED",
-        "Bernstein diagonal zero",
-        { stage: "chord" },
-      );
-    b[k] = intervalMul(acc, intervalDiv(intervalExact(1), intervalExact(diag)));
-  }
-  return b;
-};
-
-const intervalMid = (iv: Interval): number => (iv.lo + iv.hi) / 2;
-const intervalDiv = (a: Interval, b: Interval): Interval => {
-  if (b.lo <= 0 && b.hi >= 0)
-    throw new TrackCompileError(
-      "INTEGRATION_FAILED",
-      "Interval division by zero-spanning interval",
-      { stage: "chord" },
-    );
-  const vals = [a.lo / b.lo, a.lo / b.hi, a.hi / b.lo, a.hi / b.hi];
-  return { lo: nextDown(Math.min(...vals)), hi: nextUp(Math.max(...vals)) };
-};
-
-const chordErrorUpperBoundSeventhOrder = (
+export const chordErrorUpperBoundSeventhOrder = (
   span: SeventhOrderHermiteSpan<Vec3>,
   start: number,
   end: number,
@@ -190,14 +112,16 @@ const chordErrorUpperBoundSeventhOrder = (
   // Translation invariant: remove constant coefficient before restriction (chord error is translation invariant)
   const translatedRows: Interval[][] = rows.map((row) => {
     const intervals = row.map((v, idx) =>
-      idx === 0 ? intervalExact(0) : intervalExact(v),
+      idx === 0 ? intervalExact(0, "chord") : intervalExact(v, "chord"),
     );
     return intervals;
   });
   const restrictedRows = translatedRows.map((row) =>
-    restrictPowerCoefficientsInterval(row, start, end),
+    restrictPowerCoefficientsInterval(row, start, end, "chord"),
   );
-  const bernsteinRows = restrictedRows.map((q) => powerToBernsteinInterval(q));
+  const bernsteinRows = restrictedRows.map((q) =>
+    powerToBernsteinInterval(q, "chord"),
+  );
   // 8 control intervals
   const controls: Array<{ x: Interval; y: Interval; z: Interval }> = [];
   for (let i = 0; i < 8; i += 1) {
@@ -246,30 +170,45 @@ const chordErrorUpperBoundSeventhOrder = (
     // segment point at t: p0 + t*(p1-p0) as intervals (outward, contains a real point on chord)
     const segX = intervalAdd(
       p0.x,
-      intervalMul(intervalSub(p1.x, p0.x), intervalExact(t)),
+      intervalMul(
+        intervalSub(p1.x, p0.x, "chord"),
+        intervalExact(t, "chord"),
+        "chord",
+      ),
+      "chord",
     );
     const segY = intervalAdd(
       p0.y,
-      intervalMul(intervalSub(p1.y, p0.y), intervalExact(t)),
+      intervalMul(
+        intervalSub(p1.y, p0.y, "chord"),
+        intervalExact(t, "chord"),
+        "chord",
+      ),
+      "chord",
     );
     const segZ = intervalAdd(
       p0.z,
-      intervalMul(intervalSub(p1.z, p0.z), intervalExact(t)),
+      intervalMul(
+        intervalSub(p1.z, p0.z, "chord"),
+        intervalExact(t, "chord"),
+        "chord",
+      ),
+      "chord",
     );
-    const dx = intervalSub(ci.x, segX);
-    const dy = intervalSub(ci.y, segY);
-    const dz = intervalSub(ci.z, segZ);
+    const dx = intervalSub(ci.x, segX, "chord");
+    const dy = intervalSub(ci.y, segY, "chord");
+    const dz = intervalSub(ci.z, segZ, "chord");
     const maxAbsX = Math.max(Math.abs(dx.lo), Math.abs(dx.hi));
     const maxAbsY = Math.max(Math.abs(dy.lo), Math.abs(dy.hi));
     const maxAbsZ = Math.max(Math.abs(dz.lo), Math.abs(dz.hi));
-    const upX = nextUp(maxAbsX);
-    const upY = nextUp(maxAbsY);
-    const upZ = nextUp(maxAbsZ);
-    const sqX = nextUp(upX * upX);
-    const sqY = nextUp(upY * upY);
-    const sqZ = nextUp(upZ * upZ);
-    const sum = nextUp(nextUp(sqX + sqY) + sqZ);
-    const normUpper = nextUp(Math.sqrt(sum));
+    const upX = nextUp(maxAbsX, "chord");
+    const upY = nextUp(maxAbsY, "chord");
+    const upZ = nextUp(maxAbsZ, "chord");
+    const sqX = nextUp(upX * upX, "chord");
+    const sqY = nextUp(upY * upY, "chord");
+    const sqZ = nextUp(upZ * upZ, "chord");
+    const sum = nextUp(nextUp(sqX + sqY, "chord") + sqZ, "chord");
+    const normUpper = nextUp(Math.sqrt(sum), "chord");
     if (!Number.isFinite(normUpper))
       throw new TrackCompileError(
         "INTEGRATION_FAILED",
@@ -616,6 +555,7 @@ const checksum = (data: CompiledTrackDataInput): string => {
   feed("}");
   return (hash >>> 0).toString(16).padStart(8, "0");
 };
+export const _checksumForTest = checksum;
 
 const compiledTrackStorage = new WeakMap<
   CompiledTrackData,
@@ -916,11 +856,29 @@ const compileTrackAdaptive = (
     }
   }
   let globalNodes = 0;
+  let totalAccepted = 0;
+  const sharedCertWork = { count: 0 };
   for (let elemIdx = 0; elemIdx < elements.length; elemIdx += 1) {
     const element = elements[elemIdx]!;
-    let lut: ReturnType<typeof buildCheckedLut>;
     try {
-      lut = buildCheckedLut(element.span, 32);
+      certifySpeedInterval(element.span, 0, 1, 0, sharedCertWork);
+    } catch (error) {
+      if (error instanceof TrackCompileError) {
+        if (error.evidence.elementId) throw error;
+        throw new TrackCompileError(error.code, error.message, {
+          ...error.evidence,
+          elementId: element.id,
+        });
+      }
+      throw new TrackCompileError(
+        "SPEED_CERTIFICATION_FAILED",
+        error instanceof Error ? error.message : String(error),
+        { elementId: element.id, stage: "speed", uInterval: [0, 1] },
+      );
+    }
+    let lut: ReturnType<typeof buildCheckedLutNoCert>;
+    try {
+      lut = buildCheckedLutNoCert(element.span, 32);
     } catch (error) {
       if (error instanceof TrackCompileError) {
         if (error.evidence.elementId) throw error;
@@ -954,7 +912,7 @@ const compileTrackAdaptive = (
       else {
         let u: number;
         try {
-          u = checkedInvertWithLut(element.span, s, lut, 1e-10);
+          u = checkedInvertWithLutNoCert(element.span, s, lut, 1e-10);
         } catch (error) {
           if (error instanceof TrackCompileError && error.evidence.elementId)
             throw error;
@@ -1014,8 +972,8 @@ const compileTrackAdaptive = (
       ];
       while (stack.length > 0) {
         if (
-          nodes >= ADAPTIVE_MAX_NODES ||
-          globalNodes >= ADAPTIVE_MAX_NODES * elements.length
+          nodes >= ADAPTIVE_MAX_NODES_PER_ELEMENT ||
+          globalNodes >= ADAPTIVE_MAX_TOTAL_NODES
         )
           throw new TrackCompileError(
             "SAMPLE_BUDGET_EXCEEDED",
@@ -1072,30 +1030,17 @@ const compileTrackAdaptive = (
                 limitSamples: ADAPTIVE_MAX_SAMPLES_PER_ELEMENT,
               },
             );
-          // Live global sample budget before leaf push (accounting for shared seams)
-          {
-            const sumPrev = perElementUs.reduce((s, us) => s + us.length, 0);
-            const remainingElements = elements.length - elemIdx - 1;
-            const projectedTotal =
-              sumPrev +
-              (resultUs.length + 1) +
-              remainingElements * ADAPTIVE_MIN_SAMPLES_PER_ELEMENT -
-              (elements.length - 1);
-            if (projectedTotal > ADAPTIVE_MAX_TOTAL_SAMPLES)
-              throw new TrackCompileError(
-                "SAMPLE_BUDGET_EXCEEDED",
-                `Track would exceed total ${ADAPTIVE_MAX_TOTAL_SAMPLES} after ${element.id}`,
-                {
-                  elementId: element.id,
-                  stage: "samples",
-                  uInterval: [cur.aU, cur.bU],
-                  sInterval: [cur.aS, cur.bS],
-                  samples: projectedTotal,
-                  limitSamples: ADAPTIVE_MAX_TOTAL_SAMPLES,
-                  work: globalNodes + nodes,
-                },
-              );
-          }
+          checkGlobalSampleBudget(
+            totalAccepted,
+            resultUs.length,
+            elemIdx,
+            elements,
+            1,
+            element,
+            cur,
+            globalNodes,
+            nodes,
+          );
           resultUs.push(cur.bU);
           resultSs.push(cur.bS);
           nodes++;
@@ -1131,30 +1076,17 @@ const compileTrackAdaptive = (
               samples: resultUs.length,
             },
           );
-        // Live global budget before subdivision (future leaf will need at least one sample)
-        {
-          const sumPrev = perElementUs.reduce((s, us) => s + us.length, 0);
-          const remainingElements = elements.length - elemIdx - 1;
-          const projectedTotal =
-            sumPrev +
-            (resultUs.length + 2) +
-            remainingElements * ADAPTIVE_MIN_SAMPLES_PER_ELEMENT -
-            (elements.length - 1);
-          if (projectedTotal > ADAPTIVE_MAX_TOTAL_SAMPLES)
-            throw new TrackCompileError(
-              "SAMPLE_BUDGET_EXCEEDED",
-              `Track would exceed total ${ADAPTIVE_MAX_TOTAL_SAMPLES} on subdivision of ${element.id}`,
-              {
-                elementId: element.id,
-                stage: "samples",
-                uInterval: [cur.aU, cur.bU],
-                sInterval: [cur.aS, cur.bS],
-                samples: projectedTotal,
-                limitSamples: ADAPTIVE_MAX_TOTAL_SAMPLES,
-                work: globalNodes + nodes,
-              },
-            );
-        }
+        checkGlobalSampleBudget(
+          totalAccepted,
+          resultUs.length,
+          elemIdx,
+          elements,
+          2,
+          element,
+          cur,
+          globalNodes,
+          nodes,
+        );
         const sMid = (cur.aS + cur.bS) / 2;
         if (sMid === cur.aS || sMid === cur.bS)
           throw new TrackCompileError(
@@ -1169,7 +1101,7 @@ const compileTrackAdaptive = (
           );
         let midU: number;
         try {
-          midU = checkedInvertWithLut(element.span, sMid, lut, 1e-10);
+          midU = checkedInvertWithLutNoCert(element.span, sMid, lut, 1e-10);
         } catch (error) {
           if (error instanceof TrackCompileError && error.evidence.elementId)
             throw error;
@@ -1241,11 +1173,10 @@ const compileTrackAdaptive = (
       );
     perElementUs.push(resultUs);
     perElementSs.push(resultSs);
+    totalAccepted += resultUs.length;
   }
 
-  const totalSamples =
-    perElementUs.reduce((sum, us) => sum + us.length, 0) -
-    (elements.length - 1);
+  const totalSamples = totalAccepted - (elements.length - 1);
   if (totalSamples > ADAPTIVE_MAX_TOTAL_SAMPLES)
     throw new TrackCompileError(
       "SAMPLE_BUDGET_EXCEEDED",
