@@ -45,9 +45,10 @@ function car(
   distanceM: number,
   position: [number, number, number],
   telemetry: CarTelemetry,
+  index = 0,
 ): CarState {
   return {
-    index: 0,
+    index,
     distanceM,
     position: vec3(...position),
     tangent: vec3(1, 0, 0),
@@ -245,10 +246,10 @@ describe("engineering limits - frames table-driven", () => {
     const { track, spanIds } = trackWithSpans(["a", "b"]);
     const frames = [
       frame(0, [
-        car(2, [2, 0, 0], tel({ verticalG: 6 })),
-        car(2, [2, 0, 0], tel({ verticalG: 6 })),
+        car(2, [2, 0, 0], tel({ verticalG: 6 }), 0),
+        car(2, [2, 0, 0], tel({ verticalG: 6 }), 1),
       ]),
-      frame(1, [car(12, [12, 0, 0], tel({ verticalG: 6 }))]),
+      frame(1, [car(12, [12, 0, 0], tel({ verticalG: 6 }), 0)]),
     ];
     const diags = validateEngineeringLimits(frames, track, profile, spanIds);
     const d = diags.find((x) => x.code === "ENGINEERING_LIMIT_VERTICAL_G_MAX")!;
@@ -257,8 +258,8 @@ describe("engineering limits - frames table-driven", () => {
     expect(d.relatedIds).toContain("car-0");
     const frames2 = [
       frame(0, [
-        car(2, [2, 0, 0], tel({ verticalG: 6 })),
-        car(2, [2, 0, 0], tel({ verticalG: 6 })),
+        car(2, [2, 0, 0], tel({ verticalG: 6 }), 0),
+        car(2, [2, 0, 0], tel({ verticalG: 6 }), 1),
       ]),
     ];
     const diags2 = validateEngineeringLimits(frames2, track, profile, spanIds);
@@ -406,5 +407,67 @@ describe("engineering limits - frames table-driven", () => {
     expect(d.margin).toBeUndefined();
     expect(d.location?.time).toBe(1.5);
     expect(d.location?.s).toBe(5);
+  });
+
+  it("RED: mismatched elementIndices is fatal", () => {
+    const { track, spanIds } = trackWithSpans(["a", "b"]);
+    // corrupt elementIndices: make second element's start sample owned by wrong element
+    const badTrack = {
+      distances: track.distances,
+      elementBoundaries: track.elementBoundaries,
+      elementIndices: new Uint32Array(track.elementIndices),
+      totalLength: track.totalLength,
+    } as unknown as import("@openvibecoaster/core").CompiledTrackData;
+    // flip first sample of second element to be 0 instead of 1
+    (badTrack.elementIndices as Uint32Array)[track.elementBoundaries[2]! + 1] =
+      0;
+    const frames = [frame(0, [car(15, [15, 0, 0], tel({}))])];
+    const diags = validateEngineeringLimits(frames, badTrack, profile, spanIds);
+    expect(diags[0]?.severity).toBe("fatal");
+    expect(diags[0]?.code).toBe("ENGINEERING_LIMITS_UNCERTIFIED");
+  });
+
+  it("RED: car index7 at slot0 uses authoritative index", () => {
+    const { track, spanIds } = trackWithSpans(["a"]);
+    const c = car(5, [5, 0, 0], tel({ verticalG: 6 }), 7);
+    const frames = [frame(0, [c])];
+    const diags = validateEngineeringLimits(frames, track, profile, spanIds);
+    const d = diags.find((x) => x.code === "ENGINEERING_LIMIT_VERTICAL_G_MAX")!;
+    expect(d.relatedIds).toEqual(["car-7"]);
+    expect(d.elementId).toBe("a");
+  });
+
+  it("RED: duplicate car index is fatal", () => {
+    const { track, spanIds } = trackWithSpans(["a"]);
+    const frames = [
+      frame(0, [car(5, [5, 0, 0], tel({})), car(5, [5, 0, 0], tel({}), 0)]),
+    ];
+    // both cars have index 0 -> duplicate
+    const diags = validateEngineeringLimits(frames, track, profile, spanIds);
+    expect(
+      diags.some(
+        (d) => d.severity === "fatal" && d.message.includes("duplicate"),
+      ),
+    ).toBe(true);
+  });
+
+  it("RED: dropped/reordered car is fatal", () => {
+    const { track, spanIds } = trackWithSpans(["a"]);
+    const frames = [
+      frame(0, [car(5, [5, 0, 0], tel({}), 0), car(5, [5, 0, 0], tel({}), 1)]),
+      frame(1, [car(5, [5, 0, 0], tel({}), 0)]), // dropped car 1
+    ];
+    const diags = validateEngineeringLimits(frames, track, profile, spanIds);
+    expect(
+      diags.some(
+        (d) => d.severity === "fatal" && d.message.includes("changed car"),
+      ),
+    ).toBe(true);
+    const frames2 = [
+      frame(0, [car(5, [5, 0, 0], tel({}), 0), car(5, [5, 0, 0], tel({}), 1)]),
+      frame(1, [car(5, [5, 0, 0], tel({}), 1), car(5, [5, 0, 0], tel({}), 0)]), // reordered
+    ];
+    const diags2 = validateEngineeringLimits(frames2, track, profile, spanIds);
+    expect(diags2.some((d) => d.severity === "fatal")).toBe(true);
   });
 });

@@ -81,13 +81,21 @@ export function validateEngineeringLimits(
         "Authoritative spanIds missing – cannot validate engineering limits",
       ),
     ];
-  const distances = track.distances;
-  const boundaries = track.elementBoundaries;
+  const distances = track.distances,
+    boundaries = track.elementBoundaries,
+    indices = track.elementIndices;
   if (
     !(distances instanceof Float64Array) ||
-    !(boundaries instanceof Uint32Array)
+    !(boundaries instanceof Uint32Array) ||
+    !(indices instanceof Uint32Array)
   )
-    return [fatal("Track distances/boundaries must be typed arrays")];
+    return [fatal("Track distances/boundaries/indices must be typed arrays")];
+  if (indices.length !== distances.length)
+    return [
+      fatal(
+        `Track elementIndices length ${indices.length} must equal distances length ${distances.length}`,
+      ),
+    ];
   if (boundaries.length % 2 !== 0)
     return [fatal("Track elementBoundaries must contain start/end pairs")];
   const count = boundaries.length / 2;
@@ -122,6 +130,9 @@ export function validateEngineeringLimits(
   for (let i = 0; i < spanIds.length; i++)
     if (typeof spanIds[i] !== "string" || spanIds[i]!.trim() === "")
       return [fatal(`SpanIds[${i}] must be non-empty string`)];
+  for (let i = 0; i < indices.length; i++)
+    if (!Number.isInteger(indices[i]!) || indices[i]! >= spanIds.length)
+      return [fatal(`Track elementIndices[${i}] out of range`)];
   if (boundaries[0] !== 0)
     return [fatal("Track elementBoundaries must start at 0")];
   if (boundaries[boundaries.length - 1] !== distances.length - 1)
@@ -146,18 +157,35 @@ export function validateEngineeringLimits(
     if (start >= end)
       return [fatal(`Track element ${spanIds[i]} has start >= end`)];
   }
-  const ranges: { id: string; start: number; end: number }[] = [];
-  for (let i = 0; i < count; i++)
-    ranges.push({
-      id: spanIds[i]!,
-      start: distances[boundaries[i * 2]!]!,
-      end: distances[boundaries[i * 2 + 1]!]!,
-    });
+  for (let i = 0; i < count; i++) {
+    const sIdx = boundaries[i * 2]!,
+      eIdx = boundaries[i * 2 + 1]!;
+    for (let j = sIdx; j <= eIdx; j++) {
+      const expected = j === sIdx && i > 0 ? i - 1 : i;
+      if (indices[j] !== expected)
+        return [
+          fatal(
+            `Track elementIndices[${j}] expected ${expected} for element ${spanIds[i]} boundary seam but got ${indices[j]}`,
+          ),
+        ];
+    }
+  }
   const findElement = (s: number): string | undefined => {
     if (!finite(s)) return undefined;
-    for (let i = 0; i < ranges.length; i++)
-      if (s >= ranges[i]!.start && s <= ranges[i]!.end) return ranges[i]!.id;
-    return undefined;
+    let lo = 0,
+      hi = distances.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const d = distances[mid]!;
+      if (d === s) return spanIds[indices[mid]!];
+      if (d < s) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    if (hi < 0 || lo >= distances.length) return undefined;
+    const leftOwner = indices[hi]!,
+      rightOwner = indices[lo]!;
+    if (leftOwner !== rightOwner) return spanIds[rightOwner]!;
+    return spanIds[leftOwner]!;
   };
   const specs: {
     code: string;
@@ -209,6 +237,7 @@ export function validateEngineeringLimits(
   ];
   const worst = new Map<string, Candidate>();
   const diags: Diagnostic[] = [];
+  let expectedCarIndices: readonly number[] | undefined;
   for (const frame of frames) {
     if (
       !finite(frame.timeSeconds) ||
@@ -219,23 +248,40 @@ export function validateEngineeringLimits(
       continue;
     }
     const time = frame.timeSeconds;
-    for (let carIdx = 0; carIdx < frame.cars.length; carIdx++) {
-      const car = frame.cars[carIdx]!;
-      const hasValidDistance = finite(car.distanceM);
-      const hasValidPosition =
-        Array.isArray(car.position) &&
-        car.position.length === 3 &&
-        car.position.every(finite);
-      if (!hasValidDistance || !hasValidPosition) {
-        const loc =
-          hasValidDistance && hasValidPosition
-            ? { s: car.distanceM, time, position: car.position as Vec3 }
-            : undefined;
+    const indicesInFrame = frame.cars.map((c: CarState) => c.index);
+    let hasInvalid = false;
+    for (const idx of indicesInFrame)
+      if (!Number.isInteger(idx) || idx < 0) hasInvalid = true;
+    if (hasInvalid) {
+      diags.push(fatal(`Frame at t=${fmt(time)}s has invalid car index`));
+      continue;
+    }
+    if (new Set(indicesInFrame).size !== indicesInFrame.length) {
+      diags.push(fatal(`Frame at t=${fmt(time)}s has duplicate car indices`));
+      continue;
+    }
+    if (!expectedCarIndices) expectedCarIndices = [...indicesInFrame];
+    else if (
+      expectedCarIndices.length !== frame.cars.length ||
+      !expectedCarIndices.every((v, i) => v === indicesInFrame[i])
+    ) {
+      diags.push(
+        fatal(
+          `Frame at t=${fmt(time)}s has changed car count/order/indices – cannot validate`,
+        ),
+      );
+      continue;
+    }
+    for (let slot = 0; slot < frame.cars.length; slot++) {
+      const car = frame.cars[slot]!;
+      if (
+        !finite(car.distanceM) ||
+        !Array.isArray(car.position) ||
+        car.position.length !== 3 ||
+        !car.position.every(finite)
+      ) {
         diags.push(
-          fatal(
-            `Car ${carIdx} has missing or non-finite distance/position`,
-            loc,
-          ),
+          fatal(`Car ${car.index} has missing or non-finite distance/position`),
         );
         continue;
       }
@@ -251,7 +297,7 @@ export function validateEngineeringLimits(
         !tel.jerkMps3.every(finite)
       ) {
         diags.push(
-          fatal(`Car ${carIdx} has missing or non-finite telemetry`, {
+          fatal(`Car ${car.index} has missing or non-finite telemetry`, {
             s: car.distanceM,
             time,
             position: car.position as Vec3,
@@ -265,18 +311,18 @@ export function validateEngineeringLimits(
       if (!elementId) {
         diags.push(
           fatal(
-            `Car ${carIdx} at s=${fmt(s)}m cannot be mapped to track element`,
+            `Car ${car.index} at s=${fmt(s)}m cannot be mapped to track element`,
             { s, time, position },
           ),
         );
         continue;
       }
-      const carId = `car-${carIdx}`;
+      const carId = `car-${car.index}`;
       for (const spec of specs) {
         const actualRaw = spec.get(car);
         if (!finite(actualRaw)) {
           diags.push(
-            fatal(`Car ${carIdx} ${spec.code} actual is non-finite`, {
+            fatal(`Car ${car.index} ${spec.code} actual is non-finite`, {
               s,
               time,
               position,
@@ -300,7 +346,7 @@ export function validateEngineeringLimits(
           (actualRaw === existing.actual &&
             (time < existing.time ||
               (time === existing.time &&
-                carIdx < Number(existing.carId.split("-")[1] ?? 99))));
+                car.index < Number(existing.carId.split("-")[1] ?? 99))));
         if (isWorse)
           worst.set(spec.code, {
             actual: actualRaw,
