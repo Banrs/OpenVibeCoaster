@@ -47,6 +47,11 @@ const config = (overrides: Partial<SimulatorConfig> = {}): SimulatorConfig => ({
   ...overrides,
 });
 
+const required = <T>(v: T | undefined): T => {
+  if (v === undefined) throw new Error("required");
+  return v;
+};
+
 describe("pure multi-car simulator", () => {
   it("holds a stationary train on a level frictionless line", () => {
     const result = simulateRide(line(100), {
@@ -162,6 +167,119 @@ describe("pure multi-car simulator", () => {
     expect(
       result.frames.at(-1)?.telemetry.accumulatedLossWorkJ,
     ).toBeGreaterThan(0);
+  });
+
+  it("keeps drive and loss work consistent with kinetic and potential energy on a flat launch-brake run", () => {
+    const zones: OperationZone[] = [
+      {
+        id: "launch",
+        kind: "launch",
+        startDistanceM: 0,
+        endDistanceM: 15,
+        targetSpeedMps: 20,
+      },
+      {
+        id: "brake",
+        kind: "brake",
+        startDistanceM: 15,
+        endDistanceM: 60,
+        brakeForcePerCarN: 5000,
+      },
+    ];
+    const result = simulateRide(line(100), {
+      durationSeconds: 4,
+      config: config({ zones }),
+      initial: { headDistanceM: 6, speedMps: 0 },
+    });
+    const a = required(result.frames[0]);
+    const b = required(result.frames.at(-1));
+    const deltaKE = b.telemetry.kineticEnergyJ - a.telemetry.kineticEnergyJ;
+    const deltaPE = b.telemetry.potentialEnergyJ - a.telemetry.potentialEnergyJ;
+    const drive = b.telemetry.accumulatedDriveWorkJ;
+    const loss = b.telemetry.accumulatedLossWorkJ;
+    expect(
+      Math.abs(deltaKE + deltaPE - (drive - loss) + b.telemetry.energyErrorJ),
+    ).toBeCloseTo(0, 10);
+    expect(Math.abs(b.telemetry.energyErrorJ)).toBeLessThan(350);
+    expect(drive).toBeGreaterThan(0);
+    expect(loss).toBeGreaterThan(0);
+  });
+
+  it("distinguishes vertical G across three cars at sinusoidal crest and valley", () => {
+    const span = {
+      position: (u: number) => vec3(0, 6 * Math.sin(2 * Math.PI * u), 80 * u),
+      derivative: (u: number, order = 1) =>
+        order === 1
+          ? vec3(0, 12 * Math.PI * Math.cos(2 * Math.PI * u), 80)
+          : vec3(0, -24 * Math.PI * Math.PI * Math.sin(2 * Math.PI * u), 0),
+    };
+    const track = compileTrack([{ id: "sin", span }], { samples: 257 });
+    const headCrest = track.totalLength / 4;
+    const headValley = (track.totalLength * 3) / 4;
+    const runAt = (headDistanceM: number) =>
+      simulateRide(track, {
+        durationSeconds: 0,
+        config: config(),
+        initial: { headDistanceM, speedMps: 8 },
+      });
+    const crest = required(runAt(headCrest).frames[0]);
+    const valley = required(runAt(headValley).frames[0]);
+    expect(crest.cars.map((car) => car.distanceM)).toEqual([
+      headCrest,
+      headCrest - 3,
+      headCrest - 6,
+    ]);
+    expect(valley.cars.map((car) => car.distanceM)).toEqual([
+      headValley,
+      headValley - 3,
+      headValley - 6,
+    ]);
+    expect(required(crest.cars[0]).frame.distance).toBeCloseTo(headCrest, 6);
+    expect(crest.selection.middle.telemetry.verticalG).toBeLessThan(1);
+    expect(valley.selection.middle.telemetry.verticalG).toBeGreaterThan(1);
+    const crestG = crest.cars.map((car) => car.telemetry.verticalG);
+    const valleyG = valley.cars.map((car) => car.telemetry.verticalG);
+    expect(required(crestG[0])).not.toBe(required(crestG[1]));
+    expect(required(crestG[1])).not.toBe(required(crestG[2]));
+    expect(required(crestG[0])).not.toBe(required(crestG[2]));
+    expect(required(valleyG[0])).not.toBe(required(valleyG[1]));
+    expect(required(valleyG[1])).not.toBe(required(valleyG[2]));
+    expect(required(valleyG[0])).not.toBe(required(valleyG[2]));
+    const curvature = sampleTrackAtDistance(track, headCrest).curvature;
+    const expected = (8 * 8 * curvature) / 9.80665;
+    expect(crest.telemetry.verticalG).toBeCloseTo(1 - expected, 2);
+    expect(valley.telemetry.verticalG).toBeCloseTo(1 + expected, 2);
+  });
+
+  it("transitions from rolling to exact stall under magnetic braking without static hold or reversal", () => {
+    const zones: OperationZone[] = [
+      {
+        id: "mag",
+        kind: "brake",
+        startDistanceM: 0,
+        endDistanceM: 100,
+        brakeForcePerCarN: 18000,
+      },
+    ];
+    const result = simulateRide(line(100), {
+      durationSeconds: 4,
+      config: config({
+        zones,
+        train: { ...config().train, cars: [{ massKg: 1000, seatCount: 0 }] },
+      }),
+      initial: { headDistanceM: 10, speedMps: 8 },
+    });
+    const first = required(result.frames[0]);
+    expect(first.status).toBe("rolling");
+    const stall = required(result.frames.find((f) => f.status === "stall"));
+    expect(stall.speedMps).toBe(0);
+    const bad = result.frames.some(
+      (f) =>
+        f.status === "static-hold" ||
+        f.status === "rollback" ||
+        f.status === "reversal",
+    );
+    expect(bad).toBe(false);
   });
 
   it("allows uphill rollback, reversal, and explicit invalid-state diagnostics", () => {
