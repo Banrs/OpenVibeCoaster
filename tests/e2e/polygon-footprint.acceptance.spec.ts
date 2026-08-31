@@ -12,53 +12,27 @@ test.describe("polygon – save/load and directed concave", () => {
   test("directed rectangle saves canonical polygon Vec3 order and heightRange separate", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
-    const { createDesignIntentV1, vec3 } =
-      await import("@openvibecoaster/core");
-    const { generateCoaster } = await import("@openvibecoaster/generator");
-    // Create a valid coaster via insta (no footprint) then attach rectangle polygon
-    const baseIntent = createDesignIntentV1({
-      generatorVersion: "test-polygon",
-      seed: 1234,
-      mode: "insta",
-      family: "steel-sitdown-lsm-v1",
-      elements: [],
-      gates: [],
-      targets: [],
-      constraints: [],
-      terrainProfileId: "rolling-highlands-v1",
-      pinnedElementIds: [],
-    });
-    const base = generateCoaster(baseIntent, { name: "rect-base" });
-    const rectPolygon = [
-      vec3(-260, 0, -180),
-      vec3(260, 0, -180),
-      vec3(260, 0, 180),
-      vec3(-260, 0, 180),
-    ];
-    const { createCoasterFileV1, serializeCoasterFileV1 } =
-      await import("@openvibecoaster/core");
-    const rectFile = createCoasterFileV1({
-      name: base.file.name,
-      intent: {
-        ...base.file.intent,
-        footprint: rectPolygon,
-        heightRange: { min: 0, max: 100 },
-      },
-      solvedSpans: base.file.solvedSpans,
-      seed: base.file.seed,
-      generatorVersion: base.file.generatorVersion,
-      profileVersion: base.file.profileVersion,
-      researchSnapshotIds: base.file.researchSnapshotIds,
-      compiledDataChecksum: base.file.compiledDataChecksum,
-    });
-    const serialized = serializeCoasterFileV1(rectFile);
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "rect-"));
-    const tmpPath = path.join(tmp, "rect.json");
-    await fs.writeFile(tmpPath, serialized, "utf-8");
-    await page.locator("#load-file").setInputFiles(tmpPath);
+    // Activate Directed via accessible label (radio is visually hidden, user cannot click hidden input directly)
+    await page.locator("label:has(#generation-directed)").click();
+    await expect(page.locator("#generation-directed")).toBeChecked();
+    // Ensure required stall remains checked for directed generation
+    const stall = page.locator("#required-stall");
+    if (!(await stall.isChecked())) await stall.check();
+    await expect(stall).toBeChecked();
+    // Fill rectangle footprint via directed DOM controls (canonical order)
+    await page.locator("#footprint-min-x").fill("-260");
+    await page.locator("#footprint-max-x").fill("260");
+    await page.locator("#footprint-min-z").fill("-180");
+    await page.locator("#footprint-max-z").fill("180");
+    await page.locator("#height-min").fill("0");
+    await page.locator("#height-max").fill("100");
+    await page.locator("#seed-input").click();
+    await page.locator("#seed-input").fill("5555");
+    await page.locator("#generate-btn").click();
     await waitForReady(page);
     const snapshot = await page.evaluate(() => {
       const snap = window.__vibecoasterSnapshot?.();
@@ -105,7 +79,29 @@ test.describe("polygon – save/load and directed concave", () => {
       expect(v[1]).toBe(0);
     }
     expect(loadedIntent.heightRange).toEqual({ min: 0, max: 100 });
-    await fs.rm(tmp, { recursive: true, force: true });
+    // Ensure polygon Vec3 order never emits AABB {min,max} object
+    expect(JSON.stringify(payload.intent.footprint).includes('"min"')).toBe(
+      false,
+    );
+    // Reload the just-downloaded file through #load-file to prove browser loader round-trip
+    const reloadTmp = await fs.mkdtemp(path.join(os.tmpdir(), "reload-"));
+    const reloadPath = path.join(reloadTmp, "reload.json");
+    await fs.writeFile(reloadPath, bytes, "utf-8");
+    await page.locator("#load-file").setInputFiles(reloadPath);
+    await waitForReady(page);
+    const reloadSnap = await page.evaluate(() => {
+      const snap = window.__vibecoasterSnapshot?.();
+      return snap
+        ? {
+            footprint: snap.intentFootprint,
+            heightRange: snap.intentHeightRange,
+          }
+        : null;
+    });
+    if (!reloadSnap) throw new Error("reload snapshot missing");
+    expect(reloadSnap.footprint).toEqual(snapshot.footprint);
+    expect(reloadSnap.heightRange).toEqual(snapshot.heightRange);
+    await fs.rm(reloadTmp, { recursive: true, force: true });
     expect(
       obs.consoleAll.filter((m) => m.type === "error" || m.type === "warning"),
     ).toEqual([]);
@@ -115,53 +111,42 @@ test.describe("polygon – save/load and directed concave", () => {
   test("concave polygon order round-trip via file and browser snapshot", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
-    const { createDesignIntentV1, vec3 } =
-      await import("@openvibecoaster/core");
-    const { generateCoaster } = await import("@openvibecoaster/generator");
-    const concavePolygon = [
-      vec3(0, 0, 0),
-      vec3(10, 0, 0),
-      vec3(10, 0, 6),
-      vec3(6, 0, 6),
-      vec3(6, 0, 10),
-      vec3(0, 0, 10),
-    ];
-    const baseIntent = createDesignIntentV1({
-      generatorVersion: "test-polygon",
-      seed: 42,
-      mode: "insta",
-      family: "steel-sitdown-lsm-v1",
-      elements: [],
-      gates: [],
-      targets: [],
-      constraints: [],
-      terrainProfileId: "rolling-highlands-v1",
-      pinnedElementIds: [],
-    });
-    const base = generateCoaster(baseIntent, { name: "concave-base" });
-    const { createCoasterFileV1, serializeCoasterFileV1 } =
-      await import("@openvibecoaster/core");
-    const concaveFile = createCoasterFileV1({
-      name: base.file.name,
-      intent: {
-        ...base.file.intent,
-        footprint: concavePolygon,
-        heightRange: { min: 0, max: 100 },
-      },
-      solvedSpans: base.file.solvedSpans,
-      seed: base.file.seed,
-      generatorVersion: base.file.generatorVersion,
-      profileVersion: base.file.profileVersion,
-      researchSnapshotIds: base.file.researchSnapshotIds,
-      compiledDataChecksum: base.file.compiledDataChecksum,
-    });
-    const serialized = serializeCoasterFileV1(concaveFile);
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "concave-"));
-    const tmpPath = path.join(tmp, "concave.json");
-    await fs.writeFile(tmpPath, serialized, "utf-8");
     await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
+    // Generate base CoasterFile inside Chromium via insta (browser-authenticated, same-runtime)
+    await page.locator("label:has(#generation-insta)").click();
+    await expect(page.locator("#generation-insta")).toBeChecked();
+    await page.locator("#seed-input").click();
+    await page.locator("#seed-input").fill("42");
+    await page.locator("#generate-btn").click();
+    await waitForReady(page);
+    // Save base file produced by Chromium engine and read its bytes in Playwright
+    const baseDownloadPromise = page.waitForEvent("download");
+    await page.locator("#save-btn").click();
+    const baseDownload = await baseDownloadPromise;
+    const basePath = await baseDownload.path();
+    if (!basePath) throw new Error("base download missing");
+    const baseBytes = await fs.readFile(basePath, "utf-8");
+    const basePayload = JSON.parse(baseBytes) as Record<string, unknown>;
+    // Mutate ONLY intent footprint/heightRange in Node, keep browser-produced solvedSpans/checksum untouched
+    const concavePolygon: [number, number, number][] = [
+      [0, 0, 0],
+      [10, 0, 0],
+      [10, 0, 6],
+      [6, 0, 6],
+      [6, 0, 10],
+      [0, 0, 10],
+    ];
+    const intent = basePayload.intent as Record<string, unknown>;
+    intent.footprint = concavePolygon;
+    intent.heightRange = { min: 0, max: 100 };
+    const mutated = JSON.stringify(basePayload);
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "concave-"));
+    const tmpPath = path.join(tmp, "concave.json");
+    await fs.writeFile(tmpPath, mutated, "utf-8");
+    // Load mutated file back into SAME Chromium runtime
     await page.locator("#load-file").setInputFiles(tmpPath);
     await waitForReady(page);
     const snapshot = await page.evaluate(() => {
@@ -213,62 +198,46 @@ test.describe("polygon – save/load and directed concave", () => {
     assertNoObservability(obs, "polygon-concave");
   });
 
-  test("gate inside concave AABB but outside notch rejected in browser with exact evidence", async ({
+  test("gate inside concave AABB but outside notch flagged via browser snapshot contradiction with exact evidence", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
-    const {
-      createDesignIntentV1,
-      vec3,
-      createCoasterFileV1,
-      serializeCoasterFileV1,
-    } = await import("@openvibecoaster/core");
-    const { generateCoaster } = await import("@openvibecoaster/generator");
-    const concavePolygon = [
-      vec3(0, 0, 0),
-      vec3(10, 0, 0),
-      vec3(10, 0, 6),
-      vec3(6, 0, 6),
-      vec3(6, 0, 10),
-      vec3(0, 0, 10),
+    // Browser-authenticated base generation via insta (same-runtime), then intent-only mutation for concave+gates
+    await page.locator("label:has(#generation-insta)").click();
+    await expect(page.locator("#generation-insta")).toBeChecked();
+    await page.locator("#seed-input").click();
+    await page.locator("#seed-input").fill("7");
+    await page.locator("#generate-btn").click();
+    await waitForReady(page);
+    const baseDownloadPromise = page.waitForEvent("download");
+    await page.locator("#save-btn").click();
+    const baseDownload = await baseDownloadPromise;
+    const basePath = await baseDownload.path();
+    if (!basePath) throw new Error("base download missing");
+    const baseBytes = await fs.readFile(basePath, "utf-8");
+    const basePayload = JSON.parse(baseBytes) as Record<string, unknown>;
+    const concavePolygon: [number, number, number][] = [
+      [0, 0, 0],
+      [10, 0, 0],
+      [10, 0, 6],
+      [6, 0, 6],
+      [6, 0, 10],
+      [0, 0, 10],
     ];
-    const baseIntent = createDesignIntentV1({
-      generatorVersion: "test-polygon",
-      seed: 7,
-      mode: "insta",
-      family: "steel-sitdown-lsm-v1",
-      elements: [],
-      gates: [],
-      targets: [],
-      constraints: [],
-      terrainProfileId: "rolling-highlands-v1",
-      pinnedElementIds: [],
-    });
-    const base = generateCoaster(baseIntent, { name: "gate-base" });
-    const gateFile = createCoasterFileV1({
-      name: base.file.name,
-      intent: {
-        ...base.file.intent,
-        footprint: concavePolygon,
-        heightRange: { min: 0, max: 20 },
-        gates: [
-          { id: "gate-000", position: vec3(8, 12, 8) },
-          { id: "gate-001", position: vec3(6, 12, 6) },
-        ],
-      },
-      solvedSpans: base.file.solvedSpans,
-      seed: base.file.seed,
-      generatorVersion: base.file.generatorVersion,
-      profileVersion: base.file.profileVersion,
-      researchSnapshotIds: base.file.researchSnapshotIds,
-      compiledDataChecksum: base.file.compiledDataChecksum,
-    });
-    const serialized = serializeCoasterFileV1(gateFile);
+    const intent = basePayload.intent as Record<string, unknown>;
+    intent.footprint = concavePolygon;
+    intent.heightRange = { min: 0, max: 20 };
+    intent.gates = [
+      { id: "gate-000", position: [8, 12, 8] },
+      { id: "gate-001", position: [6, 12, 6] },
+    ];
+    const mutated = JSON.stringify(basePayload);
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "gate-"));
     const tmpPath = path.join(tmp, "gate.json");
-    await fs.writeFile(tmpPath, serialized, "utf-8");
+    await fs.writeFile(tmpPath, mutated, "utf-8");
     await page.locator("#load-file").setInputFiles(tmpPath);
     await waitForReady(page);
     const snapshot = await page.evaluate(() =>
@@ -306,11 +275,20 @@ test.describe("polygon – save/load and directed concave", () => {
   test("directed rectangle controls remain keyboard reachable and not clipped", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const obs = attachObservability(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
     await page.waitForLoadState("domcontentloaded");
-    await page.locator("#generation-directed").click();
+    // Mobile: generation rail is in a drawer, open it via accessible tab button before activating Directed
+    const leftTab = page.locator('button[data-drawer="left"]');
+    if (await leftTab.isVisible()) {
+      await leftTab.click();
+      await expect(page.locator("#generation-rail")).toBeVisible();
+    }
+    // Activate Directed via accessible label (radio input is visually hidden, never force hidden input click)
+    await page.locator("label:has(#generation-directed)").click();
+    await expect(page.locator("#generation-directed")).toBeChecked();
     await page.keyboard.press("Tab");
     let focusedId = "";
     for (let i = 0; i < 30; i++) {
@@ -348,7 +326,17 @@ test.describe("polygon – save/load and directed concave", () => {
     });
     expect(overflow.visible).toBe(true);
     expect(overflow.clipped).toBe(false);
-    await page.locator("#gate-0-enabled").focus();
+    // Reach gate checkbox via Tab navigation (no direct .focus() — keyboard reachability)
+    let gateFocused = false;
+    for (let i = 0; i < 40; i++) {
+      const id = await page.evaluate(() => document.activeElement?.id ?? "");
+      if (id === "gate-0-enabled") {
+        gateFocused = true;
+        break;
+      }
+      await page.keyboard.press("Tab");
+    }
+    expect(gateFocused).toBe(true);
     await expect(page.locator("#gate-0-enabled")).toBeFocused();
     await page.keyboard.press("Space");
     await expect(page.locator("#gate-0-enabled")).toBeChecked();
