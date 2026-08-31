@@ -5,6 +5,17 @@ import { fileURLToPath } from "node:url";
 export const PORTABLE_WORKER_INVARIANT =
   "Future production workers must be Vite-inlined and Blob-backed so the portable output remains a single-file artifact.";
 
+const threeEntry = fileURLToPath(import.meta.resolve("three"));
+const threeLicense = readFileSync(
+  resolve(dirname(threeEntry), "../LICENSE"),
+  "utf8",
+).trim();
+const thirdPartyNotice = `<!--
+Third-party license: three.js
+
+${threeLicense}
+-->`;
+
 function attribute(tag, name) {
   const match = tag.match(
     new RegExp(
@@ -116,10 +127,19 @@ function inlineScripts(html, distDir) {
   );
 }
 
+function includeThirdPartyNotice(html) {
+  const doctype = /<!doctype html>/i;
+  return doctype.test(html)
+    ? html.replace(doctype, (match) => `${match}\n${thirdPartyNotice}`)
+    : `${thirdPartyNotice}\n${html}`;
+}
+
 export function createPortableHtml({ distDir, inputFile, outputFile }) {
   const html = readFileSync(inputFile, "utf8");
   const withStyles = inlineStyles(html, distDir);
-  const portableHtml = inlineScripts(withStyles, distDir);
+  const portableHtml = includeThirdPartyNotice(
+    inlineScripts(withStyles, distDir),
+  );
   writeFileSync(outputFile, portableHtml, "utf8");
   return portableHtml;
 }

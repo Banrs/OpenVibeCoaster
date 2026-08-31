@@ -53,6 +53,11 @@ describe("portable HTML packager", () => {
       expect(first).not.toMatch(/<script[^>]+src=["'][^"']+["'][^>]*>/i);
       expect(first).toContain("<\\/style>");
       expect(first).toContain("<\\/script>");
+      expect(first).toContain("Third-party license: three.js");
+      expect(first).toContain("Copyright © 2010-2026 three.js authors");
+      expect(first).toContain(
+        "The above copyright notice and this permission notice shall be included",
+      );
       expect(readFileSync(outputFile, "utf8")).toBe(first);
     } finally {
       rmSync(root, { force: true, recursive: true });
