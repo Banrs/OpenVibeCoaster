@@ -1,4 +1,4 @@
-import type { Diagnostic } from "@openvibecoaster/core";
+import type { Diagnostic, Vec3 } from "@openvibecoaster/core";
 import {
   isPointInsidePolygon,
   signedDistanceXZ,
@@ -6,17 +6,26 @@ import {
 } from "@openvibecoaster/core";
 import type { DirectedEditorInput } from "../directedInput.js";
 
+function isXzTuple(value: unknown): value is readonly [number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === "number" &&
+    typeof value[1] === "number" &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1])
+  );
+}
+
 function getPolygonAndHeight(
   footprint: DirectedEditorInput["footprint"],
-): { polygon: ReturnType<typeof vec3>[]; minY: number; maxY: number } | null {
+): { polygon: readonly Vec3[]; minY: number; maxY: number } | null {
   const raw = footprint.polygon;
   if (!Array.isArray(raw) || raw.length < 3) return null;
-  const polygon: ReturnType<typeof vec3>[] = [];
+  const polygon: Vec3[] = [];
   for (const point of raw) {
-    if (!Array.isArray(point) || point.length !== 2) return null;
-    const x = (point as unknown[])[0] as number;
-    const z = (point as unknown[])[1] as number;
-    if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+    if (!isXzTuple(point)) return null;
+    const [x, z] = point;
     polygon.push(vec3(x, 0, z));
   }
   const minY = footprint.minHeightM ?? 0;

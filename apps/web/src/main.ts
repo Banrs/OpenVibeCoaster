@@ -1140,6 +1140,36 @@ const controller = createExperienceController({
   },
 });
 
+declare global {
+  interface Window {
+    __vibecoasterSnapshot?: () => {
+      readonly intent: import("@openvibecoaster/core").DesignIntentV1 | null;
+      readonly intentFootprint:
+        readonly import("@openvibecoaster/core").Vec3[] | undefined;
+      readonly intentHeightRange:
+        import("@openvibecoaster/core").HeightRangeV1 | undefined;
+    };
+    __vibecoasterDetectGate?: (
+      input: DirectedEditorInput,
+    ) => readonly import("@openvibecoaster/core").Diagnostic[];
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__vibecoasterSnapshot = () => {
+    const result =
+      controller.getState().result ?? controller.getState().lastGoodResult;
+    const intent = result?.file.intent ?? null;
+    return {
+      intent,
+      intentFootprint: intent?.footprint,
+      intentHeightRange: intent?.heightRange,
+    };
+  };
+  window.__vibecoasterDetectGate = (input: DirectedEditorInput) =>
+    detectGateContradictions(input);
+}
+
 function syncTelemetryGraphA11y(): void {
   const auth = getAuthoritativeResult();
   const timeline = auth?.timeline ?? null;

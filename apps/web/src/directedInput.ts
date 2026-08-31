@@ -602,9 +602,7 @@ export function createDirectedDesignIntent(input: DirectedEditorInput): {
   // Build canonical footprint polygon [x,0,z] preserving order; Y always zero.
   // Four min/max inputs remain as rectangle authoring convenience via frozen order.
   const footprint: readonly Vec3[] = Object.freeze(
-    copy.footprint.polygon.map(
-      ([x, z]) => Object.freeze(vec3(x, 0, z)) as Vec3,
-    ),
+    copy.footprint.polygon.map(([x, z]) => Object.freeze(vec3(x, 0, z))),
   );
   const minY = copy.footprint.minHeightM ?? 0;
   const maxY = copy.footprint.maxHeightM;

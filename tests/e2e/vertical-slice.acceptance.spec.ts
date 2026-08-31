@@ -516,7 +516,20 @@ test.describe("vertical-slice – persistence", () => {
     test.setTimeout(300_000);
     const obs = attachObservability(page);
     await page.setViewportSize({ width: 1280, height: 800 });
-    await gotoAndGenerateInsta(page, "5555");
+    await page.goto("/");
+    await page.waitForLoadState("domcontentloaded");
+    await page.locator("#generation-directed").click();
+    await page.locator("#required-stall").check();
+    await page.locator("#footprint-min-x").fill("-260");
+    await page.locator("#footprint-max-x").fill("260");
+    await page.locator("#footprint-min-z").fill("-180");
+    await page.locator("#footprint-max-z").fill("180");
+    await page.locator("#height-min").fill("0");
+    await page.locator("#height-max").fill("100");
+    await page.locator("#terrain-profile").selectOption("rolling-highlands-v1");
+    await page.locator("#seed-input").fill("5555");
+    await page.locator("#generate-btn").click();
+    await waitForReady(page);
 
     const preLengthEl = page.locator('[data-testid="track-length"]');
     await expect(preLengthEl).toBeVisible();
@@ -550,7 +563,7 @@ test.describe("vertical-slice – persistence", () => {
     expect(preTelemetry, "data-signature required").not.toBeNull();
     expect(preTelemetry!).toMatch(/^[0-9a-f]{8}-[0-9a-f]{8}-\d+-\d+\.\d{2}$/i);
 
-    const downloadPromise = page.waitForEvent("download", { timeout: 15_000 });
+    const downloadPromise = page.waitForEvent("download");
     await page.locator("#save-btn").click();
     const download = await downloadPromise;
     const dlPath = await download.path();
@@ -569,28 +582,29 @@ test.describe("vertical-slice – persistence", () => {
     const dlChecksum = (json.compiledDataChecksum as string) ?? "";
     expect(dlChecksum).toMatch(/^[0-9a-f]{8}$/i);
     expect(dlChecksum.toLowerCase()).toBe(preChecksum.toLowerCase());
-    // Polygon footprint: save preserves order and never emits {min,max} AABB; heightRange separate
+    // Polygon footprint: save preserves order and never emits {min,max} AABB; heightRange separate (unconditional)
     const intent = (json as { intent: Record<string, unknown> }).intent;
-    if (intent.footprint !== undefined) {
-      expect(Array.isArray(intent.footprint)).toBe(true);
-      const fp = intent.footprint as unknown[];
-      expect(fp.length).toBeGreaterThan(0);
-      // First vertex should be Vec3 with Y=0
-      const first = fp[0] as number[];
-      expect(Array.isArray(first)).toBe(true);
-      expect(first[1]).toBe(0);
-      // Never emits AABB object
-      expect(JSON.stringify(intent.footprint)).not.toContain('"min"');
-      expect(JSON.stringify(intent.footprint)).not.toContain('"max"');
-      if (intent.heightRange !== undefined) {
-        const hr = intent.heightRange as Record<string, unknown>;
-        expect(typeof hr.min).toBe("number");
-        expect(typeof hr.max).toBe("number");
-      }
-    }
+    expect(Array.isArray(intent.footprint)).toBe(true);
+    const fp = intent.footprint as unknown[];
+    expect(fp.length).toBe(4);
+    expect(fp[0]).toEqual([-260, 0, -180]);
+    expect(fp[1]).toEqual([260, 0, -180]);
+    expect(fp[2]).toEqual([260, 0, 180]);
+    expect(fp[3]).toEqual([-260, 0, 180]);
+    for (const v of fp as number[][]) expect(v[1]).toBe(0);
+    expect(JSON.stringify(intent.footprint).includes('"min"')).toBe(false);
+    const hr = intent.heightRange as Record<string, unknown>;
+    expect(hr.min).toBe(0);
+    expect(hr.max).toBe(100);
 
     await page.locator("#load-file").setInputFiles(dlPath as string);
-    await waitForReady(page, 90_000);
+    await waitForReady(page);
+    // After reload, browser snapshot must expose same footprint
+    const snapshot = await page.evaluate(() =>
+      window.__vibecoasterSnapshot?.(),
+    );
+    expect(snapshot?.intentFootprint).toEqual(intent.footprint);
+    expect(snapshot?.intentHeightRange).toEqual(intent.heightRange);
 
     const postChecksum =
       (await page

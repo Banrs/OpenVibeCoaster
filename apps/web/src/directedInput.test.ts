@@ -321,16 +321,20 @@ describe("directed input – DesignIntent mapping", () => {
       footprint: {
         polygon: [
           [0, 0],
-          [1, 1],
-          [1, 0],
+          [2, 0],
+          [2, 2],
+          [0, 2],
           [0, 1],
+          [2, 1],
         ] as unknown as DirectedEditorInput["footprint"]["polygon"],
         maxHeightM: 10,
       },
     };
     const bowErrors = validateDirectedInput(bowTie);
     expect(bowErrors.some((e) => e.field === "footprint.polygon")).toBe(true);
-    expect(bowErrors.some((e) => e.message.length > 0)).toBe(true);
+    expect(
+      bowErrors.some((e) => /crossing|overlapping|touching/i.test(e.message)),
+    ).toBe(true);
     expect(createDirectedDesignIntent(bowTie).intent).toBeNull();
 
     // collinear 3 points on edge + tiny area may still be > epsilon; force degenerate line
@@ -372,14 +376,19 @@ describe("directed input – DesignIntent mapping", () => {
       createDirectedDesignIntent(pentagon);
     expect(pentCreateErrors).toHaveLength(0);
     expect(pentIntent).not.toBeNull();
-    expect(pentIntent!.footprint).toHaveLength(5);
-    expect(pentIntent!.footprint![0]).toEqual([0, 0, 0]);
-    expect(pentIntent!.footprint![1]).toEqual([100, 0, 0]);
-    expect(pentIntent!.footprint![4]).toEqual([0, 0, 50]);
+    if (!pentIntent) throw new Error("pentIntent must be defined");
+    const pentFootprint = pentIntent.footprint;
+    if (!pentFootprint) throw new Error("pentFootprint must be defined");
+    expect(pentFootprint).toHaveLength(5);
+    expect(pentFootprint[0]).toEqual([0, 0, 0]);
+    expect(pentFootprint[1]).toEqual([100, 0, 0]);
+    expect(pentFootprint[4]).toEqual([0, 0, 50]);
     // Y always zero, heightRange separate authoritative
-    for (const v of pentIntent!.footprint!) expect(v[1]).toBe(0);
-    expect(pentIntent!.heightRange!.max).toBe(10);
-    expect(pentIntent!.heightRange!.min).toBe(0);
+    for (const v of pentFootprint) expect(v[1]).toBe(0);
+    const pentHeightRange = pentIntent.heightRange;
+    if (!pentHeightRange) throw new Error("pentHeightRange must be defined");
+    expect(pentHeightRange.max).toBe(10);
+    expect(pentHeightRange.min).toBe(0);
 
     // Concave simple polygon (notch), CW and CCW both valid, order preserved
     const concave: DirectedEditorInput["footprint"]["polygon"] = [
@@ -401,17 +410,21 @@ describe("directed input – DesignIntent mapping", () => {
     const concaveErrors = validateDirectedInput(concaveInput);
     expect(concaveErrors).toHaveLength(0);
     const { intent: concaveIntent } = createDirectedDesignIntent(concaveInput);
-    expect(concaveIntent!.footprint).toHaveLength(6);
-    expect(concaveIntent!.footprint![0]).toEqual([0, 0, 0]);
-    expect(concaveIntent!.footprint![2]).toEqual([10, 0, 6]);
-    for (const v of concaveIntent!.footprint!) expect(v[1]).toBe(0);
-    expect(concaveIntent!.heightRange!.min).toBe(2);
-    expect(concaveIntent!.heightRange!.max).toBe(20);
+    if (!concaveIntent) throw new Error("concaveIntent must be defined");
+    const concaveFootprint = concaveIntent.footprint;
+    if (!concaveFootprint) throw new Error("concaveFootprint must be defined");
+    expect(concaveFootprint).toHaveLength(6);
+    expect(concaveFootprint[0]).toEqual([0, 0, 0]);
+    expect(concaveFootprint[2]).toEqual([10, 0, 6]);
+    for (const v of concaveFootprint) expect(v[1]).toBe(0);
+    const concaveHeightRange = concaveIntent.heightRange;
+    if (!concaveHeightRange)
+      throw new Error("concaveHeightRange must be defined");
+    expect(concaveHeightRange.min).toBe(2);
+    expect(concaveHeightRange.max).toBe(20);
 
     // CW order also valid (reverse)
-    const concaveCW = [
-      ...concave,
-    ].reverse() as unknown as DirectedEditorInput["footprint"]["polygon"];
+    const concaveCW = [...concave].reverse();
     const cwErrors = validateDirectedInput({
       ...validInput,
       footprint: { polygon: concaveCW, maxHeightM: 20 },
@@ -421,8 +434,11 @@ describe("directed input – DesignIntent mapping", () => {
       ...validInput,
       footprint: { polygon: concaveCW, maxHeightM: 20 },
     });
-    expect(cwIntent!.footprint![0]).toEqual([0, 0, 10]);
-    expect(cwIntent!.footprint![5]).toEqual([0, 0, 0]);
+    if (!cwIntent) throw new Error("cwIntent must be defined");
+    const cwFootprint = cwIntent.footprint;
+    if (!cwFootprint) throw new Error("cwFootprint must be defined");
+    expect(cwFootprint[0]).toEqual([0, 0, 10]);
+    expect(cwFootprint[5]).toEqual([0, 0, 0]);
   });
 
   it("preserves polygon order round-trip, maps [x,z]->[x,0,z], rectangle convenience order, separate heightRange", () => {
@@ -438,15 +454,18 @@ describe("directed input – DesignIntent mapping", () => {
       ...validInput,
       footprint: { polygon: orderedPolygon, maxHeightM: 50, minHeightM: 5 },
     });
-    expect(intent!.footprint).toHaveLength(5);
-    expect(intent!.footprint![0]).toEqual([0, 0, 0]);
-    expect(intent!.footprint![1]).toEqual([5, 0, 0]);
-    expect(intent!.footprint![2]).toEqual([5, 0, 5]);
-    expect(intent!.footprint![3]).toEqual([3, 0, 3]);
-    expect(intent!.footprint![4]).toEqual([0, 0, 5]);
+    if (!intent) throw new Error("ordered intent must be defined");
+    expect(intent.footprint).toHaveLength(5);
+    const orderedFootprint = intent.footprint;
+    if (!orderedFootprint) throw new Error("footprint must be defined");
+    expect(orderedFootprint[0]).toEqual([0, 0, 0]);
+    expect(orderedFootprint[1]).toEqual([5, 0, 0]);
+    expect(orderedFootprint[2]).toEqual([5, 0, 5]);
+    expect(orderedFootprint[3]).toEqual([3, 0, 3]);
+    expect(orderedFootprint[4]).toEqual([0, 0, 5]);
     // [x,z]->[x,0,z] mapping: Y always zero, heightRange authoritative
-    for (const v of intent!.footprint!) expect(v[1]).toBe(0);
-    expect(intent!.heightRange).toEqual({ min: 5, max: 50 });
+    for (const v of orderedFootprint) expect(v[1]).toBe(0);
+    expect(intent.heightRange).toEqual({ min: 5, max: 50 });
 
     // Rectangle convenience frozen order: [minX,minZ],[maxX,minZ],[maxX,maxZ],[minX,maxZ]
     const rectMinX = -10,
@@ -463,25 +482,29 @@ describe("directed input – DesignIntent mapping", () => {
       ...validInput,
       footprint: { polygon: rectPolygon, maxHeightM: 30 },
     });
-    expect(rectIntent!.footprint).toEqual([
+    if (!rectIntent) throw new Error("rectIntent must be defined");
+    expect(rectIntent.footprint).toEqual([
       [rectMinX, 0, rectMinZ],
       [rectMaxX, 0, rectMinZ],
       [rectMaxX, 0, rectMaxZ],
       [rectMinX, 0, rectMaxZ],
     ]);
-    expect(rectIntent!.heightRange).toEqual({ min: 0, max: 30 });
+    expect(rectIntent.heightRange).toEqual({ min: 0, max: 30 });
 
     // Save/reload canonical JSON preserves order via design intent (never emits {min,max})
-    const serialized = serializeDesignIntentV1(intent!);
+    if (!intent) throw new Error("intent must be defined");
+    const serialized = serializeDesignIntentV1(intent);
     const parsed = JSON.parse(serialized) as { footprint: unknown };
     expect(Array.isArray(parsed.footprint)).toBe(true);
-    const footprintJson = parsed.footprint as unknown[];
-    expect(footprintJson[0]!).toEqual([0, 0, 0]);
-    expect(footprintJson[1]!).toEqual([5, 0, 0]);
+    const footprintJson = parsed.footprint;
+    if (Array.isArray(footprintJson)) {
+      expect(footprintJson[0]).toEqual([0, 0, 0]);
+      expect(footprintJson[1]).toEqual([5, 0, 0]);
+    }
     const reparsed = parseDesignIntentV1(serialized);
-    expect(reparsed.footprint).toEqual(intent!.footprint);
-    // Full coaster file round-trip also preserves order when using proper spans (tested via helper)
-    expect(intent!.footprint![1]![0]).toBe(5);
+    expect(reparsed.footprint).toEqual(intent.footprint);
+    const second = intent.footprint ? intent.footprint[1] : undefined;
+    if (second) expect(second[0]).toBe(5);
   });
 
   it("never silently drops pinnedElementIds – unknown and duplicate pins error field-specifically", () => {

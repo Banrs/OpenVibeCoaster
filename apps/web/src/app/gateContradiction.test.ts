@@ -247,7 +247,8 @@ describe("detectGateContradictions", () => {
     const notchGate = makeInput([{ position: [8, 82, 8] }], concave);
     const diags = detectGateContradictions(notchGate);
     expect(diags.length).toBe(1);
-    const d = diags[0]!;
+    const d = diags[0];
+    if (!d) throw new Error("diag missing");
     expect(d.code).toBe("GATE_OUTSIDE_FOOTPRINT");
     expect(d.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
     expect(d.margin).toBeLessThan(0);
@@ -255,24 +256,9 @@ describe("detectGateContradictions", () => {
     expect(d.limit).toBe(0);
     // Verify via core classification
     const polyVec3 = concave.polygon.map(([x, z]) => vec3(x, 0, z));
-    expect(
-      isPointInsidePolygon(
-        polyVec3 as unknown as readonly (typeof polyVec3)[number][],
-        vec3(8, 0, 8),
-      ),
-    ).toBe(false);
-    expect(
-      signedDistanceXZ(
-        polyVec3 as unknown as readonly (typeof polyVec3)[number][],
-        vec3(8, 0, 8),
-      ),
-    ).toBeGreaterThan(0);
-    expect(
-      signedDistanceXZ(
-        polyVec3 as unknown as readonly (typeof polyVec3)[number][],
-        vec3(6, 0, 6),
-      ),
-    ).toBe(0);
+    expect(isPointInsidePolygon(polyVec3, vec3(8, 0, 8))).toBe(false);
+    expect(signedDistanceXZ(polyVec3, vec3(8, 0, 8))).toBeGreaterThan(0);
+    expect(signedDistanceXZ(polyVec3, vec3(6, 0, 6))).toBe(0);
 
     // Gate inside polygon but near notch interior (2,2) should be allowed
     expect(
@@ -334,9 +320,7 @@ describe("detectGateContradictions", () => {
       return [x, g[1], z];
     };
     const transformedPolygon: DirectedEditorInput["footprint"] = {
-      polygon: originalPolygon.polygon.map(
-        transform,
-      ) as unknown as typeof originalPolygon.polygon,
+      polygon: originalPolygon.polygon.map(transform),
       maxHeightM: 100,
       minHeightM: 0,
     };
@@ -355,7 +339,9 @@ describe("detectGateContradictions", () => {
       ),
     );
     expect(outsideTransformed.length).toBe(1);
-    expect(outsideTransformed[0]!.margin).toBeLessThan(0);
+    const firstOutside = outsideTransformed[0];
+    if (!firstOutside) throw new Error("outside diag missing");
+    expect(firstOutside.margin).toBeLessThan(0);
     expect(
       detectGateContradictions(
         makeInput(
