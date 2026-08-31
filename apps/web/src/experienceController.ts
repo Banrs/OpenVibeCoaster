@@ -203,24 +203,27 @@ const validateResult = (
     )
       return "track totalLength must be finite positive";
     const timeline = result.timeline;
+    const headDistanceM = timeline.headDistanceM;
+    const timeSeconds = timeline.timeSeconds;
+    const speedMps = timeline.speedMps;
     if (
-      !(timeline.headDistanceM instanceof Float64Array) ||
-      !(timeline.timeSeconds instanceof Float64Array) ||
-      !(timeline.speedMps instanceof Float64Array)
+      !(headDistanceM instanceof Float64Array) ||
+      !(timeSeconds instanceof Float64Array) ||
+      !(speedMps instanceof Float64Array)
     )
       return "timeline arrays must be Float64Array";
     if (timeline.length === 0) return "timeline must not be empty";
     if (!(
-      timeline.headDistanceM.length === timeline.timeSeconds.length &&
-      timeline.timeSeconds.length === timeline.speedMps.length &&
-      timeline.speedMps.length === timeline.length
+      headDistanceM.length === timeSeconds.length &&
+      timeSeconds.length === speedMps.length &&
+      speedMps.length === timeline.length
     ))
       return "timeline arrays must be aligned";
     for (let i = 0; i < timeline.length; i += 1) {
       if (
-        !Number.isFinite(timeline.headDistanceM[i]!) ||
-        !Number.isFinite(timeline.timeSeconds[i]!) ||
-        !Number.isFinite(timeline.speedMps[i]!)
+        !Number.isFinite(headDistanceM[i]!) ||
+        !Number.isFinite(timeSeconds[i]!) ||
+        !Number.isFinite(speedMps[i]!)
       )
         return "timeline arrays must be finite";
     }

@@ -964,3 +964,94 @@ describe("ExperienceController – injection and epochs", () => {
     expect(ctrl.getState().result).toBe(lastGood);
   });
 });
+
+describe("ExperienceController – defensive-copy amplification regression", () => {
+  it("validateResult snapshots timeline getters once per validation (not per sample)", () => {
+    const ctrl = createExperienceController({
+      onGenerate: vi.fn(),
+      onLocalRegenerate: vi.fn(),
+      onCompileLoad: vi.fn(),
+    });
+    const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
+    // Build a timeline with 12 samples to amplify per-iteration cost
+    const length = 12;
+    const timeSeconds = new Float64Array(length);
+    const headDistanceM = new Float64Array(length);
+    const speedMps = new Float64Array(length);
+    for (let i = 0; i < length; i++) {
+      timeSeconds[i] = i * 0.5;
+      headDistanceM[i] = i * 2;
+      speedMps[i] = 10 + i;
+    }
+    const timeline = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds,
+      headDistanceM,
+      speedMps,
+    });
+    const file = makeFile("station-000");
+    const track = compileCoasterFile(file).track;
+    const result: AuthoritativeExperienceResult = {
+      file,
+      track,
+      timeline,
+      diagnostics: [],
+      spanHashes: { "station-000": "hash-a", a: "hash-a" },
+    };
+    // Spy via prototype getter wrapping (instances are frozen, so instance defineProperty fails)
+    const proto = RideTimeline.prototype as unknown as Record<string, unknown>;
+    const descHead = Object.getOwnPropertyDescriptor(
+      proto as object,
+      "headDistanceM",
+    )!;
+    const descTime = Object.getOwnPropertyDescriptor(
+      proto as object,
+      "timeSeconds",
+    )!;
+    const descSpeed = Object.getOwnPropertyDescriptor(
+      proto as object,
+      "speedMps",
+    )!;
+    let headCount = 0;
+    let timeCount = 0;
+    let speedCount = 0;
+    const origHead = descHead.get as () => Float64Array;
+    const origTime = descTime.get as () => Float64Array;
+    const origSpeed = descSpeed.get as () => Float64Array;
+    Object.defineProperty(proto, "headDistanceM", {
+      get() {
+        headCount++;
+        return origHead.call(this);
+      },
+      configurable: true,
+    });
+    Object.defineProperty(proto, "timeSeconds", {
+      get() {
+        timeCount++;
+        return origTime.call(this);
+      },
+      configurable: true,
+    });
+    Object.defineProperty(proto, "speedMps", {
+      get() {
+        speedCount++;
+        return origSpeed.call(this);
+      },
+      configurable: true,
+    });
+    let ok = false;
+    try {
+      ok = ctrl.setResult(result, id);
+    } finally {
+      Object.defineProperty(proto, "headDistanceM", descHead);
+      Object.defineProperty(proto, "timeSeconds", descTime);
+      Object.defineProperty(proto, "speedMps", descSpeed);
+    }
+    expect(ok).toBe(true);
+    // After fix each defensive getter must be copied exactly once per validation (snapshot before loop)
+    // Before fix each was invoked ~ length+2 times turning linear validation into quadratic allocation
+    expect(headCount).toBeLessThanOrEqual(1);
+    expect(timeCount).toBeLessThanOrEqual(1);
+    expect(speedCount).toBeLessThanOrEqual(1);
+  });
+});

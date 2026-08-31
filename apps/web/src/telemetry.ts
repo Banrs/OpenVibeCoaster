@@ -166,30 +166,30 @@ export function getTimelineSeries(
 
   switch (metric) {
     case "speed": {
-      if (timeline.speedMps.length === length)
-        values = Array.from(timeline.speedMps);
+      const speedMps = timeline.speedMps;
+      if (speedMps.length === length) values = Array.from(speedMps);
       else reason = "The authoritative timeline does not contain this series";
       break;
     }
     case "verticalG": {
-      if (timeline.verticalG.length === length)
-        values = Array.from(timeline.verticalG);
+      const verticalG = timeline.verticalG;
+      if (verticalG.length === length) values = Array.from(verticalG);
       else if (timeline.frames.length === length)
         values = timeline.frames.map((f) => f.telemetry.verticalG);
       else reason = "The authoritative timeline does not contain this series";
       break;
     }
     case "lateralG": {
-      if (timeline.lateralG.length === length)
-        values = Array.from(timeline.lateralG);
+      const lateralG = timeline.lateralG;
+      if (lateralG.length === length) values = Array.from(lateralG);
       else if (timeline.frames.length === length)
         values = timeline.frames.map((f) => f.telemetry.lateralG);
       else reason = "The authoritative timeline does not contain this series";
       break;
     }
     case "longitudinalG": {
-      if (timeline.longitudinalG.length === length)
-        values = Array.from(timeline.longitudinalG);
+      const longitudinalG = timeline.longitudinalG;
+      if (longitudinalG.length === length) values = Array.from(longitudinalG);
       else if (timeline.frames.length === length)
         values = timeline.frames.map((f) => f.telemetry.longitudinalG);
       else reason = "The authoritative timeline does not contain this series";
@@ -197,16 +197,19 @@ export function getTimelineSeries(
     }
     case "gForce": {
       // Magnitude of total G vector: derived from per-sample vertical/lateral/longitudinal if available
+      const verticalG = timeline.verticalG;
+      const lateralG = timeline.lateralG;
+      const longitudinalG = timeline.longitudinalG;
       if (
-        timeline.verticalG.length === length &&
-        timeline.lateralG.length === length &&
-        timeline.longitudinalG.length === length
+        verticalG.length === length &&
+        lateralG.length === length &&
+        longitudinalG.length === length
       ) {
         values = [];
         for (let i = 0; i < length; i += 1) {
-          const v = timeline.verticalG[i] ?? 0;
-          const lat = timeline.lateralG[i] ?? 0;
-          const long = timeline.longitudinalG[i] ?? 0;
+          const v = verticalG[i] ?? 0;
+          const lat = lateralG[i] ?? 0;
+          const long = longitudinalG[i] ?? 0;
           values.push(Math.hypot(v, lat, long));
         }
       } else if (timeline.frames.length === length) {
@@ -251,12 +254,13 @@ export function getTimelineSeries(
       }
       if (values === null && track) {
         // Fallback: bankDerivative (rad/m) * signed speed (m/s) = rad/s – correct units, not bank angle
+        // Reuse distances snapshot from arraysFromTimeline to avoid per-sample defensive copy
         const speed = timeline.speedMps;
         if (speed.length === length) {
           const derived: number[] = [];
           for (let i = 0; i < length; i += 1) {
             const s = speed[i]!;
-            const distance = timeline.headDistanceM[i] ?? 0;
+            const distance = distances[i] ?? 0;
             const derivative = interpolateTrackBankDerivative(track, distance);
             if (!Number.isFinite(derivative) || !Number.isFinite(s)) {
               derived.length = 0;

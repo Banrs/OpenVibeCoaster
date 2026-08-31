@@ -63,7 +63,7 @@ import {
   type AllowedRate,
 } from "./app/playbackOptions.js";
 import { createRideAudioEngine, type RideAudioEngine } from "./audio/engine.js";
-import type { RideTimeline } from "@openvibecoaster/simulator";
+import { computeTelemetrySignature } from "./app/telemetrySignature.js";
 
 function el<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -587,32 +587,6 @@ function readDirectedControls(): {
   const { intent, errors: createErrors } =
     createDirectedDesignIntent(builtInput);
   return { intent, errors: createErrors, editorInput: builtInput };
-}
-
-function computeTelemetrySignature(
-  track: CompiledTrackData,
-  timeline: RideTimeline,
-): string {
-  // Use checksum, timeline length, duration, and a stable hash of speed samples
-  const checksum = track.checksum.toLowerCase();
-  const len = timeline.length;
-  const duration = timeline.timeSeconds[len - 1] ?? 0;
-  // simple deterministic hash: FNV-ish over speed + distance
-  let hash = 0x811c9dc5;
-  const update = (v: number) => {
-    const s = v.toFixed(6);
-    for (let i = 0; i < s.length; i++) {
-      hash = Math.imul(hash ^ s.charCodeAt(i), 0x01000193);
-    }
-  };
-  for (let i = 0; i < Math.min(len, 64); i++) {
-    update(timeline.speedMps[i] ?? 0);
-    update(timeline.headDistanceM[i] ?? 0);
-  }
-  update(len);
-  update(duration);
-  const hex = (hash >>> 0).toString(16).padStart(8, "0");
-  return `${checksum}-${hex}-${len}-${duration.toFixed(2)}`;
 }
 
 // DOM population helpers

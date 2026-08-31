@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
-import { compileTrack, vec3, sampleCompiledTrack } from "@openvibecoaster/core";
+import {
+  CompiledTrackData,
+  compileTrack,
+  vec3,
+  sampleCompiledTrack,
+} from "@openvibecoaster/core";
 
 // These imports will fail in red phase – that preserves evidence.
 import { createDeterministicHeightfield, buildTerrainMesh } from "./terrain.js";
@@ -478,5 +483,94 @@ describe("render – absence of second spline / product UI terrain only", () => 
       expect(hasTerrain).toBe(true);
       handle.dispose();
     }
+  });
+});
+
+describe("render – defensive-copy amplification regression", () => {
+  function spyTrackGetters(_data: CompiledTrackData) {
+    const proto = CompiledTrackData.prototype as unknown as Record<
+      string,
+      unknown
+    >;
+    const keys = [
+      "positions",
+      "tangents",
+      "normals",
+      "binormals",
+      "distances",
+      "elementIndices",
+      "elementBoundaries",
+    ] as const;
+    const descriptors: Record<string, PropertyDescriptor> = {};
+    const counts: Record<string, number> = {};
+    for (const key of keys) {
+      const desc = Object.getOwnPropertyDescriptor(proto as object, key);
+      if (!desc?.get) continue;
+      descriptors[key] = desc;
+      counts[key] = 0;
+      Object.defineProperty(proto, key, {
+        get(this: CompiledTrackData) {
+          counts[key]!++;
+          return (desc.get as () => unknown).call(this) as unknown;
+        },
+        configurable: true,
+      });
+    }
+    return {
+      counts,
+      restore() {
+        for (const key of Object.keys(descriptors)) {
+          Object.defineProperty(proto, key, descriptors[key]!);
+        }
+      },
+    };
+  }
+
+  it("buildSupportColumns snapshots positions once, not three times per support", () => {
+    const data = makeSimpleTrack();
+    const env = createDeterministicHeightfield(
+      "supports-regression",
+      16,
+      16,
+      5,
+    );
+    const spy = spyTrackGetters(data);
+    const result = buildSupportColumns(data, env, 10);
+    expect(result.meshes.length).toBeGreaterThan(0);
+    // positions previously copied 3 times per support iteration (~12 for 4 supports)
+    expect(spy.counts.positions).toBeLessThanOrEqual(1);
+    spy.restore();
+  });
+
+  it("buildTrackGeometries snapshots tangents once per build and elementIndices once when selection enabled", () => {
+    const data = makeSimpleTrack();
+    // Without selection, tangents per tie was 3 per tie
+    const spy1 = spyTrackGetters(data);
+    const res1 = buildTrackGeometries(data, { metric: "height" });
+    expect(res1.leftRail).toBeInstanceOf(THREE.BufferGeometry);
+    expect(spy1.counts.tangents).toBeLessThanOrEqual(1);
+    spy1.restore();
+    // With selection enabled, elementIndices was copied per sample
+    const spy2 = spyTrackGetters(data);
+    const res2 = buildTrackGeometries(data, {
+      metric: "height",
+      selectedElementIndex: 0,
+    });
+    expect(res2.leftRail).toBeInstanceOf(THREE.BufferGeometry);
+    expect(spy2.counts.elementIndices).toBeLessThanOrEqual(1);
+    expect(spy2.counts.tangents).toBeLessThanOrEqual(1);
+    spy2.restore();
+  });
+
+  it("supports fallback also snapshots positions once", () => {
+    const data = makeSimpleTrack();
+    // Use env that will trigger fallback path (no hit on first passes)
+    const env = createDeterministicHeightfield("fallback-reg", 4, 4, 0.1);
+    const spy = spyTrackGetters(data);
+    const result = buildSupportColumns(data, env, 1000);
+    // May have zero or one mesh but positions still should be snapshot once
+    expect(spy.counts.positions).toBeLessThanOrEqual(1);
+    expect(result.meshes.length).toBeGreaterThanOrEqual(0);
+    spy.restore();
   });
 });

@@ -16,6 +16,7 @@ import {
   moveTimelineSelection,
   type TimelineMetricId,
 } from "./telemetry.js";
+import { computeTelemetrySignature } from "./app/telemetrySignature.js";
 
 import {
   QuinticScalarSpan,
@@ -423,5 +424,153 @@ describe("telemetry – graph sync and seam", () => {
     // No track -> empty
     const noTrack = getSeamInspection(null, diagnostics, true);
     expect(noTrack.seamDiagnostics).toEqual([]);
+  });
+});
+
+describe("telemetry – defensive-copy amplification regression", () => {
+  function spyTimelineGetters(_timeline: RideTimeline) {
+    const proto = RideTimeline.prototype as unknown as Record<string, unknown>;
+    const descriptors: Record<string, PropertyDescriptor> = {};
+    const counts: Record<string, number> = {};
+    for (const key of [
+      "headDistanceM",
+      "timeSeconds",
+      "speedMps",
+      "verticalG",
+      "lateralG",
+      "longitudinalG",
+      "jerkMps3",
+    ] as const) {
+      const desc = Object.getOwnPropertyDescriptor(proto as object, key);
+      if (!desc?.get) continue;
+      descriptors[key] = desc;
+      counts[key] = 0;
+      Object.defineProperty(proto, key, {
+        get(this: RideTimeline) {
+          counts[key]!++;
+          return (desc.get as () => Float64Array).call(this);
+        },
+        configurable: true,
+      });
+    }
+    return {
+      counts,
+      restore() {
+        for (const key of Object.keys(descriptors)) {
+          Object.defineProperty(proto, key, descriptors[key]!);
+        }
+      },
+    };
+  }
+
+  it("gForce path snapshots vertical/lateral/longitudinal G once each, not per sample", () => {
+    const timeline = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0, 1, 2, 3]),
+      headDistanceM: new Float64Array([0, 10, 20, 30]),
+      speedMps: new Float64Array([5, 6, 7, 8]),
+      longitudinalG: new Float64Array([0.1, 0.2, 0.3, 0.4]),
+      lateralG: new Float64Array([0.05, 0.06, 0.07, 0.08]),
+      verticalG: new Float64Array([1, 1.1, 1.2, 1.3]),
+      frames: [],
+    });
+    const track = straightTrack();
+    const spy = spyTimelineGetters(timeline);
+    const series = getTimelineSeries(timeline, "gForce", track);
+    expect(series.available).toBe(true);
+    // gForce previously did 3 copies per sample (12 for length 4) plus length checks
+    expect(spy.counts.verticalG).toBeLessThanOrEqual(1);
+    expect(spy.counts.lateralG).toBeLessThanOrEqual(1);
+    expect(spy.counts.longitudinalG).toBeLessThanOrEqual(1);
+    spy.restore();
+  });
+
+  it("speed metric copies speedMps exactly once (not twice for length check + Array.from)", () => {
+    const timeline = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0, 1, 2, 3, 4]),
+      headDistanceM: new Float64Array([0, 10, 20, 30, 40]),
+      speedMps: new Float64Array([5, 6, 7, 8, 9]),
+      frames: [],
+    });
+    const track = straightTrack();
+    const spy = spyTimelineGetters(timeline);
+    const series = getTimelineSeries(timeline, "speed", track);
+    expect(series.available).toBe(true);
+    expect(spy.counts.speedMps).toBeLessThanOrEqual(1);
+    spy.restore();
+  });
+
+  it("rollRate fallback reuses distances snapshot and does not re-read headDistanceM per sample", () => {
+    const track = straightTrack();
+    // timeline without frames to force fallback bankDerivative * speed
+    const timeline = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0, 1, 2, 3]),
+      headDistanceM: new Float64Array([0, 10, 20, 30]),
+      speedMps: new Float64Array([5, 5, 5, 5]),
+      frames: [],
+    });
+    const spy = spyTimelineGetters(timeline);
+    const series = getTimelineSeries(timeline, "rollRate", track);
+    expect(series.available).toBe(true);
+    // arraysFromTimeline already does one headDistanceM copy; fallback must not do per-sample copies
+    // Total headDistanceM copies must be <=1 (the one from arraysFromTimeline via distances)
+    // Speed may be one copy
+    expect(spy.counts.headDistanceM).toBeLessThanOrEqual(1);
+    expect(spy.counts.speedMps).toBeLessThanOrEqual(1);
+    spy.restore();
+  });
+
+  it("verticalG/lateralG/longitudinalG do not double-copy when frames fallback not needed", () => {
+    const timeline = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds: new Float64Array([0, 1, 2, 3]),
+      headDistanceM: new Float64Array([0, 10, 20, 30]),
+      speedMps: new Float64Array([5, 6, 7, 8]),
+      verticalG: new Float64Array([1, 1, 1, 1]),
+      lateralG: new Float64Array([0, 0, 0, 0]),
+      longitudinalG: new Float64Array([0, 0, 0, 0]),
+      frames: [],
+    });
+    const track = straightTrack();
+    const spy = spyTimelineGetters(timeline);
+    const v = getTimelineSeries(timeline, "verticalG", track);
+    expect(v.available).toBe(true);
+    expect(spy.counts.verticalG).toBeLessThanOrEqual(1);
+    spy.restore();
+    const spy2 = spyTimelineGetters(timeline);
+    const lat = getTimelineSeries(timeline, "lateralG", track);
+    expect(lat.available).toBe(true);
+    expect(spy2.counts.lateralG).toBeLessThanOrEqual(1);
+    spy2.restore();
+  });
+
+  it("computeTelemetrySignature snapshots speedMps/headDistanceM/timeSeconds once per 64-sample hash (not 128 copies)", () => {
+    const track = straightTrack();
+    const length = 70;
+    const timeSeconds = new Float64Array(length);
+    const headDistanceM = new Float64Array(length);
+    const speedMps = new Float64Array(length);
+    for (let i = 0; i < length; i++) {
+      timeSeconds[i] = i * 0.5;
+      headDistanceM[i] = i * 2;
+      speedMps[i] = 10 + i;
+    }
+    const timeline = new RideTimeline({
+      sampleRateHz: 10,
+      timeSeconds,
+      headDistanceM,
+      speedMps,
+    });
+    const spy = spyTimelineGetters(timeline);
+    const sig = computeTelemetrySignature(track, timeline);
+    expect(typeof sig).toBe("string");
+    expect(sig.length).toBeGreaterThan(0);
+    // Previously 64 iterations each did timeline.speedMps and timeline.headDistanceM copies => 128 copies + timeSeconds once
+    expect(spy.counts.speedMps).toBeLessThanOrEqual(1);
+    expect(spy.counts.headDistanceM).toBeLessThanOrEqual(1);
+    expect(spy.counts.timeSeconds).toBeLessThanOrEqual(1);
+    spy.restore();
   });
 });

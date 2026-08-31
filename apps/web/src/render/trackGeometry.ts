@@ -215,6 +215,8 @@ export function buildTrackGeometries(
   const positions = data.positions;
   const normalsArr = data.normals;
   const binormalsArr = data.binormals;
+  const tangentsArr = data.tangents;
+  const elementIndicesArr = data.elementIndices;
 
   const metricRes = resolveMetricAvailability(data, metric, options.metricData);
   const available = metricRes.available;
@@ -231,7 +233,7 @@ export function buildTrackGeometries(
 
   const isSelected = (idx: number): boolean => {
     if (options.selectedElementIndex === undefined) return false;
-    return data.elementIndices[idx] === options.selectedElementIndex;
+    return elementIndicesArr[idx] === options.selectedElementIndex;
   };
   const seamSet = new Set<number>();
   const elementBoundaries = data.elementBoundaries;
@@ -364,9 +366,9 @@ export function buildTrackGeometries(
         const px = positions[i * 3] ?? 0;
         const py = positions[i * 3 + 1] ?? 0;
         const pz = positions[i * 3 + 2] ?? 0;
-        const tx = data.tangents[i * 3] ?? 0;
-        const ty = data.tangents[i * 3 + 1] ?? 0;
-        const tz = data.tangents[i * 3 + 2] ?? 0;
+        const tx = tangentsArr[i * 3] ?? 0;
+        const ty = tangentsArr[i * 3 + 1] ?? 0;
+        const tz = tangentsArr[i * 3 + 2] ?? 0;
         const nx = normalF32[i * 3] ?? 0;
         const ny = normalF32[i * 3 + 1] ?? 0;
         const nz = normalF32[i * 3 + 2] ?? 0;

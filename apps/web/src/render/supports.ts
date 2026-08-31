@@ -19,14 +19,15 @@ export function buildSupportColumns(
   const meshes: THREE.Mesh[] = [];
   const trackPoints: ReturnType<typeof vec3>[] = [];
   const heights: number[] = [];
+  const positions = data.positions;
   const count = data.distances.length;
   const step = Math.max(1, Math.floor(interval));
   const direction = vec3(0, -1, 0);
   try {
     for (let i = 0; i < count; i += step) {
-      const x = data.positions[i * 3];
-      const y = data.positions[i * 3 + 1];
-      const z = data.positions[i * 3 + 2];
+      const x = positions[i * 3];
+      const y = positions[i * 3 + 1];
+      const z = positions[i * 3 + 2];
       const origin = vec3(x, y, z);
       const hit = env.raycast(origin, direction, 1000);
       if (!hit) continue;
@@ -81,9 +82,9 @@ export function buildSupportColumns(
     // Always ensure at least one support if possible (for tests near terrain)
     if (meshes.length === 0) {
       // fallback: first point regardless of height threshold with capped visual
-      const x = data.positions[0];
-      const y = data.positions[1];
-      const z = data.positions[2];
+      const x = positions[0];
+      const y = positions[1];
+      const z = positions[2];
       const origin = vec3(x, y, z);
       const hit = env.raycast(origin, direction, 1000);
       if (hit) {
