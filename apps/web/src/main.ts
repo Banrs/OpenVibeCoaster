@@ -1912,6 +1912,11 @@ function __vibecoasterSnapshot(): Readonly<{
   intentFootprint: readonly import("@openvibecoaster/core").Vec3[] | undefined;
   intentHeightRange: import("@openvibecoaster/core").HeightRangeV1 | undefined;
   gateContradictions: readonly import("@openvibecoaster/core").Diagnostic[];
+  playbackHeadDistanceM: number | null;
+  playbackIsPlaying: boolean | null;
+  playbackRate: number | null;
+  playbackCamera: string | null;
+  trackLengthM: number | null;
 }> {
   const cam = lifecycle.getCamera();
   const loaded =
@@ -1945,6 +1950,8 @@ function __vibecoasterSnapshot(): Readonly<{
     };
     gateContradictions = detectGateContradictions(input);
   }
+  const playbackSnap = ridePlayback?.getSnapshot() ?? null;
+  const track = loaded?.track ?? null;
   return Object.freeze({
     rendererReady: lifecycle.isRendererReady(),
     successfulRenderCount: lifecycle.getSuccessfulRenderCount(),
@@ -1958,6 +1965,11 @@ function __vibecoasterSnapshot(): Readonly<{
     intentFootprint,
     intentHeightRange,
     gateContradictions,
+    playbackHeadDistanceM: playbackSnap ? playbackSnap.headDistanceM : null,
+    playbackIsPlaying: playbackSnap ? playbackSnap.isPlaying : null,
+    playbackRate: playbackSnap ? playbackSnap.rate : null,
+    playbackCamera: playbackSnap ? playbackSnap.camera : null,
+    trackLengthM: track ? track.totalLength : null,
   });
 }
 window.__vibecoasterSnapshot = __vibecoasterSnapshot;

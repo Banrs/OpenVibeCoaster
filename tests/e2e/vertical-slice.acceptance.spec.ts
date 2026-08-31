@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import {
   assertNoObservability,
@@ -10,6 +10,53 @@ import {
   waitForRAF,
   waitForReady,
 } from "./acceptance-helpers.js";
+type Snapshot = {
+  cameraX: number;
+  cameraY: number;
+  cameraZ: number;
+  playbackHeadDistanceM: number | null;
+  playbackIsPlaying: boolean | null;
+  playbackRate: number | null;
+  playbackCamera: string | null;
+  trackLengthM: number | null;
+  intentFootprint?: unknown;
+  intentHeightRange?: unknown;
+};
+
+async function snap(page: Page): Promise<Snapshot> {
+  return (await page.evaluate(
+    () =>
+      (
+        window as unknown as { __vibecoasterSnapshot?: () => Snapshot }
+      ).__vibecoasterSnapshot?.() as Snapshot,
+  )) as Snapshot;
+}
+
+async function domDistance(page: Page): Promise<number> {
+  const raw = await page
+    .locator('[data-testid="train-position"]')
+    .getAttribute("data-distance-m");
+  return raw ? Number.parseFloat(raw) : NaN;
+}
+
+async function headM(page: Page): Promise<number | null> {
+  return (await snap(page)).playbackHeadDistanceM;
+}
+
+async function playing(page: Page): Promise<boolean | null> {
+  return (await snap(page)).playbackIsPlaying;
+}
+
+async function playbackRate(page: Page): Promise<number | null> {
+  return (await snap(page)).playbackRate;
+}
+
+async function cleanupDownload(path: string | null): Promise<void> {
+  if (!path) return;
+  try {
+    await fs.unlink(path);
+  } catch {}
+}
 
 test.describe("vertical-slice – insta generate to ride", () => {
   test("flow1: Insta -> ready diagnostics -> front-seat ride, 1.6-2.2km, 80m inverted top-hat, duration>5s, controls enabled", async ({
@@ -108,46 +155,187 @@ test.describe("vertical-slice – ride controls", () => {
     const obs = attachObservability(page);
     await page.setViewportSize({ width: 1280, height: 800 });
     await gotoAndGenerateInsta(page, "2026");
-
+    const pauseBtn = page.locator("#pause-btn");
+    await expect(pauseBtn).toBeEnabled();
+    if ((await playing(page)) === true) {
+      await pauseBtn.click();
+      await expect
+        .poll(async () => await playing(page), { timeout: 5_000 })
+        .toBe(false);
+    }
+    await expect
+      .poll(async () => await playing(page), { timeout: 5_000 })
+      .toBe(false);
+    const positions: Array<[number, number, number]> = [];
     for (const cam of ["front", "middle", "rear", "chase", "orbit"] as const) {
       await page.locator(`input[name="camera"][value="${cam}"]`).click();
       await expect(
         page.locator(`input[name="camera"][value="${cam}"]`),
       ).toBeChecked();
+      await expect
+        .poll(
+          async () => {
+            const v = await snap(page);
+            return Number.isFinite(v.cameraX) &&
+              Number.isFinite(v.cameraY) &&
+              Number.isFinite(v.cameraZ)
+              ? `${v.cameraX},${v.cameraY},${v.cameraZ}`
+              : null;
+          },
+          { timeout: 5_000 },
+        )
+        .not.toBeNull();
+      const v = await snap(page);
+      positions.push([v.cameraX, v.cameraY, v.cameraZ]);
+      if (v.playbackCamera !== null) expect(v.playbackCamera).toBe(cam);
     }
-
-    const pauseBtn = page.locator("#pause-btn");
-    await expect(pauseBtn).toBeEnabled();
-    const beforePressed = await pauseBtn.getAttribute("aria-pressed");
-    const beforeText = await pauseBtn.textContent();
+    const dist = (a: [number, number, number], b: [number, number, number]) =>
+      Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    for (let i = 1; i < positions.length; i += 1) {
+      expect(dist(positions[i - 1]!, positions[i]!)).toBeGreaterThan(0.5);
+    }
+    let maxSpread = 0;
+    for (let i = 0; i < positions.length; i += 1)
+      for (let j = i + 1; j < positions.length; j += 1)
+        maxSpread = Math.max(maxSpread, dist(positions[i]!, positions[j]!));
+    expect(maxSpread).toBeGreaterThan(5);
+    const pausedHead = (await headM(page))!;
+    const pausedDom = await domDistance(page);
+    expect(Number.isFinite(pausedHead)).toBe(true);
+    await expect
+      .poll(
+        async () => {
+          const cur = await snap(page);
+          const d = await domDistance(page);
+          return (
+            cur.playbackHeadDistanceM !== null &&
+            Math.abs(cur.playbackHeadDistanceM - pausedHead) < 1e-6 &&
+            Math.abs(d - pausedDom) < 1e-6
+          );
+        },
+        { timeout: 1_000 },
+      )
+      .toBe(true);
     await pauseBtn.click();
-    expect(await pauseBtn.getAttribute("aria-pressed")).not.toBe(beforePressed);
-    expect(await pauseBtn.textContent()).not.toBe(beforeText);
+    await expect
+      .poll(async () => await playing(page), { timeout: 5_000 })
+      .toBe(true);
+    await expect
+      .poll(async () => (await headM(page))! > pausedHead + 1, {
+        timeout: 5_000,
+      })
+      .toBe(true);
+    const afterHead = (await headM(page))!;
+    expect(afterHead).toBeGreaterThan(pausedHead);
+    expect(await domDistance(page)).toBeGreaterThan(pausedDom);
+    await expect
+      .poll(async () => (await headM(page))! > afterHead + 0.5, {
+        timeout: 3_000,
+      })
+      .toBe(true);
     await pauseBtn.click();
-    expect(await pauseBtn.getAttribute("aria-pressed")).toBe(beforePressed);
-
+    await expect
+      .poll(async () => await playing(page), { timeout: 5_000 })
+      .toBe(false);
     const scrubber = page.locator("#scrubber");
-    const scrubValue = page.locator(".scrubber-value");
     await expect(scrubber).toBeEnabled();
-    const startVal = await scrubber.inputValue();
-    await scrubber.focus();
-    await page.keyboard.press("ArrowRight");
+    const before = (await headM(page))!;
     await scrubber.fill("500");
-    expect(await scrubber.inputValue()).not.toBe(startVal);
-    await expect(scrubValue).toContainText("500");
+    await expect
+      .poll(async () => Math.abs((await headM(page))! - before) > 1, {
+        timeout: 3_000,
+      })
+      .toBe(true);
+    await expect(page.locator(".scrubber-value")).toContainText("500");
+    const mid = (await headM(page))!;
+    expect(Math.abs((await domDistance(page)) - mid)).toBeLessThan(1);
     await scrubber.fill("200");
-    expect(await scrubber.inputValue()).toBe("200");
-
-    const speed = page.locator("#playback-speed");
-    for (const v of ["0.25", "0.5", "1", "2"] as const) {
-      await speed.selectOption(v);
-      await expect(speed).toHaveValue(v);
-    }
-
+    await expect
+      .poll(async () => (await headM(page)) !== mid, { timeout: 3_000 })
+      .toBe(true);
+    await expect(scrubber).toHaveValue("200");
+    await scrubber.fill("0");
+    await expect(scrubber).toHaveValue("0");
+    await expect
+      .poll(
+        async () => {
+          const h = await headM(page);
+          return h !== null && Number.isFinite(h);
+        },
+        { timeout: 5_000 },
+      )
+      .toBe(true);
+    const sample0Baseline = (await headM(page))!;
+    expect(Number.isFinite(sample0Baseline)).toBe(true);
+    expect(sample0Baseline).toBeGreaterThan(10);
+    expect(sample0Baseline).toBeLessThan(30);
+    await expect
+      .poll(async () => await playing(page), { timeout: 5_000 })
+      .toBe(false);
+    const measure = async (rate: "0.5" | "2"): Promise<number> => {
+      await scrubber.fill("0");
+      await expect(scrubber).toHaveValue("0");
+      await expect
+        .poll(async () => await playing(page), { timeout: 5_000 })
+        .toBe(false);
+      await page.locator("#playback-speed").selectOption(rate);
+      await expect(page.locator("#playback-speed")).toHaveValue(rate);
+      await expect
+        .poll(async () => await playbackRate(page), { timeout: 5_000 })
+        .toBe(Number(rate));
+      await expect
+        .poll(async () => await playing(page), { timeout: 5_000 })
+        .toBe(false);
+      const start = (await headM(page))!;
+      await pauseBtn.click();
+      await expect
+        .poll(async () => await playing(page), { timeout: 5_000 })
+        .toBe(true);
+      const t0 = Date.now();
+      await expect
+        .poll(
+          async () =>
+            Date.now() - t0 >= 800 && (await headM(page))! > start + 0.5,
+          {
+            timeout: 5_000,
+          },
+        )
+        .toBe(true);
+      const end = (await headM(page))!;
+      await pauseBtn.click();
+      await expect
+        .poll(async () => await playing(page), { timeout: 5_000 })
+        .toBe(false);
+      return Math.max(0, end - start);
+    };
+    const d05 = await measure("0.5");
+    const d20 = await measure("2");
+    expect(d05).toBeGreaterThan(1);
+    expect(d20).toBeGreaterThan(1);
+    expect(d20 / Math.max(1e-6, d05)).toBeGreaterThan(2.2);
+    expect(d20 / Math.max(1e-6, d05)).toBeLessThan(6.5);
     await page.locator("#reset-btn").click();
     await expect(scrubber).toHaveValue("0");
-    await expect(scrubValue).toContainText("0 /");
-
+    await expect
+      .poll(
+        async () => {
+          const cur = await snap(page);
+          const d = await domDistance(page);
+          return (
+            cur.playbackHeadDistanceM !== null &&
+            Math.abs(cur.playbackHeadDistanceM - sample0Baseline) < 0.5 &&
+            Math.abs(d - sample0Baseline) < 0.5 &&
+            cur.playbackIsPlaying === false
+          );
+        },
+        { timeout: 3_000 },
+      )
+      .toBe(true);
+    const hl = await page
+      .locator('[data-testid="track-highlight"]')
+      .getAttribute("data-highlight-distance");
+    expect(hl && Number.isFinite(Number.parseFloat(hl))).toBe(true);
+    expect(Math.abs(Number.parseFloat(hl!) - sample0Baseline)).toBeLessThan(1);
     assertNoObservability(obs, "flow2");
   });
 });
@@ -359,44 +547,29 @@ test.describe("vertical-slice – directed generation", () => {
     await page.waitForLoadState("domcontentloaded");
     await page.locator("#generation-directed").click();
     await expect(page.locator("#generation-directed")).toBeChecked();
-
     const stall = page.locator("#required-stall");
     if (!(await stall.isChecked())) await stall.check();
     await expect(stall).toBeChecked();
-
     await page.locator("#gate-0-enabled").check();
-    await expect(page.locator("#gate-0-enabled")).toBeChecked();
     await page.locator("#gate-0-x").fill("40");
     await page.locator("#gate-0-y").fill("12");
     await page.locator("#gate-0-z").fill("20");
     await page.locator("#gate-0-yaw").fill("5");
     await page.locator("#gate-0-pitch").fill("0");
-
     await page.locator("#footprint-min-x").fill("-260");
     await page.locator("#footprint-max-x").fill("260");
     await page.locator("#footprint-min-z").fill("-180");
     await page.locator("#footprint-max-z").fill("180");
     await page.locator("#height-min").fill("0");
     await page.locator("#height-max").fill("100");
-
-    await expect(
-      page.locator('#terrain-profile option[value="rolling-highlands-v1"]'),
-    ).toHaveCount(1);
     await page.locator("#terrain-profile").selectOption("rolling-highlands-v1");
-    await expect(page.locator("#terrain-profile")).toHaveValue(
-      "rolling-highlands-v1",
-    );
-
     await page.locator("#target-total-length-value").fill("1800");
     await page.locator("#target-total-length-class").selectOption("hard");
     await page.locator("#target-end-y-value").fill("18");
     await page.locator("#target-end-y-class").selectOption("soft");
-
-    await page.locator("#seed-input").click();
     await page.locator("#seed-input").fill("1234");
     await page.locator("#generate-btn").click();
     await waitForReady(page, 90_000);
-
     expect(
       await page
         .locator(
@@ -404,9 +577,74 @@ test.describe("vertical-slice – directed generation", () => {
         )
         .count(),
     ).toBe(0);
-    const relaxCount = await page.locator("#relaxations-list li").count();
-    expect(relaxCount).toBe(0);
-
+    expect(await page.locator("#relaxations-list li").count()).toBe(0);
+    let dlPath: string | null = null;
+    try {
+      const downloadPromise = page.waitForEvent("download");
+      await page.locator("#save-btn").click();
+      const download = await downloadPromise;
+      dlPath = (await download.path()) as string;
+      const bytes = await fs.readFile(dlPath, "utf-8");
+      const payload = parseCoasterFileV1FromBytes(bytes);
+      expect(validateCoasterFileV1SchemaFields(payload)).toEqual([]);
+      const json = payload as Record<string, unknown>;
+      const intent = json.intent as Record<string, unknown>;
+      expect(Array.isArray(intent.footprint)).toBe(true);
+      const fp = intent.footprint as unknown[];
+      expect(fp[0]).toEqual([-260, 0, -180]);
+      expect(fp[1]).toEqual([260, 0, -180]);
+      expect(fp[2]).toEqual([260, 0, 180]);
+      expect(fp[3]).toEqual([-260, 0, 180]);
+      expect(JSON.stringify(intent.footprint).includes('"min"')).toBe(false);
+      const hr = intent.heightRange as Record<string, unknown>;
+      expect(hr.min).toBe(0);
+      expect(hr.max).toBe(100);
+      expect(intent.terrainProfileId).toBe("rolling-highlands-v1");
+      const elements = intent.elements as Array<Record<string, unknown>>;
+      expect(elements.some((e) => e.kind === "stall")).toBe(true);
+      const gates = intent.gates as Array<Record<string, unknown>>;
+      const gate0 = gates.find((g) => g.id === "gate-000") ?? gates[0];
+      expect(gate0!.position).toEqual([40, 12, 20]);
+      const yaw = (5 * Math.PI) / 180;
+      const expectedQ: [number, number, number, number] = [
+        0,
+        Math.sin(yaw / 2),
+        0,
+        Math.cos(yaw / 2),
+      ];
+      const n = Math.hypot(...expectedQ);
+      const normQ = expectedQ.map((v) => v / n) as [
+        number,
+        number,
+        number,
+        number,
+      ];
+      const actualQ = gate0!.orientation as number[];
+      expect(actualQ.length).toBe(4);
+      for (let i = 0; i < 4; i += 1)
+        expect(Math.abs(actualQ[i]! - normQ[i]!)).toBeLessThan(1e-6);
+      expect(Math.hypot(...actualQ).toFixed(4)).toBe("1.0000");
+      const targets = intent.targets as Array<Record<string, unknown>>;
+      const total = targets.find((t) => t.id === "total-length") as Record<
+        string,
+        unknown
+      >;
+      expect(total.kind).toBe("total-length");
+      expect(total.target).toBe(1800);
+      expect(total.hard).toBe(true);
+      const endY = targets.find((t) => t.id === "end-y") as Record<
+        string,
+        unknown
+      >;
+      expect(endY.kind).toBe("end-y");
+      expect(endY.target).toBe(18);
+      expect(endY.hard).toBe(false);
+      const cur = await snap(page);
+      expect(cur.intentFootprint).toEqual(intent.footprint);
+      expect(cur.intentHeightRange).toEqual(intent.heightRange);
+    } finally {
+      await cleanupDownload(dlPath);
+    }
     assertNoObservability(obs, "flow6a");
   });
 
