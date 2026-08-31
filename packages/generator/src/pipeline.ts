@@ -16,8 +16,8 @@ import {
   serializeCoasterFileV1,
   serializeDesignIntentV1,
   serializeSolvedSpanV1,
-  signedDistanceXZ,
   reconstructSolvedSpan,
+  signedDistanceStrictXZ,
   validateDesignIntentV1,
   compileTrack,
   aabbFromPoints,
@@ -817,7 +817,7 @@ const gateDiagnostics = (
         gatePosition,
       );
       if (!inside) {
-        const sd = signedDistanceXZ(
+        const sd = signedDistanceStrictXZ(
           intent.footprint as FootprintPolygon,
           gatePosition,
         );

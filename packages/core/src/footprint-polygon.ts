@@ -314,6 +314,177 @@ export function footprintBounds(polygon: FootprintPolygon): Aabb {
   return aabb(vec3(minX, 0, minZ), vec3(maxX, 0, maxZ));
 }
 
+// --- Strict proof predicates (reuse internals, eps=0, fail-closed) ---
+
+const diameterXZStrict = (polygon: FootprintPolygon): number => {
+  let maxSq = 0;
+  const n = polygon.length;
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      const dx = polygon[i]![0] - polygon[j]![0];
+      const dz = polygon[i]![2] - polygon[j]![2];
+      const d2 = dx * dx + dz * dz;
+      if (d2 > maxSq) maxSq = d2;
+    }
+  }
+  return Math.sqrt(maxSq);
+};
+
+export function isPointInsidePolygonStrict(
+  polygon: FootprintPolygon,
+  point: Vec3,
+): boolean {
+  if (
+    !Number.isFinite(point[0]) ||
+    !Number.isFinite(point[1]) ||
+    !Number.isFinite(point[2])
+  )
+    return false;
+  const x = point[0];
+  const z = point[2];
+  const n = polygon.length;
+  for (let i = 0; i < n; i += 1) {
+    const a = polygon[i]!;
+    const b = polygon[(i + 1) % n]!;
+    const d = pointToSegmentDistanceXZ(x, z, a[0], a[2], b[0], b[2]);
+    if (d === 0) return true;
+  }
+  let inside = false;
+  for (let i = 0; i < n; i += 1) {
+    const a = polygon[i]!;
+    const b = polygon[(i + 1) % n]!;
+    const az = a[2];
+    const bz = b[2];
+    if (az > z !== bz > z) {
+      const xinters = ((b[0] - a[0]) * (z - az)) / (bz - az) + a[0];
+      if (xinters > x) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+export function signedDistanceStrictXZ(
+  polygon: FootprintPolygon,
+  point: Vec3,
+): number {
+  if (
+    !Number.isFinite(point[0]) ||
+    !Number.isFinite(point[1]) ||
+    !Number.isFinite(point[2])
+  )
+    return Number.NaN;
+  const x = point[0];
+  const z = point[2];
+  let minDist = Infinity;
+  const n = polygon.length;
+  for (let i = 0; i < n; i += 1) {
+    const a = polygon[i]!;
+    const b = polygon[(i + 1) % n]!;
+    const d = pointToSegmentDistanceXZ(x, z, a[0], a[2], b[0], b[2]);
+    if (d < minDist) minDist = d;
+  }
+  if (minDist === 0) return 0;
+  const inside = isPointInsidePolygonStrict(polygon, point);
+  return inside ? -minDist : minDist;
+}
+
+export function segmentWithinPolygonStrict(
+  polygon: FootprintPolygon,
+  a: Vec3,
+  b: Vec3,
+): { readonly inside: boolean; readonly witness?: Vec3 } {
+  if (
+    !Array.isArray(a) ||
+    !Array.isArray(b) ||
+    a.length !== 3 ||
+    b.length !== 3 ||
+    !Number.isFinite(a[0]) ||
+    !Number.isFinite(a[1]) ||
+    !Number.isFinite(a[2]) ||
+    !Number.isFinite(b[0]) ||
+    !Number.isFinite(b[1]) ||
+    !Number.isFinite(b[2])
+  ) {
+    return { inside: false };
+  }
+  const diameter = diameterXZStrict(polygon);
+  const ax = a[0];
+  const az = a[2];
+  const bx = b[0];
+  const bz = b[2];
+  const dx = bx - ax;
+  const dz = bz - az;
+  const len2 = dx * dx + dz * dz;
+  if (len2 === 0) {
+    const inside = isPointInsidePolygonStrict(polygon, a);
+    if (inside) return { inside: true };
+    return { inside: false, witness: vec3(ax, 0, az) };
+  }
+  const tValues: number[] = [0, 1];
+  const cross = (ux: number, uz: number, vx: number, vz: number): number =>
+    ux * vz - uz * vx;
+  const n = polygon.length;
+  const epsOrient = Math.max(1e-12, diameter * diameter * 1e-12);
+  for (let i = 0; i < n; i += 1) {
+    const q1 = polygon[i]!;
+    const q2 = polygon[(i + 1) % n]!;
+    const q1x = q1[0];
+    const q1z = q1[2];
+    const q2x = q2[0];
+    const q2z = q2[2];
+    const sX = q2x - q1x;
+    const sZ = q2z - q1z;
+    const rX = dx;
+    const rZ = dz;
+    const rxs = cross(rX, rZ, sX, sZ);
+    const qpx = q1x - ax;
+    const qpz = q1z - az;
+    if (Math.abs(rxs) <= epsOrient) {
+      const qpr = cross(qpx, qpz, rX, rZ);
+      if (Math.abs(qpr) > epsOrient) continue;
+      const dotRR = rX * rX + rZ * rZ;
+      if (!(dotRR > 1e-18)) continue;
+      const t1 = ((q1x - ax) * rX + (q1z - az) * rZ) / dotRR;
+      const t2 = ((q2x - ax) * rX + (q2z - az) * rZ) / dotRR;
+      const tMin = Math.min(t1, t2);
+      const tMax = Math.max(t1, t2);
+      const overlapMin = Math.max(0, tMin);
+      const overlapMax = Math.min(1, tMax);
+      if (overlapMax <= overlapMin) continue;
+      if (overlapMin > 0 && overlapMin < 1) tValues.push(overlapMin);
+      if (overlapMax > 0 && overlapMax < 1) tValues.push(overlapMax);
+      continue;
+    }
+    const t = cross(qpx, qpz, sX, sZ) / rxs;
+    const u = cross(qpx, qpz, rX, rZ) / rxs;
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+      const ct = Math.max(0, Math.min(1, t));
+      if (ct > 0 && ct < 1) tValues.push(ct);
+    }
+  }
+  tValues.sort((l, r) => l - r);
+  const dedup: number[] = [];
+  for (const t of tValues) {
+    if (dedup.length === 0 || t !== dedup[dedup.length - 1]!) dedup.push(t);
+  }
+  if (!isPointInsidePolygonStrict(polygon, a))
+    return { inside: false, witness: vec3(ax, 0, az) };
+  if (!isPointInsidePolygonStrict(polygon, b))
+    return { inside: false, witness: vec3(bx, 0, bz) };
+  for (let i = 0; i < dedup.length - 1; i += 1) {
+    const t0 = dedup[i]!;
+    const t1 = dedup[i + 1]!;
+    const midT = (t0 + t1) / 2;
+    if (!(midT > t0 && midT < t1)) continue;
+    const mx = ax + midT * dx;
+    const mz = az + midT * dz;
+    const mid = vec3(mx, 0, mz);
+    if (!isPointInsidePolygonStrict(polygon, mid))
+      return { inside: false, witness: mid };
+  }
+  return { inside: true };
+}
+
 export function segmentWithinPolygon(
   polygon: FootprintPolygon,
   a: Vec3,

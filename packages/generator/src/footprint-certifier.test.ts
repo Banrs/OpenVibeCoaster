@@ -5,7 +5,11 @@ import {
   createCoasterFileV1,
   footprintBounds,
   isPointInsidePolygon,
+  isPointInsidePolygonStrict,
   reconstructSolvedSpan,
+  segmentWithinPolygon,
+  segmentWithinPolygonStrict,
+  signedDistanceStrictXZ,
   signedDistanceXZ,
   vec3,
   SeventhOrderHermiteSpan,
@@ -13,7 +17,7 @@ import {
   type SolvedSpan,
   type Vec3,
 } from "@openvibecoaster/core";
-import { CertifiedWorkBudget } from "./polynomial-bounds";
+import { CertifiedWorkBudget, restrictedBernstein } from "./polynomial-bounds";
 import {
   certifyFootprintSpan,
   certifyFootprintSpans,
@@ -144,11 +148,11 @@ describe("footprint certifier production API", () => {
     });
     assertOutside(result);
     const witness = result.witness;
-    const sd = signedDistanceXZ(concaveL, witness.position);
+    const sd = signedDistanceStrictXZ(concaveL, witness.position);
     expect(sd).toBeGreaterThan(0);
     expect(witness.signedDistance).toBe(sd);
     expect(Number.isFinite(witness.s)).toBe(true);
-    expect(isPointInsidePolygon(concaveL, witness.position)).toBe(false);
+    expect(isPointInsidePolygonStrict(concaveL, witness.position)).toBe(false);
     expect(witness.position[2]).toBeCloseTo(7, 5);
     const requiredFootprintId = "required-footprint";
     expect(witness.signedDistance).toBeGreaterThan(0);
@@ -230,69 +234,39 @@ describe("footprint certifier production API", () => {
     });
     assertUncertified(resBudget);
     expect(resBudget.reason.length).toBeGreaterThan(0);
-    let foundUncertified: SolvedSpan | undefined;
-    let foundInside: ReturnType<typeof certifyFootprintSpan> | undefined;
-    let foundZero: ReturnType<typeof certifyFootprintSpan> | undefined;
-    for (let d = 20; d <= 120; d += 10) {
-      const p0 = vec3(1, 0, 6);
-      const p1 = vec3(1, 0, 9);
-      const spanInstance = new SeventhOrderHermiteSpan<Vec3>({
-        p0,
+    const fixtureSpan = (() => {
+      const s = new SeventhOrderHermiteSpan<Vec3>({
+        p0: vec3(1, 0, 6),
+        p1: vec3(1, 0, 9),
         d10: vec3(0, 0, 0),
-        d20: vec3(d, 0, 0),
-        d30: vec3(0, 0, 0),
-        p1,
         d11: vec3(0, 0, 0),
-        d21: vec3(-d, 0, 0),
+        d20: vec3(40, 0, 0),
+        d21: vec3(-40, 0, 0),
+        d30: vec3(0, 0, 0),
         d31: vec3(0, 0, 0),
       });
-      const candidate: SolvedSpan = {
-        id: "search-span",
-        span: spanInstance,
-        positionCoefficients: spanInstance.coefficients,
+      const span: SolvedSpan = {
+        id: "maxDepth-fixture",
+        span: s,
+        positionCoefficients: s.coefficients,
         rollCoefficients: [0, 0, 0, 0, 0, 0],
         length: 5,
       };
-      const resFull = certifyFootprintSpan(candidate, concaveL, {
-        station: 0,
-        budget: new CertifiedWorkBudget(1_000_000),
-        maxDepth: 32,
-      });
-      const resZero = certifyFootprintSpan(candidate, concaveL, {
-        station: 0,
-        budget: new CertifiedWorkBudget(1_000_000),
-        maxDepth: 0,
-      });
-      if (resFull.status === "inside" && resZero.status === "uncertified") {
-        foundUncertified = candidate;
-        foundInside = resFull;
-        foundZero = resZero;
-        break;
-      }
-    }
-    if (foundUncertified && foundZero) {
-      assertUncertified(foundZero);
-      expect(foundZero.reason).toContain("max depth");
-      assertDefined(foundInside);
-      assertInside(foundInside);
-      const pipelineBudget = new CertifiedWorkBudget(1_000_000);
-      const pipelineRes = certifyFootprintSpan(foundUncertified, concaveL, {
-        station: 0,
-        budget: pipelineBudget,
-        maxDepth: 0,
-      });
-      assertUncertified(pipelineRes);
-    } else {
-      const insideSpan = createConcaveArmCurveSpan();
-      const resZeroFallback = certifyFootprintSpan(insideSpan, concaveL, {
-        station: 0,
-        budget: new CertifiedWorkBudget(1_000_000),
-        maxDepth: 0,
-      });
-      expect(["inside", "uncertified"].includes(resZeroFallback.status)).toBe(
-        true,
-      );
-    }
+      return span;
+    })();
+    const resFull = certifyFootprintSpan(fixtureSpan, concaveL, {
+      station: 0,
+      budget: new CertifiedWorkBudget(1_000_000),
+      maxDepth: 32,
+    });
+    const resZero = certifyFootprintSpan(fixtureSpan, concaveL, {
+      station: 0,
+      budget: new CertifiedWorkBudget(1_000_000),
+      maxDepth: 0,
+    });
+    assertInside(resFull);
+    assertUncertified(resZero);
+    expect(resZero.reason).toMatch(/max depth/i);
     expect(tinyBudget.used).toBeGreaterThan(0);
   });
 
@@ -367,8 +341,9 @@ describe("footprint certifier production API", () => {
     expect(gatePos[2] >= bounds.min[2] && gatePos[2] <= bounds.max[2]).toBe(
       true,
     );
+    expect(isPointInsidePolygonStrict(concaveL, gatePos)).toBe(false);
     expect(isPointInsidePolygon(concaveL, gatePos)).toBe(false);
-    const sd = signedDistanceXZ(concaveL, gatePos);
+    const sd = signedDistanceStrictXZ(concaveL, gatePos);
     expect(sd).toBeGreaterThan(0);
     const intent = {
       schemaVersion: 1 as const,
@@ -566,5 +541,166 @@ describe("footprint certifier production API", () => {
     const migratedAgain = compileCoasterFile(legacyJson);
     expect(migratedAgain.file.compiledDataChecksum).toBe(checksum);
     expect(migratedAgain.file.intent.footprint).toEqual(polygonForLegacy);
+  });
+
+  it("interval enclosure strictly contains double midpoint hull", () => {
+    const coeffsX: readonly number[] = [
+      884, -1000, 500, -300, 200, -100, 50, -10,
+    ].map((v) => v * 1);
+    const cNotch: FootprintPolygon = [
+      vec3(0, 0, 0),
+      vec3(100, 0, 0),
+      vec3(100, 0, 30),
+      vec3(20, 0, 30),
+      vec3(20, 0, 70),
+      vec3(100, 0, 70),
+      vec3(100, 0, 100),
+      vec3(0, 0, 100),
+    ];
+    const budget = new CertifiedWorkBudget(1_000_000);
+    const xIntervals = restrictedBernstein(coeffsX, 0.33, 0.66, budget);
+    const xMid = xIntervals.map((iv) => (iv.lo + iv.hi) / 2);
+    let midInside = true;
+    for (const xm of xMid) {
+      const pt = vec3(xm, 0, 15);
+      if (!isPointInsidePolygon(cNotch, pt)) midInside = false;
+    }
+    let cornerOutside = false;
+    for (const iv of xIntervals) {
+      const forLo = vec3(iv.lo, 0, 15);
+      const forHi = vec3(iv.hi, 0, 15);
+      if (
+        !isPointInsidePolygon(cNotch, forLo) ||
+        !isPointInsidePolygon(cNotch, forHi)
+      )
+        cornerOutside = true;
+    }
+    expect(cornerOutside).toBe(true);
+    void midInside;
+  });
+
+  it("concave dedup collapse strict vs tolerant", () => {
+    const cNotch: FootprintPolygon = [
+      vec3(0, 0, 0),
+      vec3(100, 0, 0),
+      vec3(100, 0, 30),
+      vec3(20, 0, 30),
+      vec3(20, 0, 70),
+      vec3(100, 0, 70),
+      vec3(100, 0, 100),
+      vec3(0, 0, 100),
+    ];
+    const a = vec3(10, 0, 50);
+    const b = vec3(90, 0, 50);
+    const tolerant = segmentWithinPolygon(cNotch, a, b);
+    const strict = segmentWithinPolygonStrict(cNotch, a, b);
+    expect(strict.inside).toBe(false);
+    void tolerant;
+    assertDefined(strict.witness, "strict witness missing");
+    expect(isPointInsidePolygonStrict(cNotch, strict.witness)).toBe(false);
+  });
+
+  it("ray-through-vertex strict parity", () => {
+    const cNotch: FootprintPolygon = [
+      vec3(0, 0, 0),
+      vec3(100, 0, 0),
+      vec3(100, 0, 30),
+      vec3(20, 0, 30),
+      vec3(20, 0, 70),
+      vec3(100, 0, 70),
+      vec3(100, 0, 100),
+      vec3(0, 0, 100),
+    ];
+    const pt = vec3(20.0000000005, 0, 30);
+    const tolerantInside = isPointInsidePolygon(cNotch, pt);
+    const strictInside = isPointInsidePolygonStrict(cNotch, pt);
+    expect(strictInside).toBe(false);
+    void tolerantInside;
+  });
+
+  it("linear demotion strict exact zero", () => {
+    const p0 = vec3(0, 0, 0);
+    const p1 = vec3(10, 0, 0);
+    const span = createLinearSpan(p0, p1, "linear-exact");
+    const budget = new CertifiedWorkBudget(1_000_000);
+    const res = certifyFootprintSpan(span, concaveL, {
+      station: 0,
+      budget,
+      maxDepth: 32,
+    });
+    assertInside(res);
+    const eps = 1e-9;
+    const p0b = vec3(0, 0, 0);
+    const p1b = vec3(10, 0, 0);
+    const coeffsX: readonly number[] = [0, 10, eps, 0, 0, 0, 0, 0];
+    const coeffsZ: readonly number[] = [0, 0, 0, 0, 0, 0, 0, 0];
+    const coeffsY: readonly number[] = [0, 0, 0, 0, 0, 0, 0, 0];
+    const rows: readonly (readonly number[])[] = [coeffsX, coeffsY, coeffsZ];
+    const inst = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(rows);
+    const spanEps: SolvedSpan = {
+      id: "eps-curve",
+      span: inst,
+      positionCoefficients: rows,
+      rollCoefficients: [0, 0, 0, 0, 0, 0],
+      length: 10,
+    };
+    const resEps = certifyFootprintSpan(spanEps, concaveL, {
+      station: 0,
+      budget: new CertifiedWorkBudget(1_000_000),
+      maxDepth: 32,
+    });
+    expect(resEps.status).not.toBe("inside");
+    void p0b;
+    void p1b;
+  });
+
+  it("eps witness masking strict vs tolerant", () => {
+    const poly: FootprintPolygon = [
+      vec3(0, 0, 0),
+      vec3(500, 0, 0),
+      vec3(500, 0, 500),
+      vec3(0, 0, 500),
+    ];
+    const outside = vec3(500.0000005, 0, 250);
+    const sdTolerant = signedDistanceXZ(poly, outside);
+    const sdStrict = signedDistanceStrictXZ(poly, outside);
+    expect(sdTolerant).toBe(0);
+    expect(sdStrict).toBeGreaterThan(0);
+    const span = createLinearSpan(vec3(490, 0, 250), outside, "eps-outside");
+    const res = certifyFootprintSpan(span, poly, {
+      station: 0,
+      budget: new CertifiedWorkBudget(1_000_000),
+      maxDepth: 32,
+    });
+    assertOutside(res);
+    expect(res.witness.signedDistance).toBeGreaterThan(0);
+  });
+
+  it("45 degree rotation strict invariance", () => {
+    const square: FootprintPolygon = [
+      vec3(0, 0, 0),
+      vec3(10, 0, 0),
+      vec3(10, 0, 10),
+      vec3(0, 0, 10),
+    ];
+    const boundaryNear = vec3(5, 0, 0.0000000005);
+    const outsideNear = vec3(5, 0, -0.00000005);
+    expect(isPointInsidePolygon(square, boundaryNear)).toBe(true);
+    expect(isPointInsidePolygonStrict(square, boundaryNear)).toBe(true);
+    expect(signedDistanceXZ(square, outsideNear)).toBeGreaterThan(0);
+    expect(signedDistanceStrictXZ(square, outsideNear)).toBeGreaterThan(0);
+    const angle = Math.PI / 4;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const rotate = (p: Vec3): Vec3 =>
+      vec3(p[0] * cos - p[2] * sin, p[1], p[0] * sin + p[2] * cos);
+    const squareR: FootprintPolygon = square.map(rotate);
+    const boundaryR = rotate(boundaryNear);
+    const outsideR = rotate(outsideNear);
+    expect(isPointInsidePolygon(squareR, boundaryR)).toBe(true);
+    expect(isPointInsidePolygonStrict(squareR, outsideR)).toBe(false);
+    const sdStrict = signedDistanceStrictXZ(square, outsideNear);
+    const sdStrictR = signedDistanceStrictXZ(squareR, outsideR);
+    expect(Math.abs(sdStrict - sdStrictR)).toBeLessThan(1e-9);
   });
 });

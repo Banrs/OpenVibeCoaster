@@ -31,3 +31,9 @@ export type {
   SweptClearanceSegment,
 } from "./clearance-geometry";
 export { certifiedSweptDistance } from "./clearance-geometry";
+export {
+  certifyFootprintSpan,
+  certifyFootprintSpans,
+  scaffoldFitsFootprintPolygon,
+  type FootprintSpanStatus,
+} from "./footprint-certifier";

@@ -93,7 +93,7 @@ export const nextUp = (value: number): number => {
   return bits.getFloat64(0, false);
 };
 
-interface Interval {
+export interface Interval {
   readonly lo: number;
   readonly hi: number;
 }
@@ -199,7 +199,7 @@ const binomial = (
   return finite(result, "Binomial coefficient");
 };
 
-const restrictedBernstein = (
+export const restrictedBernstein = (
   coefficients: readonly number[],
   start: number,
   end: number,
@@ -256,6 +256,17 @@ const restrictedBernstein = (
     return value;
   });
 };
+
+export const restrictedBernsteinBoxes = (
+  coefficientsX: readonly number[],
+  coefficientsZ: readonly number[],
+  start: number,
+  end: number,
+  budget: CertifiedWorkBudget,
+): { readonly x: readonly Interval[]; readonly z: readonly Interval[] } => ({
+  x: restrictedBernstein(coefficientsX, start, end, budget),
+  z: restrictedBernstein(coefficientsZ, start, end, budget),
+});
 
 const evaluatePolynomial = (
   coefficients: readonly number[],
