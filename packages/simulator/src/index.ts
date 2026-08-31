@@ -73,6 +73,7 @@ interface DynamicsSample {
   readonly totalForce: number;
   readonly accelerationMps2: number;
   readonly activeZones: readonly OperationZone[];
+  readonly staticStictionCapacityN: number;
 }
 
 interface WorkState {
@@ -284,58 +285,6 @@ const gravityVector = (config: SimulatorConfig): Vec3 =>
     "gravityVector",
     "Gravity vector must be finite",
   );
-
-const perCarNormalForceN = (
-  track: CompiledTrackData,
-  config: SimulatorConfig,
-  distanceM: number,
-  massKg: number,
-  carIndex: number,
-): number => {
-  const sample = sampleTrackAtDistance(
-    track,
-    trackDistance(track, config, distanceM),
-  );
-  const gVec = gravityVector(config);
-  const tangentProjection = dot(gVec, sample.tangent);
-  const perp = subtract(gVec, scale(sample.tangent, tangentProjection));
-  const perpMag = Math.hypot(perp[0], perp[1], perp[2]);
-  return checkedFinite(
-    massKg * perpMag,
-    `train.cars[${carIndex}].normal`,
-    "Per-car normal force must be finite",
-  );
-};
-
-const staticStictionCapacityN = (
-  track: CompiledTrackData,
-  config: SimulatorConfig,
-  headDistanceM: number,
-): number => {
-  let total = 0;
-  for (let index = 0; index < config.train.cars.length; index += 1) {
-    const car = config.train.cars[index]!;
-    const distanceM = headDistanceM - index * config.train.spacingM;
-    const normalN = perCarNormalForceN(
-      track,
-      config,
-      distanceM,
-      car.massKg,
-      index,
-    );
-    const capacity = checkedFinite(
-      config.staticStictionCoefficient * normalN,
-      "staticStictionLimitN",
-      "Static stiction limit must be finite",
-    );
-    total = checkedFinite(
-      total + capacity,
-      "staticStictionLimitN",
-      "Static stiction limit must be finite",
-    );
-  }
-  return total;
-};
 
 const vectorIsFiniteAndNonzero = (value: Vec3): boolean =>
   value.every(finite) && Math.hypot(value[0], value[1], value[2]) > 1e-15;
@@ -663,143 +612,6 @@ const forceIsFinite = (force: PerCarForce): boolean =>
     force.net,
   ].every(finite);
 
-const forceAt = (
-  track: CompiledTrackData,
-  config: SimulatorConfig,
-  distanceM: number,
-  speedMps: number,
-  car: CarConfiguration,
-  carCount: number,
-  carIndex: number,
-): PerCarForce => {
-  const forceField = `train.cars[${carIndex}].force`;
-  const sample = sampleTrackAtDistance(
-    track,
-    trackDistance(track, config, distanceM),
-  );
-  const zones = activeZones(track, config, distanceM);
-  const gravity = checkedFinite(
-    car.massKg * dot(gravityVector(config), sample.tangent),
-    `${forceField}.gravity`,
-    "Per-car gravity force must be finite",
-  );
-  const normalN = perCarNormalForceN(
-    track,
-    config,
-    distanceM,
-    car.massKg,
-    carIndex,
-  );
-  const rollingMagnitude = checkedFinite(
-    config.rollingResistanceCoefficient * normalN,
-    `${forceField}.rollingMagnitude`,
-    "Rolling resistance force must be finite",
-  );
-  const rolling =
-    Math.abs(speedMps) > SPEED_EPSILON && rollingMagnitude > 0
-      ? -Math.sign(speedMps) * rollingMagnitude
-      : 0;
-  const drag = checkedFinite(
-    -0.5 *
-      config.airDensityKgPerM3 *
-      (config.dragCdA / carCount) *
-      speedMps *
-      Math.abs(speedMps),
-    `${forceField}.drag`,
-    "Aerodynamic drag force must be finite",
-  );
-  let drive = 0;
-  let brake = 0;
-  let launchActive = false;
-  let brakeActive = false;
-  const addTargetBrake = (target: number, limit: number): void => {
-    if (Math.abs(speedMps) <= target) return;
-    const rawRequested = checkedFinite(
-      config.lsmTargetGainNPerMps * (Math.abs(speedMps) - target),
-      `${forceField}.requestedBrake`,
-      "Requested brake force must be finite",
-    );
-    const capped = Math.min(limit, Math.max(0, rawRequested));
-    brake = checkedFinite(
-      brake - Math.sign(speedMps) * capped,
-      `${forceField}.brake`,
-      "Brake force must be finite",
-    );
-  };
-  for (const zone of zones) {
-    if (zone.kind === "launch" || zone.kind === "boost") {
-      launchActive = true;
-      const target = zone.targetSpeedMps ?? 0;
-      const requested =
-        zone.targetSpeedMps === undefined
-          ? (zone.lsmForcePerCarN ?? config.lsmForcePerCarN)
-          : config.lsmTargetGainNPerMps * (target - speedMps);
-      const checkedRequested = checkedFinite(
-        requested,
-        `${forceField}.requestedDrive`,
-        "Requested drive force must be finite",
-      );
-      const forceLimit = Math.max(
-        0,
-        zone.lsmForcePerCarN ?? config.lsmForcePerCarN,
-      );
-      const powerLimit = Math.max(
-        0,
-        zone.lsmPowerPerCarW ?? config.lsmPowerPerCarW,
-      );
-      const capped = Math.max(
-        -forceLimit,
-        Math.min(forceLimit, checkedRequested),
-      );
-      const powerCapped =
-        Math.abs(speedMps) > SPEED_EPSILON
-          ? Math.sign(capped) *
-            Math.min(Math.abs(capped), powerLimit / Math.abs(speedMps))
-          : capped;
-      drive = checkedFinite(
-        drive + powerCapped,
-        `${forceField}.drive`,
-        "Drive force must be finite",
-      );
-    } else if (zone.kind === "brake") {
-      brakeActive = true;
-      const target = Math.max(0, zone.targetSpeedMps ?? 0);
-      const limit = Math.max(
-        0,
-        zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
-      );
-      addTargetBrake(target, limit);
-    } else if (zone.kind === "station") {
-      if (zone.targetSpeedMps === undefined) continue;
-      brakeActive = true;
-      const target = Math.max(0, zone.targetSpeedMps);
-      const limit = Math.max(
-        0,
-        zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
-      );
-      addTargetBrake(target, limit);
-    }
-  }
-  return {
-    gravity,
-    rolling: checkedFinite(
-      rolling,
-      `${forceField}.rolling`,
-      "Rolling resistance force must be finite",
-    ),
-    drag,
-    drive,
-    brake,
-    net: sumFinite(
-      [gravity, rolling, drag, drive, brake],
-      `${forceField}.net`,
-      "Per-car net force must be finite",
-    ),
-    launchActive,
-    brakeActive,
-  };
-};
-
 const dynamicsAt = (
   track: CompiledTrackData,
   config: SimulatorConfig,
@@ -813,17 +625,149 @@ const dynamicsAt = (
       `Open-track ${violation.kind} distance left [0, ${track.totalLength}] during integration`,
       violation.boundaryM,
     );
-  const forces = config.train.cars.map((car, index) =>
-    forceAt(
+  const gVec = gravityVector(config);
+  const carCount = config.train.cars.length;
+  let staticStictionCapacityN = 0;
+  const forces = config.train.cars.map((car, index) => {
+    const distanceM = headDistanceM - index * config.train.spacingM;
+    const forceField = `train.cars[${index}].force`;
+    const sample = sampleTrackAtDistance(
       track,
-      config,
-      headDistanceM - index * config.train.spacingM,
-      speedMps,
-      car,
-      config.train.cars.length,
-      index,
-    ),
-  );
+      trackDistance(track, config, distanceM),
+    );
+    const zones = activeZones(track, config, distanceM);
+    const gravity = checkedFinite(
+      car.massKg * dot(gVec, sample.tangent),
+      `${forceField}.gravity`,
+      "Per-car gravity force must be finite",
+    );
+    const tangentProjection = dot(gVec, sample.tangent);
+    const perp = subtract(gVec, scale(sample.tangent, tangentProjection));
+    const perpMag = Math.hypot(perp[0], perp[1], perp[2]);
+    const normalN = checkedFinite(
+      car.massKg * perpMag,
+      `train.cars[${index}].normal`,
+      "Per-car normal force must be finite",
+    );
+    const rollingMagnitude = checkedFinite(
+      config.rollingResistanceCoefficient * normalN,
+      `${forceField}.rollingMagnitude`,
+      "Rolling resistance force must be finite",
+    );
+    const rolling =
+      Math.abs(speedMps) > SPEED_EPSILON && rollingMagnitude > 0
+        ? -Math.sign(speedMps) * rollingMagnitude
+        : 0;
+    const drag = checkedFinite(
+      -0.5 *
+        config.airDensityKgPerM3 *
+        (config.dragCdA / carCount) *
+        speedMps *
+        Math.abs(speedMps),
+      `${forceField}.drag`,
+      "Aerodynamic drag force must be finite",
+    );
+    let drive = 0;
+    let brake = 0;
+    let launchActive = false;
+    let brakeActive = false;
+    const addTargetBrake = (target: number, limit: number): void => {
+      if (Math.abs(speedMps) <= target) return;
+      const rawRequested = checkedFinite(
+        config.lsmTargetGainNPerMps * (Math.abs(speedMps) - target),
+        `${forceField}.requestedBrake`,
+        "Requested brake force must be finite",
+      );
+      const capped = Math.min(limit, Math.max(0, rawRequested));
+      brake = checkedFinite(
+        brake - Math.sign(speedMps) * capped,
+        `${forceField}.brake`,
+        "Brake force must be finite",
+      );
+    };
+    for (const zone of zones) {
+      if (zone.kind === "launch" || zone.kind === "boost") {
+        launchActive = true;
+        const target = zone.targetSpeedMps ?? 0;
+        const requested =
+          zone.targetSpeedMps === undefined
+            ? (zone.lsmForcePerCarN ?? config.lsmForcePerCarN)
+            : config.lsmTargetGainNPerMps * (target - speedMps);
+        const checkedRequested = checkedFinite(
+          requested,
+          `${forceField}.requestedDrive`,
+          "Requested drive force must be finite",
+        );
+        const forceLimit = Math.max(
+          0,
+          zone.lsmForcePerCarN ?? config.lsmForcePerCarN,
+        );
+        const powerLimit = Math.max(
+          0,
+          zone.lsmPowerPerCarW ?? config.lsmPowerPerCarW,
+        );
+        const capped = Math.max(
+          -forceLimit,
+          Math.min(forceLimit, checkedRequested),
+        );
+        const powerCapped =
+          Math.abs(speedMps) > SPEED_EPSILON
+            ? Math.sign(capped) *
+              Math.min(Math.abs(capped), powerLimit / Math.abs(speedMps))
+            : capped;
+        drive = checkedFinite(
+          drive + powerCapped,
+          `${forceField}.drive`,
+          "Drive force must be finite",
+        );
+      } else if (zone.kind === "brake") {
+        brakeActive = true;
+        const target = Math.max(0, zone.targetSpeedMps ?? 0);
+        const limit = Math.max(
+          0,
+          zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
+        );
+        addTargetBrake(target, limit);
+      } else if (zone.kind === "station") {
+        if (zone.targetSpeedMps === undefined) continue;
+        brakeActive = true;
+        const target = Math.max(0, zone.targetSpeedMps);
+        const limit = Math.max(
+          0,
+          zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
+        );
+        addTargetBrake(target, limit);
+      }
+    }
+    const capacity = checkedFinite(
+      config.staticStictionCoefficient * normalN,
+      "staticStictionLimitN",
+      "Static stiction limit must be finite",
+    );
+    staticStictionCapacityN = checkedFinite(
+      staticStictionCapacityN + capacity,
+      "staticStictionLimitN",
+      "Static stiction limit must be finite",
+    );
+    return {
+      gravity,
+      rolling: checkedFinite(
+        rolling,
+        `${forceField}.rolling`,
+        "Rolling resistance force must be finite",
+      ),
+      drag,
+      drive,
+      brake,
+      net: sumFinite(
+        [gravity, rolling, drag, drive, brake],
+        `${forceField}.net`,
+        "Per-car net force must be finite",
+      ),
+      launchActive,
+      brakeActive,
+    };
+  });
   const totalForce = sumFinite(
     forces.map((force) => force.net),
     "totalForce",
@@ -840,6 +784,7 @@ const dynamicsAt = (
     totalForce,
     accelerationMps2,
     activeZones: active,
+    staticStictionCapacityN,
   };
 };
 
@@ -850,10 +795,9 @@ const derivative = (
   speedMps: number,
 ): readonly [number, number] => {
   const sample = dynamicsAt(track, config, distanceM, speedMps);
-  const staticLimit = staticStictionCapacityN(track, config, distanceM);
   if (
     Math.abs(speedMps) <= SPEED_EPSILON &&
-    Math.abs(sample.totalForce) <= staticLimit
+    Math.abs(sample.totalForce) <= sample.staticStictionCapacityN
   )
     return [0, 0];
   return [speedMps, sample.accelerationMps2];
@@ -1858,7 +1802,7 @@ export const simulateRide = (
       dynamics.forces.some((force) => force.launchActive),
       dynamics.forces.some((force) => force.brakeActive),
     );
-    const staticLimit = staticStictionCapacityN(track, config, currentDistance);
+    const staticLimit = dynamics.staticStictionCapacityN;
     const computedStatus = statusFor(
       previousSpeed,
       currentSpeed,
@@ -1961,7 +1905,6 @@ export const simulateRide = (
       });
       break;
     }
-    const staticLimit = staticStictionCapacityN(track, config, distanceM);
     if (
       previousSpeed !== 0 &&
       (previousSpeed * speedMps < 0 ||
@@ -1972,7 +1915,8 @@ export const simulateRide = (
           ))
     ) {
       const atRest = dynamicsAt(track, config, distanceM, 0);
-      if (Math.abs(atRest.totalForce) <= staticLimit) speedMps = 0;
+      if (Math.abs(atRest.totalForce) <= atRest.staticStictionCapacityN)
+        speedMps = 0;
     }
     const averageForces = previousDynamics.forces.map((force, index) => {
       const next = nextDynamics.forces[index];

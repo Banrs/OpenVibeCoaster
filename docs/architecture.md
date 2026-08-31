@@ -69,9 +69,12 @@ non-finite evidence yields `CLEARANCE_UNCERTIFIED` or
 The simulator is a constrained point-train model with fixed `dt = 1/240 s`
 (RK4) and timeline sampling at `1/120 s`. Forces per car are gravity,
 rolling resistance, aerodynamic drag, LSM drive (force and power limited), and
-brake. Operation zones (`station`, `block`, `launch`, `boost`, `brake`) are
-half-open intervals. Energy accounting tracks kinetic, potential, drive work,
-loss work, and residual error.
+brake. v1 rolling/static friction uses weight-normal `N=m*|g_perp|` per car;
+dynamic curvature/wheel-load friction is intentionally excluded under the
+existing no-bogie/wheel-contact limitation. Operation zones
+(`station`, `block`, `launch`, `boost`, `brake`) are half-open intervals.
+Energy accounting tracks kinetic, potential, drive work, loss work, and
+residual error.
 
 Environments are `HeightfieldEnvironment` heightfields. The environment
 provides `signedDistance`, `sampleSolid`, `bounds`, `heightAt`, `normalAt`,

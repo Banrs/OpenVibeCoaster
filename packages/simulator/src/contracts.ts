@@ -44,7 +44,9 @@ export interface SimulatorConfig {
   readonly closedTrack?: boolean;
   readonly fixedStepSeconds: number;
   readonly timelineStepSeconds: number;
+  /** v1 uses weight-normal N=m*|g_perp| per car; curvature/wheel-load friction excluded (no bogie/wheel-contact model). */
   readonly rollingResistanceCoefficient: number;
+  /** v1 uses weight-normal N=m*|g_perp| per car; curvature/wheel-load friction excluded (no bogie/wheel-contact model). */
   readonly staticStictionCoefficient: number;
   readonly dragCdA: number;
   readonly airDensityKgPerM3: number;

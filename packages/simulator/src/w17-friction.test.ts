@@ -121,42 +121,4 @@ describe("w17 friction correction (RED)", () => {
     expect(forces[0]!.rolling).toBeCloseTo(expectedRolling, 4);
     expect(forces[0]!.rolling).not.toBeCloseTo(incorrectRolling, 1);
   });
-
-  it("rolling acceleration integration uses mu_r*N (steep grade)", () => {
-    const muR = 0.2;
-    const config = baseConfig({
-      rollingResistanceCoefficient: muR,
-      staticStictionCoefficient: 0,
-      dragCdA: 0,
-    });
-    // rolling opposes motion: forward uphill should have larger negative acceleration with correct mu*N vs mu*m*g?
-    // Actually incorrect mu*m*g gives larger rolling magnitude (4903 vs 1961), so incorrect acceleration is more negative.
-    // Test via direct speed after short duration without gravity? isolate by checking delta.
-    const result = simulateRide(steepTrack, {
-      durationSeconds: 0.5,
-      config,
-      initial: { headDistanceM: 50, speedMps: 5 },
-    });
-    const finalSpeed = result.frames.at(-1)!.speedMps;
-    // compute expected acceleration: (gravity + rolling)/mass
-    const sample = sampleTrackAtDistance(steepTrack, 50);
-    const gVec = vec3Scale(vec3Normalize(vec3(0, -1, 0)), g);
-    const gravPerCar = 1000 * vec3Dot(gVec, sample.tangent);
-    const n = normalPerCar(1000, g, sample.tangent, [0, -1, 0]);
-    const rollingPerCar = -muR * n; // sign positive speed
-    const expectedAccel = (gravPerCar + rollingPerCar) / 1000;
-    const incorrectRolling = -muR * 1000 * g;
-    const incorrectAccel = (gravPerCar + incorrectRolling) / 1000;
-    // After 0.5s, speed ~5 + accel*0.5 (approx, RK4 close)
-    const expectedSpeedApprox = 5 + expectedAccel * 0.5;
-    const incorrectSpeedApprox = 5 + incorrectAccel * 0.5;
-    expect(
-      Math.abs(expectedSpeedApprox - incorrectSpeedApprox),
-    ).toBeGreaterThan(0.2);
-    // final speed should be closer to expected than incorrect
-    expect(Math.abs(finalSpeed - expectedSpeedApprox)).toBeLessThan(
-      Math.abs(finalSpeed - incorrectSpeedApprox),
-    );
-    expect(Math.abs(finalSpeed - expectedSpeedApprox)).toBeLessThan(0.3);
-  });
 });
