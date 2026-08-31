@@ -27,12 +27,18 @@ export interface SweptClearanceSegment {
 export type CertifiedDistanceResult =
   | {
       ok: true;
+      excluded: false;
       lowerM: number;
       upperM: number;
       witnessU: number;
       witnessV: number;
       pointA: Vec3;
       pointB: Vec3;
+      work: number;
+    }
+  | {
+      ok: true;
+      excluded: true;
       work: number;
     }
   | { ok: false; code: "CLEARANCE_UNCERTIFIED"; message: string; work: number };
@@ -166,6 +172,53 @@ function pointToBoxClosest(p: Vec3, box: OrientedBox): Vec3 {
   }
   return r;
 }
+function pointInBox(p: Vec3, box: OrientedBox, eps = 1e-9): boolean {
+  const d = sub(p, box.center);
+  for (let i = 0; i < 3; i += 1) {
+    const proj = dot(d, box.axes[i]!);
+    if (Math.abs(proj) > box.halfExtents[i]! + eps) return false;
+  }
+  return true;
+}
+function segmentObbIntersect(
+  p0: Vec3,
+  p1: Vec3,
+  box: OrientedBox,
+): Vec3 | null {
+  const dir = sub(p1, p0);
+  const diff = sub(p0, box.center);
+  let tMin = 0;
+  let tMax = 1;
+  const EPS_F = 1e-12;
+  for (let i = 0; i < 3; i += 1) {
+    const ax = box.axes[i]!;
+    const e = dot(ax, diff);
+    const f = dot(ax, dir);
+    const h = box.halfExtents[i]!;
+    if (Math.abs(f) < EPS_F) {
+      if (e < -h - 1e-9 || e > h + 1e-9) return null;
+      continue;
+    }
+    let t1 = (-h - e) / f;
+    let t2 = (h - e) / f;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    if (t1 > tMin) tMin = t1;
+    if (t2 < tMax) tMax = t2;
+    if (tMin > tMax + 1e-12) return null;
+  }
+  if (tMin < 0 || tMin > 1) {
+    if (tMin < 0) {
+      if (0 > tMax) return null;
+      tMin = 0;
+    } else return null;
+  }
+  if (tMin > tMax) return null;
+  return add(p0, scale(dir, tMin));
+}
 function getEdges(box: OrientedBox): Array<[Vec3, Vec3]> {
   const edges: Array<[Vec3, Vec3]> = [];
   for (let axis = 0; axis < 3; axis += 1) {
@@ -186,7 +239,7 @@ function getEdges(box: OrientedBox): Array<[Vec3, Vec3]> {
   }
   return edges;
 }
-function segmentClosest(
+export function segmentClosest(
   p0: Vec3,
   p1: Vec3,
   q0: Vec3,
@@ -200,36 +253,30 @@ function segmentClosest(
   const c = dot(v, v);
   const d = dot(u, w);
   const e = dot(v, w);
-  const denom = a * c - b * b;
-  if (denom < 1e-12) {
-    const t = c === 0 ? 0 : Math.max(0, Math.min(1, e / c));
-    const pb = add(q0, scale(v, t));
-    return { pa: p0, pb, dist: len(sub(p0, pb)) };
-  }
-  let sN = b * e - c * d;
-  let tN = a * e - b * d;
-  if (sN < 0) {
-    const t = c === 0 ? 0 : Math.max(0, Math.min(1, e / c));
-    const pb = add(q0, scale(v, t));
-    return { pa: p0, pb, dist: len(sub(p0, pb)) };
-  }
-  if (sN > denom) {
-    const t = c === 0 ? 0 : Math.max(0, Math.min(1, (e + b) / c));
-    const pa = add(p0, scale(u, 1));
-    const pb = add(q0, scale(v, t));
-    return { pa, pb, dist: len(sub(pa, pb)) };
-  }
-  const s = sN / denom;
-  let t = tN / c;
-  if (t < 0) {
-    const s2 = a === 0 ? 0 : Math.max(0, Math.min(1, -d / a));
-    const pa = add(p0, scale(u, s2));
-    return { pa, pb: q0, dist: len(sub(pa, q0)) };
-  }
-  if (t > 1) {
-    const s2 = a === 0 ? 0 : Math.max(0, Math.min(1, (b - d) / a));
-    const pa = add(p0, scale(u, s2));
-    return { pa, pb: q1, dist: len(sub(pa, q1)) };
+  const EPS_D = 1e-12;
+  let s: number;
+  let t: number;
+  if (a <= EPS_D && c <= EPS_D) {
+    s = 0;
+    t = 0;
+  } else if (a <= EPS_D) {
+    s = 0;
+    t = c === 0 ? 0 : Math.max(0, Math.min(1, e / c));
+  } else if (c <= EPS_D) {
+    t = 0;
+    s = Math.max(0, Math.min(1, -d / a));
+  } else {
+    const denom = a * c - b * b;
+    if (denom !== 0) s = Math.max(0, Math.min(1, (b * e - c * d) / denom));
+    else s = 0;
+    t = (b * s + e) / c;
+    if (t < 0) {
+      t = 0;
+      s = Math.max(0, Math.min(1, -d / a));
+    } else if (t > 1) {
+      t = 1;
+      s = Math.max(0, Math.min(1, (b - d) / a));
+    }
   }
   const pa = add(p0, scale(u, s));
   const pb = add(q0, scale(v, t));
@@ -255,19 +302,19 @@ export function staticObbDistance(
   for (let i = 0; i < 3; i += 1) axes.push(b.axes[i]!);
   for (let i = 0; i < 3; i += 1)
     for (let j = 0; j < 3; j += 1) {
-      const c = cross(a.axes[i]!, b.axes[j]!);
-      const l2 = dot(c, c);
-      if (l2 < 1e-14) continue;
-      axes.push(scale(c, 1 / Math.sqrt(l2)));
+      const cc = cross(a.axes[i]!, b.axes[j]!);
+      const l2 = dot(cc, cc);
+      if (l2 === 0) continue;
+      axes.push(scale(cc, 1 / Math.sqrt(l2)));
     }
   const delta = sub(b.center, a.center);
   let separated = false;
   for (const ax of axes) {
     const l = len(ax);
-    if (l < 1e-12) continue;
+    if (l === 0) continue;
     const n = scale(ax, 1 / l);
-    let ra = 0,
-      rb = 0;
+    let ra = 0;
+    let rb = 0;
     for (let i = 0; i < 3; i += 1)
       ra += a.halfExtents[i]! * Math.abs(dot(n, a.axes[i]!));
     for (let i = 0; i < 3; i += 1)
@@ -275,13 +322,27 @@ export function staticObbDistance(
     if (Math.abs(dot(delta, n)) > ra + rb + 1e-9) separated = true;
   }
   if (!separated) {
-    const r = closestFeature(a, b);
-    if (r.dist < 1e-9) return { distance: 0, pointA: r.pa, pointB: r.pb };
-    return {
-      distance: 0,
-      pointA: pointToBoxClosest(b.center, a),
-      pointB: pointToBoxClosest(a.center, b),
-    };
+    const vertsA = getVertices(a);
+    for (const va of vertsA)
+      if (pointInBox(va, b)) return { distance: 0, pointA: va, pointB: va };
+    const vertsB = getVertices(b);
+    for (const vb of vertsB)
+      if (pointInBox(vb, a)) return { distance: 0, pointA: vb, pointB: vb };
+    const edgesA = getEdges(a);
+    for (const [p0, p1] of edgesA) {
+      const ip = segmentObbIntersect(p0, p1, b);
+      if (ip) return { distance: 0, pointA: ip, pointB: ip };
+    }
+    const edgesB = getEdges(b);
+    for (const [q0, q1] of edgesB) {
+      const ip = segmentObbIntersect(q0, q1, a);
+      if (ip) return { distance: 0, pointA: ip, pointB: ip };
+    }
+    if (pointInBox(a.center, b))
+      return { distance: 0, pointA: a.center, pointB: a.center };
+    if (pointInBox(b.center, a))
+      return { distance: 0, pointA: b.center, pointB: b.center };
+    throw new RangeError("SAT intersect but no witness");
   }
   const cf = closestFeature(a, b);
   return { distance: cf.dist, pointA: cf.pa, pointB: cf.pb };
@@ -449,6 +510,35 @@ export function interpolatePose(
   const f = quatToFrame(q);
   return { position: pos, tangent: f.t, normal: f.n, binormal: f.b };
 }
+function conservativeRadius(g: ClearanceTrainGeometry): number {
+  const hx = g.halfWidthM;
+  const maxY = Math.max(g.aboveRailM, g.belowRailM);
+  const hz = g.carPitchM / 2 + g.noseTailMarginM;
+  return Math.sqrt(hx * hx + maxY * maxY + hz * hz);
+}
+function totalAngle(seg: SweptClearanceSegment): number {
+  const qa = quatFromFrame(
+    seg.start.binormal,
+    seg.start.normal,
+    seg.start.tangent,
+  );
+  const qb = quatFromFrame(seg.end.binormal, seg.end.normal, seg.end.tangent);
+  const d = Math.abs(quatDot(qa, qb));
+  return 2 * Math.acos(Math.max(-1, Math.min(1, d)));
+}
+function motionBoundForDelta(
+  seg: SweptClearanceSegment,
+  delta: number,
+): number {
+  const dPos = len(sub(seg.end.position, seg.start.position));
+  const r = conservativeRadius(seg.geometry);
+  const th = totalAngle(seg);
+  const linear = dPos * delta;
+  const angular = 2 * r * Math.sin((th * delta) / 2);
+  const raw = linear + angular;
+  const eps = 1e-12 * (1 + dPos + r) * (1 + th);
+  return raw + eps + 1e-12;
+}
 export function sweptMotionBound(
   seg: SweptClearanceSegment,
   a: number,
@@ -457,32 +547,8 @@ export function sweptMotionBound(
   finiteScalar(a, "a");
   finiteScalar(b, "b");
   if (a > b) throw new RangeError("a must be <= b");
-  const hx = seg.geometry.halfWidthM,
-    hy = (seg.geometry.aboveRailM + seg.geometry.belowRailM) / 2,
-    hz = seg.geometry.carPitchM / 2 + seg.geometry.noseTailMarginM;
-  const r = Math.sqrt(hx * hx + hy * hy + hz * hz);
-  const th =
-    2 *
-    Math.acos(
-      Math.max(
-        -1,
-        Math.min(
-          1,
-          Math.abs(
-            quatDot(
-              quatFromFrame(
-                seg.start.binormal,
-                seg.start.normal,
-                seg.start.tangent,
-              ),
-              quatFromFrame(seg.end.binormal, seg.end.normal, seg.end.tangent),
-            ),
-          ),
-        ),
-      ),
-    );
-  const dPos = len(sub(seg.end.position, seg.start.position));
-  return dPos * ((b - a) / 2) + 2 * r * Math.sin((th * (b - a)) / 4);
+  const delta = (b - a) / 2;
+  return motionBoundForDelta(seg, delta);
 }
 export function openArcIntervalDistance(
   a0: number,
@@ -534,10 +600,7 @@ export function sweptAabb(seg: SweptClearanceSegment): {
   min: Vec3;
   max: Vec3;
 } {
-  const hx = seg.geometry.halfWidthM,
-    hy = (seg.geometry.aboveRailM + seg.geometry.belowRailM) / 2,
-    hz = seg.geometry.carPitchM / 2 + seg.geometry.noseTailMarginM;
-  const r = Math.sqrt(hx * hx + hy * hy + hz * hz);
+  const r = conservativeRadius(seg.geometry);
   return {
     min: vec3(
       Math.min(seg.start.position[0], seg.end.position[0]) - r,
@@ -559,6 +622,21 @@ function sInterval(
   const a = s.startS + (s.endS - s.startS) * u0,
     b = s.startS + (s.endS - s.startS) * u1;
   return [Math.min(a, b), Math.max(a, b)];
+}
+function pointArcDistance(
+  segA: SweptClearanceSegment,
+  segB: SweptClearanceSegment,
+  u: number,
+  v: number,
+  closed: boolean,
+  L: number,
+): number {
+  const sA = segA.startS + (segA.endS - segA.startS) * u;
+  const sB = segB.startS + (segB.endS - segB.startS) * v;
+  if (!closed) return Math.abs(sA - sB);
+  const d = sA - sB;
+  const r = ((d % L) + L) % L;
+  return Math.min(r, L - r);
 }
 export function certifiedSweptDistance(
   segA: SweptClearanceSegment,
@@ -599,8 +677,20 @@ export function certifiedSweptDistance(
   createClearancePose(segB.end);
   createClearanceTrainGeometry(segA.geometry);
   createClearanceTrainGeometry(segB.geometry);
-  let work = 0;
-  type N = {
+  const localityM = opts.localityM;
+  const trackLen = opts.trackLengthM ?? 0;
+  // root wholly local check
+  if (localityM !== undefined) {
+    const [a0, a1] = sInterval(segA, 0, 1);
+    const [b0, b1] = sInterval(segB, 0, 1);
+    const d0 = closed
+      ? closedArcIntervalDistance(a0, a1, b0, b1, trackLen)
+      : openArcIntervalDistance(a0, a1, b0, b1);
+    if (d0.max <= localityM + 1e-12) {
+      return { ok: true, excluded: true, work: 0 };
+    }
+  }
+  type QueueNode = {
     u0: number;
     u1: number;
     v0: number;
@@ -611,68 +701,355 @@ export function certifiedSweptDistance(
     wV: number;
     pa: Vec3;
     pb: Vec3;
+    seq: number;
+    hasWitness: boolean;
   };
-  const evalN = (
+  let work = 0;
+  let seq = 0;
+  let bestUpper = Infinity;
+  let bestWitness: QueueNode | null = null;
+  const queue: QueueNode[] = [];
+  const push = (n: QueueNode): boolean => {
+    if (queue.length >= opts.maxWork) return false;
+    queue.push(n);
+    queue.sort((x, y) =>
+      x.lower === y.lower ? x.seq - y.seq : x.lower - y.lower,
+    );
+    return true;
+  };
+  const findFeasibleSample = (
     u0: number,
     u1: number,
     v0: number,
     v1: number,
-  ): N | null | undefined => {
-    if (opts.localityM !== undefined) {
-      const [a0, a1] = sInterval(segA, u0, u1),
-        [b0, b1] = sInterval(segB, v0, v1);
-      const d = closed
-        ? closedArcIntervalDistance(a0, a1, b0, b1, opts.trackLengthM!)
-        : openArcIntervalDistance(a0, a1, b0, b1);
-      if (d.max <= opts.localityM + 1e-12) return undefined;
+  ): { u: number; v: number } | null => {
+    if (localityM === undefined) return { u: (u0 + u1) / 2, v: (v0 + v1) / 2 };
+    const [a0, a1] = sInterval(segA, u0, u1);
+    const [b0, b1] = sInterval(segB, v0, v1);
+    const d = closed
+      ? closedArcIntervalDistance(a0, a1, b0, b1, trackLen)
+      : openArcIntervalDistance(a0, a1, b0, b1);
+    if (d.max <= localityM + 1e-12) return null;
+    if (d.min > localityM + 1e-12)
+      return { u: (u0 + u1) / 2, v: (v0 + v1) / 2 };
+    const umid = (u0 + u1) / 2;
+    const vmid = (v0 + v1) / 2;
+    const candidates: Array<[number, number]> = [
+      [u0, v0],
+      [u0, v1],
+      [u1, v0],
+      [u1, v1],
+      [umid, v0],
+      [umid, v1],
+      [u0, vmid],
+      [u1, vmid],
+      [umid, vmid],
+    ];
+    for (const [cu, cv] of candidates) {
+      const pd = pointArcDistance(segA, segB, cu, cv, closed, trackLen);
+      if (pd > localityM + 1e-12) return { u: cu, v: cv };
     }
-    const umid = (u0 + u1) / 2,
-      vmid = (v0 + v1) / 2;
-    if (umid === u0 || vmid === v0) throw new RangeError("resolution");
-    const boxA = createOrientedBox(interpolatePose(segA, umid), segA.geometry);
-    const boxB = createOrientedBox(interpolatePose(segB, vmid), segB.geometry);
-    work += 2;
-    if (work > opts.maxWork) return undefined;
+    return null;
+  };
+  const evaluate = (
+    u0: number,
+    u1: number,
+    v0: number,
+    v1: number,
+  ):
+    | { kind: "excluded" }
+    | { kind: "needSubdivide" }
+    | { kind: "ok"; node: QueueNode }
+    | { kind: "budget" } => {
+    const sample = findFeasibleSample(u0, u1, v0, v1);
+    if (sample === null) {
+      // check if wholly local already handled; if straddling with no feasible sample, need subdivide with lower 0
+      const [a0, a1] = sInterval(segA, u0, u1);
+      const [b0, b1] = sInterval(segB, v0, v1);
+      const d = closed
+        ? closedArcIntervalDistance(a0, a1, b0, b1, trackLen)
+        : openArcIntervalDistance(a0, a1, b0, b1);
+      if (d.max <= localityM! + 1e-12) return { kind: "excluded" };
+      return { kind: "needSubdivide" };
+    }
+    if (work + 1 > opts.maxWork) return { kind: "budget" };
+    if (queue.length >= opts.maxWork) return { kind: "budget" };
+    work += 1;
+    const boxA = createOrientedBox(
+      interpolatePose(segA, sample.u),
+      segA.geometry,
+    );
+    const boxB = createOrientedBox(
+      interpolatePose(segB, sample.v),
+      segB.geometry,
+    );
     const sd = staticObbDistance(boxA, boxB);
-    const mA = sweptMotionBound(segA, u0, u1),
-      mB = sweptMotionBound(segB, v0, v1);
-    return {
+    const deltaA = Math.max(Math.abs(sample.u - u0), Math.abs(sample.u - u1));
+    const deltaB = Math.max(Math.abs(sample.v - v0), Math.abs(sample.v - v1));
+    const mA = motionBoundForDelta(segA, deltaA);
+    const mB = motionBoundForDelta(segB, deltaB);
+    const lower = Math.max(0, sd.distance - mA - mB);
+    const node: QueueNode = {
       u0,
       u1,
       v0,
       v1,
-      lower: Math.max(0, sd.distance - mA - mB),
+      lower,
       upper: sd.distance,
-      wU: umid,
-      wV: vmid,
+      wU: sample.u,
+      wV: sample.v,
       pa: sd.pointA,
       pb: sd.pointB,
+      seq: seq++,
+      hasWitness: true,
     };
+    return { kind: "ok", node };
   };
-  const init = evalN(0, 1, 0, 1);
-  if (init === undefined)
+  const rootEval = evaluate(0, 1, 0, 1);
+  if (rootEval.kind === "budget") {
     return {
       ok: false,
       code: "CLEARANCE_UNCERTIFIED",
       message: "budget",
       work,
     };
-  if (!init)
+  }
+  if (rootEval.kind === "excluded") {
+    return { ok: true, excluded: true, work };
+  }
+  if (rootEval.kind === "needSubdivide") {
+    const midU = 0.5;
+    const midV = 0.5;
+    // Choose split dimension by larger motion potential from midpoint sample to interval
+    const mA0 = motionBoundForDelta(segA, 0.5);
+    const mB0 = motionBoundForDelta(segB, 0.5);
+    const splitU = mA0 >= mB0;
+    const children: Array<[number, number, number, number]> = splitU
+      ? [
+          [0, midU, 0, 1],
+          [midU, 1, 0, 1],
+        ]
+      : [
+          [0, 1, 0, midV],
+          [0, 1, midV, 1],
+        ];
+    for (const [u0, u1, v0, v1] of children) {
+      const ev = evaluate(u0, u1, v0, v1);
+      if (ev.kind === "budget")
+        return {
+          ok: false,
+          code: "CLEARANCE_UNCERTIFIED",
+          message: "budget",
+          work,
+        };
+      if (ev.kind === "excluded") continue;
+      if (ev.kind === "needSubdivide") {
+        const ph: QueueNode = {
+          u0,
+          u1,
+          v0,
+          v1,
+          lower: 0,
+          upper: Infinity,
+          wU: (u0 + u1) / 2,
+          wV: (v0 + v1) / 2,
+          pa: vec3(0, 0, 0),
+          pb: vec3(0, 0, 0),
+          seq: seq++,
+          hasWitness: false,
+        };
+        if (!push(ph))
+          return {
+            ok: false,
+            code: "CLEARANCE_UNCERTIFIED",
+            message: "budget",
+            work,
+          };
+        continue;
+      }
+      if (ev.node.upper < bestUpper) {
+        bestUpper = ev.node.upper;
+        bestWitness = ev.node;
+      }
+      if (ev.node.lower < bestUpper - 1e-12) {
+        if (!push(ev.node))
+          return {
+            ok: false,
+            code: "CLEARANCE_UNCERTIFIED",
+            message: "budget",
+            work,
+          };
+      }
+    }
+  } else if (rootEval.kind === "ok") {
+    if (rootEval.node.upper < bestUpper) {
+      bestUpper = rootEval.node.upper;
+      bestWitness = rootEval.node;
+    }
+    if (!push(rootEval.node))
+      return {
+        ok: false,
+        code: "CLEARANCE_UNCERTIFIED",
+        message: "budget",
+        work,
+      };
+  }
+  if (queue.length === 0) {
+    if (bestWitness) {
+      return {
+        ok: true,
+        excluded: false,
+        lowerM: bestWitness.lower,
+        upperM: bestWitness.upper,
+        witnessU: bestWitness.wU,
+        witnessV: bestWitness.wV,
+        pointA: bestWitness.pa,
+        pointB: bestWitness.pb,
+        work,
+      };
+    }
     return {
       ok: false,
       code: "CLEARANCE_UNCERTIFIED",
       message: "budget",
       work,
     };
-  // Simple certified: use midpoint distance as both bounds (tight)
-  return {
-    ok: true,
-    lowerM: init.upper,
-    upperM: init.upper,
-    witnessU: init.wU,
-    witnessV: init.wV,
-    pointA: init.pa,
-    pointB: init.pb,
-    work,
-  };
+  }
+  // best-first loop
+  while (queue.length > 0) {
+    const globalLower = queue[0]!.lower;
+    if (bestWitness && bestUpper - globalLower <= opts.resolutionM + 1e-12) {
+      return {
+        ok: true,
+        excluded: false,
+        lowerM: globalLower,
+        upperM: bestUpper,
+        witnessU: bestWitness.wU,
+        witnessV: bestWitness.wV,
+        pointA: bestWitness.pa,
+        pointB: bestWitness.pb,
+        work,
+      };
+    }
+    const cur = queue.shift()!;
+    if (cur.hasWitness && cur.lower >= bestUpper - 1e-12) continue;
+    if (!cur.hasWitness && cur.lower >= bestUpper - 1e-12) continue;
+    // split cur
+    // compute motion potentials for cur
+    // Use deltas from its witness if has witness else from midpoint
+    let mAcur: number;
+    let mBcur: number;
+    if (cur.hasWitness) {
+      const dA = Math.max(Math.abs(cur.wU - cur.u0), Math.abs(cur.wU - cur.u1));
+      const dB = Math.max(Math.abs(cur.wV - cur.v0), Math.abs(cur.wV - cur.v1));
+      mAcur = motionBoundForDelta(segA, dA);
+      mBcur = motionBoundForDelta(segB, dB);
+    } else {
+      const umid = (cur.u0 + cur.u1) / 2;
+      const vmid = (cur.v0 + cur.v1) / 2;
+      const dA = Math.max(Math.abs(umid - cur.u0), Math.abs(umid - cur.u1));
+      const dB = Math.max(Math.abs(vmid - cur.v0), Math.abs(vmid - cur.v1));
+      mAcur = motionBoundForDelta(segA, dA);
+      mBcur = motionBoundForDelta(segB, dB);
+    }
+    const splitU = mAcur >= mBcur;
+    const midU = (cur.u0 + cur.u1) / 2;
+    const midV = (cur.v0 + cur.v1) / 2;
+    if (midU === cur.u0 || midV === cur.v0) {
+      return {
+        ok: false,
+        code: "CLEARANCE_UNCERTIFIED",
+        message: "budget",
+        work,
+      };
+    }
+    const children: Array<[number, number, number, number]> = splitU
+      ? [
+          [cur.u0, midU, cur.v0, cur.v1],
+          [midU, cur.u1, cur.v0, cur.v1],
+        ]
+      : [
+          [cur.u0, cur.u1, cur.v0, midV],
+          [cur.u0, cur.u1, midV, cur.v1],
+        ];
+    for (const [u0, u1, v0, v1] of children) {
+      const ev = evaluate(u0, u1, v0, v1);
+      if (ev.kind === "budget")
+        return {
+          ok: false,
+          code: "CLEARANCE_UNCERTIFIED",
+          message: "budget",
+          work,
+        };
+      if (ev.kind === "excluded") continue;
+      if (ev.kind === "needSubdivide") {
+        const ph: QueueNode = {
+          u0,
+          u1,
+          v0,
+          v1,
+          lower: 0,
+          upper: Infinity,
+          wU: (u0 + u1) / 2,
+          wV: (v0 + v1) / 2,
+          pa: vec3(0, 0, 0),
+          pb: vec3(0, 0, 0),
+          seq: seq++,
+          hasWitness: false,
+        };
+        if (ph.lower >= bestUpper - 1e-12) continue;
+        if (!push(ph))
+          return {
+            ok: false,
+            code: "CLEARANCE_UNCERTIFIED",
+            message: "budget",
+            work,
+          };
+        continue;
+      }
+      if (ev.node.upper < bestUpper) {
+        bestUpper = ev.node.upper;
+        bestWitness = ev.node;
+      }
+      if (ev.node.lower >= bestUpper - 1e-12) continue;
+      if (!push(ev.node))
+        return {
+          ok: false,
+          code: "CLEARANCE_UNCERTIFIED",
+          message: "budget",
+          work,
+        };
+    }
+    if (work > opts.maxWork)
+      return {
+        ok: false,
+        code: "CLEARANCE_UNCERTIFIED",
+        message: "budget",
+        work,
+      };
+    if (queue.length > opts.maxWork)
+      return {
+        ok: false,
+        code: "CLEARANCE_UNCERTIFIED",
+        message: "budget",
+        work,
+      };
+  }
+  if (bestWitness) {
+    const globalLower = bestUpper;
+    if (bestUpper - globalLower <= opts.resolutionM + 1e-12) {
+      return {
+        ok: true,
+        excluded: false,
+        lowerM: globalLower,
+        upperM: bestUpper,
+        witnessU: bestWitness.wU,
+        witnessV: bestWitness.wV,
+        pointA: bestWitness.pa,
+        pointB: bestWitness.pb,
+        work,
+      };
+    }
+  }
+  return { ok: false, code: "CLEARANCE_UNCERTIFIED", message: "budget", work };
 }

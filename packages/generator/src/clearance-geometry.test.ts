@@ -224,7 +224,7 @@ describe("clearance geometry foundation", () => {
       resolutionM: 0.01,
     });
     expect(res.ok).toBe(true);
-    if (res.ok) {
+    if (res.ok && !res.excluded) {
       expect(res.lowerM).toBe(0);
       expect(res.upperM).toBe(0);
     }
@@ -419,7 +419,8 @@ describe("clearance geometry foundation", () => {
       resolutionM: 0.01,
     });
     expect(r1).toEqual(r2);
-    if (r1.ok) expect(r1.upperM - r1.lowerM).toBeLessThanOrEqual(0.01 + 1e-9);
+    if (r1.ok && !r1.excluded)
+      expect(r1.upperM - r1.lowerM).toBeLessThanOrEqual(0.01 + 1e-9);
     const tiny = certifiedSweptDistance(segA, segB, {
       maxWork: 1,
       resolutionM: 0.01,
