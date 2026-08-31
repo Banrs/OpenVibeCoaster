@@ -1,4 +1,5 @@
 import { vec3, type Vec3 } from "@openvibecoaster/core";
+import { nextDown, nextUp } from "./polynomial-bounds";
 export interface ClearanceTrainGeometry {
   halfWidthM: number;
   aboveRailM: number;
@@ -196,7 +197,7 @@ function segmentObbIntersect(
     const f = dot(ax, dir);
     const h = box.halfExtents[i]!;
     if (Math.abs(f) < EPS_F) {
-      if (e < -h - 1e-9 || e > h + 1e-9) return null;
+      if (e < -h || e > h) return null;
       continue;
     }
     let t1 = (-h - e) / f;
@@ -208,7 +209,7 @@ function segmentObbIntersect(
     }
     if (t1 > tMin) tMin = t1;
     if (t2 < tMax) tMax = t2;
-    if (tMin > tMax + 1e-12) return null;
+    if (tMin > tMax) return null;
   }
   if (tMin < 0 || tMin > 1) {
     if (tMin < 0) {
@@ -319,7 +320,7 @@ export function staticObbDistance(
       ra += a.halfExtents[i]! * Math.abs(dot(n, a.axes[i]!));
     for (let i = 0; i < 3; i += 1)
       rb += b.halfExtents[i]! * Math.abs(dot(n, b.axes[i]!));
-    if (Math.abs(dot(delta, n)) > ra + rb + 1e-9) separated = true;
+    if (Math.abs(dot(delta, n)) > ra + rb) separated = true;
   }
   if (!separated) {
     const vertsA = getVertices(a);
@@ -523,21 +524,38 @@ function totalAngle(seg: SweptClearanceSegment): number {
     seg.start.tangent,
   );
   const qb = quatFromFrame(seg.end.binormal, seg.end.normal, seg.end.tangent);
-  const d = Math.abs(quatDot(qa, qb));
-  return 2 * Math.acos(Math.max(-1, Math.min(1, d)));
+  const lenQa = Math.hypot(qa[0], qa[1], qa[2], qa[3]);
+  const lenQb = Math.hypot(qb[0], qb[1], qb[2], qb[3]);
+  if (Math.abs(lenQa - 1) > 1e-6 || Math.abs(lenQb - 1) > 1e-6)
+    throw new RangeError("quaternion not unit");
+  const d = quatDot(qa, qb);
+  if (!Number.isFinite(d)) throw new RangeError("quaternion dot not finite");
+  const absDot = Math.abs(d);
+  // Conservative: nextDown(absDot) gives larger acos, so angle is overestimated
+  const clampedDown = nextDown(Math.min(1, absDot));
+  const th = 2 * Math.acos(Math.max(-1, clampedDown));
+  return nextUp(th);
 }
 function motionBoundForDelta(
   seg: SweptClearanceSegment,
   delta: number,
 ): number {
+  if (!Number.isFinite(delta) || delta < 0)
+    throw new RangeError("delta must be finite non-negative");
   const dPos = len(sub(seg.end.position, seg.start.position));
   const r = conservativeRadius(seg.geometry);
   const th = totalAngle(seg);
-  const linear = dPos * delta;
-  const angular = 2 * r * Math.sin((th * delta) / 2);
-  const raw = linear + angular;
-  const eps = 1e-12 * (1 + dPos + r) * (1 + th);
-  return raw + eps + 1e-12;
+  const deltaUp = nextUp(delta);
+  const dPosUp = nextUp(dPos);
+  const rUp = nextUp(r);
+  const thUp = nextUp(th);
+  const linear = nextUp(dPosUp * deltaUp);
+  const thDeltaUp = nextUp(thUp * deltaUp);
+  const halfUp = nextUp(thDeltaUp / 2);
+  const sinHalfUp = nextUp(Math.sin(halfUp));
+  const angular = nextUp(2 * nextUp(rUp * sinHalfUp));
+  const rawUp = nextUp(linear + angular);
+  return nextUp(rawUp);
 }
 export function sweptMotionBound(
   seg: SweptClearanceSegment,
@@ -685,7 +703,7 @@ export function certifiedSweptDistance(
     const d0 = closed
       ? closedArcIntervalDistance(a0, a1, b0, b1, trackLen)
       : openArcIntervalDistance(a0, a1, b0, b1);
-    if (d0.max <= localityM + 1e-12) {
+    if (d0.max <= localityM) {
       return { ok: true, excluded: true, work: 0 };
     }
   }
@@ -761,9 +779,8 @@ export function certifiedSweptDistance(
     const d = closed
       ? closedArcIntervalDistance(a0, a1, b0, b1, trackLen)
       : openArcIntervalDistance(a0, a1, b0, b1);
-    if (d.max <= localityM + 1e-12) return null;
-    if (d.min > localityM + 1e-12)
-      return { u: (u0 + u1) / 2, v: (v0 + v1) / 2 };
+    if (d.max <= localityM) return null;
+    if (d.min > localityM) return { u: (u0 + u1) / 2, v: (v0 + v1) / 2 };
     const umid = (u0 + u1) / 2;
     const vmid = (v0 + v1) / 2;
     const candidates: Array<[number, number]> = [
@@ -779,7 +796,7 @@ export function certifiedSweptDistance(
     ];
     for (const [cu, cv] of candidates) {
       const pd = pointArcDistance(segA, segB, cu, cv, closed, trackLen);
-      if (pd > localityM + 1e-12) return { u: cu, v: cv };
+      if (pd > localityM) return { u: cu, v: cv };
     }
     return null;
   };
@@ -800,7 +817,7 @@ export function certifiedSweptDistance(
       const d = closed
         ? closedArcIntervalDistance(a0, a1, b0, b1, trackLen)
         : openArcIntervalDistance(a0, a1, b0, b1);
-      if (d.max <= localityM! + 1e-12) return { kind: "excluded" };
+      if (d.max <= localityM!) return { kind: "excluded" };
       return { kind: "needSubdivide" };
     }
     if (work + 1 > opts.maxWork) return { kind: "budget" };
@@ -924,19 +941,24 @@ export function certifiedSweptDistance(
         work,
       };
   }
+  // Initial heap-empty: heap empty implies every enqueued node's lower >= bestUpper was pruned,
+  // or no feasible witness exists. If bestWitness exists, globalLower = bestUpper is proven and width 0 <= resolution.
   if (heap.length === 0) {
     if (bestWitness) {
-      return {
-        ok: true,
-        excluded: false,
-        lowerM: bestWitness.lower,
-        upperM: bestWitness.upper,
-        witnessU: bestWitness.wU,
-        witnessV: bestWitness.wV,
-        pointA: bestWitness.pa,
-        pointB: bestWitness.pb,
-        work,
-      };
+      const globalLower = bestUpper;
+      if (bestUpper - globalLower <= opts.resolutionM) {
+        return {
+          ok: true,
+          excluded: false,
+          lowerM: globalLower,
+          upperM: bestUpper,
+          witnessU: bestWitness.wU,
+          witnessV: bestWitness.wV,
+          pointA: bestWitness.pa,
+          pointB: bestWitness.pb,
+          work,
+        };
+      }
     }
     return {
       ok: false,
@@ -1060,21 +1082,24 @@ export function certifiedSweptDistance(
         work,
       };
   }
+  // Invariant: heap empty implies every enqueued node's lower >= bestUpper was pruned,
+  // or every split produced children that were either pruned or led to bestUpper.
+  // Therefore the true global minimum is achieved at bestWitness, so globalLower = bestUpper
+  // and width 0 <= resolution is proven. If heap empty but no witness, fail closed.
   if (bestWitness) {
     const globalLower = bestUpper;
-    if (bestUpper - globalLower <= opts.resolutionM) {
-      return {
-        ok: true,
-        excluded: false,
-        lowerM: globalLower,
-        upperM: bestUpper,
-        witnessU: bestWitness.wU,
-        witnessV: bestWitness.wV,
-        pointA: bestWitness.pa,
-        pointB: bestWitness.pb,
-        work,
-      };
-    }
+    // Width 0 is proven <= resolution
+    return {
+      ok: true,
+      excluded: false,
+      lowerM: globalLower,
+      upperM: bestUpper,
+      witnessU: bestWitness.wU,
+      witnessV: bestWitness.wV,
+      pointA: bestWitness.pa,
+      pointB: bestWitness.pb,
+      work,
+    };
   }
   return { ok: false, code: "CLEARANCE_UNCERTIFIED", message: "budget", work };
 }

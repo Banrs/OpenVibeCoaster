@@ -254,7 +254,7 @@ describe("correction RED proof – must fail on 6648fec", () => {
     expect(res2.upperM).toBeGreaterThanOrEqual(best - 1e-9);
   });
 
-  it("dense oracle lies in [lower,upper] and width <=0.01 for moving/rotating cases", () => {
+  it("dense oracle 10deg moving case lies in [lower,upper] width<=0.01", () => {
     const gSmall = createClearanceTrainGeometry({
       halfWidthM: 0.2,
       aboveRailM: 0.2,
@@ -262,69 +262,80 @@ describe("correction RED proof – must fail on 6648fec", () => {
       carPitchM: 0.5,
       noseTailMarginM: 0,
     });
-    const cases = [
-      [
-        gSmall,
-        pose(v(0, 0, 0)),
-        createClearancePose({
-          position: v(0.05, 0, 0),
-          tangent: vec3(0.984807753012208, 0, 0.17364817766693033),
-          normal: vec3(0, 1, 0),
-          binormal: vec3(-0.17364817766693033, 0, 0.984807753012208),
-        }),
-        pose(v(0, 2, 0)),
-        createClearancePose({
-          position: v(0.05, 2, 0),
-          tangent: vec3(0.984807753012208, 0, 0.17364817766693033),
-          normal: vec3(0, 1, 0),
-          binormal: vec3(-0.17364817766693033, 0, 0.984807753012208),
-        }),
-      ],
-      [
-        createClearanceTrainGeometry({
-          halfWidthM: 0.5,
-          aboveRailM: 1,
-          belowRailM: 0.3,
-          carPitchM: 1,
-          noseTailMarginM: 0.1,
-        }),
-        createClearancePose({
-          position: v(0, 0, 0),
-          tangent: vec3(0, 0, 1),
-          normal: vec3(0, 1, 0),
-          binormal: vec3(-1, 0, 0),
-        }),
-        createClearancePose({
-          position: v(0.05, 0, 0),
-          tangent: vec3(0, 0, 1),
-          normal: vec3(0.9961946980917455, 0.08715574274765817, 0),
-          binormal: vec3(-0.08715574274765817, 0.9961946980917455, 0),
-        }),
-        pose(v(2, 0, 0)),
-        pose(v(2.05, 0, 0)),
-      ],
-    ] as const;
-    for (let idx = 0; idx < cases.length; idx++) {
-      const [gg, sA0, sA1, sB0, sB1] = cases[idx]!;
-      const segA = { startS: 0, endS: 1, start: sA0, end: sA1, geometry: gg };
-      const segB = { startS: 0, endS: 1, start: sB0, end: sB1, geometry: gg };
-      const res = certifiedSweptDistance(segA, segB, {
-        maxWork: 10000,
-        resolutionM: 0.01,
-      });
-      assertCertified(res);
-      let best = Infinity;
-      for (let i = 0; i <= 15; i++)
-        for (let j = 0; j <= 15; j++) {
-          const aa = createOrientedBox(interpolatePose(segA, i / 15), gg);
-          const bb = createOrientedBox(interpolatePose(segB, j / 15), gg);
-          best = Math.min(best, staticObbDistance(aa, bb).distance);
-        }
-      expect(best).toBeGreaterThanOrEqual(res.lowerM - 1e-9);
-      expect(best).toBeLessThanOrEqual(res.upperM + 1e-9);
-      expect(res.upperM - res.lowerM).toBeLessThanOrEqual(0.01);
-      expect(dist(res.pointA, res.pointB)).toBeCloseTo(res.upperM, 6);
-    }
+    const sA0 = pose(v(0, 0, 0));
+    const sA1 = createClearancePose({
+      position: v(0.05, 0, 0),
+      tangent: vec3(0.984807753012208, 0, 0.17364817766693033),
+      normal: vec3(0, 1, 0),
+      binormal: vec3(-0.17364817766693033, 0, 0.984807753012208),
+    });
+    const sB0 = pose(v(0, 2, 0));
+    const sB1 = createClearancePose({
+      position: v(0.05, 2, 0),
+      tangent: vec3(0.984807753012208, 0, 0.17364817766693033),
+      normal: vec3(0, 1, 0),
+      binormal: vec3(-0.17364817766693033, 0, 0.984807753012208),
+    });
+    const segA = { startS: 0, endS: 1, start: sA0, end: sA1, geometry: gSmall };
+    const segB = { startS: 0, endS: 1, start: sB0, end: sB1, geometry: gSmall };
+    const res = certifiedSweptDistance(segA, segB, {
+      maxWork: 10000,
+      resolutionM: 0.01,
+    });
+    assertCertified(res);
+    let best = Infinity;
+    for (let i = 0; i <= 15; i++)
+      for (let j = 0; j <= 15; j++) {
+        const aa = createOrientedBox(interpolatePose(segA, i / 15), gSmall);
+        const bb = createOrientedBox(interpolatePose(segB, j / 15), gSmall);
+        best = Math.min(best, staticObbDistance(aa, bb).distance);
+      }
+    expect(best).toBeGreaterThanOrEqual(res.lowerM - 1e-9);
+    expect(best).toBeLessThanOrEqual(res.upperM + 1e-9);
+    expect(res.upperM - res.lowerM).toBeLessThanOrEqual(0.01);
+    expect(dist(res.pointA, res.pointB)).toBeCloseTo(res.upperM, 6);
+  });
+
+  it("dense oracle asymmetric 5deg moving case lies in [lower,upper] width<=0.01", () => {
+    const gAsym = createClearanceTrainGeometry({
+      halfWidthM: 0.5,
+      aboveRailM: 1,
+      belowRailM: 0.3,
+      carPitchM: 1,
+      noseTailMarginM: 0.1,
+    });
+    const sA0 = createClearancePose({
+      position: v(0, 0, 0),
+      tangent: vec3(0, 0, 1),
+      normal: vec3(0, 1, 0),
+      binormal: vec3(-1, 0, 0),
+    });
+    const sA1 = createClearancePose({
+      position: v(0.05, 0, 0),
+      tangent: vec3(0, 0, 1),
+      normal: vec3(0.9961946980917455, 0.08715574274765817, 0),
+      binormal: vec3(-0.08715574274765817, 0.9961946980917455, 0),
+    });
+    const sB0 = pose(v(2, 0, 0));
+    const sB1 = pose(v(2.05, 0, 0));
+    const segA = { startS: 0, endS: 1, start: sA0, end: sA1, geometry: gAsym };
+    const segB = { startS: 0, endS: 1, start: sB0, end: sB1, geometry: gAsym };
+    const res = certifiedSweptDistance(segA, segB, {
+      maxWork: 10000,
+      resolutionM: 0.01,
+    });
+    assertCertified(res);
+    let best = Infinity;
+    for (let i = 0; i <= 15; i++)
+      for (let j = 0; j <= 15; j++) {
+        const aa = createOrientedBox(interpolatePose(segA, i / 15), gAsym);
+        const bb = createOrientedBox(interpolatePose(segB, j / 15), gAsym);
+        best = Math.min(best, staticObbDistance(aa, bb).distance);
+      }
+    expect(best).toBeGreaterThanOrEqual(res.lowerM - 1e-9);
+    expect(best).toBeLessThanOrEqual(res.upperM + 1e-9);
+    expect(res.upperM - res.lowerM).toBeLessThanOrEqual(0.01);
+    expect(dist(res.pointA, res.pointB)).toBeCloseTo(res.upperM, 6);
   });
 
   it("too-small budget returns uncertified without numeric bounds", () => {
@@ -536,5 +547,191 @@ describe("correction RED proof – must fail on 6648fec", () => {
     });
     assertCertified(resStraddle);
     expect(resStraddle.upperM).toBeLessThan(1);
+  });
+
+  it("adversarial locality, sub-1e-9 gap, near-parallel and near-identity quaternion are proof-carrying", () => {
+    // Open locality 0 vs 5+5e-13 at locality 5 must NOT be excluded
+    const g = geom();
+    const segA = {
+      startS: 0,
+      endS: 0,
+      start: pose(v(0, 0, 0)),
+      end: pose(v(0, 0, 0)),
+      geometry: g,
+    };
+    const segB = {
+      startS: 5 + 5e-13,
+      endS: 5 + 5e-13,
+      start: pose(v(0, 3, 0)),
+      end: pose(v(0, 3, 0)),
+      geometry: g,
+    };
+    const resLoc = certifiedSweptDistance(segA, segB, {
+      maxWork: 100,
+      resolutionM: 0.01,
+      localityM: 5,
+      closed: false,
+    });
+    // Must not be excluded; true max =5+5e-13 >5, so feasible
+    expect(resLoc.ok).toBe(true);
+    if (resLoc.ok) {
+      expect(resLoc.excluded).not.toBe(true);
+      if (!resLoc.excluded) {
+        // Genuine witness check
+        expect(resLoc.upperM).toBeGreaterThan(0);
+        expect(dist(resLoc.pointA, resLoc.pointB)).toBeCloseTo(
+          resLoc.upperM,
+          6,
+        );
+      }
+    }
+
+    // Same subinterval boundary: split root where one child has max =5+5e-13
+    const segC = {
+      startS: 0,
+      endS: 5 + 5e-13,
+      start: pose(v(0, 0, 0)),
+      end: pose(v(1, 0, 0)),
+      geometry: g,
+    };
+    const segD = {
+      startS: 0,
+      endS: 0,
+      start: pose(v(0, 3, 0)),
+      end: pose(v(0, 3, 0)),
+      geometry: g,
+    };
+    const resSub = certifiedSweptDistance(segC, segD, {
+      maxWork: 5000,
+      resolutionM: 0.01,
+      localityM: 5,
+      closed: false,
+    });
+    expect(resSub.ok).toBe(true);
+    if (resSub.ok) {
+      expect(resSub.excluded).not.toBe(true);
+    }
+
+    // Positive static gap below 1e-9 must never return zero
+    const gap = 5e-10;
+    const gGap = createClearanceTrainGeometry({
+      halfWidthM: 0.5,
+      aboveRailM: 0.5,
+      belowRailM: 0.5,
+      carPitchM: 1,
+      noseTailMarginM: 0,
+    });
+    const boxA = createOrientedBox(pose(v(0, 0, 0)), gGap);
+    const boxB = createOrientedBox(pose(v(1 + gap, 0, 0)), gGap);
+    const rGap = staticObbDistance(boxA, boxB);
+    expect(rGap.distance).toBeGreaterThan(0);
+    expect(rGap.distance).toBeCloseTo(gap, 9);
+    expect(dist(rGap.pointA, rGap.pointB)).toBeCloseTo(rGap.distance, 9);
+    expect(rGap.distance).not.toBe(0);
+
+    // Near-parallel slab/SAT: tiny angle 5e-8 rad, gap 1e-9
+    const ang2 = 5e-8;
+    const c2 = Math.cos(ang2);
+    const s2 = Math.sin(ang2);
+    const gPar = geom({
+      halfWidthM: 0.5,
+      aboveRailM: 0.5,
+      belowRailM: 0.5,
+      carPitchM: 0.5,
+      noseTailMarginM: 0,
+    });
+    const aPar = createOrientedBox(pose(v(0, 0, 0)), gPar);
+    const bPar = createOrientedBox(
+      createClearancePose({
+        position: v(0, 1 + 1e-9, 0),
+        tangent: vec3(s2, 0, c2),
+        normal: vec3(0, 1, 0),
+        binormal: vec3(-c2, 0, s2),
+      }),
+      gPar,
+    );
+    const rPar = staticObbDistance(aPar, bPar);
+    expect(rPar.distance).toBeGreaterThan(0);
+    expect(dist(rPar.pointA, rPar.pointB)).toBeCloseTo(rPar.distance, 9);
+
+    // Near-identity quaternion rotation motion envelope: dot≈1-5e-13, angle ~1e-6 rad
+    const dotNearOne = 1 - 5e-13;
+    // Construct quaternions with dot = dotNearOne: q0 = [0,0,0,1], q1 = [sin(th/2)*axis, cos(th/2)]
+    // For small th, cos(th/2)=dotNearOne => th=2*acos(dotNearOne) ~ 2*sqrt(2*5e-13)=2e-6
+    const th = 2 * Math.acos(Math.min(1, dotNearOne));
+    expect(th).toBeGreaterThan(0);
+    const gQ = createClearanceTrainGeometry({
+      halfWidthM: 0.5,
+      aboveRailM: 0.5,
+      belowRailM: 0.5,
+      carPitchM: 1,
+      noseTailMarginM: 0,
+    });
+    // Build poses via slerp: start identity, end rotated by th around Y
+    const startPose = createClearancePose({
+      position: v(0, 0, 0),
+      tangent: vec3(0, 0, 1),
+      normal: vec3(0, 1, 0),
+      binormal: vec3(-1, 0, 0),
+    });
+    const cTh = Math.cos(th);
+    const sTh = Math.sin(th);
+    const endPose = createClearancePose({
+      position: v(0.01, 0, 0),
+      tangent: vec3(sTh, 0, cTh),
+      normal: vec3(0, 1, 0),
+      binormal: vec3(-cTh, 0, sTh),
+    });
+    const segQ = {
+      startS: 0,
+      endS: 1,
+      start: startPose,
+      end: endPose,
+      geometry: gQ,
+    };
+    const bound = sweptMotionBound(segQ, 0, 1);
+    // Bound must be >= true displacement of any vertex
+    const mid = interpolatePose(segQ, 0.5);
+    const midBox = createOrientedBox(mid, gQ);
+    const midVerts = vertices(midBox);
+    for (let t = 0; t <= 1; t += 0.25) {
+      const p = interpolatePose(segQ, t);
+      const box = createOrientedBox(p, gQ);
+      const vs = vertices(box);
+      for (let k = 0; k < vs.length; k++) {
+        const d = dist(vs[k]!, midVerts[k]!);
+        expect(d).toBeLessThanOrEqual(bound + 1e-9);
+      }
+    }
+    // Also check conservative interval for moving case with this near-identity rotation
+    const segR = {
+      startS: 0,
+      endS: 1,
+      start: startPose,
+      end: endPose,
+      geometry: gQ,
+    };
+    const segS = {
+      startS: 0,
+      endS: 1,
+      start: pose(v(0, 2, 0)),
+      end: pose(v(0.01, 2, 0)),
+      geometry: gQ,
+    };
+    const resQ = certifiedSweptDistance(segR, segS, {
+      maxWork: 5000,
+      resolutionM: 0.01,
+    });
+    assertCertified(resQ);
+    expect(resQ.upperM - resQ.lowerM).toBeLessThanOrEqual(0.01);
+    let best = Infinity;
+    for (let i = 0; i <= 15; i++)
+      for (let j = 0; j <= 15; j++) {
+        const aa = createOrientedBox(interpolatePose(segR, i / 15), gQ);
+        const bb = createOrientedBox(interpolatePose(segS, j / 15), gQ);
+        best = Math.min(best, staticObbDistance(aa, bb).distance);
+      }
+    expect(best).toBeGreaterThanOrEqual(resQ.lowerM - 1e-9);
+    expect(best).toBeLessThanOrEqual(resQ.upperM + 1e-9);
   });
 });

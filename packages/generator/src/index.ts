@@ -24,3 +24,10 @@ export {
   regenerateLocal,
 } from "./pipeline";
 export { validateClearance } from "./clearance";
+export type {
+  CertifiedDistanceResult,
+  ClearancePose,
+  ClearanceTrainGeometry,
+  SweptClearanceSegment,
+} from "./clearance-geometry";
+export { certifiedSweptDistance } from "./clearance-geometry";
