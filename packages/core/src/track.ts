@@ -14,6 +14,12 @@ export interface TrackElement {
 export interface CompileTrackOptions {
   readonly samples?: number;
   readonly tolerance?: number;
+  /**
+   * Initial unbanked normal for RMF transport. This is part of the rotated
+   * physical input: supply a rotated initialNormal together with rotated
+   * geometry for equivariant compilation. When omitted, compilation uses the
+   * existing deterministic world-axis default.
+   */
   readonly initialNormal?: Vec3;
 }
 export interface CompiledTrackDataInput {

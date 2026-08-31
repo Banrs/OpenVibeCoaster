@@ -120,4 +120,23 @@ describe("compileTrack equivariance with initialNormal", () => {
       expect(b.binormal[2]).toBeCloseTo(expB[2], 6);
     }
   });
+
+  it("rejects an explicit initialNormal parallel to the first tangent", () => {
+    const span = {
+      position: (u: number) => vec3(u * 10, 0, 0),
+      derivative: () => vec3(10, 0, 0),
+    };
+    expect(() =>
+      compileTrack([{ id: "line", span }], {
+        samples: 16,
+        initialNormal: vec3(10, 0, 0),
+      }),
+    ).toThrow(/Frame initial normal.*orthogonal/i);
+    expect(() =>
+      compileTrack([{ id: "line", span }], {
+        samples: 16,
+        initialNormal: vec3(-5, 0, 0),
+      }),
+    ).toThrow(RangeError);
+  });
 });

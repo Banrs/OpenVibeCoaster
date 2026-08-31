@@ -96,6 +96,22 @@ const orthogonalize = (normal: Vec3, tangent: Vec3): Vec3 => {
     ? defaultNormal(tangent)
     : vec3Normalize(projected);
 };
+const resolveInitialNormal = (
+  initialNormal: Vec3 | undefined,
+  initialTangent: Vec3,
+): Vec3 => {
+  if (!initialNormal) return defaultNormal(initialTangent);
+  const validated = readFiniteVec3(initialNormal, "Frame initial normal");
+  const projected = vec3Sub(
+    validated,
+    vec3Scale(initialTangent, vec3Dot(validated, initialTangent)),
+  );
+  if (vec3Dot(projected, projected) < 1e-24)
+    throw new RangeError(
+      "Frame initial normal must have a non-zero component orthogonal to the initial tangent",
+    );
+  return vec3Normalize(projected);
+};
 
 export const transportFrames = (
   tangents: readonly Vec3[],
@@ -116,20 +132,7 @@ export const transportFrames = (
   const frameParameters = Array.from(parameters, readParameter);
   if (typeof bankAt !== "function") validateBankArray(bankAt, tangents.length);
   const frames: Frame[] = [];
-  const initialNormalVector = initialNormal
-    ? readFiniteVec3(initialNormal, "Frame initial normal")
-    : undefined;
-  let transportedNormal = initialNormalVector
-    ? vec3Normalize(
-        vec3Sub(
-          initialNormalVector,
-          vec3Scale(
-            normalized[0]!,
-            vec3Dot(initialNormalVector, normalized[0]!),
-          ),
-        ),
-      )
-    : defaultNormal(normalized[0]!);
+  let transportedNormal = resolveInitialNormal(initialNormal, normalized[0]!);
   for (let i = 0; i < normalized.length; i += 1) {
     if (i > 0)
       transportedNormal = orthogonalize(
@@ -226,20 +229,7 @@ export const transportFramesAlongPath = (
   const frameParameters = Array.from(parameters, readParameter);
   if (typeof bankAt !== "function") validateBankArray(bankAt, tangents.length);
   const frames: Frame[] = [];
-  const initialNormalVector = initialNormal
-    ? readFiniteVec3(initialNormal, "Frame initial normal")
-    : undefined;
-  let transportedNormal = initialNormalVector
-    ? vec3Normalize(
-        vec3Sub(
-          initialNormalVector,
-          vec3Scale(
-            normalized[0]!,
-            vec3Dot(initialNormalVector, normalized[0]!),
-          ),
-        ),
-      )
-    : defaultNormal(normalized[0]!);
+  let transportedNormal = resolveInitialNormal(initialNormal, normalized[0]!);
   for (let index = 0; index < normalized.length; index += 1) {
     if (index > 0)
       transportedNormal = orthogonalize(
