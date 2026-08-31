@@ -49,14 +49,24 @@ export const TIMELINE_CURRENT_BUFFER_COUNT = 28 as const;
 
 export function validateRideTimelineTransfer(
   transfer: RideTimelineTransfer,
+  options?: { readonly strictCurrent?: boolean },
 ): void {
   const { sampleRateHz, carCount, length, buffers } = transfer;
   if (!Number.isFinite(sampleRateHz) || sampleRateHz <= 0)
     throw new RangeError("RideTimeline sample rate must be positive");
-  if (!Number.isInteger(carCount) || carCount < 0 || carCount > 6)
-    throw new RangeError("RideTimeline carCount must be integer 0..6");
-  if (!Number.isInteger(length) || length < 0)
-    throw new RangeError("RideTimeline length must be non-negative integer");
+  if (!Number.isSafeInteger(carCount) || carCount < 0)
+    throw new RangeError(
+      "RideTimeline carCount must be safe non-negative integer",
+    );
+  if (!Number.isSafeInteger(length) || length < 0)
+    throw new RangeError(
+      "RideTimeline length must be safe non-negative integer",
+    );
+  if (!Array.isArray(buffers))
+    throw new RangeError("RideTimeline buffers must be an array");
+  for (let i = 0; i < buffers.length; i += 1)
+    if (!(buffers[i] instanceof ArrayBuffer))
+      throw new RangeError(`RideTimeline buffers[${i}] must be ArrayBuffer`);
   if (
     buffers.length !== TIMELINE_LEGACY_BUFFER_COUNT &&
     buffers.length !== TIMELINE_CURRENT_BUFFER_COUNT
@@ -64,15 +74,28 @@ export function validateRideTimelineTransfer(
     throw new RangeError(
       `RideTimeline transfer buffer count must be exactly ${TIMELINE_LEGACY_BUFFER_COUNT} or ${TIMELINE_CURRENT_BUFFER_COUNT}`,
     );
+  const safeBytes = (value: number, field: string): number => {
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new RangeError(
+        `RideTimeline ${field} byte length must be safe non-negative integer`,
+      );
+    return value;
+  };
+  const expectedScalarBytes = safeBytes(length * 8, "scalar");
+  const expectedVec3Bytes = safeBytes(length * 3 * 8, "vec3");
+  const expectedPerCarScalarBytes = safeBytes(
+    length * carCount * 8,
+    "perCarScalar",
+  );
+  const expectedPerCarVec3Bytes = safeBytes(
+    length * carCount * 3 * 8,
+    "perCarVec3",
+  );
   const firstByteLength = buffers[0]?.byteLength ?? 0;
-  if (firstByteLength !== length * 8)
+  if (firstByteLength !== expectedScalarBytes)
     throw new RangeError(
       "RideTimeline length inconsistent with timeSeconds buffer",
     );
-  const expectedScalarBytes = length * 8;
-  const expectedVec3Bytes = length * 3 * 8;
-  const expectedPerCarScalarBytes = length * carCount * 8;
-  const expectedPerCarVec3Bytes = length * carCount * 3 * 8;
   const scalarIndices = [
     0, 1, 2, 3, 4, 5, 11, 12, 13, 14, 15, 16, 17, 18, 19,
   ] as const;
@@ -80,6 +103,9 @@ export function validateRideTimelineTransfer(
   const carVec3Indices = [7, 8, 9, 10] as const;
   const perCarScalarIndices = [21, 22, 23, 24, 25] as const;
   const perCarVec3Indices = [26, 27] as const;
+  const strictCurrent =
+    options?.strictCurrent === true &&
+    buffers.length === TIMELINE_CURRENT_BUFFER_COUNT;
   const checkBytes = (
     indices: readonly number[],
     expected: number,
@@ -88,10 +114,17 @@ export function validateRideTimelineTransfer(
     for (const idx of indices) {
       if (idx >= buffers.length) continue;
       const buf = buffers[idx]!;
-      if (buf.byteLength !== expected && buf.byteLength !== 0)
-        throw new RangeError(
-          `RideTimeline ${label} buffer ${idx} byte length mismatch`,
-        );
+      if (strictCurrent) {
+        if (buf.byteLength !== expected)
+          throw new RangeError(
+            `RideTimeline ${label} buffer ${idx} byte length mismatch`,
+          );
+      } else {
+        if (buf.byteLength !== expected && buf.byteLength !== 0)
+          throw new RangeError(
+            `RideTimeline ${label} buffer ${idx} byte length mismatch`,
+          );
+      }
       // non-finite check via view without copying payload
       const view = new Float64Array(buf);
       for (let i = 0; i < view.length; i += 1)
@@ -104,7 +137,6 @@ export function validateRideTimelineTransfer(
   checkBytes(carVec3Indices, expectedPerCarVec3Bytes, "carVec3");
   checkBytes(perCarScalarIndices, expectedPerCarScalarBytes, "perCarScalar");
   checkBytes(perCarVec3Indices, expectedPerCarVec3Bytes, "perCarVec3");
-  // also validate that buffers that exist are ArrayBuffers and finite already covered
 }
 
 const clone = (values: Float64Array | undefined): Float64Array =>

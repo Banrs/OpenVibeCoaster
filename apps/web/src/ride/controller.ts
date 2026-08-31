@@ -960,6 +960,25 @@ export function createRidePlayback(
         ),
       });
     }
+    if (data.carCount === 0) {
+      return {
+        perCar: perCarTelemetry,
+        longitudinalG: lerpAt(data.longitudinalG),
+        lateralG: lerpAt(data.lateralG),
+        verticalG: lerpAt(data.verticalG),
+        specificForceMps2: vecAt(data.specificForceXYZ),
+        jerkMps3: jerkAtTime(bracket),
+        bankRad: lerpAt(data.bankRad),
+        rollRateRadPerSec: lerpAt(data.rollRateRadPerSec),
+        launchActivity: activityAt(data.launchActivity),
+        brakeActivity: activityAt(data.brakeActivity),
+        kineticEnergyJ: lerpAt(data.kineticEnergyJ),
+        potentialEnergyJ: lerpAt(data.potentialEnergyJ),
+        accumulatedDriveWorkJ: lerpAt(data.accumulatedDriveWorkJ),
+        accumulatedLossWorkJ: lerpAt(data.accumulatedLossWorkJ),
+        energyErrorJ: lerpAt(data.energyErrorJ),
+      };
+    }
     const firstPerCar = perCarTelemetry[0]!;
     return {
       perCar: perCarTelemetry,

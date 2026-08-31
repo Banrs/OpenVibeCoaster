@@ -23,6 +23,7 @@ import type {
   EngineeringWorkerRequest,
   EngineeringWorkerSuccess,
   EngineeringWorkerTimings,
+  RideTimelineCompactTransfer,
 } from "./protocol";
 import { validateEngineeringWorkerRequest } from "./protocol";
 import { collectTransferables } from "./transfer";
@@ -423,7 +424,8 @@ export function handleGenerate(
     requestId,
     file: generation.file,
     track: trackToTransfer(track),
-    timeline: sim.timeline.toTransferable(),
+    timeline:
+      sim.timeline.toTransferable() as unknown as RideTimelineCompactTransfer,
     diagnostics: [
       ...(generation.diagnostics as Diagnostic[]),
       ...(sim.diagnostics as Diagnostic[]),
@@ -520,7 +522,8 @@ export function handleRegenerate(
     requestId,
     file: generation.file,
     track: trackToTransfer(track),
-    timeline: sim.timeline.toTransferable(),
+    timeline:
+      sim.timeline.toTransferable() as unknown as RideTimelineCompactTransfer,
     diagnostics: [
       ...(generation.diagnostics as Diagnostic[]),
       ...(sim.diagnostics as Diagnostic[]),
@@ -581,7 +584,8 @@ export function handleCompileSimulate(
     requestId,
     file: loaded.file,
     track: trackToTransfer(track),
-    timeline: sim.timeline.toTransferable(),
+    timeline:
+      sim.timeline.toTransferable() as unknown as RideTimelineCompactTransfer,
     diagnostics: sim.diagnostics as Diagnostic[],
     relaxations: [],
     spanHashes,

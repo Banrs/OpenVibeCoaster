@@ -460,4 +460,148 @@ describe("EngineeringWorkerResponse timings validation", () => {
       } as unknown as Record<string, unknown>),
     ).toThrow(/extra field/);
   });
+
+  it("strict-current 28-buffer response: rejects emptied required scalar/per-car buffers (zero not accepted when expected nonzero)", () => {
+    const cases: Array<[string, number]> = [
+      ["scalar launchActivity", 11],
+      ["vec3 specificForceXYZ", 20],
+      ["carVec3 carPositionsXYZ", 7],
+      ["perCarScalar perCarLongitudinalG", 21],
+      ["perCarVec3 perCarSpecificForceXYZ", 26],
+    ];
+    for (const [label, index] of cases) {
+      const s = validSuccessBase();
+      const tl = s.timeline as unknown as { buffers: ArrayBuffer[] };
+      tl.buffers[index] = new ArrayBuffer(0);
+      expect(() => validateEngineeringWorkerResponse(s), label).toThrow();
+    }
+    // legacy 11-buffer remains accepted (zero new series not applicable, but 11-buffer shape still passes)
+    const legacy = validSuccessBase();
+    const tl = legacy.timeline as unknown as {
+      buffers: ArrayBuffer[];
+      length: number;
+      carCount: number;
+    };
+    // craft 11-buffer timeline: use only first 11 buffers
+    const eleven = {
+      sampleRateHz: 120,
+      carCount: 1,
+      length: 2,
+      buffers: tl.buffers.slice(0, 11),
+    };
+    const sLegacy = { ...legacy, timeline: eleven } as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(() => validateEngineeringWorkerResponse(sLegacy)).not.toThrow();
+  });
+
+  it("rejects 28-buffer response with unsafe dimensions and non-ArrayBuffer member", () => {
+    const s = validSuccessBase();
+    (s.timeline as unknown as Record<string, unknown>).carCount =
+      Number.MAX_SAFE_INTEGER + 1;
+    expect(() => validateEngineeringWorkerResponse(s)).toThrow();
+    const s2 = validSuccessBase();
+    (s2.timeline as unknown as Record<string, unknown>).length =
+      Number.MAX_SAFE_INTEGER + 1;
+    expect(() => validateEngineeringWorkerResponse(s2)).toThrow();
+    // unsafe byte product via huge length that makes product unsafe (even if length itself safe, byte product unsafe)
+    const s3 = validSuccessBase();
+    (s3.timeline as unknown as Record<string, unknown>).length =
+      Math.floor(Number.MAX_SAFE_INTEGER / 8) + 1;
+    // need buffers to match that huge length to bypass firstByteLength check? Instead we test that validator catches unsafe product even before buffer check
+    // Use a crafted timeline object with huge length and buffers of mismatched size, it should still throw due to unsafe product
+    expect(() => validateEngineeringWorkerResponse(s3)).toThrow();
+    const s4 = validSuccessBase();
+    const tl = s4.timeline as unknown as { buffers: unknown[] };
+    tl.buffers[0] = {} as unknown as ArrayBuffer;
+    expect(() => validateEngineeringWorkerResponse(s4)).toThrow();
+    // nested frames must be rejected on compact success
+    const s5 = validSuccessBase();
+    (s5.timeline as unknown as Record<string, unknown>).frames = [];
+    expect(() => validateEngineeringWorkerResponse(s5)).toThrow(/frames/);
+  });
+
+  it("table-driven malformed current-buffer byte lengths across groups are rejected via protocol", () => {
+    const makeTimeline = (overrides: Partial<Record<string, unknown>>) => {
+      const base = validSuccessBase();
+      const tl = base.timeline as unknown as {
+        buffers: ArrayBuffer[];
+        length: number;
+        carCount: number;
+      };
+      const copy = { ...tl, ...overrides } as unknown as Record<
+        string,
+        unknown
+      >;
+      return { ...base, timeline: copy } as unknown as Record<string, unknown>;
+    };
+    // scalar group byte length wrong
+    const sScalar = makeTimeline({
+      buffers: (() => {
+        const b = (
+          validSuccessBase().timeline as unknown as { buffers: ArrayBuffer[] }
+        ).buffers.slice();
+        b[3] = new ArrayBuffer(8); // expected 16 for length2
+        return b;
+      })(),
+    });
+    expect(() => validateEngineeringWorkerResponse(sScalar)).toThrow();
+    // vec3 group
+    const sVec3 = makeTimeline({
+      buffers: (() => {
+        const b = (
+          validSuccessBase().timeline as unknown as { buffers: ArrayBuffer[] }
+        ).buffers.slice();
+        b[6] = new ArrayBuffer(8);
+        return b;
+      })(),
+    });
+    expect(() => validateEngineeringWorkerResponse(sVec3)).toThrow();
+    // carVec3
+    const sCarVec3 = makeTimeline({
+      buffers: (() => {
+        const b = (
+          validSuccessBase().timeline as unknown as { buffers: ArrayBuffer[] }
+        ).buffers.slice();
+        b[7] = new ArrayBuffer(8);
+        return b;
+      })(),
+    });
+    expect(() => validateEngineeringWorkerResponse(sCarVec3)).toThrow();
+    // perCarScalar
+    const sPerCarScalar = makeTimeline({
+      buffers: (() => {
+        const b = (
+          validSuccessBase().timeline as unknown as { buffers: ArrayBuffer[] }
+        ).buffers.slice();
+        b[21] = new ArrayBuffer(8);
+        return b;
+      })(),
+    });
+    expect(() => validateEngineeringWorkerResponse(sPerCarScalar)).toThrow();
+    // perCarVec3
+    const sPerCarVec3 = makeTimeline({
+      buffers: (() => {
+        const b = (
+          validSuccessBase().timeline as unknown as { buffers: ArrayBuffer[] }
+        ).buffers.slice();
+        b[26] = new ArrayBuffer(8);
+        return b;
+      })(),
+    });
+    expect(() => validateEngineeringWorkerResponse(sPerCarVec3)).toThrow();
+    // non-finite contents
+    const sNonFinite = makeTimeline({
+      buffers: (() => {
+        const b = (
+          validSuccessBase().timeline as unknown as { buffers: ArrayBuffer[] }
+        ).buffers.slice();
+        const bad = new Float64Array([Number.NaN, 0]);
+        b[3] = bad.buffer;
+        return b;
+      })(),
+    });
+    expect(() => validateEngineeringWorkerResponse(sNonFinite)).toThrow();
+  });
 });

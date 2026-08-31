@@ -117,4 +117,56 @@ describe("ride controller compact fallback RED", () => {
     ).toBe(true);
     expect(c.getSnapshot().telemetry).toBeUndefined();
   });
+
+  it("valid complete compact timeline with carCount=0 yields empty perCar and truthful global telemetry", () => {
+    const timeline = new RideTimeline({
+      sampleRateHz: 120,
+      timeSeconds: new Float64Array([0, 1 / 120]),
+      headDistanceM: new Float64Array([0, 10]),
+      speedMps: new Float64Array([5, 5]),
+      carCount: 0,
+      carPositionsXYZ: new Float64Array(0),
+      carTangentsXYZ: new Float64Array(0),
+      carNormalsXYZ: new Float64Array(0),
+      carBinormalsXYZ: new Float64Array(0),
+      longitudinalG: new Float64Array([0.11, 0.22]),
+      lateralG: new Float64Array([0.05, 0.06]),
+      verticalG: new Float64Array([1, 1.1]),
+      jerkMps3: new Float64Array([0, 0, 0, 1, 1, 1]),
+      launchActivity: new Float64Array([1, 0]),
+      brakeActivity: new Float64Array([0, 1]),
+      kineticEnergyJ: new Float64Array([100, 200]),
+      potentialEnergyJ: new Float64Array([300, 400]),
+      accumulatedDriveWorkJ: new Float64Array([10, 20]),
+      accumulatedLossWorkJ: new Float64Array([5, 6]),
+      energyErrorJ: new Float64Array([1, 2]),
+      bankRad: new Float64Array([0.1, 0.2]),
+      rollRateRadPerSec: new Float64Array([0.01, 0.02]),
+      specificForceXYZ: new Float64Array([0, 0, 1, 0, 0, 1]),
+      perCarLongitudinalG: new Float64Array(0),
+      perCarLateralG: new Float64Array(0),
+      perCarVerticalG: new Float64Array(0),
+      perCarBankRad: new Float64Array(0),
+      perCarRollRateRadPerSec: new Float64Array(0),
+      perCarSpecificForceXYZ: new Float64Array(0),
+      perCarJerkXYZ: new Float64Array(0),
+      frames: [],
+    });
+    const controller = createRidePlayback(timeline);
+    const snap = controller.getSnapshot();
+    expect(snap.telemetry).toBeDefined();
+    expect(snap.telemetry!.perCar.length).toBe(0);
+    expect(snap.telemetry!.longitudinalG).toBeCloseTo(0.11);
+    expect(snap.telemetry!.lateralG).toBeCloseTo(0.05);
+    expect(snap.telemetry!.verticalG).toBeCloseTo(1);
+    expect(snap.telemetry!.bankRad).toBeCloseTo(0.1);
+    expect(snap.telemetry!.rollRateRadPerSec).toBeCloseTo(0.01);
+    expect(snap.telemetry!.kineticEnergyJ).toBeCloseTo(100);
+    expect(snap.telemetry!.specificForceMps2[2]).toBeCloseTo(1);
+    // scrub to second sample ensures interpolation from global series, not perCar[0]
+    controller.scrubTime(1 / 120);
+    const snap2 = controller.getSnapshot();
+    expect(snap2.telemetry!.longitudinalG).toBeCloseTo(0.22);
+    expect(snap2.telemetry!.perCar.length).toBe(0);
+  });
 });

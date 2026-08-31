@@ -419,4 +419,237 @@ describe("compact vs full simulation parity", () => {
     expect(hydrated.kineticEnergyJ.length).toBe(0);
     expect(hydrated.perCarLongitudinalG.length).toBe(0);
   });
+
+  it("seven-car exact round-trip via generic transfer succeeds (no 6 limit)", () => {
+    const length = 2;
+    const carCount = 7;
+    const fill = (size: number, value: number): Float64Array =>
+      new Float64Array(Array.from({ length: size }, () => value));
+    const timeline = new RideTimeline({
+      sampleRateHz: 120,
+      timeSeconds: new Float64Array([0, 1 / 120]),
+      headDistanceM: new Float64Array([0, 10]),
+      speedMps: new Float64Array([5, 5]),
+      carCount,
+      carPositionsXYZ: fill(length * carCount * 3, 1),
+      carTangentsXYZ: fill(length * carCount * 3, 1),
+      carNormalsXYZ: fill(length * carCount * 3, 1),
+      carBinormalsXYZ: fill(length * carCount * 3, 1),
+      longitudinalG: fill(length, 0.1),
+      lateralG: fill(length, 0.2),
+      verticalG: fill(length, 1),
+      jerkMps3: fill(length * 3, 0.3),
+      launchActivity: fill(length, 0),
+      brakeActivity: fill(length, 0),
+      kineticEnergyJ: fill(length, 100),
+      potentialEnergyJ: fill(length, 200),
+      accumulatedDriveWorkJ: fill(length, 300),
+      accumulatedLossWorkJ: fill(length, 400),
+      energyErrorJ: fill(length, 5),
+      bankRad: fill(length, 0.5),
+      rollRateRadPerSec: fill(length, 0.6),
+      specificForceXYZ: fill(length * 3, 0.7),
+      perCarLongitudinalG: fill(length * carCount, 0.8),
+      perCarLateralG: fill(length * carCount, 0.9),
+      perCarVerticalG: fill(length * carCount, 1.0),
+      perCarBankRad: fill(length * carCount, 0.11),
+      perCarRollRateRadPerSec: fill(length * carCount, 0.12),
+      perCarSpecificForceXYZ: fill(length * carCount * 3, 0.13),
+      perCarJerkXYZ: fill(length * carCount * 3, 0.14),
+    });
+    const transfer = timeline.toTransferable();
+    expect(transfer.carCount).toBe(7);
+    expect(transfer.buffers.length).toBe(TIMELINE_CURRENT_BUFFER_COUNT);
+    const hydrated = RideTimeline.fromTransferable(transfer);
+    expect(hydrated.carCount).toBe(7);
+    expect(hydrated.length).toBe(length);
+    expect(Array.from(hydrated.perCarBankRad)).toEqual(
+      Array.from(timeline.perCarBankRad),
+    );
+  });
+
+  it("direct fromTransferable rejects malformed buffers, unsafe integers and unsafe products", () => {
+    // non-array buffers
+    expect(() =>
+      RideTimeline.fromTransferable({
+        sampleRateHz: 120,
+        carCount: 1,
+        length: 2,
+        buffers: "bad" as unknown as ArrayBuffer[],
+      }),
+    ).toThrow();
+    // non-ArrayBuffer member
+    const badMember = Array.from({ length: 28 }, () => new ArrayBuffer(16));
+    (badMember[5] as unknown) = new Uint8Array(16) as unknown as ArrayBuffer;
+    expect(() =>
+      RideTimeline.fromTransferable({
+        sampleRateHz: 120,
+        carCount: 1,
+        length: 2,
+        buffers: badMember as unknown as ArrayBuffer[],
+      }),
+    ).toThrow();
+    // unsafe carCount
+    expect(() =>
+      RideTimeline.fromTransferable({
+        sampleRateHz: 120,
+        carCount: Number.MAX_SAFE_INTEGER + 1,
+        length: 2,
+        buffers: Array.from({ length: 28 }, () => new ArrayBuffer(16)),
+      }),
+    ).toThrow();
+    // unsafe length
+    expect(() =>
+      RideTimeline.fromTransferable({
+        sampleRateHz: 120,
+        carCount: 1,
+        length: Number.MAX_SAFE_INTEGER + 1,
+        buffers: Array.from({ length: 28 }, () => new ArrayBuffer(16)),
+      }),
+    ).toThrow();
+    // unsafe byte product: length safe but length*8 unsafe
+    const unsafeLength = Math.floor(Number.MAX_SAFE_INTEGER / 8) + 1;
+    expect(() =>
+      RideTimeline.fromTransferable({
+        sampleRateHz: 120,
+        carCount: 1,
+        length: unsafeLength,
+        buffers: Array.from({ length: 28 }, () => new ArrayBuffer(8)),
+      }),
+    ).toThrow();
+    // unsafe per-car product: carCount*length*8 unsafe
+    const unsafeCarCount = Math.floor(Number.MAX_SAFE_INTEGER / 4) + 1;
+    expect(() =>
+      RideTimeline.fromTransferable({
+        sampleRateHz: 120,
+        carCount: unsafeCarCount,
+        length: 4,
+        buffers: Array.from({ length: 28 }, () => new ArrayBuffer(8)),
+      }),
+    ).toThrow();
+  });
+
+  it("table-driven malformed current-buffer lengths and non-finite contents are rejected", () => {
+    const length = 2;
+    const carCount = 1;
+    const makeValid = (): ArrayBuffer[] => [
+      new Float64Array([0, 1]).buffer, // 0 time
+      new Float64Array([0, 10]).buffer, // 1 head
+      new Float64Array([5, 5]).buffer, // 2 speed
+      new Float64Array([0, 0]).buffer, // 3 long
+      new Float64Array([0, 0]).buffer, // 4 lat
+      new Float64Array([1, 1]).buffer, // 5 vert
+      new Float64Array([0, 0, 0, 0, 0, 0]).buffer, // 6 jerk vec3
+      new Float64Array(length * carCount * 3).buffer, // 7 carPos
+      new Float64Array(length * carCount * 3).buffer, // 8 carTan
+      new Float64Array(length * carCount * 3).buffer, // 9 carNor
+      new Float64Array(length * carCount * 3).buffer, //10 carBin
+      new Float64Array([0, 0]).buffer, //11 launch
+      new Float64Array([0, 0]).buffer, //12 brake
+      new Float64Array([0, 0]).buffer, //13 kinetic
+      new Float64Array([0, 0]).buffer, //14 potential
+      new Float64Array([0, 0]).buffer, //15 drive
+      new Float64Array([0, 0]).buffer, //16 loss
+      new Float64Array([0, 0]).buffer, //17 energy
+      new Float64Array([0, 0]).buffer, //18 bank
+      new Float64Array([0, 0]).buffer, //19 roll
+      new Float64Array([0, 0, 0, 0, 0, 0]).buffer, //20 specific vec3
+      new Float64Array([0, 0]).buffer, //21 perCarLong
+      new Float64Array([0, 0]).buffer, //22 perCarLat
+      new Float64Array([0, 0]).buffer, //23 perCarVert
+      new Float64Array([0, 0]).buffer, //24 perCarBank
+      new Float64Array([0, 0]).buffer, //25 perCarRoll
+      new Float64Array(length * carCount * 3).buffer, //26 perCarSpecific
+      new Float64Array(length * carCount * 3).buffer, //27 perCarJerk
+    ];
+    // representative groups: scalar, vec3, car-vec3, per-car-scalar, per-car-vec3
+    const cases: Array<[string, number, number]> = [
+      ["scalar", 3, 8], // longitudinalG expected 16 bytes (2*8) but we give 8
+      ["vec3", 6, 24], // jerk expected 48 bytes (2*3*8) but we give 24
+      ["carVec3", 7, 24], // carPos expected 48 (2*1*3*8) but we give 24
+      ["perCarScalar", 21, 8], // perCarLong expected 16 but we give 8
+      ["perCarVec3", 26, 24], // perCarSpecific expected 48 but we give 24
+    ];
+    for (const [label, index, badBytes] of cases) {
+      const buffers = makeValid();
+      buffers[index] = new ArrayBuffer(badBytes);
+      expect(
+        () =>
+          RideTimeline.fromTransferable({
+            sampleRateHz: 120,
+            carCount,
+            length,
+            buffers: buffers as unknown as ArrayBuffer[],
+          }),
+        label,
+      ).toThrow();
+    }
+    // non-finite contents for each group
+    const nonFiniteCases: Array<[string, number]> = [
+      ["scalar", 3],
+      ["vec3", 6],
+      ["carVec3", 7],
+      ["perCarScalar", 21],
+      ["perCarVec3", 26],
+    ];
+    for (const [label, index] of nonFiniteCases) {
+      const buffers = makeValid();
+      const arr = new Float64Array(buffers[index]!);
+      arr[0] = Number.NaN;
+      // need to ensure buffer reflects NaN: recreate
+      buffers[index] = arr.buffer;
+      expect(
+        () =>
+          RideTimeline.fromTransferable({
+            sampleRateHz: 120,
+            carCount,
+            length,
+            buffers: buffers as unknown as ArrayBuffer[],
+          }),
+        `non-finite ${label}`,
+      ).toThrow();
+    }
+    // also Infinity
+    {
+      const buffers = makeValid();
+      new Float64Array(buffers[12]!)[1] = Number.POSITIVE_INFINITY;
+      expect(() =>
+        RideTimeline.fromTransferable({
+          sampleRateHz: 120,
+          carCount,
+          length,
+          buffers: buffers as unknown as ArrayBuffer[],
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("generic 28-buffer round-trip may contain optional zero-length new series (manual construction)", () => {
+    const length = 2;
+    // manually construct timeline with empty compact series (simulating legacy-like manual construction but with 28 buffers via toTransferable)
+    // RideTimeline constructor allows empty optional arrays; toTransferable will produce 28 buffers with zero-length for those
+    const timeline = new RideTimeline({
+      sampleRateHz: 120,
+      timeSeconds: new Float64Array([0, 1 / 120]),
+      headDistanceM: new Float64Array([0, 10]),
+      speedMps: new Float64Array([5, 5]),
+      longitudinalG: new Float64Array([0, 0]),
+      lateralG: new Float64Array([0, 0]),
+      verticalG: new Float64Array([1, 1]),
+      jerkMps3: new Float64Array([0, 0, 0, 0, 0, 0]),
+      carCount: 1,
+      carPositionsXYZ: new Float64Array([0, 0, 0, 10, 0, 0]),
+      carTangentsXYZ: new Float64Array([1, 0, 0, 1, 0, 0]),
+      carNormalsXYZ: new Float64Array([0, 1, 0, 0, 1, 0]),
+      carBinormalsXYZ: new Float64Array([0, 0, 1, 0, 0, 1]),
+      // leave new series empty (will be zero-length buffers in 28)
+    });
+    const transfer = timeline.toTransferable();
+    expect(transfer.buffers.length).toBe(28);
+    // some new series are zero-length (allowed generically)
+    expect(transfer.buffers[11]!.byteLength).toBe(0);
+    const hydrated = RideTimeline.fromTransferable(transfer);
+    expect(hydrated.launchActivity.length).toBe(0);
+    expect(hydrated.length).toBe(length);
+  });
 });

@@ -58,12 +58,19 @@ export type EngineeringWorkerTimings = {
   readonly workerSendEpochMs: number;
 };
 
+export type RideTimelineCompactTransfer = Omit<
+  RideTimelineTransfer,
+  "frames"
+> & {
+  readonly frames?: never;
+};
+
 export type EngineeringWorkerSuccess = {
   readonly type: "success";
   readonly requestId: string;
   readonly file: CoasterFileV1;
   readonly track: CompiledTrackTransfer;
-  readonly timeline: RideTimelineTransfer;
+  readonly timeline: RideTimelineCompactTransfer;
   readonly diagnostics: readonly Diagnostic[];
   readonly relaxations: readonly string[];
   readonly spanHashes: Readonly<Record<string, string>>;
@@ -291,19 +298,20 @@ export function validateEngineeringWorkerResponse(
       fail("response.timeline.sampleRateHz", "finite number");
     if (
       typeof tl.length !== "number" ||
-      !Number.isInteger(tl.length) ||
-      tl.length < 0
+      !Number.isSafeInteger(tl.length) ||
+      (tl.length as number) < 0
     )
-      fail("response.timeline.length", "non-negative integer");
+      fail("response.timeline.length", "safe non-negative integer");
     if (!Array.isArray(tl.buffers)) fail("response.timeline.buffers", "array");
     for (let i = 0; i < (tl.buffers as unknown[]).length; i++)
       if (!((tl.buffers as unknown[])[i] instanceof ArrayBuffer))
         fail(`response.timeline.buffers[${i}]`, "ArrayBuffer");
     if (
       typeof tl.carCount !== "number" ||
-      !Number.isInteger(tl.carCount as number)
+      !Number.isSafeInteger(tl.carCount as number) ||
+      (tl.carCount as number) < 0
     )
-      fail("response.timeline.carCount", "non-negative integer");
+      fail("response.timeline.carCount", "safe non-negative integer");
     // enforce exact buffer counts and nested frames rejection
     const bufCount = (tl.buffers as unknown[]).length;
     if (
@@ -317,8 +325,11 @@ export function validateEngineeringWorkerResponse(
     if ("frames" in tl && tl.frames !== undefined)
       fail("response.timeline.frames", "must be absent for compact worker");
     // central shape validation using views/byte lengths without copying payload
+    // strict-current: 28-buffer compact requires exact shapes, 11-buffer legacy remains accepted
     try {
-      validateRideTimelineTransfer(tl as unknown as RideTimelineTransfer);
+      validateRideTimelineTransfer(tl as unknown as RideTimelineTransfer, {
+        strictCurrent: true,
+      });
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
