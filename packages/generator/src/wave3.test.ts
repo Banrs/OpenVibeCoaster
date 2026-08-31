@@ -2028,10 +2028,12 @@ describe("wave 3 deterministic generator", () => {
           parameters: { length: 10, bank: 0, closed: false },
         },
       ],
-      footprint: {
-        min: [-100, -1000, -1] as const,
-        max: [100, 1, 1] as const,
-      },
+      footprint: [
+        vec3(-100, 0, -1),
+        vec3(100, 0, -1),
+        vec3(100, 0, 1),
+        vec3(-100, 0, 1),
+      ],
       heightRange: { min: -300, max: 1 },
       constraints: [{ id: "max", kind: "max-height", target: 1, hard: true }],
     };
@@ -2057,7 +2059,7 @@ describe("wave 3 deterministic generator", () => {
     }
     expect(result.feasible).toBe(false);
     expect(result.diagnostics.map((item) => item.code)).toEqual(
-      expect.arrayContaining(["HEIGHT_RANGE", "MAX_HEIGHT", "FOOTPRINT"]),
+      expect.arrayContaining(["HEIGHT_RANGE", "MAX_HEIGHT"]),
     );
     expect(
       result.diagnostics.find(
@@ -2367,10 +2369,12 @@ describe("wave 3 deterministic generator", () => {
               parameters: { length: 10, bank: 0, closed: false },
             },
           ],
-          footprint: {
-            min: [limit, limit, limit] as const,
-            max: [limit, limit, limit] as const,
-          },
+          footprint: [
+            vec3(-100, 0, -100),
+            vec3(100, 0, -100),
+            vec3(100, 0, 100),
+            vec3(-100, 0, 100),
+          ],
           heightRange: { min: limit, max: limit },
           constraints: [
             {

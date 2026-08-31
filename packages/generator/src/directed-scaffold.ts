@@ -1,7 +1,8 @@
 import {
-  SeventhOrderHermiteSpan,
   arcLength,
+  footprintBounds,
   type DesignIntentV1,
+  type FootprintPolygon,
 } from "@openvibecoaster/core";
 import {
   buildElement,
@@ -10,12 +11,8 @@ import {
   poseFromGate,
 } from "./elements";
 import type { AnySemanticElement, Pose } from "./types";
-import type { SolvedSpan } from "@openvibecoaster/core";
-import {
-  CertifiedWorkBudget,
-  WorkBudgetExceeded,
-  certifiedPolynomialBounds,
-} from "./polynomial-bounds";
+import { CertifiedWorkBudget, WorkBudgetExceeded } from "./polynomial-bounds";
+import { certifyFootprintSpan } from "./footprint-certifier";
 
 const R = 20;
 const MARGIN = 22;
@@ -41,29 +38,6 @@ export const deriveGateStartPose = (
 ): Pose | undefined => {
   if (intent.gates.length === 0) return undefined;
   return poseFromGate(intent.gates[0]!);
-};
-
-const getPositionCoefficients = (
-  span: SolvedSpan,
-): readonly (readonly number[])[] | undefined => {
-  if (
-    span.positionCoefficients !== undefined &&
-    span.positionCoefficients.length === 3 &&
-    span.positionCoefficients.every(
-      (row: readonly number[]) => row.length === 8,
-    )
-  ) {
-    return span.positionCoefficients;
-  }
-  if (span.span instanceof SeventhOrderHermiteSpan) {
-    const coeffs = span.span.coefficients;
-    if (
-      coeffs.length === 3 &&
-      coeffs.every((row: readonly number[]) => row.length === 8)
-    )
-      return coeffs;
-  }
-  return undefined;
 };
 
 const buildSwitchbackScaffold = (
@@ -184,31 +158,23 @@ const scaffoldFitsFootprint = (
   budget: CertifiedWorkBudget,
 ): FootprintFit => {
   if (footprint === undefined) return "fits";
+  const polygon = footprint as FootprintPolygon;
   const start: Pose = gate === undefined ? defaultPose() : poseFromGate(gate);
   let pose: Pose = start;
   for (const element of scaffold) {
     const built = buildElement(element, pose, 44);
     for (const span of built.solvedSpans) {
-      const maybeCoeffs = getPositionCoefficients(span);
-      if (maybeCoeffs !== undefined) {
-        try {
-          const bounds = certifiedPolynomialBounds(maybeCoeffs, 0, 1, budget);
-          if (
-            bounds.min[0]! < footprint.min[0]! ||
-            bounds.max[0]! > footprint.max[0]! ||
-            bounds.min[1]! < footprint.min[1]! ||
-            bounds.max[1]! > footprint.max[1]! ||
-            bounds.min[2]! < footprint.min[2]! ||
-            bounds.max[2]! > footprint.max[2]!
-          ) {
-            return "does-not-fit";
-          }
-        } catch (error) {
-          if (error instanceof WorkBudgetExceeded) {
-            return "uncertified";
-          }
-          throw error;
-        }
+      try {
+        const result = certifyFootprintSpan(span, polygon, {
+          station: 0,
+          budget,
+          maxDepth: 32,
+        });
+        if (result.status === "outside") return "does-not-fit";
+        if (result.status === "uncertified") return "uncertified";
+      } catch (error) {
+        if (error instanceof WorkBudgetExceeded) return "uncertified";
+        throw error;
       }
     }
     pose = built.endPose;
@@ -235,10 +201,12 @@ export const selectSwitchbackScaffold = (
   gate: DesignIntentV1["gates"][number] | undefined,
   budget: CertifiedWorkBudget,
 ): AnySemanticElement[] | undefined => {
-  const widthX =
-    footprint !== undefined ? footprint.max[0]! - footprint.min[0]! : 520;
-  const depthZ =
-    footprint !== undefined ? footprint.max[2]! - footprint.min[2]! : 360;
+  const bounds =
+    footprint !== undefined
+      ? footprintBounds(footprint as FootprintPolygon)
+      : undefined;
+  const widthX = bounds !== undefined ? bounds.max[0] - bounds.min[0] : 520;
+  const depthZ = bounds !== undefined ? bounds.max[2] - bounds.min[2] : 360;
   const usableX = widthX - 2 * R - 2 * MARGIN;
   const usableZ = depthZ - 2 * R - 2 * MARGIN;
   const lanesAlongX = usableX >= usableZ;
@@ -248,10 +216,10 @@ export const selectSwitchbackScaffold = (
 
   const gateX = gate?.position[0] ?? 0;
   const gateZ = gate?.position[2] ?? 0;
-  const footprintMinX = footprint?.min[0] ?? -260;
-  const footprintMaxX = footprint?.max[0] ?? 260;
-  const footprintMinZ = footprint?.min[2] ?? -180;
-  const footprintMaxZ = footprint?.max[2] ?? 180;
+  const footprintMinX = bounds?.min[0] ?? -260;
+  const footprintMaxX = bounds?.max[0] ?? 260;
+  const footprintMinZ = bounds?.min[2] ?? -180;
+  const footprintMaxZ = bounds?.max[2] ?? 180;
   const distToMinX = gateX - footprintMinX - R - MARGIN;
   const distToMaxX = footprintMaxX - gateX - R - MARGIN;
   const distToMinZ = gateZ - footprintMinZ - R - MARGIN;

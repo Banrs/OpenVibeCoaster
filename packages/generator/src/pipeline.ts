@@ -11,10 +11,12 @@ import {
   compileCoasterFile,
   createCoasterFileV1,
   canonicalJson,
+  isPointInsidePolygon,
   parseDesignIntentV1,
   serializeCoasterFileV1,
   serializeDesignIntentV1,
   serializeSolvedSpanV1,
+  signedDistanceXZ,
   reconstructSolvedSpan,
   validateDesignIntentV1,
   compileTrack,
@@ -31,6 +33,7 @@ import {
   type Diagnostic,
   type DesignIntentV1,
   type EnvironmentQuery,
+  type FootprintPolygon,
   type SolvedSpan,
   type ParametricSpan,
   type Vec3,
@@ -42,6 +45,7 @@ import {
   certifiedPolynomialBounds,
   certifyPolynomialThreshold,
 } from "./polynomial-bounds";
+import { certifyFootprintSpan } from "./footprint-certifier";
 import {
   buildElement,
   createAnyElement,
@@ -792,6 +796,9 @@ const gateDiagnostics = (
   if (intent.gates.length === 0) return [];
   const diagnostics: Diagnostic[] = [];
   let cursor = { spanIndex: 0, u: 0 };
+  const requiredFootprintId = intent.constraints.find(
+    (c) => c.kind === "required-footprint",
+  )?.id;
   for (const gate of intent.gates) {
     const gatePosition = finitePosition(gate.position);
     if (!gatePosition) {
@@ -803,6 +810,46 @@ const gateDiagnostics = (
         relatedIds: [gate.id],
       });
       continue;
+    }
+    if (intent.footprint !== undefined) {
+      const inside = isPointInsidePolygon(
+        intent.footprint as FootprintPolygon,
+        gatePosition,
+      );
+      if (!inside) {
+        const sd = signedDistanceXZ(
+          intent.footprint as FootprintPolygon,
+          gatePosition,
+        );
+        if (Number.isFinite(sd) && sd > 0) {
+          const relatedIds = requiredFootprintId
+            ? [gate.id, requiredFootprintId]
+            : [gate.id];
+          diagnostics.push(
+            sanitizeDiagnostic({
+              code: "FOOTPRINT",
+              severity: "error",
+              provenance: "PROJECT_ENGINEERING_LIMIT",
+              message: `Gate ${gate.id} outside footprint`,
+              relatedIds,
+              actual: sd,
+              limit: 0,
+              margin: -sd,
+              location: { s: 0, position: gatePosition },
+            }),
+          );
+        } else if (!Number.isFinite(sd)) {
+          diagnostics.push({
+            code: "FOOTPRINT_UNCERTIFIED",
+            severity: "fatal",
+            provenance: "PROJECT_ENGINEERING_LIMIT",
+            message: `Gate ${gate.id} footprint classification is non-finite`,
+            relatedIds: requiredFootprintId
+              ? [gate.id, requiredFootprintId]
+              : [gate.id],
+          });
+        }
+      }
     }
     let best: CanonicalPathLocation;
     try {
@@ -1023,7 +1070,10 @@ const validateGenerationConstraints = (
     relatedIds,
   });
   let station = 0;
-  const footprint = intent.footprint;
+  const footprint = intent.footprint as FootprintPolygon | undefined;
+  const requiredFootprintId = intent.constraints.find(
+    (constraint) => constraint.kind === "required-footprint",
+  )?.id;
   for (const span of spans) {
     let geometry: SeventhOrderHermiteSpan<Vec3>;
     try {
@@ -1071,27 +1121,43 @@ const validateGenerationConstraints = (
       }
     };
     if (footprint) {
-      for (const axis of [0, 1, 2] as const) {
-        const minLimit = footprint.min[axis]!;
-        const maxLimit = footprint.max[axis]!;
-        const needsMinCheck = certifiedBounds.min[axis]! < minLimit;
-        const needsMaxCheck = certifiedBounds.max[axis]! > maxLimit;
-        if (needsMinCheck)
-          check(
-            "FOOTPRINT",
-            axis,
-            minLimit,
-            "minimum",
-            `Footprint minimum exceeded by ${span.id}`,
-          );
-        if (needsMaxCheck)
-          check(
-            "FOOTPRINT",
-            axis,
-            maxLimit,
-            "maximum",
-            `Footprint maximum exceeded by ${span.id}`,
-          );
+      const footprintResult = certifyFootprintSpan(span, footprint, {
+        station,
+        budget: boundBudget,
+        maxDepth: 32,
+      });
+      if (footprintResult.status === "outside") {
+        const sd = footprintResult.witness.signedDistance;
+        const relatedIds = requiredFootprintId
+          ? [span.id, requiredFootprintId]
+          : [span.id];
+        diagnostics.push(
+          sanitizeDiagnostic({
+            code: "FOOTPRINT",
+            severity: "error",
+            provenance: "PROJECT_ENGINEERING_LIMIT",
+            message: `Footprint exceeded by ${span.id}`,
+            relatedIds,
+            actual: sd,
+            limit: 0,
+            margin: -sd,
+            location: {
+              s: footprintResult.witness.s,
+              position: footprintResult.witness.position,
+            },
+          }),
+        );
+      } else if (footprintResult.status === "uncertified") {
+        const relatedIds = requiredFootprintId
+          ? [span.id, requiredFootprintId]
+          : [span.id];
+        diagnostics.push({
+          code: "FOOTPRINT_UNCERTIFIED",
+          severity: "fatal",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: footprintResult.reason,
+          relatedIds,
+        });
       }
     }
     if (intent.heightRange) {

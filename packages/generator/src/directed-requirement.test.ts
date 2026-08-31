@@ -53,10 +53,12 @@ const baseGate = {
   ],
 };
 
-const baseFootprint = {
-  min: vec3(-260, 0, -180) as Vec3,
-  max: vec3(260, 100, 180) as Vec3,
-};
+const baseFootprint: readonly Vec3[] = [
+  vec3(-260, 0, -180),
+  vec3(260, 0, -180),
+  vec3(260, 0, 180),
+  vec3(-260, 0, 180),
+];
 
 const baseHeightRange = { min: 0, max: 100 };
 
@@ -164,10 +166,12 @@ describe("directed requirement-style generation", { timeout: 60000 }, () => {
     "slightly tighter footprint clips and fails with FOOTPRINT evidence",
     { timeout: 60000 },
     () => {
-      const tighterFootprint = {
-        min: vec3(-220, 0, -150) as Vec3,
-        max: vec3(220, 100, 150) as Vec3,
-      };
+      const tighterFootprint: readonly Vec3[] = [
+        vec3(-220, 0, -150),
+        vec3(220, 0, -150),
+        vec3(220, 0, 150),
+        vec3(-220, 0, 150),
+      ];
       const intent = makeSuccessIntent({ footprint: tighterFootprint });
       const env = rollingEnvironment();
       const result = generateCoaster(intent, { environment: env });
@@ -186,10 +190,12 @@ describe("directed requirement-style generation", { timeout: 60000 }, () => {
   );
 
   it("translated feasible footprint still passes", { timeout: 60000 }, () => {
-    const translatedFootprint = {
-      min: vec3(-240, 0, -160) as Vec3,
-      max: vec3(280, 100, 200) as Vec3,
-    };
+    const translatedFootprint: readonly Vec3[] = [
+      vec3(-240, 0, -160),
+      vec3(280, 0, -160),
+      vec3(280, 0, 200),
+      vec3(-240, 0, 200),
+    ];
     const translatedGate = {
       id: "gate-000",
       position: vec3(60, 12, 40) as Vec3,
@@ -232,10 +238,12 @@ describe("directed requirement-style generation", { timeout: 60000 }, () => {
   });
 
   it("scaled feasible footprint still passes", { timeout: 60000 }, () => {
-    const scaledFootprint = {
-      min: vec3(-400, 0, -300) as Vec3,
-      max: vec3(400, 100, 300) as Vec3,
-    };
+    const scaledFootprint: readonly Vec3[] = [
+      vec3(-400, 0, -300),
+      vec3(400, 0, -300),
+      vec3(400, 0, 300),
+      vec3(-400, 0, 300),
+    ];
     const intent = makeSuccessIntent({ footprint: scaledFootprint });
     const env = rollingEnvironment();
     const result = generateCoaster(intent, { environment: env });
@@ -264,10 +272,12 @@ describe("directed requirement-style generation", { timeout: 60000 }, () => {
     "aspect-swapped feasible footprint still passes with Z-axis routing",
     { timeout: 60000 },
     () => {
-      const swappedFootprint = {
-        min: vec3(-180, 0, -260) as Vec3,
-        max: vec3(180, 100, 260) as Vec3,
-      };
+      const swappedFootprint: readonly Vec3[] = [
+        vec3(-180, 0, -260),
+        vec3(180, 0, -260),
+        vec3(180, 0, 260),
+        vec3(-180, 0, 260),
+      ];
       const intent = makeSuccessIntent({ footprint: swappedFootprint });
       const env = rollingEnvironment();
       const result = generateCoaster(intent, { environment: env });
@@ -327,10 +337,12 @@ describe("directed requirement-style generation", { timeout: 60000 }, () => {
     "tiny footprint remains infeasible with evidence and <=3 relaxations",
     { timeout: 60000 },
     () => {
-      const tinyFootprint = {
-        min: vec3(-5, 0, -5) as Vec3,
-        max: vec3(5, 100, 5) as Vec3,
-      };
+      const tinyFootprint: readonly Vec3[] = [
+        vec3(-5, 0, -5),
+        vec3(5, 0, -5),
+        vec3(5, 0, 5),
+        vec3(-5, 0, 5),
+      ];
       const intent = makeSuccessIntent({ footprint: tinyFootprint });
       const env = rollingEnvironment();
       const result = generateCoaster(intent, { environment: env });
