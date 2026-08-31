@@ -109,6 +109,21 @@ const bankDerivative = (span: SolvedSpan, u: number): number =>
   span.bank?.derivative(u, 1) ?? 0;
 const bankSecondDerivative = (span: SolvedSpan, u: number): number =>
   span.bank?.derivative(u, 2) ?? 0;
+const physicalBankDerivative = (span: SolvedSpan, u: number): number => {
+  const q = vec3Length(span.span.derivative(u, 1));
+  if (q <= 1e-12) return 0;
+  return bankDerivative(span, u) / q;
+};
+const physicalBankSecondDerivative = (span: SolvedSpan, u: number): number => {
+  const d1 = span.span.derivative(u, 1);
+  const d2 = span.span.derivative(u, 2);
+  const q = vec3Length(d1);
+  if (q <= 1e-12) return 0;
+  const betaU = bankDerivative(span, u);
+  const betaUU = bankSecondDerivative(span, u);
+  const qU = vec3Dot(d1, d2) / q;
+  return betaUU / q ** 2 - (betaU * qU) / q ** 3;
+};
 const subspan = <T extends number | Vec3>(
   source: ParametricSpan<T>,
   start: number,
@@ -361,10 +376,11 @@ export const diagnoseSeams = (
       ),
       bankRad: Math.abs(bankValue(left, 1) - bankValue(right, 0)),
       bankDerivativeRadPerM: Math.abs(
-        bankDerivative(left, 1) - bankDerivative(right, 0),
+        physicalBankDerivative(left, 1) - physicalBankDerivative(right, 0),
       ),
       bankSecondDerivativeRadPerM2: Math.abs(
-        bankSecondDerivative(left, 1) - bankSecondDerivative(right, 0),
+        physicalBankSecondDerivative(left, 1) -
+          physicalBankSecondDerivative(right, 0),
       ),
       specificForceJumpG: Math.abs(
         specificForceNormalG(left, 1, speed) -
