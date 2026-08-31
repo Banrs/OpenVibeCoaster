@@ -11,7 +11,7 @@ import {
   compileCoasterFile,
   createCoasterFileV1,
   canonicalJson,
-  isPointInsidePolygon,
+  isPointInsidePolygonStrict,
   parseDesignIntentV1,
   serializeCoasterFileV1,
   serializeDesignIntentV1,
@@ -812,7 +812,7 @@ const gateDiagnostics = (
       continue;
     }
     if (intent.footprint !== undefined) {
-      const inside = isPointInsidePolygon(
+      const inside = isPointInsidePolygonStrict(
         intent.footprint as FootprintPolygon,
         gatePosition,
       );

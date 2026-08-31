@@ -398,6 +398,75 @@ describe("footprint certifier production API", () => {
     expect(firstDiag).toEqual(secondDiag);
   });
 
+  it("sub-epsilon outside gate strict vs tolerant", () => {
+    const square: FootprintPolygon = [
+      vec3(0, 0, 0),
+      vec3(10, 0, 0),
+      vec3(10, 0, 10),
+      vec3(0, 0, 10),
+    ];
+    const gatePos = vec3(10 + 5e-9, 0, 5);
+    expect(isPointInsidePolygon(square, gatePos)).toBe(true);
+    expect(isPointInsidePolygonStrict(square, gatePos)).toBe(false);
+    expect(signedDistanceXZ(square, gatePos)).toBe(0);
+    expect(signedDistanceStrictXZ(square, gatePos)).toBeGreaterThan(0);
+    const intent = {
+      schemaVersion: 1 as const,
+      generatorVersion: "test-v1",
+      seed: 7,
+      mode: "directed" as const,
+      family: "steel-sitdown-lsm-v1" as const,
+      elements: [
+        {
+          id: "station-000",
+          kind: "station" as const,
+          type: "station" as const,
+          parameters: { length: 10 },
+        },
+      ],
+      gates: [{ id: "gate-000", position: gatePos }],
+      targets: [],
+      constraints: [],
+      footprint: square,
+      heightRange: { min: 0, max: 100 },
+      terrainProfileId: "test",
+      pinnedElementIds: [],
+    };
+    const run = generateCoaster(intent);
+    const diag = run.diagnostics.find(
+      (d) =>
+        d.code === "FOOTPRINT" &&
+        d.relatedIds !== undefined &&
+        d.relatedIds.includes("gate-000"),
+    );
+    assertDefined(diag, "sub-epsilon gate FOOTPRINT missing");
+    expect(diag.limit).toBe(0);
+    assertDefined(diag.actual, "actual missing");
+    expect(diag.actual).toBeGreaterThan(0);
+    expect(diag.actual).toBeCloseTo(5e-9, 8);
+  });
+
+  it("near-parallel concave notch strict does not skip", () => {
+    const cNotch: FootprintPolygon = [
+      vec3(0, 0, 0),
+      vec3(100, 0, 0),
+      vec3(100, 0, 30),
+      vec3(20, 0, 30),
+      vec3(20, 0, 70),
+      vec3(100, 0, 70),
+      vec3(100, 0, 100),
+      vec3(0, 0, 100),
+    ];
+    const eps = 5e-13;
+    const a = vec3(10, 0, 50);
+    const b = vec3(90, 0, 50 + eps);
+    const strict = segmentWithinPolygonStrict(cNotch, a, b);
+    expect(strict.inside).toBe(false);
+    assertDefined(strict.witness, "near-parallel witness missing");
+    const tolerant = segmentWithinPolygon(cNotch, a, b);
+    void tolerant;
+  });
+
   it("CW and CCW polygons produce equivalent codes and evidence", () => {
     const cw = concaveL;
     const ccw: FootprintPolygon = [...concaveL].reverse();

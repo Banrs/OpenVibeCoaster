@@ -257,17 +257,6 @@ export const restrictedBernstein = (
   });
 };
 
-export const restrictedBernsteinBoxes = (
-  coefficientsX: readonly number[],
-  coefficientsZ: readonly number[],
-  start: number,
-  end: number,
-  budget: CertifiedWorkBudget,
-): { readonly x: readonly Interval[]; readonly z: readonly Interval[] } => ({
-  x: restrictedBernstein(coefficientsX, start, end, budget),
-  z: restrictedBernstein(coefficientsZ, start, end, budget),
-});
-
 const evaluatePolynomial = (
   coefficients: readonly number[],
   u: number,

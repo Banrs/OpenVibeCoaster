@@ -316,20 +316,6 @@ export function footprintBounds(polygon: FootprintPolygon): Aabb {
 
 // --- Strict proof predicates (reuse internals, eps=0, fail-closed) ---
 
-const diameterXZStrict = (polygon: FootprintPolygon): number => {
-  let maxSq = 0;
-  const n = polygon.length;
-  for (let i = 0; i < n; i += 1) {
-    for (let j = i + 1; j < n; j += 1) {
-      const dx = polygon[i]![0] - polygon[j]![0];
-      const dz = polygon[i]![2] - polygon[j]![2];
-      const d2 = dx * dx + dz * dz;
-      if (d2 > maxSq) maxSq = d2;
-    }
-  }
-  return Math.sqrt(maxSq);
-};
-
 export function isPointInsidePolygonStrict(
   polygon: FootprintPolygon,
   point: Vec3,
@@ -407,7 +393,6 @@ export function segmentWithinPolygonStrict(
   ) {
     return { inside: false };
   }
-  const diameter = diameterXZStrict(polygon);
   const ax = a[0];
   const az = a[2];
   const bx = b[0];
@@ -420,11 +405,11 @@ export function segmentWithinPolygonStrict(
     if (inside) return { inside: true };
     return { inside: false, witness: vec3(ax, 0, az) };
   }
+  // No epsOrient: exact zero only, fail-closed on ambiguous
   const tValues: number[] = [0, 1];
   const cross = (ux: number, uz: number, vx: number, vz: number): number =>
     ux * vz - uz * vx;
   const n = polygon.length;
-  const epsOrient = Math.max(1e-12, diameter * diameter * 1e-12);
   for (let i = 0; i < n; i += 1) {
     const q1 = polygon[i]!;
     const q2 = polygon[(i + 1) % n]!;
@@ -439,9 +424,9 @@ export function segmentWithinPolygonStrict(
     const rxs = cross(rX, rZ, sX, sZ);
     const qpx = q1x - ax;
     const qpz = q1z - az;
-    if (Math.abs(rxs) <= epsOrient) {
+    if (rxs === 0) {
       const qpr = cross(qpx, qpz, rX, rZ);
-      if (Math.abs(qpr) > epsOrient) continue;
+      if (qpr !== 0) continue;
       const dotRR = rX * rX + rZ * rZ;
       if (!(dotRR > 1e-18)) continue;
       const t1 = ((q1x - ax) * rX + (q1z - az) * rZ) / dotRR;
