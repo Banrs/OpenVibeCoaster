@@ -1,6 +1,7 @@
 import {
   buildArcLengthLut,
-  checkedArcLength,
+  buildCheckedLut,
+  checkedInvertWithLut,
   invertArcLength,
 } from "./arc-length";
 import { TrackCompileError } from "./compile-error";
@@ -39,12 +40,17 @@ const ADAPTIVE_MAX_CHORD_ERROR_M = 0.0005;
 const ADAPTIVE_MAX_DEPTH = 32;
 const ADAPTIVE_MAX_SAMPLES_PER_ELEMENT = 65536;
 const ADAPTIVE_MAX_TOTAL_SAMPLES = 262144;
+// Deterministic node/work cap: each subdivision creates a node, each leaf emits a sample.
+// At max, 65536 samples => ~131k intervals, so cap 400k is safe and deterministic.
+const ADAPTIVE_MAX_NODES = 400000;
 
-// outward-rounded helpers for chord certificate
+// outward-rounded helpers for chord certificate – genuine interval certificate
 const arcBits = new DataView(new ArrayBuffer(8));
 const nextUp = (value: number): number => {
   if (Number.isNaN(value))
-    throw new TrackCompileError("INTEGRATION_FAILED", "nextUp received NaN");
+    throw new TrackCompileError("INTEGRATION_FAILED", "nextUp received NaN", {
+      stage: "chord",
+    });
   if (value === Number.POSITIVE_INFINITY) return value;
   if (value === 0) return Number.MIN_VALUE;
   arcBits.setFloat64(0, value, false);
@@ -52,6 +58,42 @@ const nextUp = (value: number): number => {
   word = value > 0 ? word + 1n : word - 1n;
   arcBits.setBigUint64(0, word, false);
   return arcBits.getFloat64(0, false);
+};
+const nextDown = (value: number): number => {
+  if (Number.isNaN(value))
+    throw new TrackCompileError("INTEGRATION_FAILED", "nextDown received NaN", {
+      stage: "chord",
+    });
+  if (value === Number.NEGATIVE_INFINITY) return value;
+  if (value === 0) return -Number.MIN_VALUE;
+  arcBits.setFloat64(0, value, false);
+  let word = arcBits.getBigUint64(0, false);
+  word = value > 0 ? word - 1n : word + 1n;
+  arcBits.setBigUint64(0, word, false);
+  return arcBits.getFloat64(0, false);
+};
+type Interval = { readonly lo: number; readonly hi: number };
+const intervalExact = (v: number): Interval => {
+  if (!Number.isFinite(v))
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Interval exact requires finite",
+      { stage: "chord", actual: v, limit: 0 },
+    );
+  return { lo: v, hi: v };
+};
+const intervalAdd = (a: Interval, b: Interval): Interval => ({
+  lo: nextDown(a.lo + b.lo),
+  hi: nextUp(a.hi + b.hi),
+});
+const intervalSub = (a: Interval, b: Interval): Interval => ({
+  lo: nextDown(a.lo - b.hi),
+  hi: nextUp(a.hi - b.lo),
+});
+const intervalMul = (a: Interval, b: Interval): Interval => {
+  const vals = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi];
+  // each product is double rounded; outward already via min/max + next
+  return { lo: nextDown(Math.min(...vals)), hi: nextUp(Math.max(...vals)) };
 };
 
 const binomial = (n: number, k: number): number => {
@@ -61,46 +103,70 @@ const binomial = (n: number, k: number): number => {
   return result;
 };
 
-const restrictPowerCoefficients = (
-  coefficients: readonly number[],
+const restrictPowerCoefficientsInterval = (
+  coefficients: readonly Interval[],
   a: number,
   b: number,
-): number[] => {
-  const w = b - a;
-  const aPowers: number[] = [1];
-  for (let i = 1; i < coefficients.length; i += 1)
-    aPowers.push(aPowers[i - 1]! * a);
-  const result: number[] = Array(coefficients.length).fill(0);
-  for (let k = 0; k < coefficients.length; k += 1) {
-    let sum = 0;
-    const wPow = w ** k;
-    for (let i = k; i < coefficients.length; i += 1) {
-      sum += coefficients[i]! * binomial(i, k) * aPowers[i - k]!;
+): Interval[] => {
+  const wInterval = intervalSub(intervalExact(b), intervalExact(a));
+  const aInterval = intervalExact(a);
+  const n = coefficients.length;
+  // aPowers[0]=1, aPowers[i]=a^i as interval
+  const aPowers: Interval[] = [intervalExact(1)];
+  for (let i = 1; i < n; i += 1)
+    aPowers.push(intervalMul(aPowers[i - 1]!, aInterval));
+  const result: Interval[] = Array.from({ length: n }, () => intervalExact(0));
+  for (let k = 0; k < n; k += 1) {
+    let sum: Interval = intervalExact(0);
+    // w^k as interval
+    let wPow: Interval = intervalExact(1);
+    for (let p = 0; p < k; p += 1) wPow = intervalMul(wPow, wInterval);
+    for (let i = k; i < n; i += 1) {
+      const bin = intervalExact(binomial(i, k));
+      const term = intervalMul(
+        intervalMul(coefficients[i]!, bin),
+        aPowers[i - k]!,
+      );
+      sum = intervalAdd(sum, term);
     }
-    result[k] = wPow * sum;
+    result[k] = intervalMul(sum, wPow);
   }
   return result;
 };
 
-const powerToBernstein = (q: readonly number[]): number[] => {
+const powerToBernsteinInterval = (q: readonly Interval[]): Interval[] => {
   const n = q.length - 1;
-  const b: number[] = Array(n + 1).fill(0);
+  const b: Interval[] = Array.from({ length: n + 1 }, () => intervalExact(0));
   for (let k = 0; k <= n; k += 1) {
-    let acc = q[k]!;
+    let acc: Interval = q[k]!;
     for (let j = 0; j < k; j += 1) {
       const sign = (k - j) % 2 === 0 ? 1 : -1;
       const mij = binomial(n, j) * binomial(n - j, k - j) * sign;
-      acc -= b[j]! * mij;
+      const term = intervalMul(b[j]!, intervalExact(mij));
+      acc = intervalSub(acc, term);
     }
     const diag = binomial(n, k);
     if (diag === 0)
       throw new TrackCompileError(
         "INTEGRATION_FAILED",
         "Bernstein diagonal zero",
+        { stage: "chord" },
       );
-    b[k] = acc / diag;
+    b[k] = intervalMul(acc, intervalDiv(intervalExact(1), intervalExact(diag)));
   }
   return b;
+};
+
+const intervalMid = (iv: Interval): number => (iv.lo + iv.hi) / 2;
+const intervalDiv = (a: Interval, b: Interval): Interval => {
+  if (b.lo <= 0 && b.hi >= 0)
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Interval division by zero-spanning interval",
+      { stage: "chord" },
+    );
+  const vals = [a.lo / b.lo, a.lo / b.hi, a.hi / b.lo, a.hi / b.hi];
+  return { lo: nextDown(Math.min(...vals)), hi: nextUp(Math.max(...vals)) };
 };
 
 const chordErrorUpperBoundSeventhOrder = (
@@ -109,65 +175,111 @@ const chordErrorUpperBoundSeventhOrder = (
   end: number,
 ): number => {
   if (!(start >= 0 && end <= 1 && start < end))
-    throw new TrackCompileError("INTEGRATION_FAILED", "Invalid chord interval");
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      "Invalid chord interval",
+      { stage: "chord", uInterval: [start, end] },
+    );
   const rows = span.coefficients as readonly (readonly number[])[];
   if (rows.length !== 3 || rows.some((r) => r.length !== 8))
     throw new TrackCompileError(
       "INTEGRATION_FAILED",
       "Seventh-order coefficients invalid",
+      { stage: "chord" },
     );
-  const restrictedRows = rows.map((row) =>
-    restrictPowerCoefficients(row, start, end),
+  // Translation invariant: remove constant coefficient before restriction (chord error is translation invariant)
+  const translatedRows: Interval[][] = rows.map((row) => {
+    const intervals = row.map((v, idx) =>
+      idx === 0 ? intervalExact(0) : intervalExact(v),
+    );
+    return intervals;
+  });
+  const restrictedRows = translatedRows.map((row) =>
+    restrictPowerCoefficientsInterval(row, start, end),
   );
-  const bernsteinRows = restrictedRows.map((q) => powerToBernstein(q));
-  // Reconstruct 8 control points
-  const controls: Vec3[] = [];
+  const bernsteinRows = restrictedRows.map((q) => powerToBernsteinInterval(q));
+  // 8 control intervals
+  const controls: Array<{ x: Interval; y: Interval; z: Interval }> = [];
   for (let i = 0; i < 8; i += 1) {
-    controls.push(
-      vec3(bernsteinRows[0]![i]!, bernsteinRows[1]![i]!, bernsteinRows[2]![i]!),
-    );
+    controls.push({
+      x: bernsteinRows[0]![i]!,
+      y: bernsteinRows[1]![i]!,
+      z: bernsteinRows[2]![i]!,
+    });
   }
   const p0 = controls[0]!;
   const p1 = controls[7]!;
-  const v: Vec3 = vec3(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
-  const vDot = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-  if (!(vDot > 1e-24)) {
-    // degenerate segment: distance to p0
-    let max = 0;
-    for (let i = 1; i < 7; i += 1) {
-      const d = Math.hypot(
-        controls[i]![0] - p0[0],
-        controls[i]![1] - p0[1],
-        controls[i]![2] - p0[2],
+  // If p0-p1 degenerate (interval width), still handle via t method
+  // Compute midpoints for nominal t selection
+  const midP0 = vec3(intervalMid(p0.x), intervalMid(p0.y), intervalMid(p0.z));
+  const midP1 = vec3(intervalMid(p1.x), intervalMid(p1.y), intervalMid(p1.z));
+  const vMid: Vec3 = vec3(
+    midP1[0] - midP0[0],
+    midP1[1] - midP0[1],
+    midP1[2] - midP0[2],
+  );
+  const vMidDot = vMid[0] * vMid[0] + vMid[1] * vMid[1] + vMid[2] * vMid[2];
+  let maxUpper = 0;
+  for (let i = 0; i < 8; i += 1) {
+    const ci = controls[i]!;
+    // nominal t from midpoints
+    let t: number;
+    if (!(vMidDot > 1e-30)) {
+      t = 0;
+    } else {
+      const midCi = vec3(
+        intervalMid(ci.x),
+        intervalMid(ci.y),
+        intervalMid(ci.z),
       );
-      const up = nextUp(d);
-      if (up > max) max = up;
+      const diffMid: Vec3 = vec3(
+        midCi[0] - midP0[0],
+        midCi[1] - midP0[1],
+        midCi[2] - midP0[2],
+      );
+      const dot =
+        diffMid[0] * vMid[0] + diffMid[1] * vMid[1] + diffMid[2] * vMid[2];
+      t = dot / vMidDot;
+      if (!Number.isFinite(t)) t = 0;
+      t = Math.max(0, Math.min(1, t));
     }
-    return max;
+    // segment point at t: p0 + t*(p1-p0) as intervals (outward, contains a real point on chord)
+    const segX = intervalAdd(
+      p0.x,
+      intervalMul(intervalSub(p1.x, p0.x), intervalExact(t)),
+    );
+    const segY = intervalAdd(
+      p0.y,
+      intervalMul(intervalSub(p1.y, p0.y), intervalExact(t)),
+    );
+    const segZ = intervalAdd(
+      p0.z,
+      intervalMul(intervalSub(p1.z, p0.z), intervalExact(t)),
+    );
+    const dx = intervalSub(ci.x, segX);
+    const dy = intervalSub(ci.y, segY);
+    const dz = intervalSub(ci.z, segZ);
+    const maxAbsX = Math.max(Math.abs(dx.lo), Math.abs(dx.hi));
+    const maxAbsY = Math.max(Math.abs(dy.lo), Math.abs(dy.hi));
+    const maxAbsZ = Math.max(Math.abs(dz.lo), Math.abs(dz.hi));
+    const upX = nextUp(maxAbsX);
+    const upY = nextUp(maxAbsY);
+    const upZ = nextUp(maxAbsZ);
+    const sqX = nextUp(upX * upX);
+    const sqY = nextUp(upY * upY);
+    const sqZ = nextUp(upZ * upZ);
+    const sum = nextUp(nextUp(sqX + sqY) + sqZ);
+    const normUpper = nextUp(Math.sqrt(sum));
+    if (!Number.isFinite(normUpper))
+      throw new TrackCompileError(
+        "INTEGRATION_FAILED",
+        "Chord bound norm non-finite",
+        { stage: "chord", uInterval: [start, end] },
+      );
+    if (normUpper > maxUpper) maxUpper = normUpper;
   }
-  let max = 0;
-  for (let i = 1; i < 7; i += 1) {
-    const diff: Vec3 = vec3(
-      controls[i]![0] - p0[0],
-      controls[i]![1] - p0[1],
-      controls[i]![2] - p0[2],
-    );
-    const t = (diff[0] * v[0] + diff[1] * v[1] + diff[2] * v[2]) / vDot;
-    const clamped = Math.max(0, Math.min(1, t));
-    const closest: Vec3 = vec3(
-      p0[0] + v[0] * clamped,
-      p0[1] + v[1] * clamped,
-      p0[2] + v[2] * clamped,
-    );
-    const d = Math.hypot(
-      controls[i]![0] - closest[0],
-      controls[i]![1] - closest[1],
-      controls[i]![2] - closest[2],
-    );
-    const up = nextUp(d);
-    if (up > max) max = up;
-  }
-  return max;
+  // For translation-invariant bound, the max distance among controls bounds the true curve
+  return maxUpper;
 };
 
 const chordErrorUpperBound = (
@@ -202,142 +314,6 @@ const chordErrorUpperBound = (
   );
 };
 
-const checkedSpeedLocal = (span: ParametricSpan<Vec3>, u: number): number => {
-  let d: Vec3;
-  try {
-    d = span.derivative(u, 1);
-  } catch (error) {
-    throw new TrackCompileError(
-      "INTEGRATION_FAILED",
-      error instanceof Error ? error.message : String(error),
-    );
-  }
-  if (!Array.isArray(d) || d.length !== 3 || !d.every(Number.isFinite))
-    throw new TrackCompileError(
-      "INTEGRATION_FAILED",
-      "Span derivative must be finite 3-vector",
-    );
-  const v = Math.hypot(d[0], d[1], d[2]);
-  if (!Number.isFinite(v) || !(v > 1e-12))
-    throw new TrackCompileError(
-      "INTEGRATION_FAILED",
-      "A span derivative must be finite and non-zero",
-    );
-  return v;
-};
-
-const buildCheckedLut = (
-  span: ParametricSpan<Vec3>,
-  segments = 32,
-): {
-  parameters: Float64Array;
-  distances: Float64Array;
-  totalLength: number;
-} => {
-  if (!Number.isInteger(segments) || segments < 1)
-    throw new TrackCompileError(
-      "INTEGRATION_FAILED",
-      "LUT segments must be positive integer",
-    );
-  const parameters = new Float64Array(segments + 1);
-  const distances = new Float64Array(segments + 1);
-  for (let i = 0; i <= segments; i += 1) {
-    parameters[i] = i / segments;
-    if (i > 0) {
-      const segLen = checkedArcLength(
-        span,
-        parameters[i - 1]!,
-        parameters[i]!,
-        1e-9,
-      );
-      distances[i] = distances[i - 1]! + segLen;
-    }
-  }
-  return { parameters, distances, totalLength: distances[segments]! };
-};
-
-const checkedInvertWithLut = (
-  span: ParametricSpan<Vec3>,
-  target: number,
-  lut: {
-    parameters: Float64Array;
-    distances: Float64Array;
-    totalLength: number;
-  },
-  tolerance = 1e-10,
-): number => {
-  if (!Number.isFinite(target))
-    throw new TrackCompileError(
-      "INVERSION_FAILED",
-      "Target distance must be finite",
-    );
-  if (target <= 0) return 0;
-  if (target >= lut.totalLength) return 1;
-  // binary search for bracket
-  let lowIdx = 0;
-  let highIdx = lut.distances.length - 1;
-  while (lowIdx + 1 < highIdx) {
-    const mid = Math.floor((lowIdx + highIdx) / 2);
-    if (lut.distances[mid]! <= target) lowIdx = mid;
-    else highIdx = mid;
-  }
-  let low = lut.parameters[lowIdx]!;
-  let high = lut.parameters[lowIdx + 1]!;
-  let lowDist = lut.distances[lowIdx]!;
-  let highDist = lut.distances[lowIdx + 1]!;
-  let u = low + ((target - lowDist) / (highDist - lowDist)) * (high - low);
-  if (!Number.isFinite(u)) u = (low + high) / 2;
-  u = Math.max(low, Math.min(high, u));
-  for (let iter = 0; iter < 30; iter += 1) {
-    const travelled = lowDist + checkedArcLength(span, low, u, 1e-11);
-    const error = travelled - target;
-    if (!Number.isFinite(error))
-      throw new TrackCompileError(
-        "INVERSION_FAILED",
-        "Inversion error non-finite",
-      );
-    if (Math.abs(error) <= tolerance * Math.max(1, lut.totalLength)) return u;
-    if (error > 0) {
-      high = u;
-      highDist = travelled;
-    } else {
-      low = u;
-      lowDist = travelled;
-    }
-    if (!(high > low))
-      throw new TrackCompileError(
-        "INVERSION_FAILED",
-        "Inversion bracket collapsed",
-      );
-    if (high - low < 1e-14)
-      throw new TrackCompileError(
-        "INVERSION_FAILED",
-        "Inversion reached parameter resolution",
-      );
-    let speed: number;
-    try {
-      speed = checkedSpeedLocal(span, u);
-    } catch {
-      speed = Number.NaN;
-    }
-    const candidate =
-      Number.isFinite(speed) && Math.abs(speed) > 1e-10
-        ? u - error / speed
-        : Number.NaN;
-    if (Number.isFinite(candidate) && candidate > low && candidate < high)
-      u = candidate;
-    else u = (low + high) / 2;
-    if (!Number.isFinite(u))
-      throw new TrackCompileError(
-        "INVERSION_FAILED",
-        "Inversion candidate non-finite",
-      );
-  }
-  throw new TrackCompileError(
-    "INVERSION_FAILED",
-    "Arc length inversion failed to converge",
-  );
-};
 export interface CompiledTrackDataInput {
   readonly positions: Float64Array;
   readonly tangents: Float64Array;
@@ -388,14 +364,6 @@ const encodeUtf8 = (text: string): Uint8Array => {
       );
   }
   return new Uint8Array(bytes);
-};
-const hashText = (text: string): string => {
-  const bytes = encodeUtf8(text);
-  const hash = bytes.reduce(
-    (value, byte) => Math.imul(value ^ byte, 0x01000193),
-    0x811c9dc5,
-  );
-  return (hash >>> 0).toString(16).padStart(8, "0");
 };
 const spanSpeed = (span: ParametricSpan<Vec3>, u: number): number => {
   const derivative = span.derivative(u, 1);
@@ -593,24 +561,60 @@ const validateCompiledTrackDataInput: (
   }
 };
 const checksum = (data: CompiledTrackDataInput): string => {
-  const canonical = JSON.stringify({
-    positions: Array.from(data.positions),
-    tangents: Array.from(data.tangents),
-    normals: Array.from(data.normals),
-    binormals: Array.from(data.binormals),
-    distances: Array.from(data.distances),
-    curvature: Array.from(data.curvature),
-    curvatureVector: Array.from(data.curvatureVector),
-    bank: Array.from(data.bank),
-    bankDerivative: Array.from(data.bankDerivative),
-    zoneMasks: Array.from(data.zoneMasks),
-    zoneNames: [...data.zoneNames],
-    elementIndices: Array.from(data.elementIndices),
-    elementBoundaries: Array.from(data.elementBoundaries),
-    parameters: Array.from(data.parameters),
-    totalLength: data.totalLength,
-  });
-  return hashText(canonical);
+  // Streaming output-compatible checksum without boxing large arrays: feed exact same canonical JSON token sequence into FNV hash
+  let hash = 0x811c9dc5;
+  const feed = (s: string): void => {
+    const bytes = encodeUtf8(s);
+    for (const b of bytes) hash = Math.imul(hash ^ b, 0x01000193);
+  };
+  const feedNumberArray = (arr: Float64Array | Uint32Array): void => {
+    feed("[");
+    for (let i = 0; i < arr.length; i += 1) {
+      if (i > 0) feed(",");
+      feed(JSON.stringify(arr[i] as number));
+    }
+    feed("]");
+  };
+  const feedZoneNames = (arr: readonly string[]): void => {
+    feed("[");
+    for (let i = 0; i < arr.length; i += 1) {
+      if (i > 0) feed(",");
+      feed(JSON.stringify(arr[i]));
+    }
+    feed("]");
+  };
+  feed('{"positions":');
+  feedNumberArray(data.positions);
+  feed(',"tangents":');
+  feedNumberArray(data.tangents);
+  feed(',"normals":');
+  feedNumberArray(data.normals);
+  feed(',"binormals":');
+  feedNumberArray(data.binormals);
+  feed(',"distances":');
+  feedNumberArray(data.distances);
+  feed(',"curvature":');
+  feedNumberArray(data.curvature);
+  feed(',"curvatureVector":');
+  feedNumberArray(data.curvatureVector);
+  feed(',"bank":');
+  feedNumberArray(data.bank);
+  feed(',"bankDerivative":');
+  feedNumberArray(data.bankDerivative);
+  feed(',"zoneMasks":');
+  feedNumberArray(data.zoneMasks);
+  feed(',"zoneNames":');
+  feedZoneNames([...data.zoneNames]);
+  feed(',"elementIndices":');
+  feedNumberArray(data.elementIndices);
+  feed(',"elementBoundaries":');
+  feedNumberArray(data.elementBoundaries);
+  feed(',"parameters":');
+  feedNumberArray(data.parameters);
+  feed(',"totalLength":');
+  feed(JSON.stringify(data.totalLength));
+  feed("}");
+  return (hash >>> 0).toString(16).padStart(8, "0");
 };
 
 const compiledTrackStorage = new WeakMap<
@@ -748,7 +752,9 @@ const compileTrackFixed = (
   elements: readonly TrackElement[],
   options: CompileTrackOptions,
 ): CompiledTrackData => {
-  const perElement = Math.max(2, Math.floor(options.samples!));
+  const raw = options.samples!;
+  if (!Number.isFinite(raw)) throw new RangeError("samples must be finite");
+  const perElement = Math.max(2, Math.floor(raw));
   const count = elements.length * (perElement - 1) + 1;
   const positions = new Float64Array(count * 3);
   const tangents = new Float64Array(count * 3);
@@ -882,24 +888,59 @@ const compileTrackAdaptive = (
     elements.length * ADAPTIVE_MIN_SAMPLES_PER_ELEMENT - (elements.length - 1);
   if (minTotal > ADAPTIVE_MAX_TOTAL_SAMPLES)
     throw new TrackCompileError(
-      "BUDGET_EXCEEDED",
+      "SAMPLE_BUDGET_EXCEEDED",
       `Track minimum ${minTotal} exceeds total ${ADAPTIVE_MAX_TOTAL_SAMPLES}`,
+      {
+        stage: "samples",
+        samples: minTotal,
+        limitSamples: ADAPTIVE_MAX_TOTAL_SAMPLES,
+      },
     );
   // First pass: determine variable sample layouts via checked adaptive subdivision
   const perElementUs: number[][] = [];
   const perElementSs: number[][] = [];
   const perElementLengths: number[] = [];
   for (const element of elements) {
-    validSpanSpeed(element.span, 0);
-    validSpanSpeed(element.span, 1);
+    try {
+      validSpanSpeed(element.span, 0);
+      validSpanSpeed(element.span, 1);
+    } catch (error) {
+      if (error instanceof TrackCompileError && error.evidence.elementId)
+        throw error;
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new TrackCompileError(
+        "SPEED_CERTIFICATION_FAILED",
+        `Element ${element.id}: ${msg}`,
+        { elementId: element.id, stage: "speed", uInterval: [0, 1] },
+      );
+    }
   }
-  for (const element of elements) {
-    const lut = buildCheckedLut(element.span, 32);
+  let globalNodes = 0;
+  for (let elemIdx = 0; elemIdx < elements.length; elemIdx += 1) {
+    const element = elements[elemIdx]!;
+    let lut: ReturnType<typeof buildCheckedLut>;
+    try {
+      lut = buildCheckedLut(element.span, 32);
+    } catch (error) {
+      if (error instanceof TrackCompileError) {
+        if (error.evidence.elementId) throw error;
+        throw new TrackCompileError(error.code, error.message, {
+          ...error.evidence,
+          elementId: element.id,
+        });
+      }
+      throw new TrackCompileError(
+        "INTEGRATION_FAILED",
+        error instanceof Error ? error.message : String(error),
+        { elementId: element.id, stage: "integration" },
+      );
+    }
     const L = lut.totalLength;
     if (!Number.isFinite(L) || !(L > 0))
       throw new TrackCompileError(
         "INTEGRATION_FAILED",
         `Element ${element.id} has non-positive length`,
+        { elementId: element.id, stage: "integration" },
       );
     perElementLengths.push(L);
     const seedCount = ADAPTIVE_MIN_SAMPLES_PER_ELEMENT;
@@ -911,11 +952,34 @@ const compileTrackAdaptive = (
       if (k === 0) seedUs[k] = 0;
       else if (k === seedCount - 1) seedUs[k] = 1;
       else {
-        const u = checkedInvertWithLut(element.span, s, lut, 1e-10);
+        let u: number;
+        try {
+          u = checkedInvertWithLut(element.span, s, lut, 1e-10);
+        } catch (error) {
+          if (error instanceof TrackCompileError && error.evidence.elementId)
+            throw error;
+          const msg = error instanceof Error ? error.message : String(error);
+          throw new TrackCompileError(
+            "INVERSION_FAILED",
+            `Element ${element.id}: ${msg}`,
+            {
+              elementId: element.id,
+              stage: "inversion",
+              uInterval: [seedUs[k - 1]!, 1],
+              sInterval: [seedSs[k - 1]!, s],
+            },
+          );
+        }
         if (!(u > seedUs[k - 1]! && u < 1))
           throw new TrackCompileError(
             "INVERSION_FAILED",
             `Inversion bracketing failed on ${element.id}`,
+            {
+              elementId: element.id,
+              stage: "inversion",
+              uInterval: [seedUs[k - 1]!, 1],
+              sInterval: [seedSs[k - 1]!, s],
+            },
           );
         seedUs[k] = u;
       }
@@ -928,65 +992,252 @@ const compileTrackAdaptive = (
           `Seed monotonicity failed on ${element.id}`,
         );
 
-    const expand = (
-      aU: number,
-      bU: number,
-      aS: number,
-      bS: number,
-      depth: number,
-    ): Array<{ u: number; s: number }> => {
-      const err = chordErrorUpperBound(element.span, aU, bU, element.id);
-      if (err <= ADAPTIVE_MAX_CHORD_ERROR_M) return [{ u: bU, s: bS }];
-      if (depth >= ADAPTIVE_MAX_DEPTH)
-        throw new TrackCompileError(
-          "BUDGET_EXCEEDED",
-          `Element ${element.id} exceeded adaptive depth ${ADAPTIVE_MAX_DEPTH}`,
-        );
-      const sMid = (aS + bS) / 2;
-      if (sMid === aS || sMid === bS)
-        throw new TrackCompileError(
-          "INVERSION_FAILED",
-          `Arc length resolution on ${element.id}`,
-        );
-      const midU = checkedInvertWithLut(element.span, sMid, lut, 1e-10);
-      if (!(midU > aU && midU < bU))
-        throw new TrackCompileError(
-          "INVERSION_FAILED",
-          `Inversion bracketing failed on ${element.id} at depth ${depth}`,
-        );
-      const left = expand(aU, midU, aS, sMid, depth + 1);
-      const right = expand(midU, bU, sMid, bS, depth + 1);
-      // left already contains points after aU up to midU, right after midU up to bU
-      return [...left, ...right];
-    };
-
+    // Left-first DFS that emits into bounded arrays via mutable counter, checking caps before push/subdivision
     const resultUs: number[] = [seedUs[0]!];
     const resultSs: number[] = [seedSs[0]!];
+    let nodes = 0;
     for (let i = 0; i < seedCount - 1; i += 1) {
-      const aU = seedUs[i]!;
-      const bU = seedUs[i + 1]!;
-      const aS = seedSs[i]!;
-      const bS = seedSs[i + 1]!;
-      const expanded = expand(aU, bU, aS, bS, 0);
-      for (const pt of expanded) {
-        resultUs.push(pt.u);
-        resultSs.push(pt.s);
-        if (resultUs.length > ADAPTIVE_MAX_SAMPLES_PER_ELEMENT)
+      const stack: Array<{
+        aU: number;
+        bU: number;
+        aS: number;
+        bS: number;
+        depth: number;
+      }> = [
+        {
+          aU: seedUs[i]!,
+          bU: seedUs[i + 1]!,
+          aS: seedSs[i]!,
+          bS: seedSs[i + 1]!,
+          depth: 0,
+        },
+      ];
+      while (stack.length > 0) {
+        if (
+          nodes >= ADAPTIVE_MAX_NODES ||
+          globalNodes >= ADAPTIVE_MAX_NODES * elements.length
+        )
           throw new TrackCompileError(
-            "BUDGET_EXCEEDED",
-            `Element ${element.id} exceeded ${ADAPTIVE_MAX_SAMPLES_PER_ELEMENT} samples`,
+            "SAMPLE_BUDGET_EXCEEDED",
+            `Element ${element.id} exceeded node budget`,
+            {
+              elementId: element.id,
+              stage: "subdivision",
+              depth: stack[stack.length - 1]!.depth,
+              samples: resultUs.length,
+              limit: ADAPTIVE_MAX_SAMPLES_PER_ELEMENT,
+              work: globalNodes + nodes,
+            },
           );
+        const cur = stack.pop()!;
+        let err: number;
+        try {
+          err = chordErrorUpperBound(element.span, cur.aU, cur.bU, element.id);
+        } catch (error) {
+          if (error instanceof TrackCompileError) {
+            if (error.evidence.elementId) throw error;
+            throw new TrackCompileError(error.code, error.message, {
+              ...error.evidence,
+              elementId: element.id,
+              uInterval: error.evidence.uInterval ?? [cur.aU, cur.bU],
+              sInterval: error.evidence.sInterval ?? [cur.aS, cur.bS],
+            });
+          }
+          const msg = error instanceof Error ? error.message : String(error);
+          throw new TrackCompileError(
+            "CHORD_CERTIFICATION_FAILED",
+            `Element ${element.id}: ${msg}`,
+            {
+              elementId: element.id,
+              stage: "chord",
+              uInterval: [cur.aU, cur.bU],
+              sInterval: [cur.aS, cur.bS],
+            },
+          );
+        }
+        if (err <= ADAPTIVE_MAX_CHORD_ERROR_M) {
+          if (resultUs.length >= ADAPTIVE_MAX_SAMPLES_PER_ELEMENT)
+            throw new TrackCompileError(
+              "SAMPLE_BUDGET_EXCEEDED",
+              `Element ${element.id} exceeded ${ADAPTIVE_MAX_SAMPLES_PER_ELEMENT} samples`,
+              {
+                elementId: element.id,
+                stage: "samples",
+                uInterval: [cur.aU, cur.bU],
+                sInterval: [cur.aS, cur.bS],
+                actual: err,
+                limit: ADAPTIVE_MAX_CHORD_ERROR_M,
+                depth: cur.depth,
+                samples: resultUs.length,
+                limitSamples: ADAPTIVE_MAX_SAMPLES_PER_ELEMENT,
+              },
+            );
+          // Live global sample budget before leaf push (accounting for shared seams)
+          {
+            const sumPrev = perElementUs.reduce((s, us) => s + us.length, 0);
+            const remainingElements = elements.length - elemIdx - 1;
+            const projectedTotal =
+              sumPrev +
+              (resultUs.length + 1) +
+              remainingElements * ADAPTIVE_MIN_SAMPLES_PER_ELEMENT -
+              (elements.length - 1);
+            if (projectedTotal > ADAPTIVE_MAX_TOTAL_SAMPLES)
+              throw new TrackCompileError(
+                "SAMPLE_BUDGET_EXCEEDED",
+                `Track would exceed total ${ADAPTIVE_MAX_TOTAL_SAMPLES} after ${element.id}`,
+                {
+                  elementId: element.id,
+                  stage: "samples",
+                  uInterval: [cur.aU, cur.bU],
+                  sInterval: [cur.aS, cur.bS],
+                  samples: projectedTotal,
+                  limitSamples: ADAPTIVE_MAX_TOTAL_SAMPLES,
+                  work: globalNodes + nodes,
+                },
+              );
+          }
+          resultUs.push(cur.bU);
+          resultSs.push(cur.bS);
+          nodes++;
+          globalNodes++;
+          continue;
+        }
+        if (cur.depth >= ADAPTIVE_MAX_DEPTH)
+          throw new TrackCompileError(
+            "SAMPLE_BUDGET_EXCEEDED",
+            `Element ${element.id} exceeded adaptive depth ${ADAPTIVE_MAX_DEPTH}`,
+            {
+              elementId: element.id,
+              stage: "depth",
+              uInterval: [cur.aU, cur.bU],
+              sInterval: [cur.aS, cur.bS],
+              actual: err,
+              limit: ADAPTIVE_MAX_CHORD_ERROR_M,
+              depth: cur.depth,
+            },
+          );
+        if (resultUs.length + 1 >= ADAPTIVE_MAX_SAMPLES_PER_ELEMENT)
+          throw new TrackCompileError(
+            "SAMPLE_BUDGET_EXCEEDED",
+            `Element ${element.id} would exceed ${ADAPTIVE_MAX_SAMPLES_PER_ELEMENT} samples`,
+            {
+              elementId: element.id,
+              stage: "samples",
+              uInterval: [cur.aU, cur.bU],
+              sInterval: [cur.aS, cur.bS],
+              actual: err,
+              limit: ADAPTIVE_MAX_CHORD_ERROR_M,
+              depth: cur.depth,
+              samples: resultUs.length,
+            },
+          );
+        // Live global budget before subdivision (future leaf will need at least one sample)
+        {
+          const sumPrev = perElementUs.reduce((s, us) => s + us.length, 0);
+          const remainingElements = elements.length - elemIdx - 1;
+          const projectedTotal =
+            sumPrev +
+            (resultUs.length + 2) +
+            remainingElements * ADAPTIVE_MIN_SAMPLES_PER_ELEMENT -
+            (elements.length - 1);
+          if (projectedTotal > ADAPTIVE_MAX_TOTAL_SAMPLES)
+            throw new TrackCompileError(
+              "SAMPLE_BUDGET_EXCEEDED",
+              `Track would exceed total ${ADAPTIVE_MAX_TOTAL_SAMPLES} on subdivision of ${element.id}`,
+              {
+                elementId: element.id,
+                stage: "samples",
+                uInterval: [cur.aU, cur.bU],
+                sInterval: [cur.aS, cur.bS],
+                samples: projectedTotal,
+                limitSamples: ADAPTIVE_MAX_TOTAL_SAMPLES,
+                work: globalNodes + nodes,
+              },
+            );
+        }
+        const sMid = (cur.aS + cur.bS) / 2;
+        if (sMid === cur.aS || sMid === cur.bS)
+          throw new TrackCompileError(
+            "INVERSION_FAILED",
+            `Arc length resolution on ${element.id}`,
+            {
+              elementId: element.id,
+              stage: "inversion",
+              uInterval: [cur.aU, cur.bU],
+              sInterval: [cur.aS, cur.bS],
+            },
+          );
+        let midU: number;
+        try {
+          midU = checkedInvertWithLut(element.span, sMid, lut, 1e-10);
+        } catch (error) {
+          if (error instanceof TrackCompileError && error.evidence.elementId)
+            throw error;
+          const msg = error instanceof Error ? error.message : String(error);
+          throw new TrackCompileError(
+            "INVERSION_FAILED",
+            `Element ${element.id}: ${msg}`,
+            {
+              elementId: element.id,
+              stage: "inversion",
+              uInterval: [cur.aU, cur.bU],
+              sInterval: [cur.aS, cur.bS],
+              depth: cur.depth,
+            },
+          );
+        }
+        if (!(midU > cur.aU && midU < cur.bU))
+          throw new TrackCompileError(
+            "INVERSION_FAILED",
+            `Inversion bracketing failed on ${element.id} at depth ${cur.depth}`,
+            {
+              elementId: element.id,
+              stage: "inversion",
+              uInterval: [cur.aU, cur.bU],
+              sInterval: [cur.aS, cur.bS],
+              depth: cur.depth,
+            },
+          );
+        // Push right then left for left-first DFS
+        stack.push({
+          aU: midU,
+          bU: cur.bU,
+          aS: sMid,
+          bS: cur.bS,
+          depth: cur.depth + 1,
+        });
+        stack.push({
+          aU: cur.aU,
+          bU: midU,
+          aS: cur.aS,
+          bS: sMid,
+          depth: cur.depth + 1,
+        });
+        nodes++;
+        globalNodes++;
       }
     }
     if (resultUs.length < ADAPTIVE_MIN_SAMPLES_PER_ELEMENT)
       throw new TrackCompileError(
-        "BUDGET_EXCEEDED",
+        "SAMPLE_BUDGET_EXCEEDED",
         `Element ${element.id} below minimum samples`,
+        {
+          elementId: element.id,
+          stage: "samples",
+          samples: resultUs.length,
+          limit: ADAPTIVE_MIN_SAMPLES_PER_ELEMENT,
+        },
       );
     if (resultUs.length > ADAPTIVE_MAX_SAMPLES_PER_ELEMENT)
       throw new TrackCompileError(
-        "BUDGET_EXCEEDED",
+        "SAMPLE_BUDGET_EXCEEDED",
         `Element ${element.id} exceeded ${ADAPTIVE_MAX_SAMPLES_PER_ELEMENT} samples`,
+        {
+          elementId: element.id,
+          stage: "samples",
+          samples: resultUs.length,
+          limit: ADAPTIVE_MAX_SAMPLES_PER_ELEMENT,
+        },
       );
     perElementUs.push(resultUs);
     perElementSs.push(resultSs);
@@ -997,12 +1248,12 @@ const compileTrackAdaptive = (
     (elements.length - 1);
   if (totalSamples > ADAPTIVE_MAX_TOTAL_SAMPLES)
     throw new TrackCompileError(
-      "BUDGET_EXCEEDED",
+      "SAMPLE_BUDGET_EXCEEDED",
       `Track exceeded total ${ADAPTIVE_MAX_TOTAL_SAMPLES} samples`,
     );
   if (totalSamples < 2)
     throw new TrackCompileError(
-      "BUDGET_EXCEEDED",
+      "SAMPLE_BUDGET_EXCEEDED",
       "Track needs at least two samples",
     );
 
@@ -1131,8 +1382,8 @@ export const compileTrack = (
   if (elements.length === 0)
     throw new RangeError("A track needs at least one element");
   if (options.samples !== undefined) {
-    if (!Number.isInteger(options.samples) || options.samples < 2)
-      throw new RangeError("samples must be an integer >= 2");
+    // Preserve previous public fixed-sampling edge behavior: floor fractional and clamp below 2
+    // Finite integers retain exact counts; non-finite becomes 2
     return compileTrackFixed(elements, options);
   }
   return compileTrackAdaptive(elements, options);

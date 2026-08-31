@@ -43,27 +43,32 @@ const baseIntent = createDesignIntentV1({
 });
 
 describe("regenerateCoasterFileLocal canonical 32", () => {
-  it("file reload and file-local regeneration use canonical persisted 32-sample checksum while preserving exact solved coefficients and untouched hashes", () => {
+  it("file reload and file-local regeneration use canonical persisted adaptive checksum while preserving exact solved coefficients and untouched hashes", () => {
     const gen64 = generateCoaster(baseIntent, { samples: 64 });
     const file64 = gen64.file;
-    // File's checksum is canonical 32, not 64 preview
-    const loaded = compileCoasterFile(file64, { samples: 32 });
+    // File's checksum is canonical adaptive, not 64 preview
+    const loaded = compileCoasterFile(file64);
     expect(loaded.track.checksum).toBe(file64.compiledDataChecksum);
     expect(loaded.file.compiledDataChecksum).toBe(file64.compiledDataChecksum);
-    // Also ensure that compiling with 32 vs file's checksum matches
+    // Also ensure that compiling with 32 vs file's checksum matches canonical, and preview does not weaken stored checksum
     const canonicalTrack = compileCoasterFile(file64).track;
     expect(canonicalTrack.checksum).toBe(file64.compiledDataChecksum);
+    const preview = compileCoasterFile(file64, { samples: 32 });
+    expect(preview.file.compiledDataChecksum).toBe(file64.compiledDataChecksum);
+    // Preview track is fixed 32, file remains adaptive (for this simple file they coincidentally match at 32, but file remains adaptive)
+    expect(preview.track.checksum).toBeDefined();
+    expect(preview.file.compiledDataChecksum).toBe(file64.compiledDataChecksum);
 
     // Original span bytes for untouched element station-3
     const origSpan = file64.solvedSpans.find((s) => s.id === "station-3")!;
     expect(origSpan).toBeDefined();
 
-    // File-local regeneration must use canonical 32 explicitly
+    // File-local regeneration must use canonical adaptive explicitly
     const local = regenerateCoasterFileLocal(file64, "launch-1");
     expect(local.feasible).toBe(true);
     const newFile = local.generation.file;
-    // New file's checksum must still be canonical 32
-    const reloaded = compileCoasterFile(newFile, { samples: 32 });
+    // New file's checksum must still be canonical adaptive
+    const reloaded = compileCoasterFile(newFile);
     expect(reloaded.track.checksum).toBe(newFile.compiledDataChecksum);
     expect(newFile.compiledDataChecksum).toMatch(/^[0-9a-f]{8}$/i);
     // Untouched span must remain bitwise identical
@@ -73,8 +78,10 @@ describe("regenerateCoasterFileLocal canonical 32", () => {
     // Ensure that the regenerated generation honestly reports zero candidates (no search history)
     expect(local.generation.candidatesTested).toBe(0);
     expect(local.generation.candidateLmIterations).toEqual([]);
-    // Ensure options is canonical 32, not 64
-    expect((local.generation.options as { samples?: number }).samples).toBe(32);
+    // Ensure options remains canonical adaptive, not preview 64 nor fixed 32
+    expect(
+      (local.generation.options as { samples?: number }).samples,
+    ).toBeUndefined();
   });
 
   it("handles beginning/middle/end and multi-span correctly with file-local API", () => {

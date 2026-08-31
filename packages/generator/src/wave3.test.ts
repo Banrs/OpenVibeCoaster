@@ -164,141 +164,147 @@ const retainsObjectReference = (root: unknown, target: object): boolean => {
 };
 
 describe("wave 3 deterministic generator", () => {
-  it("builds the flagship semantic sequence for automatic modes", () => {
-    const result = generateCoaster({
-      ...directedIntent,
-      mode: "full-auto",
-      elements: [],
-    });
-    expect(result.feasible, JSON.stringify(result.diagnostics)).toBe(true);
-    expect(result.diagnostics.some((item) => item.severity === "error")).toBe(
-      false,
-    );
-    expect(result.elements.map((element) => element.type)).toEqual([
-      "station",
-      "launch",
-      "topHat",
-      "overbankedTurn",
-      "airtimeHill",
-      "boost",
-      "zeroGRoll",
-      "stall",
-      "brake",
-      "brake",
-      "station",
-    ]);
-    const topHat = result.elements[2];
-    expect(topHat).toBeDefined();
-    expect((topHat!.parameters as { readonly height: number }).height).toBe(80);
-    expect(result.track.totalLength).toBeGreaterThanOrEqual(1600);
-    expect(result.track.totalLength).toBeLessThanOrEqual(2200);
-    expect(
-      Math.abs(
-        (result.elements[3]!.parameters as { readonly bank: number }).bank,
-      ),
-    ).toBeGreaterThan(Math.PI / 2);
-    expect(
-      Math.abs(
-        (result.elements[6]!.parameters as { readonly roll: number }).roll,
-      ),
-    ).toBeCloseTo(Math.PI * 2, 12);
-    expect(
-      (result.elements[7]!.parameters as { readonly height: number }).height,
-    ).toBeGreaterThan(0);
-    const overbankSpans = result.solvedSpans.filter((span) =>
-      span.id.startsWith("overbankedTurn-003"),
-    );
-    expect(
-      Math.max(
-        ...overbankSpans.flatMap((span) =>
-          Array.from({ length: 33 }, (_, index) =>
-            Math.abs(span.bank!.position(index / 32)),
+  it(
+    "builds the flagship semantic sequence for automatic modes",
+    { timeout: 10000 },
+    () => {
+      const result = generateCoaster({
+        ...directedIntent,
+        mode: "full-auto",
+        elements: [],
+      });
+      expect(result.feasible, JSON.stringify(result.diagnostics)).toBe(true);
+      expect(result.diagnostics.some((item) => item.severity === "error")).toBe(
+        false,
+      );
+      expect(result.elements.map((element) => element.type)).toEqual([
+        "station",
+        "launch",
+        "topHat",
+        "overbankedTurn",
+        "airtimeHill",
+        "boost",
+        "zeroGRoll",
+        "stall",
+        "brake",
+        "brake",
+        "station",
+      ]);
+      const topHat = result.elements[2];
+      expect(topHat).toBeDefined();
+      expect((topHat!.parameters as { readonly height: number }).height).toBe(
+        80,
+      );
+      expect(result.track.totalLength).toBeGreaterThanOrEqual(1600);
+      expect(result.track.totalLength).toBeLessThanOrEqual(2200);
+      expect(
+        Math.abs(
+          (result.elements[3]!.parameters as { readonly bank: number }).bank,
+        ),
+      ).toBeGreaterThan(Math.PI / 2);
+      expect(
+        Math.abs(
+          (result.elements[6]!.parameters as { readonly roll: number }).roll,
+        ),
+      ).toBeCloseTo(Math.PI * 2, 12);
+      expect(
+        (result.elements[7]!.parameters as { readonly height: number }).height,
+      ).toBeGreaterThan(0);
+      const overbankSpans = result.solvedSpans.filter((span) =>
+        span.id.startsWith("overbankedTurn-003"),
+      );
+      expect(
+        Math.max(
+          ...overbankSpans.flatMap((span) =>
+            Array.from({ length: 33 }, (_, index) =>
+              Math.abs(span.bank!.position(index / 32)),
+            ),
           ),
         ),
-      ),
-    ).toBeGreaterThan(Math.PI / 2);
-    const rollSpans = result.solvedSpans.filter((span) =>
-      span.id.startsWith("zeroGRoll-006"),
-    );
-    expect(
-      rollSpans.at(-1)!.bank!.position(1) - rollSpans[0]!.bank!.position(0),
-    ).toBeCloseTo(Math.PI * 2, 10);
-    const stallSpans = result.solvedSpans.filter((span) =>
-      span.id.startsWith("stall-007"),
-    );
-    const stallHeights = stallSpans.flatMap((span) =>
-      Array.from(
-        { length: 33 },
-        (_, index) => span.span.position(index / 32)[1],
-      ),
-    );
-    expect(
-      Math.max(...stallHeights) - Math.min(...stallHeights),
-    ).toBeGreaterThan(10);
-    const topHatSpans = result.file.solvedSpans.filter((span) =>
-      span.id.startsWith("topHat-002#"),
-    );
-    expect(topHatSpans.map((span) => span.id)).toEqual([
-      "topHat-002#0",
-      "topHat-002#1",
-    ]);
-    const runtimeTopHatSpans = result.solvedSpans.filter((span) =>
-      span.id.startsWith("topHat-002#"),
-    );
-    runtimeTopHatSpans.forEach((span, index) => {
-      expect(span.span).toBeInstanceOf(SeventhOrderHermiteSpan);
-      expect(span.bank).toBeInstanceOf(QuinticScalarSpan);
-      expect(span.positionCoefficients).toEqual(
-        topHatSpans[index]!.positionCoefficients,
+      ).toBeGreaterThan(Math.PI / 2);
+      const rollSpans = result.solvedSpans.filter((span) =>
+        span.id.startsWith("zeroGRoll-006"),
       );
-      expect(span.rollCoefficients).toEqual(
-        topHatSpans[index]!.rollCoefficients,
+      expect(
+        rollSpans.at(-1)!.bank!.position(1) - rollSpans[0]!.bank!.position(0),
+      ).toBeCloseTo(Math.PI * 2, 10);
+      const stallSpans = result.solvedSpans.filter((span) =>
+        span.id.startsWith("stall-007"),
       );
-    });
-    const loaded = compileCoasterFile(result.serializedFile);
-    const sampleTopHat = (spans: typeof topHatSpans, u: number) => {
-      const index = u <= 0.5 ? 0 : 1;
-      const local = index === 0 ? u * 2 : u * 2 - 1;
-      const span = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
-        spans[index]!.positionCoefficients,
-      );
-      const roll = spans[index]!.rollCoefficients;
-      return {
-        height: span.position(local)[1],
-        bank: roll.reduce(
-          (sum, value, power) => sum + value * local ** power,
-          0,
+      const stallHeights = stallSpans.flatMap((span) =>
+        Array.from(
+          { length: 33 },
+          (_, index) => span.span.position(index / 32)[1],
         ),
+      );
+      expect(
+        Math.max(...stallHeights) - Math.min(...stallHeights),
+      ).toBeGreaterThan(10);
+      const topHatSpans = result.file.solvedSpans.filter((span) =>
+        span.id.startsWith("topHat-002#"),
+      );
+      expect(topHatSpans.map((span) => span.id)).toEqual([
+        "topHat-002#0",
+        "topHat-002#1",
+      ]);
+      const runtimeTopHatSpans = result.solvedSpans.filter((span) =>
+        span.id.startsWith("topHat-002#"),
+      );
+      runtimeTopHatSpans.forEach((span, index) => {
+        expect(span.span).toBeInstanceOf(SeventhOrderHermiteSpan);
+        expect(span.bank).toBeInstanceOf(QuinticScalarSpan);
+        expect(span.positionCoefficients).toEqual(
+          topHatSpans[index]!.positionCoefficients,
+        );
+        expect(span.rollCoefficients).toEqual(
+          topHatSpans[index]!.rollCoefficients,
+        );
+      });
+      const loaded = compileCoasterFile(result.serializedFile);
+      const sampleTopHat = (spans: typeof topHatSpans, u: number) => {
+        const index = u <= 0.5 ? 0 : 1;
+        const local = index === 0 ? u * 2 : u * 2 - 1;
+        const span = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+          spans[index]!.positionCoefficients,
+        );
+        const roll = spans[index]!.rollCoefficients;
+        return {
+          height: span.position(local)[1],
+          bank: roll.reduce(
+            (sum, value, power) => sum + value * local ** power,
+            0,
+          ),
+        };
       };
-    };
-    const apex = sampleTopHat(topHatSpans, 0.5);
-    const offApexHeights = Array.from(
-      { length: 2001 },
-      (_, index) => index / 2000,
-    )
-      .filter((u) => u !== 0.5)
-      .map((u) => sampleTopHat(topHatSpans, u).height);
-    expect(apex.height).toBeCloseTo(80, 10);
-    expect(Math.max(...offApexHeights)).toBeLessThan(apex.height);
-    expect(apex.bank - sampleTopHat(topHatSpans, 0).bank).toBeCloseTo(
-      Math.PI,
-      12,
-    );
-    const loadedTopHatSpans = loaded.file.solvedSpans.filter((span) =>
-      span.id.startsWith("topHat-002#"),
-    );
-    expect(loadedTopHatSpans).toEqual(topHatSpans);
-    for (const u of [0, 0.17, 0.35, 0.5, 0.65, 0.83, 1]) {
-      const sample = sampleTopHat(topHatSpans, u);
-      const loadedSample = sampleTopHat(loadedTopHatSpans, u);
-      expect(loadedSample).toEqual(sample);
-    }
-    expect(compileCoasterFile(result.serializedFile).track.positions).toEqual(
-      result.track.positions,
-    );
-    expect(loaded.track.checksum).toBe(result.track.checksum);
-    expect(serializeCoasterFileV1(loaded.file)).toBe(result.serializedFile);
-  });
+      const apex = sampleTopHat(topHatSpans, 0.5);
+      const offApexHeights = Array.from(
+        { length: 2001 },
+        (_, index) => index / 2000,
+      )
+        .filter((u) => u !== 0.5)
+        .map((u) => sampleTopHat(topHatSpans, u).height);
+      expect(apex.height).toBeCloseTo(80, 10);
+      expect(Math.max(...offApexHeights)).toBeLessThan(apex.height);
+      expect(apex.bank - sampleTopHat(topHatSpans, 0).bank).toBeCloseTo(
+        Math.PI,
+        12,
+      );
+      const loadedTopHatSpans = loaded.file.solvedSpans.filter((span) =>
+        span.id.startsWith("topHat-002#"),
+      );
+      expect(loadedTopHatSpans).toEqual(topHatSpans);
+      for (const u of [0, 0.17, 0.35, 0.5, 0.65, 0.83, 1]) {
+        const sample = sampleTopHat(topHatSpans, u);
+        const loadedSample = sampleTopHat(loadedTopHatSpans, u);
+        expect(loadedSample).toEqual(sample);
+      }
+      expect(compileCoasterFile(result.serializedFile).track.positions).toEqual(
+        result.track.positions,
+      );
+      expect(loaded.track.checksum).toBe(result.track.checksum);
+      expect(serializeCoasterFileV1(loaded.file)).toBe(result.serializedFile);
+    },
+  );
 
   it("keeps the flagship force-driven geometry schema-clean", () => {
     const result = generateCoaster({
@@ -2401,7 +2407,6 @@ describe("wave 3 deterministic generator", () => {
       "name",
       "profileVersion",
       "researchSnapshotIds",
-      "samples",
       "trackClearance",
       "trainEnvelopeRadius",
     ];

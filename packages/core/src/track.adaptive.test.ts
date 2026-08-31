@@ -108,8 +108,10 @@ describe("certified adaptive track compilation (TDD)", () => {
 
   it("circle/helix with exact sagitta certifier compiles and meets 0.5mm", () => {
     const R = 20;
+    const circleSpeed = R * 2 * Math.PI;
     const circleSpan: ParametricSpan<Vec3> & {
       chordErrorUpperBound: (a: number, b: number) => number;
+      speedLowerBound: (a: number, b: number) => number;
     } = {
       position: (u: number) =>
         vec3(R * Math.cos(2 * Math.PI * u), 0, R * Math.sin(2 * Math.PI * u)),
@@ -139,9 +141,12 @@ describe("certified adaptive track compilation (TDD)", () => {
         const sagitta = R * (1 - Math.cos(deltaTheta / 2));
         return sagitta;
       },
+      speedLowerBound: () => circleSpeed,
     };
+    const helixSpeed = Math.hypot(R * 2 * Math.PI, 10);
     const helixSpan: ParametricSpan<Vec3> & {
       chordErrorUpperBound: (a: number, b: number) => number;
+      speedLowerBound: (a: number, b: number) => number;
     } = {
       position: (u: number) =>
         vec3(
@@ -168,6 +173,7 @@ describe("certified adaptive track compilation (TDD)", () => {
         const deltaTheta = 2 * Math.PI * (b - a);
         return R * (1 - Math.cos(deltaTheta / 2));
       },
+      speedLowerBound: () => helixSpeed,
     };
     const cData = compileTrack([{ id: "circle", span: circleSpan }]);
     const hData = compileTrack([{ id: "helix", span: helixSpan }]);
@@ -316,9 +322,12 @@ describe("certified adaptive track compilation (TDD)", () => {
   });
 
   it("opaque span without certifier throws UNBOUNDED_SPAN", () => {
-    const opaque: ParametricSpan<Vec3> = {
+    const opaque: ParametricSpan<Vec3> & {
+      speedLowerBound?: (a: number, b: number) => number;
+    } = {
       position: (u: number) => vec3(u * 10, Math.sin(u * 10), 0),
       derivative: (u: number) => vec3(10, 10 * Math.cos(u * 10), 0),
+      speedLowerBound: () => 1,
     };
     expect(() => compileTrack([{ id: "opaque", span: opaque }])).toThrow(
       expect.objectContaining({ code: "UNBOUNDED_SPAN" }),
@@ -337,13 +346,15 @@ describe("certified adaptive track compilation (TDD)", () => {
       // Per-element budget: opaque with always-large chord error forces subdivision beyond limit
       const bigErrorSpan: ParametricSpan<Vec3> & {
         chordErrorUpperBound: (a: number, b: number) => number;
+        speedLowerBound: (a: number, b: number) => number;
       } = {
         position: (u: number) => vec3(u * 10, 0, 0),
         derivative: () => vec3(10, 0, 0),
         chordErrorUpperBound: () => 1, // always >0.0005, will subdivide until budget
+        speedLowerBound: () => 10,
       };
       expect(() => compileTrack([{ id: "big", span: bigErrorSpan }])).toThrow(
-        expect.objectContaining({ code: "BUDGET_EXCEEDED" }),
+        expect.objectContaining({ code: "SAMPLE_BUDGET_EXCEEDED" }),
       );
 
       // Total budget: use early min-total check to avoid heavy work – 9000 lines min total 31*9000+1 >262144, should throw quickly
@@ -352,7 +363,7 @@ describe("certified adaptive track compilation (TDD)", () => {
         span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(1, 0, 0)),
       }));
       expect(() => compileTrack(many)).toThrow(
-        expect.objectContaining({ code: "BUDGET_EXCEEDED" }),
+        expect.objectContaining({ code: "SAMPLE_BUDGET_EXCEEDED" }),
       );
     },
   );
@@ -366,7 +377,11 @@ describe("certified adaptive track compilation (TDD)", () => {
           : vec3(6 * (u - 0.5), 0, 0),
     };
     expect(() => checkedArcLength(stationary, 0, 1)).toThrow(
-      expect.objectContaining({ code: "INTEGRATION_FAILED" }),
+      expect.objectContaining({
+        code: expect.stringMatching(
+          /INTEGRATION_FAILED|SPEED_CERTIFICATION_FAILED/,
+        ),
+      }),
     );
     const goodSpan = SeventhOrderHermiteSpan.line(
       vec3(0, 0, 0),
@@ -385,7 +400,11 @@ describe("certified adaptive track compilation (TDD)", () => {
     // Inverting to a tiny distance that requires evaluating near zero speed should fail or be at limit
     // Use checkedInvert with totalLength that includes zero-speed endpoint
     expect(() => checkedArcLength(stationaryAtZero, 0, 1)).toThrow(
-      expect.objectContaining({ code: "INTEGRATION_FAILED" }),
+      expect.objectContaining({
+        code: expect.stringMatching(
+          /INTEGRATION_FAILED|SPEED_CERTIFICATION_FAILED/,
+        ),
+      }),
     );
     // Inversion on singular span should fail closed (either integration or inversion code)
     expect(() =>

@@ -71,8 +71,42 @@ const toCompileFatalDiagnostic = (
   error: unknown,
   relatedIds: readonly string[] = [],
 ): Diagnostic => {
-  const code =
-    error instanceof TrackCompileError ? error.code : "COMPILE_FAILED";
+  if (error instanceof TrackCompileError) {
+    const ev = error.evidence as Record<string, unknown>;
+    const actualRaw =
+      typeof ev.actual === "number"
+        ? (ev.actual as number)
+        : typeof ev.samples === "number" && typeof ev.limitSamples === "number"
+          ? (ev.samples as number)
+          : undefined;
+    const limitRaw =
+      typeof ev.limit === "number"
+        ? (ev.limit as number)
+        : typeof ev.limitSamples === "number"
+          ? (ev.limitSamples as number)
+          : undefined;
+    const margin =
+      actualRaw !== undefined && limitRaw !== undefined
+        ? limitRaw - actualRaw
+        : undefined;
+    // Never fabricate location: omit unless exact global s and position are known (not available from element-local evidence)
+    const elementId =
+      typeof ev.elementId === "string" ? (ev.elementId as string) : undefined;
+    const allRelatedIds = [
+      ...new Set([...relatedIds, ...(elementId ? [elementId] : [])]),
+    ];
+    return {
+      code: error.code,
+      severity: "fatal",
+      provenance: "PROJECT_ENGINEERING_LIMIT",
+      message: error.message,
+      relatedIds: allRelatedIds,
+      ...(actualRaw !== undefined ? { actual: actualRaw } : {}),
+      ...(limitRaw !== undefined ? { limit: limitRaw } : {}),
+      ...(margin !== undefined ? { margin } : {}),
+    };
+  }
+  const code = "COMPILE_FAILED";
   const message = error instanceof Error ? error.message : String(error);
   return {
     code,
@@ -152,7 +186,7 @@ const canonicalIntentCopy = (intent: DesignIntentV1): DesignIntentV1 =>
 const ownedGenerationOptions = (
   options: GenerationOptions,
 ): StoredGenerationOptions => ({
-  ...(options.samples === undefined ? {} : { samples: options.samples }),
+  // Stored generation options remain canonical adaptive; preview samples never become authoritative (fixed-32 is decoder-only)
   ...(options.name === undefined ? {} : { name: options.name }),
   ...(options.generatorVersion === undefined
     ? {}
@@ -1562,33 +1596,12 @@ const buildFileResult = (
       CANONICAL_TRACK_COMPILE_OPTIONS,
     );
   } catch (error) {
-    const diagnostic = toCompileFatalDiagnostic(error);
-    // Return early generation result with fatal diagnostic if canonical compilation fails
-    const fallbackResult: GenerationResult = {
-      feasible: false,
-      intent: canonicalIntentCopy(intent),
-      elements: ownedElements(evaluation.elements),
-      solvedSpans: Object.freeze(canonicalSpans),
-      track: undefined as unknown as ReturnType<typeof compileTrack>,
-      file: undefined as unknown as CoasterFileV1,
-      serializedFile: "",
-      diagnostics: Object.freeze([...evaluation.diagnostics, diagnostic]),
-      relaxations: Object.freeze(relaxationEvidence.map((item) => item.change)),
-      relaxationEvidence: Object.freeze(relaxationEvidence),
-      candidatesTested,
-      selectedLmIterations: evaluation.solved.lmIterations,
-      candidateLmIterations: Object.freeze([...candidateLmIterations]),
-      candidateLmWork: candidateLmIterations.reduce((sum, it) => sum + it, 0),
-      relaxationLmIterations: Object.freeze([...relaxationLmIterations]),
-      relaxationLmWork: relaxationLmIterations.reduce((sum, it) => sum + it, 0),
-      lmIterations:
-        candidateLmIterations.reduce((sum, it) => sum + it, 0) +
-        relaxationLmIterations.reduce((sum, it) => sum + it, 0),
-      spanHashes: {},
-      spanBytes: {},
-      options: ownedGenerationOptions(options),
-    };
-    return deepFreeze(fallbackResult);
+    if (error instanceof TrackCompileError) throw error;
+    throw new TrackCompileError(
+      "INTEGRATION_FAILED",
+      error instanceof Error ? error.message : String(error),
+      { stage: "compilation" },
+    );
   }
   const isRequirementIntent = isRequirementStyleDirectedIntent(intent);
   const effectiveIntent: DesignIntentV1 =
@@ -2553,10 +2566,9 @@ export function regenerateCoasterFileLocal(
   elementId: string,
   options: LocalRegenerationOptions = {},
 ): LocalRegenerationResult {
-  // Validate/compile supplied file without global solve – canonical 32-sample compilation
+  // Validate/compile supplied file without global solve – canonical adaptive compilation
   const loaded = compileCoasterFile(
     fileInput as CoasterFileV1 | string | Uint8Array,
-    { samples: 32 },
   );
   const file = loaded.file;
   const solvedSpans = loaded.solvedSpans;
@@ -2585,7 +2597,7 @@ export function regenerateCoasterFileLocal(
       hashes[el.id] = hashSpan(first);
     }
   }
-  // Loaded file has no candidate-search history; represent honestly
+  // Loaded file has no candidate-search history; represent honestly – stored generation options remain adaptive (no fixed samples)
   const adapter = {
     feasible: true,
     intent: file.intent,
@@ -2606,7 +2618,7 @@ export function regenerateCoasterFileLocal(
     spanHashes: Object.freeze({ ...hashes }),
     spanBytes: Object.freeze({ ...bytes }),
     relaxationEvidence: Object.freeze([] as RelaxationEvidence[]),
-    options: Object.freeze({ samples: 32 } satisfies StoredGenerationOptions),
+    options: Object.freeze({} satisfies StoredGenerationOptions),
   } satisfies GenerationResult;
   return regenerateLocal(adapter, elementId, options);
 }
