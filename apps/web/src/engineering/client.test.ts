@@ -912,3 +912,242 @@ describe("EngineeringWorkerClient User Timing", () => {
     expect(transferEntry!.duration).toBe(expectedTransferMs);
   });
 });
+
+describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
+  it("factory cancel replays remaining queue", async () => {
+    const workers: MockWorker[] = [];
+    let client!: EngineeringWorkerClient;
+    const factory = (): WorkerLike => {
+      const w = new MockWorker();
+      workers.push(w);
+      if (workers.length === 2) client.cancel("q2");
+      return w;
+    };
+    client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("q1", validIntent);
+    const p2 = client.generate("q2", validIntent);
+    const p3 = client.generate("q3", validIntent);
+    client.cancel("q1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    await expect(p2).rejects.toThrow(/cancelled/);
+    expect(workers).toHaveLength(2);
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q3"]);
+    workers[1]!.emitMessage(makeSuccess("q3"));
+    await expect(p3).resolves.toMatchObject({ requestId: "q3" });
+  });
+
+  it("factory generate keeps order and no zombie", async () => {
+    const workers: MockWorker[] = [];
+    let client!: EngineeringWorkerClient;
+    const factory = (): WorkerLike => {
+      const w = new MockWorker();
+      workers.push(w);
+      if (workers.length === 2) void client.generate("qNew", validIntent);
+      return w;
+    };
+    client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("q1", validIntent);
+    const p2 = client.generate("q2", validIntent);
+    const p3 = client.generate("q3", validIntent);
+    client.cancel("q1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    expect(workers).toHaveLength(2);
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q2", "q3", "qNew"]);
+    workers[1]!.emitMessage(makeSuccess("q2"));
+    workers[1]!.emitMessage(makeSuccess("q3"));
+    workers[1]!.emitMessage(makeSuccess("qNew"));
+    await expect(p2).resolves.toMatchObject({ requestId: "q2" });
+    await expect(p3).resolves.toMatchObject({ requestId: "q3" });
+  });
+
+  it("terminate hook cancel+generate settles coherently", async () => {
+    const workers: MockWorker[] = [];
+    let client!: EngineeringWorkerClient;
+    const factory = (): WorkerLike => {
+      const w = new MockWorker();
+      const orig = w.terminate.bind(w);
+      w.terminate = () => {
+        orig();
+        if (workers.length === 1) {
+          client.cancel("q2");
+          void client.generate("qHook", validIntent);
+        }
+      };
+      workers.push(w);
+      return w;
+    };
+    client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("q1", validIntent);
+    const p2 = client.generate("q2", validIntent);
+    const p3 = client.generate("q3", validIntent);
+    client.cancel("q1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    await expect(p2).rejects.toThrow(/cancelled/);
+    expect(workers).toHaveLength(2);
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q3", "qHook"]);
+    workers[1]!.emitMessage(makeSuccess("q3"));
+    workers[1]!.emitMessage(makeSuccess("qHook"));
+    await expect(p3).resolves.toMatchObject({ requestId: "q3" });
+  });
+
+  it("sticky old listeners cannot settle replayed work", async () => {
+    const workers: MockWorker[] = [];
+    const factory = (): WorkerLike => {
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("q1", validIntent);
+    const p2 = client.generate("q2", validIntent);
+    client.cancel("q1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    workers[0]!.emitMessage(makeSuccess("q2"));
+    expect(client.getPendingCount()).toBe(1);
+    let settled = false;
+    p2.then(() => (settled = true)).catch(() => (settled = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBe(false);
+    workers[1]!.emitMessage(makeSuccess("q2"));
+    await expect(p2).resolves.toMatchObject({ requestId: "q2" });
+  });
+
+  it("property fallback restores exact prior values including undefined", async () => {
+    const prior = () => {};
+    const workers: WorkerLike[] = [];
+    let client!: EngineeringWorkerClient;
+    const factory = (): WorkerLike => {
+      const w = {
+        postMessage: (m: unknown) =>
+          ((w as unknown as { posted: unknown[] }).posted as unknown[]).push(m),
+        terminate: () => {},
+        onmessage: prior as unknown as (ev: MessageEvent) => void,
+        onerror: undefined,
+      } as unknown as WorkerLike;
+      (w as unknown as { posted: unknown[] }).posted = [];
+      workers.push(w);
+      return w;
+    };
+    client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("q1", validIntent);
+    const p2 = client.generate("q2", validIntent);
+    client.cancel("q1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    expect((workers[0] as unknown as { onmessage: unknown }).onmessage).toBe(
+      prior,
+    );
+    expect((workers[0] as unknown as { onerror: unknown }).onerror).toBe(
+      undefined,
+    );
+    expect(workers).toHaveLength(2);
+    const w2 = workers[1] as unknown as { posted: unknown[] };
+    expect(
+      w2.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q2"]);
+    client.cancel("q2");
+    await expect(p2).rejects.toThrow(/cancelled/);
+  });
+
+  it("partial attach rollback terminates candidate and settles survivors", async () => {
+    const workers: MockWorker[] = [];
+    let n = 0;
+    let client!: EngineeringWorkerClient;
+    const factory = (): WorkerLike => {
+      n += 1;
+      if (n === 2) {
+        const w = new MockWorker();
+        w.addEventListener = () => {
+          throw new Error("attach boom");
+        };
+        workers.push(w);
+        return w;
+      }
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("q1", validIntent);
+    const p2 = client.generate("q2", validIntent);
+    const p3 = client.generate("q3", validIntent);
+    client.cancel("q1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    await expect(p2).rejects.toThrow(/worker-factory|factory/i);
+    await expect(p3).rejects.toThrow(/worker-factory|factory/i);
+    expect(workers[1]!.terminateCount).toBe(1);
+    expect(client.getWorker()).toBeNull();
+  });
+
+  it("first replay error rejects survivors exactly once no zombie", async () => {
+    const workers: MockWorker[] = [];
+    let client!: EngineeringWorkerClient;
+    const factory = (): WorkerLike => {
+      if (workers.length === 0) {
+        const w = new MockWorker();
+        workers.push(w);
+        return w;
+      }
+      const w = new MockWorker();
+      const orig = w.postMessage.bind(w);
+      let first = true;
+      w.postMessage = (msg: unknown) => {
+        orig(msg);
+        if (first) {
+          first = false;
+          w.emitError("replay crash");
+        }
+      };
+      workers.push(w);
+      return w;
+    };
+    client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("q1", validIntent);
+    const p2 = client.generate("q2", validIntent);
+    const p3 = client.generate("q3", validIntent);
+    client.cancel("q1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    await expect(p2).rejects.toThrow(/worker-error/i);
+    await expect(p3).rejects.toThrow(/worker-error/i);
+    expect(workers[1]!.posted).toHaveLength(1);
+    expect(workers).toHaveLength(2);
+  });
+
+  it("replay success then throw resolves exactly once", async () => {
+    const workers: MockWorker[] = [];
+    let client!: EngineeringWorkerClient;
+    const factory = (): WorkerLike => {
+      if (workers.length === 0) {
+        const w = new MockWorker();
+        workers.push(w);
+        return w;
+      }
+      const w = new MockWorker();
+      w.postMessage = (msg: unknown) => {
+        const id = (msg as { requestId: string }).requestId;
+        w.posted.push(msg);
+        w.emitMessage(makeSuccess(id));
+        throw new Error("post boom");
+      };
+      workers.push(w);
+      return w;
+    };
+    client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("q1", validIntent);
+    const p2 = client.generate("q2", validIntent);
+    let rc = 0;
+    let rj = 0;
+    p2.then(() => rc++).catch(() => rj++);
+    client.cancel("q1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rc).toBe(1);
+    expect(rj).toBe(0);
+    await expect(p2).resolves.toMatchObject({ requestId: "q2" });
+  });
+});
