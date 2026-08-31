@@ -285,6 +285,58 @@ const gravityVector = (config: SimulatorConfig): Vec3 =>
     "Gravity vector must be finite",
   );
 
+const perCarNormalForceN = (
+  track: CompiledTrackData,
+  config: SimulatorConfig,
+  distanceM: number,
+  massKg: number,
+  carIndex: number,
+): number => {
+  const sample = sampleTrackAtDistance(
+    track,
+    trackDistance(track, config, distanceM),
+  );
+  const gVec = gravityVector(config);
+  const tangentProjection = dot(gVec, sample.tangent);
+  const perp = subtract(gVec, scale(sample.tangent, tangentProjection));
+  const perpMag = Math.hypot(perp[0], perp[1], perp[2]);
+  return checkedFinite(
+    massKg * perpMag,
+    `train.cars[${carIndex}].normal`,
+    "Per-car normal force must be finite",
+  );
+};
+
+const staticStictionCapacityN = (
+  track: CompiledTrackData,
+  config: SimulatorConfig,
+  headDistanceM: number,
+): number => {
+  let total = 0;
+  for (let index = 0; index < config.train.cars.length; index += 1) {
+    const car = config.train.cars[index]!;
+    const distanceM = headDistanceM - index * config.train.spacingM;
+    const normalN = perCarNormalForceN(
+      track,
+      config,
+      distanceM,
+      car.massKg,
+      index,
+    );
+    const capacity = checkedFinite(
+      config.staticStictionCoefficient * normalN,
+      "staticStictionLimitN",
+      "Static stiction limit must be finite",
+    );
+    total = checkedFinite(
+      total + capacity,
+      "staticStictionLimitN",
+      "Static stiction limit must be finite",
+    );
+  }
+  return total;
+};
+
 const vectorIsFiniteAndNonzero = (value: Vec3): boolean =>
   value.every(finite) && Math.hypot(value[0], value[1], value[2]) > 1e-15;
 
@@ -631,8 +683,15 @@ const forceAt = (
     `${forceField}.gravity`,
     "Per-car gravity force must be finite",
   );
+  const normalN = perCarNormalForceN(
+    track,
+    config,
+    distanceM,
+    car.massKg,
+    carIndex,
+  );
   const rollingMagnitude = checkedFinite(
-    config.rollingResistanceCoefficient * car.massKg * config.gravityMps2,
+    config.rollingResistanceCoefficient * normalN,
     `${forceField}.rollingMagnitude`,
     "Rolling resistance force must be finite",
   );
@@ -791,13 +850,7 @@ const derivative = (
   speedMps: number,
 ): readonly [number, number] => {
   const sample = dynamicsAt(track, config, distanceM, speedMps);
-  const staticLimit = checkedFinite(
-    config.staticStictionCoefficient *
-      totalMass(config.train) *
-      config.gravityMps2,
-    "staticStictionLimitN",
-    "Static stiction limit must be finite",
-  );
+  const staticLimit = staticStictionCapacityN(track, config, distanceM);
   if (
     Math.abs(speedMps) <= SPEED_EPSILON &&
     Math.abs(sample.totalForce) <= staticLimit
@@ -1805,8 +1858,7 @@ export const simulateRide = (
       dynamics.forces.some((force) => force.launchActive),
       dynamics.forces.some((force) => force.brakeActive),
     );
-    const staticLimit =
-      config.staticStictionCoefficient * mass * config.gravityMps2;
+    const staticLimit = staticStictionCapacityN(track, config, currentDistance);
     const computedStatus = statusFor(
       previousSpeed,
       currentSpeed,
@@ -1909,11 +1961,7 @@ export const simulateRide = (
       });
       break;
     }
-    const staticLimit = checkedFinite(
-      config.staticStictionCoefficient * mass * config.gravityMps2,
-      "staticStictionLimitN",
-      "Static stiction limit must be finite",
-    );
+    const staticLimit = staticStictionCapacityN(track, config, distanceM);
     if (
       previousSpeed !== 0 &&
       (previousSpeed * speedMps < 0 ||
