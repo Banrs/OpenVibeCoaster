@@ -143,7 +143,11 @@ function bruteSignedDistance(env: HeightfieldEnvironment, point: Vec3): number {
         closest = Math.min(closest, triangleDistanceBrute(env, point, tri));
       }
   const surf = (c: number, r: number): Vec3 =>
-    vec3(env.origin[0] + c * env.cellSize, env.heights[r * env.width + c]!, env.origin[1] + r * env.cellSize);
+    vec3(
+      env.origin[0] + c * env.cellSize,
+      env.heights[r * env.width + c]!,
+      env.origin[1] + r * env.cellSize,
+    );
   for (let c = 0; c < env.width - 1; c++) {
     closest = Math.min(
       closest,
@@ -180,12 +184,20 @@ describe("heightfield SDF acceleration – exact analytic flat cases", () => {
     const p = vec3(0.5, 2, 0.5);
     expect(flat.signedDistance(p)).toBeCloseTo(2, 10);
     expect(bruteSignedDistance(flat, p)).toBeCloseTo(2, 10);
+    expect(flat.signedDistance(p)).toBeCloseTo(
+      bruteSignedDistance(flat, p),
+      10,
+    );
   });
 
   it("below/inside returns negative distance", () => {
     const p = vec3(0.5, -1, 0.5);
-    expect(flat.signedDistance(p)).toBeCloseTo(-1, 10);
-    expect(flat.signedDistance(p)).toBeLessThan(0);
+    expect(flat.signedDistance(p)).toBeCloseTo(-0.5, 10);
+    expect(bruteSignedDistance(flat, p)).toBeCloseTo(-0.5, 10);
+    expect(flat.signedDistance(p)).toBeCloseTo(
+      bruteSignedDistance(flat, p),
+      10,
+    );
   });
 
   it("outside horizontally uses curtain/edge distance", () => {
@@ -198,18 +210,32 @@ describe("heightfield SDF acceleration – exact analytic flat cases", () => {
 
   it("corner outside is exact", () => {
     const p = vec3(2, 1, 2);
-    expect(flat.signedDistance(p)).toBeCloseTo(bruteSignedDistance(flat, p), 9);
+    expect(flat.signedDistance(p)).toBeCloseTo(
+      bruteSignedDistance(flat, p),
+      9,
+    );
+    expect(bruteSignedDistance(flat, p)).toBeGreaterThan(0);
     expect(flat.signedDistance(p)).toBeGreaterThan(0);
   });
 
   it("curtain below top returns horizontal distance", () => {
     const p = vec3(2, -1, 0.5);
-    const d = flat.signedDistance(p);
-    expect(d).toBeCloseTo(1, 10);
+    expect(flat.signedDistance(p)).toBeCloseTo(1, 10);
+    expect(bruteSignedDistance(flat, p)).toBeCloseTo(1, 10);
+    expect(flat.signedDistance(p)).toBeCloseTo(
+      bruteSignedDistance(flat, p),
+      10,
+    );
   });
 
   it("point on surface returns zero", () => {
-    expect(flat.signedDistance(vec3(0.5, 0, 0.5))).toBeCloseTo(0, 10);
+    const p = vec3(0.5, 0, 0.5);
+    expect(flat.signedDistance(p)).toBeCloseTo(0, 10);
+    expect(bruteSignedDistance(flat, p)).toBeCloseTo(0, 10);
+    expect(flat.signedDistance(p)).toBeCloseTo(
+      bruteSignedDistance(flat, p),
+      10,
+    );
   });
 });
 
@@ -265,7 +291,10 @@ describe("heightfield SDF acceleration – sloped/irregular brute comparison", (
       width: 4,
       depth: 4,
       cellSize: 1,
-      heights: new Float64Array([0, 0.5, 1, 0, 0.3, 1.2, 0.8, 0.2, 0.9, 0.1, 0.4, 0.7, 0, 0.6, 0.2, 0]),
+      heights: new Float64Array([
+        0, 0.5, 1, 0, 0.3, 1.2, 0.8, 0.2, 0.9, 0.1, 0.4, 0.7, 0,
+        0.6, 0.2, 0,
+      ]),
       origin: [0, 0],
     });
     for (let x = -0.5; x <= 3.5; x += 0.5)
@@ -320,7 +349,7 @@ describe("heightfield SDF acceleration – translation and large coordinates", (
     });
     expect(() => env.signedDistance(vec3(NaN, 0, 0))).toThrow();
     expect(() => env.signedDistance(vec3(0, Infinity, 0))).toThrow();
-    expect(() => env.signedDistance([0, 0, NaN] as unknown as Vec3)).toThrow();
+    expect(() => env.signedDistance(vec3(0, 0, NaN))).toThrow();
     expect(
       () =>
         new HeightfieldEnvironment({

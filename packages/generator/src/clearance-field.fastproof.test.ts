@@ -1,83 +1,109 @@
 import { describe, expect, it } from "vitest";
-import { compileTrack, SeventhOrderHermiteSpan, vec3, type EnvironmentQuery, type Vec3 } from "@openvibecoaster/core";
+import {
+  compileTrack,
+  SeventhOrderHermiteSpan,
+  vec3,
+  type EnvironmentQuery,
+  type Vec3,
+} from "@openvibecoaster/core";
 import { computeClearanceField } from "./clearance-field.js";
 
-describe("clearance field per-interval fast proof", () => {
-  it("skips SDF only for entirely high swept interval", () => {
-    let highCalls = 0;
-    let lowCalls = 0;
+const sphereSignedDistance = (p: Vec3): number =>
+  Math.hypot(p[0], p[1], p[2]) - 1;
 
-    const highEnv: EnvironmentQuery = {
-      signedDistance: (p: Vec3) => {
-        highCalls += 1;
-        return p[1] + 100;
+const sphereBounds = (): { min: Vec3; max: Vec3 } => ({
+  min: vec3(-1, -1, -1),
+  max: vec3(1, 1, 1),
+});
+
+function highTrack() {
+  return compileTrack(
+    [
+      {
+        id: "seg-0",
+        span: SeventhOrderHermiteSpan.line(
+          vec3(0, 15, 0),
+          vec3(0, 15, 5),
+        ),
       },
-      bounds: () => ({ min: vec3(-100, -100, -100), max: vec3(100, -100, 100) }),
+      {
+        id: "seg-1",
+        span: SeventhOrderHermiteSpan.line(
+          vec3(0, 15, 5),
+          vec3(0, 15, 10),
+        ),
+      },
+    ],
+    { samples: 2 },
+  );
+}
+
+function lowTrack() {
+  return compileTrack(
+    [
+      {
+        id: "seg-0",
+        span: SeventhOrderHermiteSpan.line(
+          vec3(0, 0.5, 0),
+          vec3(0, 0.5, 5),
+        ),
+      },
+    ],
+    { samples: 2 },
+  );
+}
+
+function farLowTrack() {
+  return compileTrack(
+    [
+      {
+        id: "seg-0",
+        span: SeventhOrderHermiteSpan.line(
+          vec3(1000, 0.5, 1000),
+          vec3(1000, 0.5, 1010),
+        ),
+      },
+    ],
+    { samples: 2 },
+  );
+}
+
+describe("clearance field per-interval fast proof", () => {
+  it("proves cap for entirely high swept interval without SDF calls", () => {
+    let calls = 0;
+    const env: EnvironmentQuery = {
+      signedDistance: (p) => {
+        calls += 1;
+        return sphereSignedDistance(p);
+      },
+      bounds: sphereBounds,
       raycast: () => undefined,
     };
-
-    // Track at y=12 is entirely above maxY=-100 by > cap (10), so first intervals should be skipped.
-    // But we use a track high above: we compile track at y=12
-    const highTrack = compileTrack(
-      [
-        { id: "seg-0", span: SeventhOrderHermiteSpan.line(vec3(0, 12, 0), vec3(0, 12, 5)) },
-        { id: "seg-1", span: SeventhOrderHermiteSpan.line(vec3(0, 12, 5), vec3(0, 12, 10)) },
-      ],
-      { samples: 2 },
-    );
-    const fieldHigh = computeClearanceField(highTrack, {
-      environment: highEnv,
+    const track = highTrack();
+    const field = computeClearanceField(track, {
+      environment: env,
       hardClearanceM: 0.5,
       displayCapM: 10,
       maxWork: 100000,
       segmentIds: ["seg-0", "seg-1"],
     });
-    expect(highCalls).toBe(0);
-    expect(fieldHigh.segments.every((s) => s.source === "cap")).toBe(true);
-
-    const lowEnv: EnvironmentQuery = {
-      signedDistance: (p: Vec3) => {
-        lowCalls += 1;
-        return p[1] + 100;
-      },
-      bounds: () => ({ min: vec3(-100, -100, -100), max: vec3(100, 0, 100) }),
-      raycast: () => undefined,
-    };
-    // Track at y=-2 is below maxY=0, so not entirely high, must call SDF
-    const lowTrack = compileTrack(
-      [
-        { id: "seg-0", span: SeventhOrderHermiteSpan.line(vec3(0, -2, 0), vec3(0, -2, 5)) },
-      ],
-      { samples: 2 },
-    );
-    const fieldLow = computeClearanceField(lowTrack, {
-      environment: lowEnv,
-      hardClearanceM: 0.5,
-      displayCapM: 10,
-      maxWork: 100000,
-      segmentIds: ["seg-0"],
-    });
-    expect(lowCalls).toBeGreaterThan(0);
-    expect(fieldLow.segments[0]!.source).not.toBe("cap");
+    expect(calls).toBe(0);
+    expect(field.segments.every((s) => s.source === "cap")).toBe(true);
+    expect(field.globalSource).toBe("cap");
   });
 
-  it("does not skip penetrating interval when horizontal bounds far but vertical low", () => {
+  it("does not skip a low penetrating interval", () => {
     let calls = 0;
     const env: EnvironmentQuery = {
-      signedDistance: (p: Vec3) => {
+      signedDistance: (p) => {
         calls += 1;
-        return p[1] - 0;
+        return sphereSignedDistance(p);
       },
-      bounds: () => ({ min: vec3(-100, -100, -100), max: vec3(100, 0, 100) }),
+      bounds: sphereBounds,
       raycast: () => undefined,
     };
-    const trackLow = compileTrack(
-      [
-        { id: "seg-0", span: SeventhOrderHermiteSpan.line(vec3(1000, -1, 1000), vec3(1000, -1, 1010)) },
-      ],
-      { samples: 2 },
-    );
-    computeClearanceField(trackLow, {
+    const track = lowTrack();
+    const field = computeClearanceField(track, {
       environment: env,
       hardClearanceM: 0.5,
       displayCapM: 10,
@@ -85,5 +111,107 @@ describe("clearance field per-interval fast proof", () => {
       segmentIds: ["seg-0"],
     });
     expect(calls).toBeGreaterThan(0);
+    expect(field.segments[0]!.source).not.toBe("cap");
+  });
+
+  it("does not infer safety from horizontal distance", () => {
+    let calls = 0;
+    const env: EnvironmentQuery = {
+      signedDistance: (p) => {
+        calls += 1;
+        return sphereSignedDistance(p);
+      },
+      bounds: sphereBounds,
+      raycast: () => undefined,
+    };
+    const track = farLowTrack();
+    const field = computeClearanceField(track, {
+      environment: env,
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 100000,
+      segmentIds: ["seg-0"],
+    });
+    expect(calls).toBeGreaterThan(0);
+    expect(field.segments[0]!.source).not.toBe("cap");
+  });
+});
+
+describe("clearance field bounds validation", () => {
+  it("does not prove cap when bounds maxY is -Infinity", () => {
+    let calls = 0;
+    const env: EnvironmentQuery = {
+      signedDistance: (p) => {
+        calls += 1;
+        return sphereSignedDistance(p);
+      },
+      bounds: () => ({
+        min: vec3(-1, -1, -1),
+        max: vec3(1, -Infinity, 1),
+      }),
+      raycast: () => undefined,
+    };
+    const track = highTrack();
+    const field = computeClearanceField(track, {
+      environment: env,
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 100000,
+      segmentIds: ["seg-0", "seg-1"],
+    });
+    expect(calls).toBeGreaterThan(0);
+    expect(field.segments.every((s) => s.source === "cap")).toBe(false);
+    expect(field.globalSource).not.toBe("cap");
+  });
+
+  it("does not prove cap when bounds maxY is NaN", () => {
+    let calls = 0;
+    const env: EnvironmentQuery = {
+      signedDistance: (p) => {
+        calls += 1;
+        return sphereSignedDistance(p);
+      },
+      bounds: () => ({
+        min: vec3(-1, -1, -1),
+        max: vec3(1, NaN, 1),
+      }),
+      raycast: () => undefined,
+    };
+    const track = highTrack();
+    const field = computeClearanceField(track, {
+      environment: env,
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 100000,
+      segmentIds: ["seg-0", "seg-1"],
+    });
+    expect(calls).toBeGreaterThan(0);
+    expect(field.segments.every((s) => s.source === "cap")).toBe(false);
+    expect(field.globalSource).not.toBe("cap");
+  });
+
+  it("does not prove cap when bounds query throws", () => {
+    let calls = 0;
+    const env: EnvironmentQuery = {
+      signedDistance: (p) => {
+        calls += 1;
+        return sphereSignedDistance(p);
+      },
+      bounds: () => {
+        throw new Error("bounds failure");
+      },
+      raycast: () => undefined,
+    };
+    const track = highTrack();
+    const field = computeClearanceField(track, {
+      environment: env,
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 100000,
+      segmentIds: ["seg-0", "seg-1"],
+    });
+    expect(calls).toBeGreaterThan(0);
+    expect(field.segments.every((s) => s.source === "cap")).toBe(false);
+    expect(field.globalSource).not.toBe("cap");
   });
 });

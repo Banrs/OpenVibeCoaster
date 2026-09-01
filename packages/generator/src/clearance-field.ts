@@ -411,11 +411,41 @@ export function computeClearanceField(
   if (env?.bounds) {
     try {
       const b = env.bounds();
-      envMaxY = b.max[1]!;
+      if (
+        !b ||
+        typeof b !== "object" ||
+        !Array.isArray((b as { min: unknown }).min) ||
+        !Array.isArray((b as { max: unknown }).max) ||
+        (b as { min: readonly unknown[] }).min.length !== 3 ||
+        (b as { max: readonly unknown[] }).max.length !== 3
+      ) {
+        throw new RangeError("bounds must be Aabb");
+      }
+      const bMin = (b as { min: Vec3 }).min;
+      const bMax = (b as { max: Vec3 }).max;
+      if (
+        !Number.isFinite(bMin[0]!) ||
+        !Number.isFinite(bMin[1]!) ||
+        !Number.isFinite(bMin[2]!) ||
+        !Number.isFinite(bMax[0]!) ||
+        !Number.isFinite(bMax[1]!) ||
+        !Number.isFinite(bMax[2]!)
+      ) {
+        throw new RangeError("bounds components must be finite");
+      }
+      if (
+        bMin[0]! > bMax[0]! ||
+        bMin[1]! > bMax[1]! ||
+        bMin[2]! > bMax[2]!
+      ) {
+        throw new RangeError("bounds min greater than max");
+      }
+      envMaxY = bMax[1]!;
       let minSweptY = Infinity;
-      for (let i = 0; i < count - 1; i++)
+      for (let i = 0; i < count - 1; i++) {
         minSweptY = Math.min(minSweptY, sweptAabbs[i]!.min[1]!);
-      const proven = nextDown(minSweptY - nextUp(b.max[1]!));
+      }
+      const proven = nextDown(minSweptY - nextUp(bMax[1]!));
       if (proven >= effectiveCap) terrainBroadPhaseProven = true;
     } catch {
       terrainBroadPhaseProven = false;
