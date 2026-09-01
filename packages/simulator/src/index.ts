@@ -32,6 +32,7 @@ import type {
 export * from "./contracts";
 export * from "./timeline";
 export * from "./engineering-limits";
+export * from "./operation-zones";
 
 const DEFAULT_GRAVITY = 9.80665;
 const SPEED_EPSILON = 1e-8;
