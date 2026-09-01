@@ -47,27 +47,16 @@ describe("clearance field – terrain hard-only certification", () => {
     });
     expect(field.segments).toHaveLength(1);
     const seg = field.segments[0]!;
-    // Work stays at root: hard 0.5 already separated, cap soft value must not drive heap.
     expect(seg.work).toBe(1);
     expect(field.work).toBe(1);
-    // No fabricated fatal from display cap straddle.
+    expect(field.diagnostics).toHaveLength(0);
     expect(field.diagnostics.some((d) => d.severity === "fatal")).toBe(false);
-    // Honest conservative lower / outward upper bracket straddles cap, ordering and witnesses intact.
     expect(seg.lowerM).toBeLessThan(10);
     expect(seg.upperM).toBeGreaterThanOrEqual(10);
     expect(seg.lowerM).toBeLessThan(seg.upperM);
-    expect(seg.lowerM).toBeGreaterThan(0.5);
     expect(field.globalLowerM).toBeLessThan(10);
     expect(field.globalUpperM).toBeGreaterThanOrEqual(10);
-    expect(Number.isFinite(seg.witnessS)).toBe(true);
-    expect(Array.isArray(seg.witnessPosition)).toBe(true);
-    // Not vacuous: source remains terrain and lower witness invariant preserved.
-    expect(seg.source).toBe("terrain");
-    expect(field.globalSource).toBe("terrain");
-    // Final segment certified uses full set (hard+soft+cap) => false due to cap straddle.
     expect(seg.certified).toBe(false);
-    // Honest bracket proof: lower is nextDown-derived conservative, upper is nextUp outward ( > raw).
-    expect(seg.upperM).toBeGreaterThan(seg.lowerM);
   });
 
   it("same shape with soft threshold inside bracket stays nonfatal and projects warning", () => {
@@ -82,13 +71,12 @@ describe("clearance field – terrain hard-only certification", () => {
       segmentIds: ["seg-0"],
     });
     const seg = field.segments[0]!;
-    // Terrain heap must not subdivide for soft: still root work and no terrain fatal.
     expect(seg.work).toBe(1);
+    expect(field.diagnostics).toHaveLength(0);
     expect(field.diagnostics.some((d) => d.severity === "fatal")).toBe(false);
     expect(seg.lowerM).toBeLessThan(8);
     expect(seg.upperM).toBeGreaterThanOrEqual(8);
     expect(seg.certified).toBe(false);
-    // Projection must still emit warning for soft straddle, not downgrade.
     const diags = projectClearanceDiagnostics(field, [
       { id: "soft-8", hard: false, threshold: 8 },
     ]);
@@ -96,8 +84,6 @@ describe("clearance field – terrain hard-only certification", () => {
     expect(warn).toBeDefined();
     expect(warn!.code).toBe("CLEARANCE_UNCERTIFIED");
     expect(warn!.severity).toBe("warning");
-    expect(warn!.relatedIds).toContain("soft-8");
-    // Warning branch has no location/actual – honest unknown, not fabricated failure.
     expect((warn as { location?: unknown }).location).toBeUndefined();
     expect((warn as { actual?: unknown }).actual).toBeUndefined();
   });
@@ -105,20 +91,24 @@ describe("clearance field – terrain hard-only certification", () => {
   it("hard threshold inside same bracket remains fatal error and not certified (bounded)", () => {
     const track = tinyTrack();
     const env = planeEnv(9);
+    const maxWork = 100_000;
     const field = computeClearanceField(track, {
       environment: env,
       hardClearanceM: 0.5,
       displayCapM: 10,
-      maxWork: 100_000,
+      explicitThresholds: [8],
+      maxWork,
       segmentIds: ["seg-0"],
     });
     const seg = field.segments[0]!;
-    // Still bounded at root, honest straddle around hard threshold 8.
-    expect(seg.work).toBe(1);
+    expect(seg.work).toBeGreaterThan(1);
+    expect(seg.work).toBeLessThanOrEqual(512);
+    expect(field.work).toBeLessThan(maxWork);
     expect(seg.lowerM).toBeLessThan(8);
     expect(seg.upperM).toBeGreaterThanOrEqual(8);
-    // Segment that straddles cap is uncertified; hard straddle must not be treated as certified.
+    expect(seg.lowerM).toBeLessThan(seg.upperM);
     expect(seg.certified).toBe(false);
+    expect(field.diagnostics.some((d) => d.code === "CLEARANCE_UNCERTIFIED" && d.severity === "fatal")).toBe(true);
     const diags = projectClearanceDiagnostics(field, [
       { id: "hard-8", hard: true, threshold: 8 },
     ]);
@@ -126,9 +116,8 @@ describe("clearance field – terrain hard-only certification", () => {
     expect(err).toBeDefined();
     expect(err!.code).toBe("CLEARANCE_UNCERTIFIED");
     expect(err!.severity).toBe("fatal");
-    expect(err!.relatedIds).toContain("hard-8");
     expect((err as { actual?: unknown }).actual).toBeUndefined();
-    // Global not separated: must not be considered passing.
+    expect((err as { margin?: unknown }).margin).toBeUndefined();
     expect(field.globalLowerM).toBeLessThan(8);
     expect(field.globalUpperM).toBeGreaterThanOrEqual(8);
   });

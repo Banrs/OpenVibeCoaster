@@ -29,6 +29,7 @@ export const DEFAULT_ENVELOPE: ClearanceTrainGeometry = Object.freeze({
 
 export const DEFAULT_HARD_CLEARANCE_M = 0.5;
 export const CERTIFICATE_RESOLUTION_M = 0.01;
+export const MAX_TERRAIN_WORK_PER_SEGMENT = 512; // bounds proof search, never certifies an unresolved constraint.
 export const DEFAULT_DISPLAY_CAP_M = 10;
 const CONSERVATIVE_LOWER_M = -Number.MAX_VALUE;
 
@@ -656,6 +657,16 @@ export function computeClearanceField(
           abortedDueToBudget = true;
           break;
         }
+        if (
+          workUsed >= MAX_TERRAIN_WORK_PER_SEGMENT &&
+          !thresholdsSeparated(
+            heap[0]!.lowerM,
+            bestUpper,
+            terrainHardThresholds,
+          )
+        ) {
+          break;
+        }
         const cur = heap[0]!;
         if (cur.lowerM >= bestUpper) {
           pop();
@@ -668,6 +679,9 @@ export function computeClearanceField(
           [node.u0, mid],
           [mid, node.u1],
         ] as const) {
+          if (workUsed >= MAX_TERRAIN_WORK_PER_SEGMENT) {
+            break;
+          }
           if (remaining <= 0) {
             abortedDueToBudget = true;
             break;
