@@ -206,9 +206,24 @@ const validateElement = (value: unknown, path: string): void => {
     ]);
     for (const [key, parameter] of Object.entries(parameters)) {
       if (key === "closed") boolean(parameter, `${path}.parameters.${key}`);
-      else if (numericParameters.has(key))
+      else if (numericParameters.has(key)) {
         finite(parameter, `${path}.parameters.${key}`);
-      else primitive(parameter, `${path}.parameters.${key}`);
+        if (key === "targetSpeed") {
+          const value = parameter as number;
+          if (value < 0 || value > 120)
+            fail(
+              `${path}.parameters.${key}`,
+              "finite number between 0 and 120 for targetSpeed",
+            );
+        } else if (key === "angle") {
+          const value = parameter as number;
+          if (value === 0 || value < -Math.PI * 2 || value > Math.PI * 2)
+            fail(
+              `${path}.parameters.${key}`,
+              "finite non-zero number between -2π and 2π for angle",
+            );
+        }
+      } else primitive(parameter, `${path}.parameters.${key}`);
     }
   }
   if (element.target !== undefined)
