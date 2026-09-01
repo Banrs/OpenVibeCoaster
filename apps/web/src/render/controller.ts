@@ -462,11 +462,7 @@ export function createRendererController(
       handle.scene.add(ties);
 
       if (env && typeof (env as { raycast?: unknown }).raycast === "function") {
-        const supports = buildSupportColumns(
-          data,
-          env as EnvironmentQuery,
-          10,
-        );
+        const supports = buildSupportColumns(data, env as EnvironmentQuery, 10);
         supportMeshesLocal = supports.meshes;
         for (const s of supportMeshesLocal) handle.scene.add(s);
       }

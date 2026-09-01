@@ -1,11 +1,26 @@
 import { describe, it, expect } from "vitest";
-import { vec3, compileTrack, SeventhOrderHermiteSpan, type TrackElement } from "@openvibecoaster/core";
-import { computeClearanceField, projectClearanceDiagnostics } from "./clearance-field.js";
-import { certifiedSweptDistance, type SweptClearanceSegment } from "./clearance-geometry.js";
+import {
+  vec3,
+  compileTrack,
+  SeventhOrderHermiteSpan,
+  type TrackElement,
+} from "@openvibecoaster/core";
+import {
+  computeClearanceField,
+  projectClearanceDiagnostics,
+} from "./clearance-field.js";
+import {
+  certifiedSweptDistance,
+  type SweptClearanceSegment,
+} from "./clearance-geometry.js";
 import { DEFAULT_ENVELOPE } from "./clearance-field.js";
 
-function makeOffsetSegments(offsetXM: number): [SweptClearanceSegment, SweptClearanceSegment] {
-  const pose = (pos: [number, number, number]): SweptClearanceSegment["start"] => ({
+function makeOffsetSegments(
+  offsetXM: number,
+): [SweptClearanceSegment, SweptClearanceSegment] {
+  const pose = (
+    pos: [number, number, number],
+  ): SweptClearanceSegment["start"] => ({
     position: vec3(pos[0], pos[1], pos[2]),
     tangent: vec3(0, 0, 1),
     normal: vec3(0, 1, 0),
@@ -28,7 +43,9 @@ function makeOffsetSegments(offsetXM: number): [SweptClearanceSegment, SweptClea
   return [segA, segB];
 }
 
-function lineTrack(points: Array<[number, number, number]>): ReturnType<typeof compileTrack> {
+function lineTrack(
+  points: Array<[number, number, number]>,
+): ReturnType<typeof compileTrack> {
   const spans: TrackElement[] = points.slice(0, -1).map((_, i) => {
     const a = vec3(points[i]![0], points[i]![1], points[i]![2]);
     const b = vec3(points[i + 1]![0], points[i + 1]![1], points[i + 1]![2]);
@@ -77,8 +94,10 @@ describe("threshold completeness – display cap and soft prevent premature sepa
     expect(resHardOnly.excluded).toBe(false);
     expect(resWithDisplay.ok).toBe(true);
     expect(resWithDisplay.excluded).toBe(false);
-    if (!resHardOnly.ok || resHardOnly.excluded) throw new Error("resHardOnly not certified");
-    if (!resWithDisplay.ok || resWithDisplay.excluded) throw new Error("resWithDisplay not certified");
+    if (!resHardOnly.ok || resHardOnly.excluded)
+      throw new Error("resHardOnly not certified");
+    if (!resWithDisplay.ok || resWithDisplay.excluded)
+      throw new Error("resWithDisplay not certified");
     expect(resHardOnly.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resWithDisplay.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resWithDisplay.lowerM).toBeLessThan(10);
@@ -99,8 +118,10 @@ describe("threshold completeness – display cap and soft prevent premature sepa
     expect(resStraddleHard.excluded).toBe(false);
     expect(resStraddleFull.ok).toBe(true);
     expect(resStraddleFull.excluded).toBe(false);
-    if (!resStraddleHard.ok || resStraddleHard.excluded) throw new Error("resStraddleHard not certified");
-    if (!resStraddleFull.ok || resStraddleFull.excluded) throw new Error("resStraddleFull not certified");
+    if (!resStraddleHard.ok || resStraddleHard.excluded)
+      throw new Error("resStraddleHard not certified");
+    if (!resStraddleFull.ok || resStraddleFull.excluded)
+      throw new Error("resStraddleFull not certified");
     expect(resStraddleHard.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resStraddleFull.lowerM).toBeLessThan(10);
     expect(resStraddleFull.upperM).toBeGreaterThanOrEqual(10);
@@ -118,7 +139,10 @@ describe("threshold completeness – display cap and soft prevent premature sepa
     const env = {
       signedDistance: (p: readonly [number, number, number]) => p[1] + 100,
       raycast: () => undefined,
-      bounds: () => ({ min: vec3(-100, -100, -100), max: vec3(100, -100, 100) }),
+      bounds: () => ({
+        min: vec3(-100, -100, -100),
+        max: vec3(100, -100, 100),
+      }),
     };
     const fieldNoSoft = computeClearanceField(track, {
       environment: env,
@@ -163,7 +187,9 @@ describe("threshold completeness – display cap and soft prevent premature sepa
     const diagsHardOnly = projectClearanceDiagnostics(fakeStraddle, [
       { id: "hard-1", hard: true, threshold: 1.0 },
     ]);
-    expect(diagsHardOnly.some((d) => d.code === "CLEARANCE_UNCERTIFIED")).toBe(true);
+    expect(diagsHardOnly.some((d) => d.code === "CLEARANCE_UNCERTIFIED")).toBe(
+      true,
+    );
     const diagsSoft = projectClearanceDiagnostics(fakeStraddle, [
       { id: "soft-1", hard: false, threshold: 2.0 },
     ]);
@@ -187,7 +213,9 @@ describe("threshold completeness – display cap and soft prevent premature sepa
     expect(resHard.excluded).toBe(false);
     expect(resWithSoft.ok).toBe(true);
     expect(resWithSoft.excluded).toBe(false);
-    if (!resHard.ok || resHard.excluded) throw new Error("resHard not certified");
-    if (!resWithSoft.ok || resWithSoft.excluded) throw new Error("resWithSoft not certified");
+    if (!resHard.ok || resHard.excluded)
+      throw new Error("resHard not certified");
+    if (!resWithSoft.ok || resWithSoft.excluded)
+      throw new Error("resWithSoft not certified");
   });
 });

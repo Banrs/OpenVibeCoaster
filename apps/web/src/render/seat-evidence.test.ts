@@ -91,7 +91,11 @@ function makeCompleteSnapshot(): RidePlaybackSnapshot {
       rollRateRadPerSec: 0.05 * idx,
     },
   });
-  const cars = [makeCar(0, posFront), makeCar(1, posMid), makeCar(2, posRear)] as const;
+  const cars = [
+    makeCar(0, posFront),
+    makeCar(1, posMid),
+    makeCar(2, posRear),
+  ] as const;
   const snapshot: RidePlaybackSnapshot = {
     timeSeconds: 0.5,
     sampleIndex: 0,
@@ -99,9 +103,33 @@ function makeCompleteSnapshot(): RidePlaybackSnapshot {
     speedMps: 5,
     telemetry: {
       perCar: [
-        { longitudinalG: 0.1, lateralG: 0.2, verticalG: 1.0, specificForceMps2: vec3(0, 9.81, 0), jerkMps3: vec3(0, 0, 0), bankRad: 0.1, rollRateRadPerSec: 0 },
-        { longitudinalG: 0.1, lateralG: 0.2, verticalG: 1.25, specificForceMps2: vec3(0, 9.81, 0), jerkMps3: vec3(0, 0, 0), bankRad: 0.1, rollRateRadPerSec: 0.05 },
-        { longitudinalG: 0.1, lateralG: 0.2, verticalG: 1.5, specificForceMps2: vec3(0, 9.81, 0), jerkMps3: vec3(0, 0, 0), bankRad: 0.1, rollRateRadPerSec: 0.1 },
+        {
+          longitudinalG: 0.1,
+          lateralG: 0.2,
+          verticalG: 1.0,
+          specificForceMps2: vec3(0, 9.81, 0),
+          jerkMps3: vec3(0, 0, 0),
+          bankRad: 0.1,
+          rollRateRadPerSec: 0,
+        },
+        {
+          longitudinalG: 0.1,
+          lateralG: 0.2,
+          verticalG: 1.25,
+          specificForceMps2: vec3(0, 9.81, 0),
+          jerkMps3: vec3(0, 0, 0),
+          bankRad: 0.1,
+          rollRateRadPerSec: 0.05,
+        },
+        {
+          longitudinalG: 0.1,
+          lateralG: 0.2,
+          verticalG: 1.5,
+          specificForceMps2: vec3(0, 9.81, 0),
+          jerkMps3: vec3(0, 0, 0),
+          bankRad: 0.1,
+          rollRateRadPerSec: 0.1,
+        },
       ],
       longitudinalG: 0.1,
       lateralG: 0.2,

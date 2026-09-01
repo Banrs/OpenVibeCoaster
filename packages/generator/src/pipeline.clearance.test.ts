@@ -14,8 +14,18 @@ function planeEnv(planeY: number) {
 
 describe("pipeline authoritative clearance", () => {
   it("explicit hard clearance via mock field bracket 0.7/0.75", async () => {
-    const { compileTrack, SeventhOrderHermiteSpan } = await import("@openvibecoaster/core");
-    const mkTrack = () => compileTrack([{ id: "seg-0", span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(10, 0, 0)) }], { samples: 2 });
+    const { compileTrack, SeventhOrderHermiteSpan } =
+      await import("@openvibecoaster/core");
+    const mkTrack = () =>
+      compileTrack(
+        [
+          {
+            id: "seg-0",
+            span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(10, 0, 0)),
+          },
+        ],
+        { samples: 2 },
+      );
     const mockTrack = mkTrack();
     const mockField: ClearanceField = {
       track: mockTrack,
@@ -83,8 +93,18 @@ describe("pipeline authoritative clearance", () => {
   });
 
   it("soft clearance same bracket gives warning and feasible", async () => {
-    const { compileTrack, SeventhOrderHermiteSpan } = await import("@openvibecoaster/core");
-    const mkTrack = () => compileTrack([{ id: "seg-0", span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(10, 0, 0)) }], { samples: 2 });
+    const { compileTrack, SeventhOrderHermiteSpan } =
+      await import("@openvibecoaster/core");
+    const mkTrack = () =>
+      compileTrack(
+        [
+          {
+            id: "seg-0",
+            span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(10, 0, 0)),
+          },
+        ],
+        { samples: 2 },
+      );
     const mockTrack = mkTrack();
     const mockField: ClearanceField = {
       track: mockTrack,
