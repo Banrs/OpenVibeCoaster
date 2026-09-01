@@ -9,6 +9,7 @@ import {
   coasterFileSpanHashes,
   computeClearanceField,
   generateCoaster,
+  generateCoasterForBenchmark,
   isClosedChain,
   mapClearanceToTimeline,
   projectClearanceDiagnostics,
@@ -293,6 +294,12 @@ export function handleGenerate(
     ]);
   }
   const typedIntent = intent as DesignIntentV1;
+  const diagnosticStartMs = getNowMs();
+  const logDiagnosticStage = (stage: string): void => {
+    console.info(
+      `[ovc-stage] ${stage} ${(getNowMs() - diagnosticStartMs).toFixed(3)}ms`,
+    );
+  };
   let env: ReturnType<typeof resolveTerrainEnvironment>;
   try {
     env = resolveEnvForProfile(typedIntent.terrainProfileId);
@@ -307,7 +314,13 @@ export function handleGenerate(
   }
   let generation: ReturnType<typeof generateCoaster>;
   try {
-    generation = generateCoaster(typedIntent, env ? { environment: env } : {});
+    logDiagnosticStage("worker:generate:start");
+    generation = generateCoasterForBenchmark(
+      typedIntent,
+      env ? { environment: env } : {},
+      (event) => logDiagnosticStage(event),
+    );
+    logDiagnosticStage("worker:generate:end");
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(
@@ -326,7 +339,9 @@ export function handleGenerate(
     ]);
   }
   const track = generation.track;
+  logDiagnosticStage("worker:simulation:start");
   const sim = simulateForTrack(track, generation.file);
+  logDiagnosticStage("worker:simulation:end");
   if (!sim.ok) return failure(requestId, [sim.diagnostic]);
   if (
     sim.diagnostics.some(
@@ -345,12 +360,14 @@ export function handleGenerate(
     );
   }
   const spanIds = generation.file.solvedSpans.map((s) => s.id);
+  logDiagnosticStage("worker:limits:start");
   const limitDiags = validateEngineeringLimits(
     sim.frames,
     track,
     engineeringLimitsProfile,
     spanIds,
   );
+  logDiagnosticStage("worker:limits:end");
   const hasFatal = limitDiags.some((d) => d.severity === "fatal");
   if (hasFatal) {
     return failure(
@@ -374,6 +391,7 @@ export function handleGenerate(
   // Required finite Float64Array clearanceM derived from owned field and actual train offsets (no default hidden offsets)
   let clearanceM: Float64Array;
   try {
+    logDiagnosticStage("worker:clearance-map:start");
     const cfg = createDefaultSimulatorConfig();
     const offsets = cfg.train.cars.map((_, i) => i * cfg.train.spacingM);
     for (const o of offsets)
@@ -391,6 +409,7 @@ export function handleGenerate(
     for (let i = 0; i < clearanceM.length; i++)
       if (!Number.isFinite(clearanceM[i]!))
         throw new RangeError(`clearanceM[${i}] must be finite`);
+    logDiagnosticStage("worker:clearance-map:end");
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(
@@ -400,6 +419,7 @@ export function handleGenerate(
       ),
     ]);
   }
+  logDiagnosticStage("worker:response");
   return {
     type: "success",
     requestId,

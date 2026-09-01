@@ -1,0 +1,32 @@
+name: Portable stage diagnostic
+
+on:
+  push:
+    branches:
+      - codex/portable-stage-current
+
+permissions:
+  contents: read
+
+jobs:
+  webkit-stage:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install npm 11.17.0
+        run: npm install -g npm@11.17.0
+      - name: Install exact lockfile
+        run: npm ci
+      - name: Build portable artifact
+        run: npm run build
+      - name: Install Playwright WebKit
+        run: npx playwright install --with-deps webkit
+      - name: Run staged portable diagnostic
+        run: npm run test:e2e:portable -- --project=webkit

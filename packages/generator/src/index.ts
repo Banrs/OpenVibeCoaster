@@ -19,6 +19,7 @@ export {
   compileCoasterFile,
   generate,
   generateCoaster,
+  generateCoasterForBenchmark,
   isClosedChain,
   localRegenerate,
   regenerateCoasterFileLocal,

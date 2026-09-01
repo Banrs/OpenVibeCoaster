@@ -15,6 +15,9 @@ test("portable artifact runs directly from file://", async ({ page }) => {
 
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
+    if (message.text().startsWith("[ovc-stage]")) {
+      console.log(message.text());
+    }
     if (message.type() === "error") {
       consoleErrors.push(message.text());
     }
