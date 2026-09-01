@@ -8,7 +8,7 @@ import {
 import {
   coasterFileSpanHashes,
   computeClearanceField,
-  generateCoaster,
+  generateCoasterForBenchmark,
   isClosedChain,
   mapClearanceToTimeline,
   projectClearanceDiagnostics,
@@ -315,7 +315,11 @@ export function handleGenerate(
   try {
     const _diagGenerateStart = getNowMs(); // DIAG-REMOVE
     console.info("[ovc:diag] handleGenerate generateCoaster start", requestId); // DIAG-REMOVE
-    generation = generateCoaster(typedIntent, env ? { environment: env } : {});
+    generation = generateCoasterForBenchmark(
+      typedIntent,
+      env ? { environment: env } : {},
+      (stage) => console.info("[ovc:diag] generate stage", stage), // DIAG-REMOVE
+    );
     console.info("[ovc:diag] handleGenerate generateCoaster end", getNowMs() - _diagGenerateStart); // DIAG-REMOVE
   } catch (err) {
     return failure(requestId, [
