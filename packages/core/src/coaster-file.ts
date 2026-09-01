@@ -217,11 +217,19 @@ const validateElement = (value: unknown, path: string): void => {
             );
         } else if (key === "angle") {
           const value = parameter as number;
-          if (value === 0 || value < -Math.PI * 2 || value > Math.PI * 2)
-            fail(
-              `${path}.parameters.${key}`,
-              "finite non-zero number between -2π and 2π for angle",
-            );
+          if (kind === "brake") {
+            if (value === 0 || value < -Math.PI * 2 || value > Math.PI * 2)
+              fail(
+                `${path}.parameters.${key}`,
+                "finite non-zero number between -2π and 2π for angle",
+              );
+          } else if (kind === "overbankedTurn") {
+            if (value === 0 || value < -Math.PI * 4 || value > Math.PI * 4)
+              fail(
+                `${path}.parameters.${key}`,
+                "finite non-zero number between -4π and 4π for angle",
+              );
+          }
         }
       } else primitive(parameter, `${path}.parameters.${key}`);
     }

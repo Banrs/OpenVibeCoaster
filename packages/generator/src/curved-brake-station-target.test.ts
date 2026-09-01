@@ -219,7 +219,7 @@ describe("curved brake and terminal station target packet", () => {
     const open = createElement("station", "station-open", { length: 12, bank: 0, closed: false });
     expect((open.parameters as StationParameters).targetSpeed).toBeUndefined();
     expect((open.parameters as StationParameters).closed).toBe(false);
-    expect(() => createElement("brake", "b", { length: 20, targetSpeed: 8, angle: 0 as unknown as number })).toThrow(/angle.*non-zero|angle.*0/);
+    expect(() => createElement("brake", "b", { length: 20, targetSpeed: 8, angle: 0 as unknown as number })).toThrow(/angle.*zero|zero.*angle/i);
     expect(() => createElement("brake", "b", { length: 20, targetSpeed: 8, angle: Number.NaN as unknown as number })).toThrow(/finite|angle/);
     expect(() => createElement("brake", "b", { length: 20, targetSpeed: 8, angle: Number.POSITIVE_INFINITY as unknown as number })).toThrow(/finite|angle/);
     expect(() => createElement("brake", "b", { length: 20, targetSpeed: 8, angle: Math.PI * 2 + 0.01 })).toThrow(/angle.*2π|angle.*between/);

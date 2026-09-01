@@ -1566,10 +1566,7 @@ const evaluateCandidate = (
     const owner = ownerForSpan(span.id, elementByIdForCandidate);
     const el = owner ? elementByIdForCandidate.get(owner) : undefined;
     if (!el) throw new Error(`Missing semantic owner for span ${span.id}`);
-    const len =
-      typeof (el.parameters as Record<string, unknown>).length === "number"
-        ? ((el.parameters as Record<string, unknown>).length as number)
-        : (span.length ?? arcLength(span.span));
+    const len = arcLength(span.span);
     return serializeSolvedSpanV1(span, el.type, len);
   });
   const canonicalSpansForCandidate = serializedForCandidate.map(
@@ -1727,17 +1724,12 @@ const buildFileResult = (
     const owner = ownerForSpan(span.id, elementById);
     const element = owner === undefined ? undefined : elementById.get(owner);
     if (!element) throw new Error(`Missing semantic owner for span ${span.id}`);
-    const parameters = element.parameters as Record<string, unknown>;
     const lengthKey = spanBytes(span);
-    let curvedLength = operationCache.spanLengthCache.get(lengthKey);
-    if (curvedLength === undefined) {
-      curvedLength = arcLength(span.span);
-      operationCache.spanLengthCache.set(lengthKey, curvedLength);
+    let length = operationCache.spanLengthCache.get(lengthKey);
+    if (length === undefined) {
+      length = arcLength(span.span);
+      operationCache.spanLengthCache.set(lengthKey, length);
     }
-    const length =
-      typeof parameters.length === "number"
-        ? parameters.length
-        : (span.length ?? curvedLength);
     return serializeSolvedSpanV1(span, element.type, length);
   });
   const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
@@ -2128,11 +2120,7 @@ const generationWithSpans = (
     const owner = ownerForSpan(span.id, elementById);
     const element = owner === undefined ? undefined : elementById.get(owner);
     if (!element) throw new Error(`Missing semantic owner for span ${span.id}`);
-    const parameters = element.parameters as Record<string, unknown>;
-    const length =
-      typeof parameters.length === "number"
-        ? parameters.length
-        : (span.length ?? arcLength(span.span));
+    const length = arcLength(span.span);
     return serializeSolvedSpanV1(span, element.type, length);
   });
   const canonicalSpans = serializedSpans.map(reconstructSolvedSpan);
