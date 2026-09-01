@@ -97,7 +97,8 @@ describe("threshold completeness – display cap and soft prevent premature sepa
     expect(resWithDisplay.ok).toBe(true);
     if (!resWithDisplay.ok) throw new Error("resWithDisplay not certified");
     expect(resWithDisplay.excluded).toBe(false);
-    if (resWithDisplay.excluded) throw new Error("resWithDisplay not certified");
+    if (resWithDisplay.excluded)
+      throw new Error("resWithDisplay not certified");
     expect(resHardOnly.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resWithDisplay.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resWithDisplay.lowerM).toBeLessThan(10);
@@ -117,11 +118,13 @@ describe("threshold completeness – display cap and soft prevent premature sepa
     expect(resStraddleHard.ok).toBe(true);
     if (!resStraddleHard.ok) throw new Error("resStraddleHard not certified");
     expect(resStraddleHard.excluded).toBe(false);
-    if (resStraddleHard.excluded) throw new Error("resStraddleHard not certified");
+    if (resStraddleHard.excluded)
+      throw new Error("resStraddleHard not certified");
     expect(resStraddleFull.ok).toBe(true);
     if (!resStraddleFull.ok) throw new Error("resStraddleFull not certified");
     expect(resStraddleFull.excluded).toBe(false);
-    if (resStraddleFull.excluded) throw new Error("resStraddleFull not certified");
+    if (resStraddleFull.excluded)
+      throw new Error("resStraddleFull not certified");
     expect(resStraddleHard.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resStraddleFull.lowerM).toBeLessThan(10);
     expect(resStraddleFull.upperM).toBeGreaterThanOrEqual(10);

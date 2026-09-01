@@ -79,9 +79,9 @@ import type {
 } from "./types";
 
 const DEFAULT_PROFILE_VERSION = "project-engineering-limits-v1" as const;
-const DEFAULT_RESEARCH_SNAPSHOT_IDS = Object.freeze(
-  ["records-2026-08-29"] as const,
-);
+const DEFAULT_RESEARCH_SNAPSHOT_IDS = Object.freeze([
+  "records-2026-08-29",
+] as const);
 
 const toCompileFatalDiagnostic = (
   error: unknown,

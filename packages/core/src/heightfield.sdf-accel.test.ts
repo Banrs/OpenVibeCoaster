@@ -46,7 +46,15 @@ function bruteTriangle(
   column: number,
   row: number,
   first: boolean,
-): { a: Vec3; b: Vec3; c: Vec3; normal: Vec3; column: number; row: number; first: boolean } {
+): {
+  a: Vec3;
+  b: Vec3;
+  c: Vec3;
+  normal: Vec3;
+  column: number;
+  row: number;
+  first: boolean;
+} {
   const origin = env.origin;
   const cs = env.cellSize;
   const sample = (c: number, r: number): number =>
@@ -80,7 +88,12 @@ function triangleContainsBrute(
 ): boolean {
   const cellX = env.origin[0] + tri.column * env.cellSize;
   const cellZ = env.origin[1] + tri.row * env.cellSize;
-  if (x < cellX || x > cellX + env.cellSize || z < cellZ || z > cellZ + env.cellSize)
+  if (
+    x < cellX ||
+    x > cellX + env.cellSize ||
+    z < cellZ ||
+    z > cellZ + env.cellSize
+  )
     return false;
   const localX = x - cellX;
   const localZ = z - cellZ;
@@ -93,8 +106,13 @@ function triangleDistanceBrute(
   point: Vec3,
   tri: ReturnType<typeof bruteTriangle>,
 ): number {
-  const rel = vec3(point[0] - tri.a[0], point[1] - tri.a[1], point[2] - tri.a[2]);
-  const planeDist = tri.normal[0] * rel[0] + tri.normal[1] * rel[1] + tri.normal[2] * rel[2];
+  const rel = vec3(
+    point[0] - tri.a[0],
+    point[1] - tri.a[1],
+    point[2] - tri.a[2],
+  );
+  const planeDist =
+    tri.normal[0] * rel[0] + tri.normal[1] * rel[1] + tri.normal[2] * rel[2];
   const px = point[0] - planeDist * tri.normal[0];
   const pz = point[2] - planeDist * tri.normal[2];
   if (triangleContainsBrute(tri, px, pz, env)) return Math.abs(planeDist);
@@ -105,7 +123,12 @@ function triangleDistanceBrute(
   );
 }
 
-function curtainDistanceBrute(env: HeightfieldEnvironment, point: Vec3, a: Vec3, b: Vec3): number {
+function curtainDistanceBrute(
+  env: HeightfieldEnvironment,
+  point: Vec3,
+  a: Vec3,
+  b: Vec3,
+): number {
   const edgeX = b[0] - a[0];
   const edgeZ = b[2] - a[2];
   const edgeLength = Math.hypot(edgeX, edgeZ);
@@ -121,7 +144,10 @@ function curtainDistanceBrute(env: HeightfieldEnvironment, point: Vec3, a: Vec3,
   }
   const upA = point[1] <= a[1] ? 0 : point[1] - a[1];
   const upB = point[1] <= b[1] ? 0 : point[1] - b[1];
-  const vert = Math.min(Math.hypot(along, upA), Math.hypot(along - edgeLength, upB));
+  const vert = Math.min(
+    Math.hypot(along, upA),
+    Math.hypot(along - edgeLength, upB),
+  );
   let planar = vert;
   if (point[1] > Math.min(a[1], b[1])) {
     const seg = pointSegmentDistanceBrute(
@@ -152,14 +178,24 @@ function bruteSignedDistance(env: HeightfieldEnvironment, point: Vec3): number {
     closest = Math.min(
       closest,
       curtainDistanceBrute(env, point, surf(c, 0), surf(c + 1, 0)),
-      curtainDistanceBrute(env, point, surf(c, env.depth - 1), surf(c + 1, env.depth - 1)),
+      curtainDistanceBrute(
+        env,
+        point,
+        surf(c, env.depth - 1),
+        surf(c + 1, env.depth - 1),
+      ),
     );
   }
   for (let r = 0; r < env.depth - 1; r++) {
     closest = Math.min(
       closest,
       curtainDistanceBrute(env, point, surf(0, r), surf(0, r + 1)),
-      curtainDistanceBrute(env, point, surf(env.width - 1, r), surf(env.width - 1, r + 1)),
+      curtainDistanceBrute(
+        env,
+        point,
+        surf(env.width - 1, r),
+        surf(env.width - 1, r + 1),
+      ),
     );
   }
   const inside =
@@ -210,10 +246,7 @@ describe("heightfield SDF acceleration – exact analytic flat cases", () => {
 
   it("corner outside is exact", () => {
     const p = vec3(2, 1, 2);
-    expect(flat.signedDistance(p)).toBeCloseTo(
-      bruteSignedDistance(flat, p),
-      9,
-    );
+    expect(flat.signedDistance(p)).toBeCloseTo(bruteSignedDistance(flat, p), 9);
     expect(bruteSignedDistance(flat, p)).toBeGreaterThan(0);
     expect(flat.signedDistance(p)).toBeGreaterThan(0);
   });
@@ -292,16 +325,18 @@ describe("heightfield SDF acceleration – sloped/irregular brute comparison", (
       depth: 4,
       cellSize: 1,
       heights: new Float64Array([
-        0, 0.5, 1, 0, 0.3, 1.2, 0.8, 0.2, 0.9, 0.1, 0.4, 0.7, 0,
-        0.6, 0.2, 0,
+        0, 0.5, 1, 0, 0.3, 1.2, 0.8, 0.2, 0.9, 0.1, 0.4, 0.7, 0, 0.6, 0.2, 0,
       ]),
       origin: [0, 0],
     });
     for (let x = -0.5; x <= 3.5; x += 0.5)
       for (let z = -0.5; z <= 3.5; z += 0.5)
-        for (const y of [ -1, 0.2, 1.5, 3]) {
+        for (const y of [-1, 0.2, 1.5, 3]) {
           const p = vec3(x, y, z);
-          expect(env.signedDistance(p)).toBeCloseTo(bruteSignedDistance(env, p), 8);
+          expect(env.signedDistance(p)).toBeCloseTo(
+            bruteSignedDistance(env, p),
+            8,
+          );
         }
   });
 });
@@ -325,7 +360,10 @@ describe("heightfield SDF acceleration – translation and large coordinates", (
     });
     const pBase = vec3(0.5, 2, 0.5);
     const pShifted = vec3(1e6 + 0.5, 2, 1e6 + 0.5);
-    expect(base.signedDistance(pBase)).toBeCloseTo(shifted.signedDistance(pShifted), 9);
+    expect(base.signedDistance(pBase)).toBeCloseTo(
+      shifted.signedDistance(pShifted),
+      9,
+    );
   });
 
   it("large finite height scale remains exact", () => {

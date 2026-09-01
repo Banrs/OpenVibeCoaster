@@ -148,9 +148,7 @@ describe("default bundled provenance ids", () => {
       seams: testSeams,
       referenceSpeed: 44,
     });
-    expect(fileLocal.generation.file.profileVersion).toBe(
-      "custom-profile-v9",
-    );
+    expect(fileLocal.generation.file.profileVersion).toBe("custom-profile-v9");
     expect(fileLocal.generation.file.researchSnapshotIds).toEqual([
       "custom-snapshot",
     ]);

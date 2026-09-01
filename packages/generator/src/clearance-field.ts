@@ -437,11 +437,7 @@ export function computeClearanceField(
       ) {
         throw new RangeError("bounds components must be finite");
       }
-      if (
-        bMin[0]! > bMax[0]! ||
-        bMin[1]! > bMax[1]! ||
-        bMin[2]! > bMax[2]!
-      ) {
+      if (bMin[0]! > bMax[0]! || bMin[1]! > bMax[1]! || bMin[2]! > bMax[2]!) {
         throw new RangeError("bounds min greater than max");
       }
       envMaxY = bMax[1]!;
@@ -646,11 +642,7 @@ export function computeClearanceField(
       while (heap.length > 0 && !certified) {
         const globalLowerHeap = heap[0]!.lowerM;
         if (
-          thresholdsSeparated(
-            globalLowerHeap,
-            bestUpper,
-            terrainHardThresholds,
-          )
+          thresholdsSeparated(globalLowerHeap, bestUpper, terrainHardThresholds)
         ) {
           certified = true;
           break;

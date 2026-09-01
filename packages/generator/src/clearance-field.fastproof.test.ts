@@ -23,17 +23,11 @@ function highTrack() {
     [
       {
         id: "seg-0",
-        span: SeventhOrderHermiteSpan.line(
-          vec3(0, 15, 0),
-          vec3(0, 15, 5),
-        ),
+        span: SeventhOrderHermiteSpan.line(vec3(0, 15, 0), vec3(0, 15, 5)),
       },
       {
         id: "seg-1",
-        span: SeventhOrderHermiteSpan.line(
-          vec3(0, 15, 5),
-          vec3(0, 15, 10),
-        ),
+        span: SeventhOrderHermiteSpan.line(vec3(0, 15, 5), vec3(0, 15, 10)),
       },
     ],
     { samples: 2 },
@@ -45,10 +39,7 @@ function lowTrack() {
     [
       {
         id: "seg-0",
-        span: SeventhOrderHermiteSpan.line(
-          vec3(0, 0.5, 0),
-          vec3(0, 0.5, 5),
-        ),
+        span: SeventhOrderHermiteSpan.line(vec3(0, 0.5, 0), vec3(0, 0.5, 5)),
       },
     ],
     { samples: 2 },

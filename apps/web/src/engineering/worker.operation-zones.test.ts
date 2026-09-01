@@ -155,7 +155,9 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
       const result = handleRegenerate("op-rg-1", gen.file, "launch-1");
       expect(result.type).toBe("success");
       if (result.type !== "success")
-        throw new Error(`regenerate failed: ${JSON.stringify(result.diagnostics)}`);
+        throw new Error(
+          `regenerate failed: ${JSON.stringify(result.diagnostics)}`,
+        );
       expect(vi.mocked(simulateRide).mock.calls).toHaveLength(1);
       const expected = operationZonesFromCoasterFile(result.file);
       const actual = getZones();

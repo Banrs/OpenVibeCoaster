@@ -825,8 +825,7 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
         const p = (i - 1) >> 1;
         const a = heap[i]!;
         const b = heap[p]!;
-        if (a.lower > b.lower || (a.lower === b.lower && a.seq >= b.seq))
-          break;
+        if (a.lower > b.lower || (a.lower === b.lower && a.seq >= b.seq)) break;
         heap[i] = b;
         heap[p] = a;
         i = p;

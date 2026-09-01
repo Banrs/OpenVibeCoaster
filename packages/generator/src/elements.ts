@@ -76,7 +76,8 @@ const validateParameters = <K extends ElementKind>(
       const p = parameters as ElementParameterMap["station"];
       range("length", p.length, 2, 500);
       angle("bank", p.bank, -Math.PI, Math.PI);
-      if (p.targetSpeed !== undefined) range("targetSpeed", p.targetSpeed, 0, 120);
+      if (p.targetSpeed !== undefined)
+        range("targetSpeed", p.targetSpeed, 0, 120);
       break;
     }
     case "launch":

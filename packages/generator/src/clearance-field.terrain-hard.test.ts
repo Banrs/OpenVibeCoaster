@@ -110,7 +110,11 @@ describe("clearance field – terrain hard-only certification", () => {
     expect(seg.upperM).toBeGreaterThanOrEqual(8);
     expect(seg.lowerM).toBeLessThan(seg.upperM);
     expect(seg.certified).toBe(false);
-    expect(field.diagnostics.some((d) => d.code === "CLEARANCE_UNCERTIFIED" && d.severity === "fatal")).toBe(true);
+    expect(
+      field.diagnostics.some(
+        (d) => d.code === "CLEARANCE_UNCERTIFIED" && d.severity === "fatal",
+      ),
+    ).toBe(true);
     const diags = projectClearanceDiagnostics(field, [
       { id: "hard-8", hard: true, threshold: 8 },
     ]);
