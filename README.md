@@ -117,7 +117,7 @@ The default generation sequence (seeded, deterministic) is:
 `overbankedTurn` (r 75 m, 0.75 pi, bank 0.6 pi) -> `airtimeHill` (130 m +
 variation, force-driven height, 1.15 g) -> `boost` (220 m, 44 m/s) ->
 `zeroGRoll` (28 m, 2 pi) -> `stall` (100 m, 18 m) -> `brake` (220 m, 8 m/s,
-180-degree curved turn) -> `brake` (110 m, 5 m/s) -> `station` (160 m, closed
+180-degree curved turn) -> `brake` (110 m, 5 m/s) -> `station` (160 m, closed:
 false, semantic target 0 m/s). The 80 m target remains
 unvalidated until a generated result passes hard-constraint diagnostics.
 

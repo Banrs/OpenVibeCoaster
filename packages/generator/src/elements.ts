@@ -665,7 +665,7 @@ export const buildElement = (
       if (p.angle !== undefined) {
         const radius = p.length / Math.abs(p.angle);
         const turns = Math.abs(p.angle) / (2 * Math.PI);
-        const signed = Math.sign(p.angle) || 1;
+        const signed = p.angle > 0 ? 1 : -1;
         const curve = transitionedCircularSpan(
           normalizedPose,
           radius,
