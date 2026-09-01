@@ -710,6 +710,15 @@ export function computeClearanceField(
             break;
           }
           workUsed += 1;
+          if (segIdx === 0 && workUsed % 1000 === 0)
+            console.info(
+              "[ovc:diag] terrain segment 0 work",
+              workUsed,
+              "remaining",
+              remaining,
+              "heap",
+              heap.length,
+            ); // DIAG-REMOVE
           const child: TerrainHeapNode = {
             u0,
             u1,
@@ -780,6 +789,19 @@ export function computeClearanceField(
       perSegmentSource[segIdx] = "terrain";
       perSegmentLowerRelatedIds[segIdx] = [segId];
       perSegmentLowerSource[segIdx] = "terrain";
+      if (segIdx < 20)
+        console.info(
+          "[ovc:diag] terrain segment end",
+          segIdx,
+          "work",
+          workUsed,
+          "remaining",
+          remaining,
+          "lower",
+          globalLower,
+          "upper",
+          bestUpper,
+        ); // DIAG-REMOVE
       const isCert =
         thresholdsSeparated(
           globalLower,
