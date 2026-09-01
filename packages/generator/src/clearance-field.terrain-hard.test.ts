@@ -80,7 +80,7 @@ describe("clearance field – terrain hard-only certification", () => {
     const diags = projectClearanceDiagnostics(field, [
       { id: "soft-8", hard: false, threshold: 8 },
     ]);
-    const warn = diags.find((d) => d.relatedIds.includes("soft-8"));
+    const warn = diags.find((d) => d.relatedIds?.includes("soft-8") ?? false);
     expect(warn).toBeDefined();
     expect(warn!.code).toBe("CLEARANCE_UNCERTIFIED");
     expect(warn!.severity).toBe("warning");
@@ -114,7 +114,7 @@ describe("clearance field – terrain hard-only certification", () => {
     const diags = projectClearanceDiagnostics(field, [
       { id: "hard-8", hard: true, threshold: 8 },
     ]);
-    const err = diags.find((d) => d.relatedIds.includes("hard-8"));
+    const err = diags.find((d) => d.relatedIds?.includes("hard-8") ?? false);
     expect(err).toBeDefined();
     expect(err!.code).toBe("CLEARANCE_UNCERTIFIED");
     expect(err!.severity).toBe("fatal");
