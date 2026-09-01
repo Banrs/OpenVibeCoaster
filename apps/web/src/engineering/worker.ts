@@ -16,11 +16,11 @@ import {
 } from "@openvibecoaster/generator";
 import {
   createDefaultSimulatorConfig,
+  operationZonesFromCoasterFile,
   simulateRide,
   RideTimeline,
   validateEngineeringLimits,
 } from "@openvibecoaster/simulator";
-import type { OperationZone } from "@openvibecoaster/simulator";
 import { engineeringLimitsProfile } from "./engineering-profile.js";
 import { resolveTerrainEnvironment } from "../terrain/environment.js";
 import type {
@@ -109,89 +109,6 @@ function resolveEnvForProfile(
 ): ReturnType<typeof resolveTerrainEnvironment> {
   // Throws on unknown profile – caller converts to diagnostic
   return resolveTerrainEnvironment(profileId);
-}
-
-function buildOperationZones(
-  track: CompiledTrackData,
-): readonly OperationZone[] {
-  const allowed: ReadonlyArray<OperationZone["kind"]> = [
-    "station",
-    "launch",
-    "boost",
-    "brake",
-  ];
-  const zones: OperationZone[] = [];
-  const distances = track.distances;
-  const masks = track.zoneMasks;
-  const count = distances.length;
-  for (const kind of allowed) {
-    const idx = track.zoneNames.indexOf(kind);
-    if (idx < 0) continue;
-    const bit = 1 << idx;
-    let runStart: number | undefined;
-    let runIdx = 0;
-    for (let i = 0; i < count; i++) {
-      const has = (masks[i]! & bit) !== 0;
-      if (has && runStart === undefined) runStart = i;
-      else if (!has && runStart !== undefined) {
-        const start = distances[runStart]!;
-        const end = distances[i]!;
-        if (end > start)
-          zones.push({
-            id: `${kind}-${runIdx++}`,
-            kind,
-            startDistanceM: start,
-            endDistanceM: end,
-          });
-        runStart = undefined;
-      }
-    }
-    if (runStart !== undefined) {
-      const start = distances[runStart]!;
-      const end = track.totalLength;
-      if (end > start)
-        zones.push({
-          id: `${kind}-${runIdx++}`,
-          kind,
-          startDistanceM: start,
-          endDistanceM: end,
-        });
-    }
-  }
-  zones.sort((a, b) => a.startDistanceM - b.startDistanceM);
-  // Deterministic project target for final contiguous magnetic/final brake run (allows 5 m/s coast to station)
-  const lastBrakeIdx = zones.reduce(
-    (best, z, i) =>
-      z.kind === "brake" &&
-      (best === -1 || z.startDistanceM > zones[best]!.startDistanceM)
-        ? i
-        : best,
-    -1,
-  );
-  if (lastBrakeIdx >= 0) {
-    const zb = zones[lastBrakeIdx]!;
-    zones[lastBrakeIdx] = { ...zb, targetSpeedMps: 5 };
-  }
-  // Terminal station closure: only the last station run (terminal) gets explicit target 0 to stop/hold; initial station remains passive
-  const lastStationIdx = zones.reduce((best, z, i) => {
-    if (z.kind !== "station") return best;
-    // Prefer terminal station that ends at totalLength; fallback to max start
-    const isTerminal = Math.abs(z.endDistanceM - track.totalLength) < 1e-9;
-    if (best === -1) return i;
-    const bestIsTerminal =
-      Math.abs(zones[best]!.endDistanceM - track.totalLength) < 1e-9;
-    if (isTerminal && !bestIsTerminal) return i;
-    if (!isTerminal && bestIsTerminal) return best;
-    return z.startDistanceM > zones[best]!.startDistanceM ? i : best;
-  }, -1);
-  if (lastStationIdx >= 0) {
-    const zs = zones[lastStationIdx]!;
-    // Only terminal station should be closed; ensure it is at or near track end
-    if (Math.abs(zs.endDistanceM - track.totalLength) < 1e-9) {
-      zones[lastStationIdx] = { ...zs, targetSpeedMps: 0 };
-    }
-  }
-  return zones;
 }
 
 function durationForTrack(track: CompiledTrackData): number {
@@ -311,7 +228,10 @@ function selectHeadDistance(
   return { ok: true, headDistanceM };
 }
 
-function simulateForTrack(track: CompiledTrackData):
+function simulateForTrack(
+  track: CompiledTrackData,
+  file: CoasterFileV1,
+):
   | {
       ok: true;
       timeline: RideTimeline;
@@ -328,7 +248,7 @@ function simulateForTrack(track: CompiledTrackData):
   );
   if (!headSelection.ok)
     return { ok: false, diagnostic: headSelection.diagnostic };
-  const zones = buildOperationZones(track);
+  const zones = operationZonesFromCoasterFile(file);
   const durationSeconds = durationForTrack(track);
   const config = {
     ...baseConfig,
@@ -406,7 +326,7 @@ export function handleGenerate(
     ]);
   }
   const track = generation.track;
-  const sim = simulateForTrack(track);
+  const sim = simulateForTrack(track, generation.file);
   if (!sim.ok) return failure(requestId, [sim.diagnostic]);
   if (
     sim.diagnostics.some(
@@ -564,7 +484,7 @@ export function handleRegenerate(
     ]);
   }
   const track = generation.track;
-  const sim = simulateForTrack(track);
+  const sim = simulateForTrack(track, generation.file);
   if (!sim.ok) return failure(requestId, [sim.diagnostic]);
   if (sim.diagnostics.some((d) => (d as Diagnostic).severity === "error")) {
     return failure(
@@ -682,7 +602,7 @@ export function handleCompileSimulate(
   }
   // Compile-simulate recompiles only; does not re-solve. Validate file checksum via compile, then simulate.
   const track = loaded.track;
-  const sim = simulateForTrack(track);
+  const sim = simulateForTrack(track, loaded.file);
   if (!sim.ok) return failure(requestId, [sim.diagnostic]);
   if (
     sim.diagnostics.some(
