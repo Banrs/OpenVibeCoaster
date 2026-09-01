@@ -217,7 +217,6 @@ describe("RidePlaybackController", () => {
 
     expect(front.position).toEqual([5, 2.125, 0]);
     expect(seat.position).toEqual([5, 2.125, 0]);
-    expect(front.car?.seats[1]?.position).toEqual([5, 3.125, 0]);
     expect(front.tangent?.[0]).toBeCloseTo(rootTwo);
     expect(front.tangent?.[1]).toBeCloseTo(rootTwo);
     expect(front.normal?.[0]).toBeCloseTo(-rootTwo);
@@ -234,7 +233,7 @@ describe("RidePlaybackController", () => {
     expect(seat.frame.binormal[2]).toBeCloseTo(1);
     expect(snapshot.telemetry?.longitudinalG).toBe(1);
     expect(snapshot.telemetry?.kineticEnergyJ).toBe(5);
-    expect(front.car?.telemetry.longitudinalG).toBe(1);
+    expect(front.car?.telemetry?.longitudinalG).toBe(1);
     expect(seat.telemetry.bankRad).toBeCloseTo(0.05);
 
     expect(

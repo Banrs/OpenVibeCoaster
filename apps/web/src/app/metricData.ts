@@ -9,6 +9,7 @@ import {
   type TimelineMetricId,
   type TimelineSeries,
 } from "../telemetry.js";
+import type { RideSelectionId } from "../ride/controller.js";
 
 function toTimelineMetricId(
   metric: Exclude<MetricId, "height">,
@@ -65,6 +66,37 @@ export function getMetricSeries(
   return getTimelineSeries(timeline, timelineMetric, track, clearanceM);
 }
 
+function resampleToTrack(
+  timelineDistances: readonly number[],
+  timelineValues: readonly number[],
+  trackDistances: ArrayLike<number>,
+): Float64Array {
+  const resampled = new Float64Array(trackDistances.length);
+  let ti = 0;
+  for (let i = 0; i < trackDistances.length; i++) {
+    const d = trackDistances[i] as number;
+    while (
+      ti + 1 < timelineDistances.length &&
+      (timelineDistances[ti + 1] as number) < d
+    ) {
+      ti++;
+    }
+    if (ti + 1 >= timelineDistances.length) {
+      resampled[i] = timelineValues[timelineValues.length - 1] as number;
+    } else if ((timelineDistances[ti] as number) === d) {
+      resampled[i] = timelineValues[ti] as number;
+    } else {
+      const d0 = timelineDistances[ti] as number;
+      const d1 = timelineDistances[ti + 1] as number;
+      const v0 = timelineValues[ti] as number;
+      const v1 = timelineValues[ti + 1] as number;
+      const t = d1 === d0 ? 0 : (d - d0) / (d1 - d0);
+      resampled[i] = v0 + (v1 - v0) * t;
+    }
+  }
+  return resampled;
+}
+
 export function deriveMetricData(
   metric: MetricId,
   result: AuthoritativeExperienceResult,
@@ -78,38 +110,164 @@ export function deriveMetricData(
     result.clearanceM ?? null,
   );
   if (!series.available) return undefined;
-  const trackDistances = result.track.distances;
-  const timelineDistances = series.distances;
-  const timelineValues = series.values;
-  const resampled = new Float64Array(trackDistances.length);
-  let ti = 0;
-  for (let i = 0; i < trackDistances.length; i++) {
-    const d = trackDistances[i]!;
-    while (
-      ti + 1 < timelineDistances.length &&
-      timelineDistances[ti + 1]! < d
-    ) {
-      ti++;
-    }
-    if (ti + 1 >= timelineDistances.length) {
-      resampled[i] = timelineValues[timelineValues.length - 1]!;
-    } else if (timelineDistances[ti]! === d) {
-      resampled[i] = timelineValues[ti]!;
-    } else {
-      const d0 = timelineDistances[ti]!;
-      const d1 = timelineDistances[ti + 1]!;
-      const v0 = timelineValues[ti]!;
-      const v1 = timelineValues[ti + 1]!;
-      const t = d1 === d0 ? 0 : (d - d0) / (d1 - d0);
-      resampled[i] = v0 + (v1 - v0) * t;
-    }
-  }
+  const resampled = resampleToTrack(
+    series.distances,
+    series.values,
+    result.track.distances,
+  );
   const data: MetricData = {};
   if (metric === "speed") data.speed = resampled;
   else if (metric === "gForce") data.gForce = resampled;
   else if (metric === "rollRate") data.rollRate = resampled;
   else if (metric === "clearance") data.clearance = resampled;
   else if (metric === "energy") data.energy = resampled;
+  return data;
+}
+
+export function getSeatCarIndex(
+  seatId: RideSelectionId,
+  carCount: number,
+): number {
+  if (seatId === "front") return 0;
+  if (seatId === "rear") return Math.max(0, carCount - 1);
+  return Math.floor(Math.max(0, carCount - 1) / 2);
+}
+
+function extractPerCarValues(
+  timeline: RideTimeline,
+  carIndex: number,
+  source: Float64Array,
+): number[] | null {
+  const expected = timeline.length * timeline.carCount;
+  if (source.length !== expected) return null;
+  const values: number[] = [];
+  for (let i = 0; i < timeline.length; i++) {
+    values.push(source[i * timeline.carCount + carIndex] as number);
+  }
+  return values;
+}
+
+export function getSeatMetricSeries(
+  metric: MetricId,
+  result: AuthoritativeExperienceResult,
+  seatId: RideSelectionId,
+): TimelineSeries {
+  const timeline = result.timeline;
+  const carCount = timeline.carCount;
+  if (carCount === 0) {
+    return getMetricSeries(
+      metric,
+      result.track,
+      timeline,
+      result.clearanceM ?? null,
+    );
+  }
+  const carIndex = getSeatCarIndex(seatId, carCount);
+  const distances = Array.from(timeline.headDistanceM);
+  const times = Array.from(timeline.timeSeconds);
+  if (metric === "rollRate") {
+    const values = extractPerCarValues(
+      timeline,
+      carIndex,
+      timeline.perCarRollRateRadPerSec,
+    );
+    if (!values) {
+      return {
+        metric: "rollRate",
+        label: "Roll rate",
+        unit: "rad/s",
+        values: [],
+        distances,
+        times,
+        available: false,
+        reason: "per-car rollRate unavailable",
+      };
+    }
+    let min = Infinity,
+      max = -Infinity;
+    for (const v of values) {
+      min = Math.min(min, v);
+      max = Math.max(max, v);
+    }
+    return {
+      metric: "rollRate",
+      label: "Roll rate",
+      unit: "rad/s",
+      values,
+      distances,
+      times,
+      available: true,
+      range: { min, max },
+    };
+  }
+  if (metric === "gForce") {
+    // signed vertical G per car (retain lateral/longitudinal in readout)
+    const values = extractPerCarValues(
+      timeline,
+      carIndex,
+      timeline.perCarVerticalG,
+    );
+    if (!values) {
+      return {
+        metric: "gForce",
+        label: "G force",
+        unit: "g",
+        values: [],
+        distances,
+        times,
+        available: false,
+        reason: "per-car verticalG unavailable",
+      };
+    }
+    let min = Infinity,
+      max = -Infinity;
+    for (const v of values) {
+      min = Math.min(min, v);
+      max = Math.max(max, v);
+    }
+    return {
+      metric: "gForce",
+      label: "G force",
+      unit: "g",
+      values,
+      distances,
+      times,
+      available: true,
+      range: { min, max },
+    };
+  }
+  return getMetricSeries(
+    metric,
+    result.track,
+    timeline,
+    result.clearanceM ?? null,
+  );
+}
+
+export function deriveSeatMetricData(
+  metric: MetricId,
+  result: AuthoritativeExperienceResult,
+  seatId: RideSelectionId,
+): MetricData | undefined {
+  if (
+    metric === "height" ||
+    metric === "speed" ||
+    metric === "clearance" ||
+    metric === "energy"
+  ) {
+    // train-wide metrics remain authoritative from head/wall
+    return deriveMetricData(metric, result);
+  }
+  const series = getSeatMetricSeries(metric, result, seatId);
+  if (!series.available) return undefined;
+  const resampled = resampleToTrack(
+    series.distances,
+    series.values,
+    result.track.distances,
+  );
+  const data: MetricData = {};
+  if (metric === "gForce") data.gForce = resampled;
+  else if (metric === "rollRate") data.rollRate = resampled;
   return data;
 }
 

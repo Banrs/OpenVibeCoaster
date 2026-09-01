@@ -9,7 +9,12 @@ import {
   updateTrainTransforms,
   type TrainGroup,
 } from "./train.js";
-import { clampFovForSpeed, getCameraState, type CameraId } from "./cameras.js";
+import {
+  clampFovForSpeed,
+  getCameraState,
+  CAMERA_FALLBACK_DIAGNOSTIC,
+  type CameraId,
+} from "./cameras.js";
 import type { RidePlaybackSnapshot } from "../ride/controller.js";
 import type { RendererHandle } from "./renderer.js";
 import type { EnvironmentQuery } from "@openvibecoaster/core";
@@ -77,12 +82,14 @@ export interface RendererController {
   getScene(): THREE.Scene;
   getMetricState(): { metric: MetricId; metricAvailable: boolean } | null;
   getDiagnosticSnapshot(): {
-    railColorHash: string;
-    seamSignature: string;
+    railColorHash: string | null;
+    seamSignature: string | null;
     highlightDistance: number | null;
-    trainWorldPositions: readonly [number, number, number][];
+    trainWorldPositions: readonly [number, number, number][] | null;
     metric: MetricId;
     metricAvailable: boolean;
+    cameraUsedFallback: boolean;
+    cameraFallbackReason: string | null;
   } | null;
 }
 
@@ -109,6 +116,8 @@ export function createRendererController(
   let highlightDisposed = false;
   let lastRailColorHash: string | null = null;
   let lastSeamSignature: string | null = null;
+  let cameraUsedFallback = false;
+  let cameraFallbackReason: string | null = null;
 
   function validateTimeline(timeline: {
     distances: Float64Array;
@@ -482,27 +491,67 @@ export function createRendererController(
       trainGroup = trainGroupLocal;
       playbackDistance = newPlaybackDistance;
       playbackSpeed = newPlaybackSpeed;
-      // deterministic hashes for P1 mutation evidence
       try {
         const colorMesh = trackMeshesLocal.find((m) => m.name === "leftRail");
         if (colorMesh) {
-          const attr = colorMesh.geometry.getAttribute("color") as unknown as
+          const colorAttr = colorMesh.geometry.getAttribute("color") as
             THREE.BufferAttribute | undefined;
-          if (attr) {
+          if (colorAttr && colorAttr.array) {
             let hash = 0;
-            const arr = attr.array as unknown as ArrayLike<number>;
+            const arr = colorAttr.array as ArrayLike<number>;
             for (let i = 0; i < Math.min(arr.length, 3000); i++) {
-              hash = (hash * 31 + Math.round((arr[i] ?? 0) * 1000)) >>> 0;
+              hash =
+                (hash * 31 + Math.round(((arr[i] as number) ?? 0) * 1000)) >>>
+                0;
             }
-            lastRailColorHash = `${hash.toString(16).padStart(8, "0")}-${newMetric}-${String(newMetricAvailable)}`;
+            lastRailColorHash = hash.toString(16).padStart(8, "0");
           } else {
-            lastRailColorHash = `${newMetric}-${String(newMetricAvailable)}`;
+            lastRailColorHash = null;
           }
+          const posAttr = colorMesh.geometry.getAttribute("position") as
+            THREE.BufferAttribute | undefined;
+          const indexAttr = colorMesh.geometry.getIndex();
+          let seamHash = 0;
+          if (posAttr && posAttr.array) {
+            const parr = posAttr.array as ArrayLike<number>;
+            for (let i = 0; i < Math.min(parr.length, 3000); i++) {
+              seamHash =
+                (seamHash * 31 +
+                  Math.round(((parr[i] as number) ?? 0) * 100)) >>>
+                0;
+            }
+          }
+          if (indexAttr && indexAttr.array) {
+            const iarr = indexAttr.array as ArrayLike<number>;
+            for (let i = 0; i < Math.min(iarr.length, 600); i++) {
+              seamHash = (seamHash * 31 + ((iarr[i] as number) ?? 0)) >>> 0;
+            }
+          }
+          const stateStr = `${String(newSeamEnabled)}:${(newSeams ?? []).join(",")}:${String(selectedElementIndex ?? "none")}:${String(highlightDistance ?? "none")}`;
+          for (let i = 0; i < stateStr.length; i++)
+            seamHash = (seamHash * 31 + stateStr.charCodeAt(i)) >>> 0;
+          if (highlightMarker && highlightDistance !== null) {
+            const firstChild = highlightMarker.group.children[0] as
+              THREE.Mesh | undefined;
+            const hg = firstChild?.geometry?.getAttribute("position") as
+              THREE.BufferAttribute | undefined;
+            if (hg && hg.array) {
+              const harr = hg.array as ArrayLike<number>;
+              for (let i = 0; i < Math.min(harr.length, 300); i++)
+                seamHash =
+                  (seamHash * 31 +
+                    Math.round(((harr[i] as number) ?? 0) * 100)) >>>
+                  0;
+            }
+          }
+          lastSeamSignature = seamHash.toString(16).padStart(8, "0");
+        } else {
+          lastRailColorHash = null;
+          lastSeamSignature = null;
         }
-        lastSeamSignature = `${String(newSeamEnabled)}:${(newSeams ?? []).join(",")}:${String(selectedElementIndex ?? "none")}`;
       } catch {
-        lastRailColorHash = `${newMetric}-${String(newMetricAvailable)}`;
-        lastSeamSignature = `${String(newSeamEnabled)}`;
+        lastRailColorHash = null;
+        lastSeamSignature = null;
       }
       trackMeshesLocal = [];
       supportMeshesLocal = [];
@@ -643,18 +692,15 @@ export function createRendererController(
     if (snapshot && snapshot.cars && snapshot.cars.length > 0) {
       transforms = getCarTransformsFromCars(snapshot.cars);
     } else if (snapshot && snapshot.selections) {
-      // fallback reconstruct via selections if cars missing (legacy)
-      const cars = [
+      const selectionCars: RidePlaybackSnapshot["cars"] = [
         snapshot.selections.front.car,
         snapshot.selections.middle.car,
         snapshot.selections.rear.car,
-      ].filter(Boolean) as unknown as {
-        position: import("@openvibecoaster/core").Vec3;
-        tangent: import("@openvibecoaster/core").Vec3;
-        normal: import("@openvibecoaster/core").Vec3;
-        binormal: import("@openvibecoaster/core").Vec3;
-      }[];
-      if (cars.length > 0) transforms = getCarTransformsFromCars(cars);
+      ].filter(
+        (c): c is RidePlaybackSnapshot["cars"][number] => c !== undefined,
+      );
+      if (selectionCars.length > 0)
+        transforms = getCarTransformsFromCars(selectionCars);
       else transforms = getCarTransforms(trackData, distance);
     } else {
       transforms = getCarTransforms(trackData, distance);
@@ -673,6 +719,12 @@ export function createRendererController(
     const reduced = options.reducedMotion ?? false;
     const deltaMs = options.deltaMs ?? 16;
     const snapshot = options.snapshot ?? null;
+    const needsFallback =
+      !snapshot ||
+      !snapshot.selections.front.position ||
+      !snapshot.selections.front.tangent;
+    cameraUsedFallback = needsFallback;
+    cameraFallbackReason = needsFallback ? CAMERA_FALLBACK_DIAGNOSTIC : null;
     if (trackData) {
       const state = getCameraState(
         cameraId,
@@ -879,14 +931,14 @@ export function createRendererController(
         }
       }
       return {
-        railColorHash:
-          lastRailColorHash ??
-          `${currentMetric}-${String(lastMetricAvailable)}`,
-        seamSignature: lastSeamSignature ?? `${String(seamInspectionEnabled)}`,
+        railColorHash: lastRailColorHash,
+        seamSignature: lastSeamSignature,
         highlightDistance,
-        trainWorldPositions: trainPositions,
+        trainWorldPositions: trainPositions.length > 0 ? trainPositions : null,
         metric: currentMetric,
         metricAvailable: lastMetricAvailable!,
+        cameraUsedFallback,
+        cameraFallbackReason,
       };
     },
   };

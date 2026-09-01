@@ -31,7 +31,13 @@ import {
   type DirectedGateInput,
 } from "./directedInput.js";
 import { buildDirectedInputFromDom } from "./app/directed.js";
-import { deriveMetricData, getMetricSeries } from "./app/metricData.js";
+import {
+  deriveMetricData,
+  deriveSeatMetricData,
+  getMetricSeries,
+  getSeatCarIndex,
+  getSeatMetricSeries,
+} from "./app/metricData.js";
 import { downloadCoasterFile } from "./app/download.js";
 import { resolveZoneMask } from "./app/zone.js";
 import { downgradeIfNoTrack } from "./app/downgrade.js";
@@ -821,50 +827,86 @@ function updatePlaybackDomFromSnapshot(
   }
 }
 
-function getSeatCarIndex(seatId: string, carCount: number): number {
-  if (seatId === "front") return 0;
-  if (seatId === "rear") return Math.max(0, carCount - 1);
-  return Math.floor(Math.max(0, carCount - 1) / 2);
-}
-
 function updateSeatTelemetryFromSnapshot(snap: RidePlaybackSnapshot): void {
   const el = document.getElementById("seat-telemetry") as HTMLElement | null;
   if (!el) return;
   const carCount = snap.carCount;
   const seatId = snap.selectedSeat;
   const carIndex = getSeatCarIndex(seatId, carCount);
-  // Resolve per-car telemetry: prefer car object, fallback to snapshot telemetry perCar
-  const selection = snap.selections[seatId as keyof typeof snap.selections];
-  const car = selection?.car ?? snap.cars[carIndex];
-  const perCarTelemetry =
-    car?.telemetry ?? snap.telemetry?.perCar[carIndex] ?? snap.telemetry;
-  const verticalG = perCarTelemetry?.verticalG ?? 0;
-  const lateralG = perCarTelemetry?.lateralG ?? 0;
-  const longitudinalG = perCarTelemetry?.longitudinalG ?? 0;
-  const jerkVec = perCarTelemetry?.jerkMps3 ?? ([0, 0, 0] as const);
-  const jerkMag = Math.hypot(jerkVec[0] ?? 0, jerkVec[1] ?? 0, jerkVec[2] ?? 0);
-  const rollRate = perCarTelemetry?.rollRateRadPerSec ?? 0;
-  const bank = perCarTelemetry?.bankRad ?? 0;
-  const heightY = car?.position?.[1] ?? selection?.position?.[1] ?? 0;
+  const selections = snap.selections;
+  const selection =
+    seatId === "front"
+      ? selections.front
+      : seatId === "rear"
+        ? selections.rear
+        : selections.middle;
+  const car = selection.car ?? snap.cars[carIndex];
+  const perCarTelemetry = car?.telemetry;
+  const verticalG = perCarTelemetry?.verticalG;
+  const lateralG = perCarTelemetry?.lateralG;
+  const longitudinalG = perCarTelemetry?.longitudinalG;
+  const jerkVec = perCarTelemetry?.jerkMps3;
+  const rollRate = perCarTelemetry?.rollRateRadPerSec;
+  const bank = perCarTelemetry?.bankRad;
+  const heightY = car?.position?.[1] ?? selection.position?.[1] ?? 0;
   const label = seatId.charAt(0).toUpperCase() + seatId.slice(1);
   const carNumber = carIndex + 1;
   const speedTrainWide = snap.speedMps;
   const energyTrainWide = snap.telemetry?.energyErrorJ ?? 0;
   const launchTrainWide = snap.telemetry?.launchActivity ? "active" : "idle";
   const brakeTrainWide = snap.telemetry?.brakeActivity ? "active" : "idle";
+  const hasPerCar = perCarTelemetry !== undefined;
   el.setAttribute("data-car-index", String(carIndex));
   el.setAttribute("data-car-count", String(carCount));
-  el.setAttribute("data-vertical-g", String(verticalG));
-  el.setAttribute("data-lateral-g", String(lateralG));
-  el.setAttribute("data-longitudinal-g", String(longitudinalG));
-  el.setAttribute("data-jerk", String(jerkMag));
-  el.setAttribute("data-jerk-x", String(jerkVec[0] ?? 0));
-  el.setAttribute("data-jerk-y", String(jerkVec[1] ?? 0));
-  el.setAttribute("data-jerk-z", String(jerkVec[2] ?? 0));
-  el.setAttribute("data-roll-rate", String(rollRate));
-  el.setAttribute("data-bank", String(bank));
+  el.setAttribute(
+    "data-vertical-g",
+    hasPerCar && verticalG !== undefined ? String(verticalG) : "unavailable",
+  );
+  el.setAttribute(
+    "data-lateral-g",
+    hasPerCar && lateralG !== undefined ? String(lateralG) : "unavailable",
+  );
+  el.setAttribute(
+    "data-longitudinal-g",
+    hasPerCar && longitudinalG !== undefined
+      ? String(longitudinalG)
+      : "unavailable",
+  );
+  if (hasPerCar && jerkVec) {
+    const jerkMag = Math.hypot(
+      jerkVec[0] ?? 0,
+      jerkVec[1] ?? 0,
+      jerkVec[2] ?? 0,
+    );
+    el.setAttribute("data-jerk", String(jerkMag));
+    el.setAttribute("data-jerk-x", String(jerkVec[0] ?? 0));
+    el.setAttribute("data-jerk-y", String(jerkVec[1] ?? 0));
+    el.setAttribute("data-jerk-z", String(jerkVec[2] ?? 0));
+  } else {
+    el.setAttribute("data-jerk", "unavailable");
+    el.setAttribute("data-jerk-x", "unavailable");
+    el.setAttribute("data-jerk-y", "unavailable");
+    el.setAttribute("data-jerk-z", "unavailable");
+  }
+  el.setAttribute(
+    "data-roll-rate",
+    hasPerCar && rollRate !== undefined ? String(rollRate) : "unavailable",
+  );
+  el.setAttribute(
+    "data-bank",
+    hasPerCar && bank !== undefined ? String(bank) : "unavailable",
+  );
   el.setAttribute("data-height", String(heightY));
-  el.textContent = `Seat ${label} — car ${carNumber}/${carCount} — vertical ${verticalG.toFixed(2)} g, lateral ${lateralG.toFixed(2)} g, longitudinal ${longitudinalG.toFixed(2)} g, jerk ${jerkMag.toFixed(2)} m/s³ (x ${(jerkVec[0] ?? 0).toFixed(2)} y ${(jerkVec[1] ?? 0).toFixed(2)} z ${(jerkVec[2] ?? 0).toFixed(2)}), roll ${rollRate.toFixed(3)} rad/s, bank ${((bank * 180) / Math.PI).toFixed(1)}° (${bank.toFixed(3)} rad), height ${heightY.toFixed(1)} m — train-wide: speed ${speedTrainWide.toFixed(1)} m/s, energy ${energyTrainWide.toFixed(1)} J, LSM ${launchTrainWide}, brake ${brakeTrainWide}, clearance train-wide`;
+  if (!hasPerCar) {
+    el.textContent = `Seat ${label} — car ${carNumber}/${carCount} — per-car telemetry unavailable — train-wide: speed ${speedTrainWide.toFixed(1)} m/s, energy ${energyTrainWide.toFixed(1)} J, LSM ${launchTrainWide}, brake ${brakeTrainWide}, clearance train-wide`;
+    return;
+  }
+  const jerkMag2 = Math.hypot(
+    jerkVec![0] ?? 0,
+    jerkVec![1] ?? 0,
+    jerkVec![2] ?? 0,
+  );
+  el.textContent = `Seat ${label} — car ${carNumber}/${carCount} — vertical ${verticalG!.toFixed(2)} g, lateral ${lateralG!.toFixed(2)} g, longitudinal ${longitudinalG!.toFixed(2)} g, jerk ${jerkMag2.toFixed(2)} m/s³ (x ${(jerkVec![0] ?? 0).toFixed(2)} y ${(jerkVec![1] ?? 0).toFixed(2)} z ${(jerkVec![2] ?? 0).toFixed(2)}), roll ${rollRate!.toFixed(3)} rad/s, bank ${((bank! * 180) / Math.PI).toFixed(1)}° (${bank!.toFixed(3)} rad), height ${heightY.toFixed(1)} m — train-wide: speed ${speedTrainWide.toFixed(1)} m/s, energy ${energyTrainWide.toFixed(1)} J, LSM ${launchTrainWide}, brake ${brakeTrainWide}, clearance train-wide`;
 }
 
 function updateMetricForSeat(snap: RidePlaybackSnapshot): void {
@@ -872,102 +914,28 @@ function updateMetricForSeat(snap: RidePlaybackSnapshot): void {
   if (!auth) return;
   const seatId = snap.selectedSeat;
   if (state.metric === "gForce" || state.metric === "rollRate") {
-    const metricData = deriveMetricDataForSeatProxy(state.metric, auth, seatId);
+    const metricData = deriveSeatMetricData(state.metric, auth, seatId);
     if (metricData) {
-      lifecycle.setMetric(
-        state.metric,
-        metricData as unknown as import("./render/metricContract.js").MetricData,
-      );
-      const series = getMetricSeries(
-        state.metric,
-        auth.track,
-        auth.timeline,
-        auth.clearanceM ?? null,
-      );
+      lifecycle.setMetric(state.metric, metricData);
+      const series = getSeatMetricSeries(state.metric, auth, seatId);
       drawTimelineGraph(telemetryGraph, series, snap.sampleIndex);
+      return;
     }
+    // unavailable per-car: show unavailable series and clear rail colors?
+    const series = getSeatMetricSeries(state.metric, auth, seatId);
+    drawTimelineGraph(telemetryGraph, series, snap.sampleIndex);
+    // do not fabricate head series
+    lifecycle.setMetric(state.metric, undefined);
+    return;
   }
-}
-
-function deriveMetricDataForSeatProxy(
-  metric: import("./viewState.js").MetricId,
-  result: import("./experienceController.js").AuthoritativeExperienceResult,
-  seatId: string,
-): import("./render/metricContract.js").MetricData | undefined {
-  // Inline per-car resampling without importing new module at top to avoid circular
-  const carCount = result.timeline.carCount;
-  const carIndex = getSeatCarIndex(seatId, carCount);
-  const trackDistances = result.track.distances;
-  const timeline = result.timeline;
-  if (metric === "rollRate") {
-    const perCar = timeline.perCarRollRateRadPerSec;
-    if (perCar.length === timeline.length * carCount) {
-      const values: number[] = [];
-      for (let i = 0; i < timeline.length; i++)
-        values.push(perCar[i * carCount + carIndex] ?? 0);
-      // resample onto track distances
-      const distances = Array.from(timeline.headDistanceM);
-      const resampled = new Float64Array(trackDistances.length);
-      let ti = 0;
-      for (let i = 0; i < trackDistances.length; i++) {
-        const d = trackDistances[i]!;
-        while (ti + 1 < distances.length && distances[ti + 1]! < d) ti++;
-        if (ti + 1 >= distances.length)
-          resampled[i] = values[values.length - 1]!;
-        else if (distances[ti]! === d) resampled[i] = values[ti]!;
-        else {
-          const d0 = distances[ti]!;
-          const d1 = distances[ti + 1]!;
-          const v0 = values[ti]!;
-          const v1 = values[ti + 1]!;
-          const t = d1 === d0 ? 0 : (d - d0) / (d1 - d0);
-          resampled[i] = v0 + (v1 - v0) * t;
-        }
-      }
-      return {
-        rollRate: resampled,
-      } as unknown as import("./render/metricContract.js").MetricData;
-    }
-  } else if (metric === "gForce") {
-    const perLat = timeline.perCarLateralG;
-    const perVert = timeline.perCarVerticalG;
-    const perLong = timeline.perCarLongitudinalG;
-    if (
-      perLat.length === timeline.length * carCount &&
-      perVert.length === timeline.length * carCount &&
-      perLong.length === timeline.length * carCount
-    ) {
-      const values: number[] = [];
-      for (let i = 0; i < timeline.length; i++) {
-        const idx = i * carCount + carIndex;
-        values.push(
-          Math.hypot(perVert[idx] ?? 0, perLat[idx] ?? 0, perLong[idx] ?? 0),
-        );
-      }
-      const distances = Array.from(timeline.headDistanceM);
-      const resampled = new Float64Array(trackDistances.length);
-      let ti = 0;
-      for (let i = 0; i < trackDistances.length; i++) {
-        const d = trackDistances[i]!;
-        while (ti + 1 < distances.length && distances[ti + 1]! < d) ti++;
-        if (ti + 1 >= distances.length)
-          resampled[i] = values[values.length - 1]!;
-        else if (distances[ti]! === d) resampled[i] = values[ti]!;
-        else {
-          const d0 = distances[ti]!;
-          const d1 = distances[ti + 1]!;
-          const v0 = values[ti]!;
-          const v1 = values[ti + 1]!;
-          const t = d1 === d0 ? 0 : (d - d0) / (d1 - d0);
-          resampled[i] = v0 + (v1 - v0) * t;
-        }
-      }
-      return {
-        gForce: resampled,
-      } as unknown as import("./render/metricContract.js").MetricData;
-    }
-  }
-  return undefined;
+  // train-wide metrics
+  const series = getMetricSeries(
+    state.metric,
+    auth.track,
+    auth.timeline,
+    auth.clearanceM ?? null,
+  );
+  drawTimelineGraph(telemetryGraph, series, snap.sampleIndex);
 }
 
 function updateAudioStatus(): void {
@@ -1395,7 +1363,13 @@ unsubscribeController = controller.subscribe((expState) => {
     const result = expState.result;
     const track = result.track;
     const timeline = result.timeline;
-    const metricData = deriveMetricData(state.metric, result);
+    const initialSeat: import("./ride/controller.js").RideSelectionId = "front";
+    const seatMetricAvailable =
+      state.metric === "gForce" || state.metric === "rollRate";
+    const metricData = seatMetricAvailable
+      ? (deriveSeatMetricData(state.metric, result, initialSeat) ??
+        deriveMetricData(state.metric, result))
+      : deriveMetricData(state.metric, result);
 
     // Attach track through lifecycle — handle WebGL failure queuing
     try {
@@ -1423,13 +1397,17 @@ unsubscribeController = controller.subscribe((expState) => {
     renderMetricLegend(state.metric);
     lifecycle.setMetric(state.metric, metricData);
 
-    const series = getMetricSeries(
-      state.metric,
-      track,
-      timeline,
-      result.clearanceM ?? null,
-    );
-    drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());
+    {
+      const series = seatMetricAvailable
+        ? getSeatMetricSeries(state.metric, result, initialSeat)
+        : getMetricSeries(
+            state.metric,
+            track,
+            timeline,
+            result.clearanceM ?? null,
+          );
+      drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());
+    }
 
     seamInspectBtn.setAttribute(
       "aria-pressed",
@@ -1767,16 +1745,31 @@ metricSelect.addEventListener("change", () => {
   state.metric = selectMetric(metricSelect.value as MetricId, state.metric);
   const authoritative = getAuthoritativeResult();
   if (authoritative) {
-    const series = getMetricSeries(
-      state.metric,
-      authoritative.track,
-      authoritative.timeline,
-      authoritative.clearanceM ?? null,
-    );
-    renderMetricLegend(state.metric);
-    drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());
-    const metricData = deriveMetricData(state.metric, authoritative);
-    lifecycle.setMetric(state.metric, metricData);
+    const seatId = ridePlayback?.getSnapshot().selectedSeat ?? "front";
+    const isSeatMetric =
+      state.metric === "gForce" || state.metric === "rollRate";
+    if (isSeatMetric) {
+      const metricData = deriveSeatMetricData(
+        state.metric,
+        authoritative,
+        seatId,
+      );
+      const series = getSeatMetricSeries(state.metric, authoritative, seatId);
+      renderMetricLegend(state.metric);
+      drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());
+      lifecycle.setMetric(state.metric, metricData);
+    } else {
+      const series = getMetricSeries(
+        state.metric,
+        authoritative.track,
+        authoritative.timeline,
+        authoritative.clearanceM ?? null,
+      );
+      renderMetricLegend(state.metric);
+      drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());
+      const metricData = deriveMetricData(state.metric, authoritative);
+      lifecycle.setMetric(state.metric, metricData);
+    }
   } else {
     lifecycle.setMetric(state.metric);
     renderMetricLegend(state.metric);
@@ -1787,10 +1780,8 @@ metricSelect.addEventListener("change", () => {
 seatSelect.addEventListener("change", () => {
   const opt = getSeatOptionByValue(seatSelect.value);
   if (!opt) {
-    const fallback = getSeatValueFromSnapshot(
-      ridePlayback?.getSnapshot() ??
-        ({ selectedSeat: "front" } as unknown as RidePlaybackSnapshot),
-    );
+    const snap = ridePlayback?.getSnapshot();
+    const fallback = snap ? getSeatValueFromSnapshot(snap) : "front";
     seatSelect.value = fallback;
     return;
   }

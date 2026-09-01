@@ -42,6 +42,7 @@ export interface GetCameraOptions {
   deltaMs?: number | undefined;
   chaseDistance?: number | undefined;
   chaseHeight?: number | undefined;
+  snapshot?: RidePlaybackSnapshot | null | undefined;
 }
 
 export function getCarIndexForCamera(
@@ -53,20 +54,6 @@ export function getCarIndexForCamera(
   if (cameraId === "middle")
     return carCount > 0 ? Math.floor((carCount - 1) / 2) : null;
   return null;
-}
-
-let lastFallbackWarned = false;
-function markFallback(reason: string): void {
-  if (lastFallbackWarned) return;
-  lastFallbackWarned = true;
-  try {
-    const g = globalThis as unknown as {
-      __vibecoasterCameraFallback?: string;
-    };
-    g.__vibecoasterCameraFallback = reason;
-  } catch {
-    // ignore
-  }
 }
 
 function samplePosition(
@@ -100,15 +87,20 @@ function resolveSeatPose(
           ? "middle"
           : null;
   if (!selId) return null;
-  const sel = snapshot.selections[selId as keyof typeof snapshot.selections];
+  const selections = snapshot.selections;
+  const sel =
+    selId === "front"
+      ? selections.front
+      : selId === "rear"
+        ? selections.rear
+        : selections.middle;
   if (!sel || !sel.position || !sel.tangent || !sel.normal || !sel.binormal)
     return null;
-  // orthonormality is validated by ride controller; use directly
   return {
-    pos: sel.position as Vec3,
-    tangent: sel.tangent as Vec3,
-    normal: sel.normal as Vec3,
-    binormal: sel.binormal as Vec3,
+    pos: sel.position,
+    tangent: sel.tangent,
+    normal: sel.normal,
+    binormal: sel.binormal,
   };
 }
 
@@ -119,23 +111,21 @@ function resolveHeadPose(
 ): { pos: Vec3; tangent: Vec3; normal: Vec3; binormal: Vec3 } {
   const front = resolveSeatPose("front", snapshot);
   if (front) return front;
-  // fallback for legacy/empty compact timeline
-  markFallback(CAMERA_FALLBACK_DIAGNOSTIC);
   return samplePosition(data, fallbackDistance);
 }
 
 function add(a: Vec3, b: Vec3): Vec3 {
-  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]] as unknown as Vec3;
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]] as Vec3;
 }
 function scale(v: Vec3, s: number): Vec3 {
-  return [v[0] * s, v[1] * s, v[2] * s] as unknown as Vec3;
+  return [v[0] * s, v[1] * s, v[2] * s] as Vec3;
 }
 function lerpVec(a: Vec3, b: Vec3, t: number): Vec3 {
   return [
     a[0] * (1 - t) + b[0] * t,
     a[1] * (1 - t) + b[1] * t,
     a[2] * (1 - t) + b[2] * t,
-  ] as unknown as Vec3;
+  ] as Vec3;
 }
 function lerp(a: number, b: number, t: number): number {
   return a * (1 - t) + b * t;
@@ -146,11 +136,10 @@ export function getCameraState(
   data: CompiledTrackData,
   distance: number,
   speedMps: number,
-  options: GetCameraOptions & { snapshot?: RidePlaybackSnapshot | null } = {},
+  options: GetCameraOptions = {},
 ): CameraState {
   const reduced = options.reducedMotion ?? false;
-  const snapshot = (options as { snapshot?: RidePlaybackSnapshot | null })
-    .snapshot;
+  const snapshot = options.snapshot;
   // Signed speed remains authoritative; validate finite
   const effectiveSpeed = Number.isFinite(speedMps) ? speedMps : 0;
   const fov = clampFovForSpeed(effectiveSpeed);
@@ -181,8 +170,6 @@ export function getCameraState(
         rawTarget = add(pose.pos, scale(pose.tangent, 20));
         break;
       }
-      // fallback for validated legacy/empty compact timeline
-      markFallback(CAMERA_FALLBACK_DIAGNOSTIC);
       {
         const s = samplePosition(data, distance);
         const eye =
@@ -207,7 +194,6 @@ export function getCameraState(
         rawTarget = add(head.pos, scale(head.tangent, 6));
         break;
       }
-      markFallback(CAMERA_FALLBACK_DIAGNOSTIC);
       {
         const s0 = samplePosition(data, distance);
         const sBehind = samplePosition(data, Math.max(0, distance - chaseDist));
@@ -229,12 +215,11 @@ export function getCameraState(
           Math.cos(angle) * orbitRadius,
           14,
           Math.sin(angle) * orbitRadius,
-        ] as unknown as Vec3;
+        ] as Vec3;
         rawPos = add(head.pos, orbitOffset);
         rawTarget = add(head.pos, scale(head.normal, 0.6));
         break;
       }
-      markFallback(CAMERA_FALLBACK_DIAGNOSTIC);
       {
         const s = samplePosition(data, distance);
         const orbitRadius = 32;
@@ -243,7 +228,7 @@ export function getCameraState(
           Math.cos(angle) * orbitRadius,
           14,
           Math.sin(angle) * orbitRadius,
-        ] as unknown as Vec3;
+        ] as Vec3;
         rawPos = add(s.pos, orbitOffset);
         rawTarget = add(s.pos, scale(s.normal, 0.6));
         break;

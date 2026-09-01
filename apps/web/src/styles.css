@@ -1300,6 +1300,35 @@ body.reduced-motion * {
   height: 100% !important;
 }
 
+.audio-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #0f141d;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  min-width: 0;
+}
+
+.seat-telemetry {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #0f141d;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
 .render-metrics {
   position: absolute;
   left: 8px;

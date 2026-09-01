@@ -68,7 +68,7 @@ export function getCarTransforms(
       sample.position[0] + sample.normal[0] * upOffset,
       sample.position[1] + sample.normal[1] * upOffset,
       sample.position[2] + sample.normal[2] * upOffset,
-    ] as unknown as Vec3;
+    ] as Vec3;
     const quat = quatFromBasis(sample.tangent, sample.normal, sample.binormal);
     result.push({ position: pos, quaternion: quat });
   }
@@ -90,7 +90,7 @@ export function getCarTransformsFromCars(
       car.position[0] + car.normal[0] * upOffset,
       car.position[1] + car.normal[1] * upOffset,
       car.position[2] + car.normal[2] * upOffset,
-    ] as unknown as Vec3;
+    ] as Vec3;
     const quat = quatFromBasis(car.tangent, car.normal, car.binormal);
     result.push({ position: pos, quaternion: quat });
   }
