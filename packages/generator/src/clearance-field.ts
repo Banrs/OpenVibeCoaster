@@ -252,8 +252,9 @@ function evaluateTerrainSubinterval(
     const sd = env.signedDistance(p);
     if (!Number.isFinite(sd))
       throw new RangeError("signedDistance must be finite");
-    if (sd < bestUpper) {
-      bestUpper = sd;
+    const candidate = nextUp(sd);
+    if (candidate < bestUpper) {
+      bestUpper = candidate;
       bestPos = p;
     }
   }

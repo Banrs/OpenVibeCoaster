@@ -8,6 +8,8 @@ import {
 } from "@openvibecoaster/core";
 import { computeClearanceField } from "./clearance-field.js";
 
+// Sphere SDF helper: used only to count proof-elided SDF calls and verify
+// source/cap vs terrain — not for exact-value threshold assertions.
 const sphereSignedDistance = (p: Vec3): number =>
   Math.hypot(p[0], p[1], p[2]) - 1;
 
