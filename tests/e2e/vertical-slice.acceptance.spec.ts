@@ -684,9 +684,7 @@ test.describe("vertical-slice – directed generation", () => {
         (c) => c.id === "required-stall",
       ) as Record<string, unknown>;
       expect(stallC.target).toBe("stall");
-      expect(["required-stall", "required-element"]).toContain(
-        stallC.kind as string,
-      );
+      expect(stallC.kind).toBe("required-element");
       const terrainC = constraints.find(
         (c) => c.id === "terrain-profile",
       ) as Record<string, unknown>;
