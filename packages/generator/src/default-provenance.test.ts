@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   compileCoasterFile,
   createDesignIntentV1,
   parseEngineeringLimitsProfile,
 } from "@openvibecoaster/core";
-import { generateCoaster, regenerateCoasterFileLocal, regenerateLocal } from "./pipeline";
+import {
+  generateCoaster,
+  regenerateCoasterFileLocal,
+  regenerateLocal,
+} from "./pipeline";
 import rawProfile from "../../../data/profiles/engineering-limits-v1.json";
 
 const testSeams = parseEngineeringLimitsProfile(rawProfile).seams;
@@ -35,13 +39,85 @@ const baseIntent = createDesignIntentV1({
 });
 
 describe("default bundled provenance ids", () => {
+  let defaultResult: ReturnType<typeof generateCoaster>;
+
+  beforeAll(() => {
+    defaultResult = generateCoaster(baseIntent);
+  });
+
   it("embeds bundled defaults when no explicit provenance is supplied", () => {
-    const result = generateCoaster(baseIntent);
-    expect(result.file.profileVersion).toBe("project-engineering-limits-v1");
-    expect(result.file.researchSnapshotIds).toEqual(["records-2026-08-29"]);
-    expect(result.file.researchSnapshotIds).not.toBe(result.options.researchSnapshotIds);
-    expect(result.options.profileVersion).toBeUndefined();
-    expect(result.options.researchSnapshotIds).toBeUndefined();
+    expect(defaultResult.file.profileVersion).toBe(
+      "project-engineering-limits-v1",
+    );
+    expect(defaultResult.file.researchSnapshotIds).toEqual([
+      "records-2026-08-29",
+    ]);
+    expect(Object.isFrozen(defaultResult.file.researchSnapshotIds)).toBe(true);
+    expect(defaultResult.serializedFile).toContain(
+      "project-engineering-limits-v1",
+    );
+    expect(defaultResult.serializedFile).toContain("records-2026-08-29");
+    expect(defaultResult.options.profileVersion).toBeUndefined();
+    expect(defaultResult.options.researchSnapshotIds).toBeUndefined();
+  });
+
+  it("round-trips defaults through compileCoasterFile serialization", () => {
+    const loaded = compileCoasterFile(defaultResult.serializedFile);
+    expect(loaded.file.profileVersion).toBe("project-engineering-limits-v1");
+    expect(loaded.file.researchSnapshotIds).toEqual(["records-2026-08-29"]);
+    const reserialized = compileCoasterFile(loaded.file);
+    expect(reserialized.file.profileVersion).toBe(
+      "project-engineering-limits-v1",
+    );
+    expect(reserialized.file.researchSnapshotIds).toEqual([
+      "records-2026-08-29",
+    ]);
+    expect(reserialized.track.checksum).toBe(
+      defaultResult.file.compiledDataChecksum,
+    );
+  });
+
+  it("preserves defaults through local regeneration entry points", () => {
+    const local = regenerateLocal(defaultResult, "stall-1", {
+      seams: testSeams,
+      referenceSpeed: 44,
+    });
+    expect(local.generation.file.profileVersion).toBe(
+      "project-engineering-limits-v1",
+    );
+    expect(local.generation.file.researchSnapshotIds).toEqual([
+      "records-2026-08-29",
+    ]);
+    expect(
+      compileCoasterFile(local.generation.serializedFile).file.profileVersion,
+    ).toBe("project-engineering-limits-v1");
+    expect(
+      compileCoasterFile(local.generation.serializedFile).file
+        .researchSnapshotIds,
+    ).toEqual(["records-2026-08-29"]);
+
+    const fileLocal = regenerateCoasterFileLocal(
+      defaultResult.file,
+      "stall-1",
+      {
+        seams: testSeams,
+        referenceSpeed: 44,
+      },
+    );
+    expect(fileLocal.generation.file.profileVersion).toBe(
+      "project-engineering-limits-v1",
+    );
+    expect(fileLocal.generation.file.researchSnapshotIds).toEqual([
+      "records-2026-08-29",
+    ]);
+    expect(
+      compileCoasterFile(fileLocal.generation.serializedFile).file
+        .profileVersion,
+    ).toBe("project-engineering-limits-v1");
+    expect(
+      compileCoasterFile(fileLocal.generation.serializedFile).file
+        .researchSnapshotIds,
+    ).toEqual(["records-2026-08-29"]);
   });
 
   it("allows explicit caller provenance to override defaults immutably", () => {
@@ -59,72 +135,37 @@ describe("default bundled provenance ids", () => {
     callerIds.push("mutated");
     expect(result.file.researchSnapshotIds).toEqual(["custom-snapshot"]);
     expect(result.options.researchSnapshotIds).toEqual(["custom-snapshot"]);
-  });
 
-  it("round-trips defaults through compileCoasterFile serialization", () => {
-    const result = generateCoaster(baseIntent);
-    const serialized = result.serializedFile;
-    const loaded = compileCoasterFile(serialized);
-    expect(loaded.file.profileVersion).toBe("project-engineering-limits-v1");
-    expect(loaded.file.researchSnapshotIds).toEqual(["records-2026-08-29"]);
-    const reserialized = compileCoasterFile(loaded.file);
-    expect(reserialized.file.profileVersion).toBe("project-engineering-limits-v1");
-    expect(reserialized.file.researchSnapshotIds).toEqual(["records-2026-08-29"]);
-    expect(reserialized.track.checksum).toBe(result.file.compiledDataChecksum);
-  });
-
-  it("preserves defaults through regenerateLocal", () => {
-    const result = generateCoaster(baseIntent);
     const local = regenerateLocal(result, "stall-1", {
       seams: testSeams,
       referenceSpeed: 44,
     });
-    expect(local.generation.file.profileVersion).toBe(
-      "project-engineering-limits-v1",
-    );
+    expect(local.generation.file.profileVersion).toBe("custom-profile-v9");
     expect(local.generation.file.researchSnapshotIds).toEqual([
-      "records-2026-08-29",
+      "custom-snapshot",
     ]);
-    const loaded = compileCoasterFile(local.generation.serializedFile);
-    expect(loaded.file.profileVersion).toBe("project-engineering-limits-v1");
-    expect(loaded.file.researchSnapshotIds).toEqual(["records-2026-08-29"]);
-  });
-
-  it("preserves defaults through regenerateCoasterFileLocal", () => {
-    const result = generateCoaster(baseIntent);
-    const local = regenerateCoasterFileLocal(result.file, "stall-1", {
-      seams: testSeams,
-      referenceSpeed: 44,
-    });
-    expect(local.generation.file.profileVersion).toBe(
-      "project-engineering-limits-v1",
-    );
-    expect(local.generation.file.researchSnapshotIds).toEqual([
-      "records-2026-08-29",
-    ]);
-    const loaded = compileCoasterFile(local.generation.serializedFile);
-    expect(loaded.file.profileVersion).toBe("project-engineering-limits-v1");
-    expect(loaded.file.researchSnapshotIds).toEqual(["records-2026-08-29"]);
-  });
-
-  it("preserves overridden ids through local regeneration", () => {
-    const result = generateCoaster(baseIntent, {
-      profileVersion: "owned-profile",
-      researchSnapshotIds: ["owned-snapshot"],
-    });
-    const local = regenerateLocal(result, "stall-1", {
-      seams: testSeams,
-      referenceSpeed: 44,
-    });
-    expect(local.generation.file.profileVersion).toBe("owned-profile");
-    expect(local.generation.file.researchSnapshotIds).toEqual(["owned-snapshot"]);
     const fileLocal = regenerateCoasterFileLocal(result.file, "stall-1", {
       seams: testSeams,
       referenceSpeed: 44,
     });
-    expect(fileLocal.generation.file.profileVersion).toBe("owned-profile");
+    expect(fileLocal.generation.file.profileVersion).toBe(
+      "custom-profile-v9",
+    );
     expect(fileLocal.generation.file.researchSnapshotIds).toEqual([
-      "owned-snapshot",
+      "custom-snapshot",
     ]);
+  });
+
+  it("allows explicit empty provenance to override defaults with empty array", () => {
+    const result = generateCoaster(baseIntent, {
+      researchSnapshotIds: [],
+    });
+    expect(result.file.researchSnapshotIds).toEqual([]);
+    expect(Object.isFrozen(result.file.researchSnapshotIds)).toBe(true);
+    expect(result.options.researchSnapshotIds).toEqual([]);
+    expect(Object.isFrozen(result.options.researchSnapshotIds)).toBe(true);
+    expect(result.serializedFile).not.toContain("records-2026-08-29");
+    const loaded = compileCoasterFile(result.serializedFile);
+    expect(loaded.file.researchSnapshotIds).toEqual([]);
   });
 });

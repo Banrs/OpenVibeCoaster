@@ -199,6 +199,8 @@ const createGenerationOperationCache = (): GenerationOperationCache => ({
 const canonicalIntentCopy = (intent: DesignIntentV1): DesignIntentV1 =>
   parseDesignIntentV1(serializeDesignIntentV1(intent));
 
+// Stored options are caller-owned inputs; effective default provenance is
+// embedded in the file (resolves apparent split authority).
 const ownedGenerationOptions = (
   options: GenerationOptions,
 ): StoredGenerationOptions => ({
