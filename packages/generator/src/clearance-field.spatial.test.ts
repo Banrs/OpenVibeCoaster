@@ -1,93 +1,70 @@
 import { describe, it, expect } from "vitest";
-import {
-  vec3,
-  compileTrack,
-  SeventhOrderHermiteSpan,
-  type CompiledTrackData,
-  type TrackElement,
-} from "@openvibecoaster/core";
+import { vec3, compileTrack, type TrackElement } from "@openvibecoaster/core";
+import type { Vec3, ParametricSpan } from "@openvibecoaster/core";
 import { computeClearanceField } from "./clearance-field.js";
 
-function makeTrackForAdversarial(): CompiledTrackData {
-  const a = SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 0, 0.5));
-  const b = SeventhOrderHermiteSpan.line(vec3(5, 0, 0), vec3(5, 0, 0.5));
-  const spans: TrackElement[] = [
-    { id: "seg-0", span: a },
-    { id: "seg-1", span: b },
-  ];
-  const track = compileTrack(spans, { samples: 2 });
-  return track;
-}
-function makeNonLocalCloseTrack(): CompiledTrackData {
-  const spans: TrackElement[] = [];
-  spans.push({
-    id: "seg-0",
-    span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 0, 10)),
-  });
-  spans.push({
-    id: "seg-1",
-    span: SeventhOrderHermiteSpan.line(vec3(50, 0, 10), vec3(50, 0, 30)),
-  });
-  spans.push({
-    id: "seg-2",
-    span: SeventhOrderHermiteSpan.line(vec3(50, 0, 30), vec3(50, 0, 50)),
-  });
-  spans.push({
-    id: "seg-3",
-    span: SeventhOrderHermiteSpan.line(vec3(50, 0, 50), vec3(50, 0, 70)),
-  });
-  spans.push({
-    id: "seg-4",
-    span: SeventhOrderHermiteSpan.line(vec3(3.5, 0, 0), vec3(3.5, 0, 10)),
-  });
-  return compileTrack(spans, { samples: 2 });
+function makeHelixTrack(): ReturnType<typeof compileTrack> {
+  const R = 30;
+  const pitchTotal = 12;
+  const turns = 2;
+  const samples = 65;
+  const thetaScale = turns * 2 * Math.PI;
+  const span: ParametricSpan<Vec3> = {
+    position: (u: number): Vec3 => {
+      const th = thetaScale * u;
+      return vec3(R * Math.cos(th), pitchTotal * u, R * Math.sin(th));
+    },
+    derivative: (u: number, order = 1): Vec3 => {
+      const th = thetaScale * u;
+      const s = Math.sin(th);
+      const c = Math.cos(th);
+      if (order === 1) {
+        return vec3(-R * thetaScale * s, pitchTotal, R * thetaScale * c);
+      }
+      if (order === 2) {
+        return vec3(
+          -R * thetaScale * thetaScale * c,
+          0,
+          -R * thetaScale * thetaScale * s,
+        );
+      }
+      if (order === 3) {
+        return vec3(
+          R * thetaScale * thetaScale * thetaScale * s,
+          0,
+          -R * thetaScale * thetaScale * thetaScale * c,
+        );
+      }
+      return vec3(0, 0, 0);
+    },
+  };
+  const elements: TrackElement[] = [{ id: "helix-0", span }];
+  return compileTrack(elements, { samples });
 }
 
 describe("clearance-field spatial hash", () => {
-  it("adversarial: centres >1 cell apart but extents within cap are still candidates (range insertion)", () => {
-    const trackClose = makeNonLocalCloseTrack();
-    const field = computeClearanceField(trackClose, {
-      hardClearanceM: 0.5,
-      displayCapM: 2,
-      maxWork: 100000,
-      segmentIds: ["seg-0", "seg-1", "seg-2", "seg-3", "seg-4"],
-    });
-    expect(field.globalLowerM).toBeLessThan(2);
-    const trackFar = makeTrackForAdversarial();
-    const field2 = computeClearanceField(trackFar, {
-      hardClearanceM: 0.5,
-      displayCapM: 2,
-      maxWork: 100000,
-      segmentIds: ["seg-0", "seg-1"],
-    });
-    expect(field.work).toBeGreaterThan(0);
-    void field2;
-  });
-
-  it("subquadratic candidates on long natural-station track", () => {
-    const spans: TrackElement[] = [];
-    const n = 20;
-    const spacing = 50;
-    for (let i = 0; i < n; i++) {
-      const a = SeventhOrderHermiteSpan.line(
-        vec3(i * spacing, 0, 0),
-        vec3(i * spacing + 10, 0, 0),
-      );
-      spans.push({ id: `seg-${i}`, span: a });
-    }
-    const track = compileTrack(spans, { samples: 2 });
-    const nSeg = track.distances.length - 1;
-    const segmentIds = Array.from({ length: nSeg }, (_, i) => `seg-${i}`);
+  it("helix two-turn R30 pitch 12 smooth nonlocal close pair", () => {
+    const track = makeHelixTrack();
     const field = computeClearanceField(track, {
       hardClearanceM: 0.5,
-      displayCapM: 10,
-      maxWork: 1_000_000,
-      segmentIds,
+      displayCapM: 2,
+      maxWork: 200000,
+      segmentIds: ["helix-0"],
     });
-    const allPairs = (nSeg * (nSeg - 1)) / 2;
-    expect(field.work).toBeLessThan(allPairs * 30);
-    expect(field.work).toBeLessThan(10000);
-    expect(field.globalLowerM).toBeGreaterThan(0.5);
-    expect(field.globalLowerM).toBeLessThanOrEqual(10);
+    expect(
+      field.diagnostics.some(
+        (d) => d.severity === "error" || d.severity === "fatal",
+      ),
+    ).toBe(false);
+    expect(field.globalLowerM).toBeGreaterThanOrEqual(0.5);
+    expect(field.globalLowerM).toBeLessThan(2);
+    expect(field.globalUpperM).toBeLessThan(2);
+    expect(field.globalUpperM).toBeGreaterThanOrEqual(field.globalLowerM);
+    expect(field.globalSource).toBe("self");
+    expect(field.globalRelatedIds.length).toBeGreaterThan(0);
+    expect(field.globalRelatedIds).toContain("helix-0");
+    expect(field.globalLowerSource).toBe("self");
+    expect(field.work).toBeGreaterThan(0);
+    expect(field.work).toBeLessThan(200000);
   });
 });

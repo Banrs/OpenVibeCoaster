@@ -1367,6 +1367,7 @@ interface CandidateEvaluation {
   readonly diagnostics: readonly Diagnostic[];
   readonly failedHardRequirementIds: ReadonlySet<string>;
   readonly track?: ReturnType<typeof compileTrack>;
+  readonly clearanceField?: import("./clearance-field.js").ClearanceField;
 }
 
 export type GenerationBenchmarkEvent =
@@ -1542,15 +1543,38 @@ const evaluateCandidate = (
         });
       }
     }
+  // Serialize to canonical spans so evaluation track exactly matches returned canonical track (no duplicate field)
+  const elementByIdForCandidate = new Map(
+    elements.map((e) => [e.id, e] as const),
+  );
+  const serializedForCandidate = spans.map((span) => {
+    const owner = ownerForSpan(span.id, elementByIdForCandidate);
+    const el = owner ? elementByIdForCandidate.get(owner) : undefined;
+    if (!el) throw new Error(`Missing semantic owner for span ${span.id}`);
+    const len =
+      typeof (el.parameters as Record<string, unknown>).length === "number"
+        ? ((el.parameters as Record<string, unknown>).length as number)
+        : (span.length ?? arcLength(span.span));
+    return serializeSolvedSpanV1(span, el.type, len);
+  });
+  const canonicalSpansForCandidate = serializedForCandidate.map(
+    reconstructSolvedSpan,
+  );
   let track: ReturnType<typeof compileTrack> | undefined;
-  if (intent.targets.some((target) => target.kind === "total-length")) {
-    try {
-      track = compileTrack(spans, { samples: options.samples ?? 128 });
-    } catch (error) {
-      diagnostics.push(toCompileFatalDiagnostic(error));
-      failedHardRequirementIds.add("track-compile");
-      track = undefined;
-    }
+  try {
+    if (options.samples !== undefined)
+      track = compileTrack(canonicalSpansForCandidate, {
+        samples: options.samples,
+      });
+    else
+      track = compileTrack(
+        canonicalSpansForCandidate,
+        CANONICAL_TRACK_COMPILE_OPTIONS,
+      );
+  } catch (error) {
+    diagnostics.push(toCompileFatalDiagnostic(error));
+    failedHardRequirementIds.add("track-compile");
+    track = undefined;
   }
   for (const target of intent.targets) {
     if (target.kind === "total-length" && track) {
@@ -1572,29 +1596,92 @@ const evaluateCandidate = (
       }
     }
   }
-  const hasHardFailure = diagnostics.some(
-    (diagnostic) =>
-      diagnostic.severity === "error" || diagnostic.severity === "fatal",
-  );
-  // Cheap candidate clearance must not use circumsphere band as proof of collision.
-  // Soft constraints never reject; hard 0.5/thresholds are authoritative via exactly-once final field.
-  // Use legacy validator only for proven centerline intersection (radius=0, clearance=0) or skip.
-  if (!hasHardFailure) {
-    const clearance = validateClearance(spans, options.environment, {
-      trainEnvelopeRadius: 0,
-      trackClearance: 0,
-      closed: isClosedChain(elements),
-    });
-    for (const item of clearance) {
-      if (item.code === "TRACK_CLEARANCE") {
-        // centerline intersection is hard failure for any hard constraint? Treat as hard requirement failure
-        for (const c of intent.constraints) {
-          if (c.kind === "track-clearance" && c.hard !== false)
-            failedHardRequirementIds.add(c.id);
-        }
+  // Authoritative clearance validation per candidate (before selection)
+  let clearanceField: import("./clearance-field.js").ClearanceField | undefined;
+  {
+    const explicitConstraintDescriptors: import("./clearance-field.js").ClearanceConstraintDescriptor[] =
+      [];
+    const explicitValues: number[] = [];
+    const hardValues: number[] = [];
+    const softValues: number[] = [];
+    const validationDiagnostics: Diagnostic[] = [];
+    for (const c of intent.constraints) {
+      if (c.kind !== "track-clearance") continue;
+      const v = (c.target ?? c.value) as unknown;
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+        validationDiagnostics.push({
+          code: "TRACK_CLEARANCE",
+          severity: "fatal",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: `track-clearance ${c.id} has invalid threshold ${String(v)}`,
+          relatedIds: [c.id],
+        });
+        if (c.hard !== false) failedHardRequirementIds.add(c.id);
+        continue;
       }
+      explicitValues.push(v as number);
+      const isHard = c.hard !== false;
+      if (isHard) hardValues.push(v as number);
+      else softValues.push(v as number);
+      explicitConstraintDescriptors.push({
+        id: c.id,
+        hard: isHard,
+        threshold: v as number,
+      });
     }
-    diagnostics.push(...clearance);
+    const hasPriorHardFailure = diagnostics.some(
+      (d) => d.severity === "error" || d.severity === "fatal",
+    );
+    if (validationDiagnostics.length > 0) {
+      diagnostics.push(...validationDiagnostics);
+    } else if (track && !hasPriorHardFailure) {
+      const displayCap = Math.max(10, 0.5, ...explicitValues);
+      const closed = isClosedChain(elements);
+      const segmentIds = canonicalSpansForCandidate.map((s) => s.id);
+      try {
+        observer?.("clearance:start");
+        const field = computeClearanceField(track, {
+          environment: options.environment,
+          closed,
+          hardClearanceM: 0.5,
+          explicitThresholds: hardValues,
+          softThresholds: softValues,
+          displayCapM: displayCap,
+          segmentIds,
+        });
+        observer?.("clearance:end");
+        clearanceField = field;
+        const projected = projectClearanceDiagnostics(
+          field,
+          explicitConstraintDescriptors,
+        );
+        diagnostics.push(...field.diagnostics, ...projected);
+        for (const desc of explicitConstraintDescriptors) {
+          if (!desc.hard) continue;
+          const hasFailure = projected.some(
+            (d) =>
+              d.relatedIds?.includes(desc.id) &&
+              (d.severity === "error" || d.severity === "fatal"),
+          );
+          if (hasFailure) failedHardRequirementIds.add(desc.id);
+        }
+      } catch (e) {
+        observer?.("clearance:end");
+        const msg = e instanceof Error ? e.message : String(e);
+        diagnostics.push({
+          code: "CLEARANCE_UNCERTIFIED",
+          severity: "fatal",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: msg,
+          relatedIds: [],
+        });
+        failedHardRequirementIds.add("clearance-compute");
+      }
+    } else if (!track) {
+      // track failed already, no field
+    } else if (hasPriorHardFailure) {
+      // Skip expensive clearance; relaxation rerun will compute after other hard constraint removed
+    }
   }
   const evaluation = {
     elements,
@@ -1604,6 +1691,7 @@ const evaluateCandidate = (
     diagnostics: sanitizeDiagnostics(diagnostics),
     failedHardRequirementIds,
     ...(track ? { track } : {}),
+    ...(clearanceField ? { clearanceField } : {}),
   };
   observer?.("validation:end");
   return evaluation;
@@ -1699,19 +1787,37 @@ const buildFileResult = (
   }
   let track: ReturnType<typeof compileTrack>;
   let compileDiagnostics: readonly Diagnostic[] = evaluation.diagnostics;
-  try {
-    track =
-      options.samples === undefined
-        ? canonicalTrack
-        : compileTrack(canonicalSpans, { samples: options.samples });
-  } catch (error) {
-    const diagnostic = toCompileFatalDiagnostic(error);
-    compileDiagnostics = Object.freeze([...evaluation.diagnostics, diagnostic]);
-    track = canonicalTrack;
+  let trackCompileFailed = false;
+  const reuseTrack = evaluation.track as
+    ReturnType<typeof compileTrack> | undefined;
+  const reuseField = evaluation.clearanceField as
+    import("./clearance-field.js").ClearanceField | undefined;
+  const canReuseTrack =
+    reuseTrack !== undefined &&
+    reuseField !== undefined &&
+    reuseField.track.checksum === reuseTrack.checksum &&
+    (options.samples === undefined
+      ? reuseTrack.checksum === canonicalTrack.checksum
+      : reuseTrack.checksum !== canonicalTrack.checksum);
+  // Reuse already-selected authoritative track if available; compile canonical once for checksum when needed
+  if (canReuseTrack) {
+    track = reuseTrack;
+  } else {
+    try {
+      track =
+        options.samples === undefined
+          ? canonicalTrack
+          : compileTrack(canonicalSpans, { samples: options.samples });
+    } catch (error) {
+      const diagnostic = toCompileFatalDiagnostic(error);
+      compileDiagnostics = Object.freeze([
+        ...evaluation.diagnostics,
+        diagnostic,
+      ]);
+      trackCompileFailed = true;
+      track = canonicalTrack;
+    }
   }
-  const hasCompileFatal = compileDiagnostics.some(
-    (d) => d.severity === "error" || d.severity === "fatal",
-  );
   observer?.("compilation:end");
   // Exactly one clearance field per final generation (owned runtime result)
   let clearanceField: import("./clearance-field.js").ClearanceField | undefined;
@@ -1749,38 +1855,53 @@ const buildFileResult = (
   // Build real span ids for honest diagnostics (stable, not surrogate element-N)
   const segmentIds = canonicalSpans.map((s) => s.id);
   const hasFatalNoField =
-    hasCompileFatal ||
+    trackCompileFailed ||
     validationDiagnostics.some((d) => d.severity === "fatal");
   if (!hasFatalNoField) {
-    observer?.("clearance:start");
-    try {
-      clearanceField = computeClearanceField(track, {
-        environment: options.environment,
-        closed: isClosedChain(evaluation.elements),
-        hardClearanceM: 0.5,
-        explicitThresholds: hardValues,
-        softThresholds: softValues,
-        displayCapM: displayCap,
-        segmentIds,
-      });
-    } catch (e) {
+    const canReuseField =
+      reuseField !== undefined &&
+      reuseTrack !== undefined &&
+      reuseTrack.checksum === track.checksum &&
+      reuseField.track.checksum === reuseTrack.checksum;
+    if (canReuseField) {
+      clearanceField = reuseField;
+      fieldDiagnostics = Object.freeze([...validationDiagnostics]);
+    } else {
+      observer?.("clearance:start");
+      try {
+        clearanceField = computeClearanceField(track, {
+          environment: options.environment,
+          closed: isClosedChain(evaluation.elements),
+          hardClearanceM: 0.5,
+          explicitThresholds: hardValues,
+          softThresholds: softValues,
+          displayCapM: displayCap,
+          segmentIds,
+        });
+      } catch (e) {
+        observer?.("clearance:end");
+        throw e;
+      }
       observer?.("clearance:end");
-      throw e;
+      const projected = projectClearanceDiagnostics(
+        clearanceField,
+        explicitConstraintDescriptors,
+      );
+      fieldDiagnostics = Object.freeze([
+        ...clearanceField.diagnostics,
+        ...projected,
+        ...validationDiagnostics,
+      ]);
     }
-    observer?.("clearance:end");
-    const projected = projectClearanceDiagnostics(
-      clearanceField,
-      explicitConstraintDescriptors,
-    );
-    fieldDiagnostics = Object.freeze([
-      ...clearanceField.diagnostics,
-      ...projected,
-      ...validationDiagnostics,
-    ]);
   } else {
-    fieldDiagnostics = Object.freeze([...validationDiagnostics]);
-    // No field computed for infeasible compilation; explicitly absent rather than invented
-    clearanceField = undefined;
+    // Keep already-owned failed field whenever compilation succeeded, with exact evidence
+    if (reuseField !== undefined && !trackCompileFailed) {
+      clearanceField = reuseField;
+      fieldDiagnostics = Object.freeze([...validationDiagnostics]);
+    } else {
+      fieldDiagnostics = Object.freeze([...validationDiagnostics]);
+      clearanceField = undefined;
+    }
   }
   const mergedDiagnostics = Object.freeze([
     ...compileDiagnostics,
@@ -2922,6 +3043,7 @@ export const regenerateLocal = (
     ...regeneratedOwnerIds,
   ]);
   let lastDiagnostics: readonly Diagnostic[] = [];
+  let lastAttemptedGeneration: GenerationResult | undefined;
   while (queue.length > 0) {
     const [localStart, localEnd] = queue.shift()!;
     const key = `${localStart}:${localEnd}`;
@@ -2954,7 +3076,7 @@ export const regenerateLocal = (
       }
       const localByOwner = new Map<string, SolvedSpan[]>();
       const changedElementById = new Map(
-        changedElements.map((element) => [element.id, element]),
+        changedElements.map((element) => [element.id, element] as const),
       );
       for (const span of localSpans) {
         const owner = ownerForSpan(span.id, changedElementById);
@@ -3013,48 +3135,73 @@ export const regenerateLocal = (
         diagnostics,
         options.environment,
       );
-      if (
-        !diagnostics.some(
-          (item) => item.severity === "error" || item.severity === "fatal",
-        )
-      ) {
+      lastAttemptedGeneration = localGeneration;
+      if (!localGeneration.feasible) {
+        lastDiagnostics = localGeneration.diagnostics;
+      } else {
         const untouchedSpanHashes: Record<string, string> = {};
         const untouchedSpanBytes: Record<string, string> = {};
+        let hashMismatchId: string | undefined;
         for (let index = 0; index < generated.elements.length; index += 1) {
           const id = generated.elements[index]!.id;
           if (index >= localStart && index <= localEnd) continue;
-          untouchedSpanHashes[id] = generated.spanHashes[id]!;
-          untouchedSpanBytes[id] = generated.spanBytes[id]!;
+          const gHash = generated.spanHashes[id];
+          const gBytes = generated.spanBytes[id];
+          if (gHash === undefined || gBytes === undefined) {
+            hashMismatchId = id;
+            break;
+          }
+          untouchedSpanHashes[id] = gHash;
+          untouchedSpanBytes[id] = gBytes;
           const oldSpans = oldByOwner.get(id) ?? [];
           const newSpans = localGeneration.solvedSpans.filter(
             (span) => generationOwner(localGeneration, span.id) === id,
           );
           if (
             oldSpans.length !== newSpans.length ||
-            oldSpans.some(
-              (span, spanIndex) =>
-                spanBytes(span) !== spanBytes(newSpans[spanIndex]!),
-            )
+            oldSpans.some((span, spanIndex) => {
+              const ns = newSpans[spanIndex];
+              return ns === undefined || spanBytes(span) !== spanBytes(ns);
+            })
           ) {
-            lastDiagnostics = [
-              hardDiagnostic(
-                "LOCAL_REGENERATION",
-                `Untouched solved span ${id} changed during local regeneration`,
-                [id],
-              ),
-            ];
+            hashMismatchId = id;
             break;
           }
         }
-        if (lastDiagnostics === diagnostics)
-          return {
-            feasible: true,
-            generation: localGeneration,
-            diagnostics,
-            changedWindow: [localStart, localEnd],
-            untouchedSpanHashes,
-            untouchedSpanBytes,
-          };
+        if (hashMismatchId) {
+          lastDiagnostics = [
+            hardDiagnostic(
+              "LOCAL_REGENERATION",
+              `Untouched solved span ${hashMismatchId} changed during local regeneration`,
+              [hashMismatchId],
+            ),
+          ];
+        } else {
+          const hashesEqual = Object.entries(untouchedSpanHashes).every(
+            ([id, hash]) => localGeneration.spanHashes[id] === hash,
+          );
+          const bytesEqual = Object.entries(untouchedSpanBytes).every(
+            ([id, b]) => localGeneration.spanBytes[id] === b,
+          );
+          if (!hashesEqual || !bytesEqual) {
+            lastDiagnostics = [
+              hardDiagnostic(
+                "LOCAL_REGENERATION",
+                `Untouched span hashes/bytes mismatch during local regeneration`,
+                Object.keys(untouchedSpanHashes),
+              ),
+            ];
+          } else {
+            return {
+              feasible: true,
+              generation: localGeneration,
+              diagnostics: localGeneration.diagnostics,
+              changedWindow: [localStart, localEnd],
+              untouchedSpanHashes,
+              untouchedSpanBytes,
+            };
+          }
+        }
       }
     } catch (error) {
       lastDiagnostics = [
@@ -3076,10 +3223,15 @@ export const regenerateLocal = (
     `No allowed local regeneration window is feasible for ${selectedElementId}`,
     [selectedElementId],
   );
+  const failedGeneration = lastAttemptedGeneration ?? generated;
+  const failedDiagnostics =
+    lastAttemptedGeneration !== undefined
+      ? [...lastDiagnostics, { ...item, severity: "fatal" as const }]
+      : [...lastDiagnostics, { ...item, severity: "fatal" as const }];
   return {
     feasible: false,
-    generation: generated,
-    diagnostics: [...lastDiagnostics, { ...item, severity: "fatal" }],
+    generation: failedGeneration,
+    diagnostics: failedDiagnostics,
     changedWindow: initialWindow,
     untouchedSpanHashes: generated.spanHashes,
     untouchedSpanBytes: generated.spanBytes,

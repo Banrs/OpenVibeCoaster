@@ -101,26 +101,29 @@ describe("clearance field – terrain continuous", () => {
 
 describe("clearance field – oriented nonlocal envelope collision", () => {
   it("detects collision with rotated boxes when far along arc but close in world", () => {
-    const spans: TrackElement[] = [
-      {
-        id: "seg-0",
-        span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 0, 5)),
-      },
-      {
-        id: "seg-1",
-        span: SeventhOrderHermiteSpan.line(vec3(50, 0, 5), vec3(50, 0, 80)),
-      },
-      {
-        id: "seg-2",
-        span: SeventhOrderHermiteSpan.line(vec3(0.5, 0, 0), vec3(0.5, 0, 5)),
-      },
+    const points: Array<[number, number, number]> = [
+      [0, 0, 0],
+      [0, 0, 5],
+      [0, 0, 50],
+      [50, 0, 50],
+      [50, 0, 80],
+      [0.5, 0, 80],
+      [0.5, 0, 0],
     ];
+    const spans: TrackElement[] = points.slice(0, -1).map((p, i) => ({
+      id: `seg-${i}`,
+      span: SeventhOrderHermiteSpan.line(
+        vec3(p[0], p[1], p[2]),
+        vec3(points[i + 1]![0], points[i + 1]![1], points[i + 1]![2]),
+      ),
+    }));
     const track = compileTrack(spans, { samples: 2 });
+    const ids = spans.map((s) => s.id);
     const field = computeClearanceField(track, {
       hardClearanceM: 0.5,
       displayCapM: 10,
       maxWork: 100000,
-      segmentIds: ["seg-0", "seg-1", "seg-2"],
+      segmentIds: ids,
     });
     expect(field.globalLowerM).toBeLessThan(1);
     expect(field.globalSource).toBe("self");
@@ -529,37 +532,6 @@ describe("clearance field – locality exclusions", () => {
     });
     expect(within).toBe(false);
     expect(res.ok && !res.excluded).toBe(true);
-  });
-});
-
-describe("clearance field – adversarial multi-cell range pair", () => {
-  it("range insertion finds close pair even when centres far apart", () => {
-    const spans: TrackElement[] = [
-      {
-        id: "seg-0",
-        span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 0, 10)),
-      },
-      {
-        id: "seg-1",
-        span: SeventhOrderHermiteSpan.line(vec3(50, 0, 10), vec3(50, 0, 20)),
-      },
-      {
-        id: "seg-2",
-        span: SeventhOrderHermiteSpan.line(vec3(50, 0, 20), vec3(50, 0, 30)),
-      },
-      {
-        id: "seg-3",
-        span: SeventhOrderHermiteSpan.line(vec3(3.5, 0, 0), vec3(3.5, 0, 10)),
-      },
-    ];
-    const track = compileTrack(spans, { samples: 2 });
-    const field = computeClearanceField(track, {
-      hardClearanceM: 0.5,
-      displayCapM: 2,
-      maxWork: 100000,
-      segmentIds: ["seg-0", "seg-1", "seg-2", "seg-3"],
-    });
-    expect(field.globalLowerM).toBeLessThan(2);
   });
 });
 

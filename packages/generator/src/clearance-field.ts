@@ -772,13 +772,45 @@ export function computeClearanceField(
     cellSize = 1;
   }
 
+  const CHUNK_SIZE = 16;
+  const maxCertificationThreshold = Math.max(
+    hard,
+    ...thresholds,
+    ...softThresholds,
+  );
+  const chunkCount = Math.ceil(sweptAabbs.length / CHUNK_SIZE);
+  const chunkAabbs: Array<{ min: Vec3; max: Vec3 }> = [];
+  for (let c = 0; c < chunkCount; c++) {
+    const startIdx = c * CHUNK_SIZE;
+    const endIdx = Math.min((c + 1) * CHUNK_SIZE, sweptAabbs.length) - 1;
+    let minX = Infinity,
+      minY = Infinity,
+      minZ = Infinity;
+    let maxX = -Infinity,
+      maxY = -Infinity,
+      maxZ = -Infinity;
+    for (let k = startIdx; k <= endIdx; k++) {
+      const a = sweptAabbs[k]!;
+      minX = Math.min(minX, a.min[0]!);
+      minY = Math.min(minY, a.min[1]!);
+      minZ = Math.min(minZ, a.min[2]!);
+      maxX = Math.max(maxX, a.max[0]!);
+      maxY = Math.max(maxY, a.max[1]!);
+      maxZ = Math.max(maxZ, a.max[2]!);
+    }
+    chunkAabbs.push({
+      min: vec3(nextDown(minX), nextDown(minY), nextDown(minZ)),
+      max: vec3(nextUp(maxX), nextUp(maxY), nextUp(maxZ)),
+    });
+  }
+
   let candidatePairs: Array<[number, number]> = [];
   let hashBuilt = true;
 
   try {
     const cellMap = new Map<string, number[]>();
-    for (let i = 0; i < sweptAabbs.length; i++) {
-      const aabb = sweptAabbs[i]!;
+    for (let c = 0; c < chunkCount; c++) {
+      const aabb = chunkAabbs[c]!;
       const ranges = bucketRanges(aabb, cellSize);
       const cx = rangeCount(ranges[0]!);
       const cy = rangeCount(ranges[1]!);
@@ -791,15 +823,16 @@ export function computeClearanceField(
           for (let z = ranges[2]![0]; z <= ranges[2]![1]; z++) {
             const key = `${x},${y},${z}`;
             const list = cellMap.get(key);
-            if (list) list.push(i);
-            else cellMap.set(key, [i]);
+            if (list) list.push(c);
+            else cellMap.set(key, [c]);
           }
         }
       }
     }
-    const seen = new Set<string>();
-    for (let i = 0; i < sweptAabbs.length; i++) {
-      const aabb = sweptAabbs[i]!;
+    const chunkSeen = new Set<string>();
+    const chunkCandidatePairs: Array<[number, number]> = [];
+    for (let c = 0; c < chunkCount; c++) {
+      const aabb = chunkAabbs[c]!;
       const expanded = {
         min: vec3(
           nextDown(aabb.min[0]! - effectiveCap),
@@ -819,7 +852,7 @@ export function computeClearanceField(
       const qTotal = checkedProduct(checkedProduct(qx, qy), qz);
       if (!charge(qTotal))
         throw new RangeError("work budget exhausted on hash query");
-      const candSet = new Set<number>();
+      const candChunkSet = new Set<number>();
       for (let x = qRanges[0]![0]; x <= qRanges[0]![1]; x++) {
         for (let y = qRanges[1]![0]; y <= qRanges[1]![1]; y++) {
           for (let z = qRanges[2]![0]; z <= qRanges[2]![1]; z++) {
@@ -828,49 +861,204 @@ export function computeClearanceField(
             if (!list) continue;
             for (const j of list) {
               if (!charge(1))
-                throw new RangeError("work budget exhausted on bucket visits");
-              if (j > i) candSet.add(j);
+                throw new RangeError(
+                  "work budget exhausted on chunk bucket visits",
+                );
+              if (j < c) continue;
+              const pairKey = `${Math.min(c, j)}:${Math.max(c, j)}`;
+              if (chunkSeen.has(pairKey)) continue;
+              // No chunk-level locality exclusion except self is always candidate; cross chunks are all candidates (conservative)
+              // Self chunk is always included, cross chunk is included if AABB overlaps expanded
+              if (j === c) {
+                if (!candChunkSet.has(c)) candChunkSet.add(c);
+              } else {
+                candChunkSet.add(j);
+              }
             }
           }
         }
       }
-      if (!charge(candSet.size))
-        throw new RangeError("work budget exhausted on candidate visits");
-      const sorted = [...candSet].sort((a, b) => a - b);
-      if (sorted.length > 1) {
+      // Add self chunk
+      candChunkSet.add(c);
+      if (!charge(candChunkSet.size))
+        throw new RangeError("work budget exhausted on chunk candidate visits");
+      const sortedChunks = [...candChunkSet].sort((a, b) => a - b);
+      if (sortedChunks.length > 1) {
         const sortCost =
-          sorted.length * Math.ceil(Math.log2(sorted.length + 1));
+          sortedChunks.length * Math.ceil(Math.log2(sortedChunks.length + 1));
         if (!charge(sortCost))
-          throw new RangeError("work budget exhausted on candidate sort");
+          throw new RangeError("work budget exhausted on chunk candidate sort");
       }
-      for (const j of sorted) {
-        const pairKey = `${i}:${j}`;
-        if (seen.has(pairKey)) continue;
-        if (!charge(1)) throw new RangeError("work budget exhausted on dedup");
-        seen.add(pairKey);
-        const aabbA = sweptAabbs[i]!;
-        const aabbB = sweptAabbs[j]!;
-        const gap = (axis: 0 | 1 | 2): number => {
-          if (aabbA.max[axis]! < aabbB.min[axis]!)
-            return aabbB.min[axis]! - aabbA.max[axis]!;
-          if (aabbB.max[axis]! < aabbA.min[axis]!)
-            return aabbA.min[axis]! - aabbB.max[axis]!;
-          return 0;
-        };
-        const distLower = nextDown(Math.hypot(gap(0), gap(1), gap(2)));
-        if (distLower > effectiveCap) continue;
+      for (const j of sortedChunks) {
+        const a = Math.min(c, j);
+        const b = Math.max(c, j);
+        const chunkPairKey = `${a}:${b}`;
+        if (chunkSeen.has(chunkPairKey)) continue;
         if (!charge(1))
-          throw new RangeError("work budget exhausted on candidate insertion");
-        candidatePairs.push([i, j]);
+          throw new RangeError("work budget exhausted on chunk dedup");
+        chunkSeen.add(chunkPairKey);
+        if (!charge(1))
+          throw new RangeError("work budget exhausted on chunk pair insertion");
+        chunkCandidatePairs.push([a, b]);
       }
     }
-    if (candidatePairs.length > 1) {
+    if (chunkCandidatePairs.length > 1) {
       const pairSortCost =
-        candidatePairs.length * Math.ceil(Math.log2(candidatePairs.length + 1));
+        chunkCandidatePairs.length *
+        Math.ceil(Math.log2(chunkCandidatePairs.length + 1));
       if (!charge(pairSortCost))
-        throw new RangeError("work budget exhausted on pair sort");
+        throw new RangeError("work budget exhausted on chunk pair sort");
     }
-    candidatePairs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    chunkCandidatePairs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
+    const seenRaw = new Set<string>();
+    for (const [ca, cb] of chunkCandidatePairs) {
+      const startA = ca * CHUNK_SIZE;
+      const endA = Math.min((ca + 1) * CHUNK_SIZE, sweptAabbs.length);
+      const startB = cb * CHUNK_SIZE;
+      const endB = Math.min((cb + 1) * CHUNK_SIZE, sweptAabbs.length);
+      if (ca === cb) {
+        for (let i = startA; i < endA; i++) {
+          for (let j = i + 1; j < endA; j++) {
+            if (!charge(1))
+              throw new RangeError(
+                "work budget exhausted on raw pair enumeration",
+              );
+            const segA = sweptSegments[i]!;
+            const segB = sweptSegments[j]!;
+            if (
+              areSweptIntervalsWithinLocality(
+                segA,
+                segB,
+                localityM,
+                closed,
+                track.totalLength,
+              )
+            )
+              continue;
+            const aabbA = sweptAabbs[i]!;
+            const aabbB = sweptAabbs[j]!;
+            const gap = (axis: 0 | 1 | 2): number => {
+              if (aabbA.max[axis]! < aabbB.min[axis]!)
+                return aabbB.min[axis]! - aabbA.max[axis]!;
+              if (aabbB.max[axis]! < aabbA.min[axis]!)
+                return aabbA.min[axis]! - aabbB.max[axis]!;
+              return 0;
+            };
+            const distLower = nextDown(Math.hypot(gap(0), gap(1), gap(2)));
+            if (distLower > effectiveCap) continue;
+            if (distLower >= maxCertificationThreshold) {
+              if (!charge(1))
+                throw new RangeError(
+                  "work budget exhausted on threshold-pass lower update",
+                );
+              if (distLower < perSegmentLower[i]!) {
+                perSegmentLower[i] = distLower;
+                perSegmentLowerRelatedIds[i] = [
+                  idForSegment(i),
+                  idForSegment(j),
+                ];
+                perSegmentLowerSource[i] = "self";
+                perSegmentLowerWitnessS[i] = sweptSegments[i]!.startS;
+                perSegmentLowerWitnessPos[i] = sweptSegments[i]!.start.position;
+              }
+              if (distLower < perSegmentLower[j]!) {
+                perSegmentLower[j] = distLower;
+                perSegmentLowerRelatedIds[j] = [
+                  idForSegment(i),
+                  idForSegment(j),
+                ];
+                perSegmentLowerSource[j] = "self";
+                perSegmentLowerWitnessS[j] = sweptSegments[j]!.startS;
+                perSegmentLowerWitnessPos[j] = sweptSegments[j]!.start.position;
+              }
+              continue;
+            }
+            const pairKey = `${i}:${j}`;
+            if (seenRaw.has(pairKey)) continue;
+            if (!charge(1))
+              throw new RangeError("work budget exhausted on dedup");
+            seenRaw.add(pairKey);
+            if (!charge(1))
+              throw new RangeError(
+                "work budget exhausted on candidate insertion",
+              );
+            candidatePairs.push([i, j]);
+          }
+        }
+      } else {
+        for (let i = startA; i < endA; i++) {
+          for (let j = startB; j < endB; j++) {
+            if (!charge(1))
+              throw new RangeError(
+                "work budget exhausted on raw pair enumeration",
+              );
+            const segA = sweptSegments[i]!;
+            const segB = sweptSegments[j]!;
+            if (
+              areSweptIntervalsWithinLocality(
+                segA,
+                segB,
+                localityM,
+                closed,
+                track.totalLength,
+              )
+            )
+              continue;
+            const aabbA = sweptAabbs[i]!;
+            const aabbB = sweptAabbs[j]!;
+            const gap = (axis: 0 | 1 | 2): number => {
+              if (aabbA.max[axis]! < aabbB.min[axis]!)
+                return aabbB.min[axis]! - aabbA.max[axis]!;
+              if (aabbB.max[axis]! < aabbA.min[axis]!)
+                return aabbA.min[axis]! - aabbB.max[axis]!;
+              return 0;
+            };
+            const distLower = nextDown(Math.hypot(gap(0), gap(1), gap(2)));
+            if (distLower > effectiveCap) continue;
+            if (distLower >= maxCertificationThreshold) {
+              if (!charge(1))
+                throw new RangeError(
+                  "work budget exhausted on threshold-pass lower update",
+                );
+              if (distLower < perSegmentLower[i]!) {
+                perSegmentLower[i] = distLower;
+                perSegmentLowerRelatedIds[i] = [
+                  idForSegment(i),
+                  idForSegment(j),
+                ];
+                perSegmentLowerSource[i] = "self";
+                perSegmentLowerWitnessS[i] = sweptSegments[i]!.startS;
+                perSegmentLowerWitnessPos[i] = sweptSegments[i]!.start.position;
+              }
+              if (distLower < perSegmentLower[j]!) {
+                perSegmentLower[j] = distLower;
+                perSegmentLowerRelatedIds[j] = [
+                  idForSegment(i),
+                  idForSegment(j),
+                ];
+                perSegmentLowerSource[j] = "self";
+                perSegmentLowerWitnessS[j] = sweptSegments[j]!.startS;
+                perSegmentLowerWitnessPos[j] = sweptSegments[j]!.start.position;
+              }
+              continue;
+            }
+            const ai = Math.min(i, j);
+            const bj = Math.max(i, j);
+            const pairKey = `${ai}:${bj}`;
+            if (seenRaw.has(pairKey)) continue;
+            if (!charge(1))
+              throw new RangeError("work budget exhausted on dedup");
+            seenRaw.add(pairKey);
+            if (!charge(1))
+              throw new RangeError(
+                "work budget exhausted on candidate insertion",
+              );
+            candidatePairs.push([ai, bj]);
+          }
+        }
+      }
+    }
   } catch (e) {
     hashBuilt = false;
     const msg = e instanceof Error ? e.message : String(e);

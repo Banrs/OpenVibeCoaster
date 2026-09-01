@@ -1,4 +1,10 @@
-import { interpolateTrackFrame, vec3, type Vec3 } from "@openvibecoaster/core";
+import {
+  interpolateTrackFrame,
+  quatDot,
+  quatFromFrame,
+  vec3,
+  type Vec3,
+} from "@openvibecoaster/core";
 import { nextDown, nextUp } from "./polynomial-bounds";
 export interface ClearanceTrainGeometry {
   halfWidthM: number;
@@ -504,57 +510,7 @@ export function staticObbDistance(
     pointB: vec3(res.pointB[0], res.pointB[1], res.pointB[2]),
   };
 }
-type Quat = readonly [number, number, number, number];
-function quatNormalize(q: Quat): Quat {
-  const l = Math.hypot(q[0], q[1], q[2], q[3]);
-  if (l < 1e-12) throw new RangeError("zero quat");
-  return [q[0] / l, q[1] / l, q[2] / l, q[3] / l] as const;
-}
-function quatFromFrame(b: Vec3, n: Vec3, t: Vec3): Quat {
-  const m00 = t[0],
-    m01 = n[0],
-    m02 = b[0];
-  const m10 = t[1],
-    m11 = n[1],
-    m12 = b[1];
-  const m20 = t[2],
-    m21 = n[2],
-    m22 = b[2];
-  const tr = m00 + m11 + m22;
-  let x = 0,
-    y = 0,
-    z = 0,
-    w = 0;
-  if (tr > 0) {
-    const s = Math.sqrt(tr + 1) * 2;
-    w = 0.25 * s;
-    x = (m21 - m12) / s;
-    y = (m02 - m20) / s;
-    z = (m10 - m01) / s;
-  } else if (m00 > m11 && m00 > m22) {
-    const s = Math.sqrt(1 + m00 - m11 - m22) * 2;
-    w = (m21 - m12) / s;
-    x = 0.25 * s;
-    y = (m01 + m10) / s;
-    z = (m02 + m20) / s;
-  } else if (m11 > m22) {
-    const s = Math.sqrt(1 + m11 - m00 - m22) * 2;
-    w = (m02 - m20) / s;
-    x = (m01 + m10) / s;
-    y = 0.25 * s;
-    z = (m12 + m21) / s;
-  } else {
-    const s = Math.sqrt(1 + m22 - m00 - m11) * 2;
-    w = (m10 - m01) / s;
-    x = (m02 + m20) / s;
-    y = (m12 + m21) / s;
-    z = 0.25 * s;
-  }
-  return quatNormalize([x, y, z, w]);
-}
-function quatDot(a: Quat, b: Quat): number {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-}
+
 export function interpolatePose(
   s: SweptClearanceSegment,
   t: number,
@@ -591,11 +547,11 @@ function conservativeRadius(g: ClearanceTrainGeometry): number {
 }
 function totalAngle(seg: SweptClearanceSegment): number {
   const qa = quatFromFrame(
-    seg.start.binormal,
-    seg.start.normal,
     seg.start.tangent,
+    seg.start.normal,
+    seg.start.binormal,
   );
-  const qb = quatFromFrame(seg.end.binormal, seg.end.normal, seg.end.tangent);
+  const qb = quatFromFrame(seg.end.tangent, seg.end.normal, seg.end.binormal);
   const lenQa = Math.hypot(qa[0], qa[1], qa[2], qa[3]);
   const lenQb = Math.hypot(qb[0], qb[1], qb[2], qb[3]);
   if (Math.abs(lenQa - 1) > 1e-6 || Math.abs(lenQb - 1) > 1e-6)
@@ -616,11 +572,11 @@ function getSegmentInvariants(seg: SweptClearanceSegment): SegmentInvariants {
   const dPos = len(sub(seg.end.position, seg.start.position));
   const r = conservativeRadius(seg.geometry);
   const qa = quatFromFrame(
-    seg.start.binormal,
-    seg.start.normal,
     seg.start.tangent,
+    seg.start.normal,
+    seg.start.binormal,
   );
-  const qb = quatFromFrame(seg.end.binormal, seg.end.normal, seg.end.tangent);
+  const qb = quatFromFrame(seg.end.tangent, seg.end.normal, seg.end.binormal);
   const lenQa = Math.hypot(qa[0], qa[1], qa[2], qa[3]);
   const lenQb = Math.hypot(qb[0], qb[1], qb[2], qb[3]);
   if (Math.abs(lenQa - 1) > 1e-6 || Math.abs(lenQb - 1) > 1e-6)

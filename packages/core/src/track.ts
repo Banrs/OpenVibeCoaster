@@ -7,7 +7,16 @@ import {
 } from "./arc-length";
 import { TrackCompileError } from "./compile-error";
 import { transportFramesAlongPath } from "./frames";
-import { vec3, vec3Cross, vec3Dot, vec3Length, vec3Normalize } from "./math";
+import {
+  vec3,
+  vec3Cross,
+  vec3Dot,
+  vec3Length,
+  vec3Normalize,
+  frameFromQuat,
+  quatFromFrame,
+  quatSlerp,
+} from "./math";
 import { SeventhOrderHermiteSpan } from "./spans";
 import {
   intervalAdd,
@@ -33,53 +42,27 @@ export function interpolateTrackFrame(
   binormal1: Vec3,
   fraction: number,
 ): { tangent: Vec3; normal: Vec3; binormal: Vec3 } {
-  const tangent = vec3Normalize(
-    vec3(
-      tangent0[0] * (1 - fraction) + tangent1[0] * fraction,
-      tangent0[1] * (1 - fraction) + tangent1[1] * fraction,
-      tangent0[2] * (1 - fraction) + tangent1[2] * fraction,
-    ),
-  );
-  const rawNormal = vec3(
-    normal0[0] * (1 - fraction) + normal1[0] * fraction,
-    normal0[1] * (1 - fraction) + normal1[1] * fraction,
-    normal0[2] * (1 - fraction) + normal1[2] * fraction,
-  );
-  const dot =
-    tangent[0] * rawNormal[0] +
-    tangent[1] * rawNormal[1] +
-    tangent[2] * rawNormal[2];
-  const projectedNormal = vec3(
-    rawNormal[0] - tangent[0] * dot,
-    rawNormal[1] - tangent[1] * dot,
-    rawNormal[2] - tangent[2] * dot,
-  );
-  const rawBinormal = vec3(
-    binormal0[0] * (1 - fraction) + binormal1[0] * fraction,
-    binormal0[1] * (1 - fraction) + binormal1[1] * fraction,
-    binormal0[2] * (1 - fraction) + binormal1[2] * fraction,
-  );
-  const normal =
-    projectedNormal[0] ** 2 +
-      projectedNormal[1] ** 2 +
-      projectedNormal[2] ** 2 >
-    1e-24
-      ? vec3Normalize(projectedNormal)
-      : vec3Normalize(
-          vec3(
-            rawBinormal[1] * tangent[2] - rawBinormal[2] * tangent[1],
-            rawBinormal[2] * tangent[0] - rawBinormal[0] * tangent[2],
-            rawBinormal[0] * tangent[1] - rawBinormal[1] * tangent[0],
-          ),
-        );
-  const binormal = vec3Normalize(
-    vec3(
-      tangent[1] * normal[2] - tangent[2] * normal[1],
-      tangent[2] * normal[0] - tangent[0] * normal[2],
-      tangent[0] * normal[1] - tangent[1] * normal[0],
-    ),
-  );
-  return { tangent, normal, binormal };
+  if (!Number.isFinite(fraction))
+    throw new RangeError("fraction must be finite");
+  if (fraction <= 0) {
+    return {
+      tangent: vec3(tangent0[0], tangent0[1], tangent0[2]),
+      normal: vec3(normal0[0], normal0[1], normal0[2]),
+      binormal: vec3(binormal0[0], binormal0[1], binormal0[2]),
+    };
+  }
+  if (fraction >= 1) {
+    return {
+      tangent: vec3(tangent1[0], tangent1[1], tangent1[2]),
+      normal: vec3(normal1[0], normal1[1], normal1[2]),
+      binormal: vec3(binormal1[0], binormal1[1], binormal1[2]),
+    };
+  }
+  const tt = Math.max(0, Math.min(1, fraction));
+  const q0 = quatFromFrame(tangent0, normal0, binormal0);
+  const q1 = quatFromFrame(tangent1, normal1, binormal1);
+  const qs = quatSlerp(q0, q1, tt);
+  return frameFromQuat(qs);
 }
 
 export interface TrackElement {
