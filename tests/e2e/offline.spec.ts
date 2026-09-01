@@ -4,13 +4,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const artifactPath = fileURLToPath(
   new URL("../../apps/web/dist/OpenVibeCoaster.html", import.meta.url),
 );
+const artifactFileUrl = pathToFileURL(artifactPath).href;
 
 test.use({ launchOptions: { args: ["--disable-webgl"] } });
 
 test("portable artifact runs directly from file://", async ({ page }) => {
   const pageErrors: string[] = [];
   const consoleErrors: string[] = [];
-  const externalRequests: string[] = [];
+  const disallowedRequests: string[] = [];
 
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -19,12 +20,17 @@ test("portable artifact runs directly from file://", async ({ page }) => {
     }
   });
   page.on("request", (request) => {
-    if (/^(?:https?:|wss?:)/i.test(request.url())) {
-      externalRequests.push(request.url());
+    const url = request.url();
+    const allowed =
+      url === artifactFileUrl ||
+      url.startsWith("data:") ||
+      url.startsWith("blob:");
+    if (!allowed) {
+      disallowedRequests.push(url);
     }
   });
 
-  await page.goto(pathToFileURL(artifactPath).href, {
+  await page.goto(artifactFileUrl, {
     waitUntil: "domcontentloaded",
   });
 
@@ -59,7 +65,10 @@ test("portable artifact runs directly from file://", async ({ page }) => {
     "true",
   );
 
-  expect(externalRequests).toEqual([]);
+  expect(
+    disallowedRequests,
+    `disallowed requests (only ${artifactFileUrl} plus data: and blob: allowed): ${disallowedRequests.join(", ")}`,
+  ).toEqual([]);
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
 });

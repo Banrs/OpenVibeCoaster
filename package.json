@@ -18,6 +18,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
+    "test:e2e:portable": "playwright test --config=playwright.portable.config.ts",
     "lint": "oxlint --deny-warnings .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

@@ -124,3 +124,15 @@ jobs:
           if ((Get-Item "apps/web/dist/OpenVibeCoaster.html").Length -eq 0) { throw "Portable artifact is empty: apps/web/dist/OpenVibeCoaster.html" }
           Get-ChildItem "apps/web/dist/OpenVibeCoaster.html" | Format-List Name,Length,FullName
           Write-Host "Portable artifact verified: apps/web/dist/OpenVibeCoaster.html exists and is non-empty"
+      - name: Install Playwright WebKit (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: npx playwright install --with-deps webkit
+      - name: Portable E2E (macOS - WebKit)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: npm run test:e2e:portable -- --project=webkit
+      - name: Portable E2E (Windows - Edge)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: npm run test:e2e:portable -- --project=edge

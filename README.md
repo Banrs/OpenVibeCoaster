@@ -59,26 +59,39 @@ npm run verify
 The GitHub Actions CI enforces Node 24 and npm 11.17.0 with shell-native
 assertions, runs the quality gate (typecheck, lint, format, unit tests, build,
 bench, Playwright Chromium) on `ubuntu-latest`, and verifies the portable
-artifact on `windows-latest` and `macos-latest`. Build-time npm dependencies
-(Node 24, npm 11.17.0, Vite, TypeScript, Vitest, Playwright, Oxlint, Prettier)
-are disclosed in `package.json` and `apps/web/package.json`. Three.js is
-bundled into `OpenVibeCoaster.html` at build time as the runtime rendering
-code; no runtime package install, CDN, server, or network fetch is required.
+artifact on `windows-latest` and `macos-latest` by opening
+`apps/web/dist/OpenVibeCoaster.html` directly via `file://` with no server.
+Build-time npm dependencies (Node 24, npm 11.17.0, Vite, TypeScript, Vitest,
+Playwright, Oxlint, Prettier) are disclosed in `package.json` and
+`apps/web/package.json` and are required only to build the artifact. Runtime
+requires zero package dependencies: opening the built HTML in an already-
+installed browser needs no runtime `npm install`, server, CDN, backend, network,
+or dependency install. Three.js is bundled into `OpenVibeCoaster.html` at build
+time as the runtime rendering code. Portable CI uses the installed stable Edge
+channel (`msedge`) on Windows directly, and Playwright WebKit (`webkit` /
+Desktop Safari device) on macOS as an engine-level WebKit approximation — it is
+not an automated branded Safari claim.
 
 ## Portable build and offline use
 
 On Windows and macOS, after `npm run build`, open the portable artifact
-directly in a current built-in browser:
+directly in an already-installed browser with no server, network, or install
+step:
 
 ```text
 apps/web/dist/OpenVibeCoaster.html
 ```
 
-Double-click the file or use File > Open in Edge, Chrome, Safari, or Firefox.
-No server (`vite preview` is not required), `npm install` at runtime, account,
-backend, CDN, web fonts, or media download is required. The rendering code
-(Three.js) is already bundled inside the HTML by
-`apps/web/scripts/portable-packager.mjs`, which inlines CSS and JS so the
+Double-click the file or use File > Open in a current installed browser. No
+server (`vite preview` is not required), runtime `npm install`, account,
+backend, CDN, web fonts, or media download is required. CI verifies the
+portable file directly via `file://`: Windows runs the artifact in the
+installed stable Edge channel (`msedge`) and macOS runs it under Playwright
+WebKit as an engine-level approximation of Desktop Safari — this is not a claim
+of automated branded Safari execution. Users can open the file in a current
+installed browser on Windows or macOS; browsers beyond this CI coverage are not
+overclaimed. The rendering code (Three.js) is already bundled inside the HTML
+by `apps/web/scripts/portable-packager.mjs`, which inlines CSS and JS so the
 output is a single-file offline artifact. The inline browser worker is
 Vite-inlined and Blob-backed (`apps/web/src/engineering/factory.ts` via
 `?worker&inline`) so the portable file has no runtime network, backend, or
