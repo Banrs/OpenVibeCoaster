@@ -249,16 +249,33 @@ export class EngineeringWorkerClient {
       }
       const [id, entry] = next;
       entry.postedEpoch = transition.epoch;
+      let posted = false;
       try {
         binding.worker.postMessage(entry.request);
-        this.transition = null;
-        return;
+        posted = true;
       } catch (error) {
         if (this.pending.get(id) !== entry) continue;
         if (this.transition !== transition || this.binding !== binding) return;
         this.pending.delete(id);
         entry.reject(error instanceof Error ? error : new Error(String(error)));
+        continue;
       }
+      if (!posted) continue;
+      // If postMessage synchronously settled the entry (e.g., mock emitted
+      // success during postMessage and handleMessage resolved it), handleMessage
+      // would have attempted postNextIfIdle but returned due to non-null
+      // transition. We must drain the next survivor here instead of
+      // blindly clearing transition and leaving q3 pending forever.
+      if (!this.pending.has(id)) {
+        continue;
+      }
+      if (this.pending.get(id) !== entry) {
+        continue;
+      }
+      // Async path: entry still pending, clear transition and let future
+      // handleMessage drain via postNextIfIdle.
+      this.transition = null;
+      return;
     }
   }
 
@@ -341,10 +358,12 @@ export class EngineeringWorkerClient {
       if (!response || typeof response.requestId !== "string") return;
       const entry = this.pending.get(response.requestId);
       if (!entry) return;
-      if (entry.epoch !== this.epoch) {
-        this.pending.delete(response.requestId);
-        return;
-      }
+      // Invariant: current() guard (binding === binding && epoch === epoch)
+      // ensures stale old-binding messages are ignored before lookup.
+      // Any pending entry must have epoch === current epoch after survivor
+      // migration; this branch is therefore unreachable. Do not silently
+      // delete and leak a promise; preserve or ignore without settlement.
+      if (entry.epoch !== this.epoch) return;
       if (entry.postedEpoch !== this.epoch) return;
       try {
         validateEngineeringWorkerResponse(response);
@@ -474,10 +493,10 @@ export class EngineeringWorkerClient {
       if (this.terminated || !requestId.trim()) return;
       const entry = this.pending.get(requestId);
       if (!entry) return;
-      if (entry.epoch !== this.epoch) {
-        this.pending.delete(requestId);
-        return;
-      }
+      // Invariant: pending entries are migrated to current epoch on
+      // active cancel/error; stale epoch entries are unreachable via
+      // current binding. Do not silently delete and leak.
+      if (entry.epoch !== this.epoch) return;
       const activeId = [...this.pending.entries()].find(
         ([, candidate]) => candidate.postedEpoch === this.epoch,
       )?.[0];
