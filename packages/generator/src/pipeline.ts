@@ -1629,12 +1629,10 @@ const evaluateCandidate = (
         threshold: v as number,
       });
     }
-    const hasPriorHardFailure = diagnostics.some(
-      (d) => d.severity === "error" || d.severity === "fatal",
-    );
     if (validationDiagnostics.length > 0) {
       diagnostics.push(...validationDiagnostics);
-    } else if (track && !hasPriorHardFailure) {
+    }
+    if (track && validationDiagnostics.length === 0) {
       const displayCap = Math.max(10, 0.5, ...explicitValues);
       const closed = isClosedChain(elements);
       const segmentIds = canonicalSpansForCandidate.map((s) => s.id);
@@ -1678,9 +1676,7 @@ const evaluateCandidate = (
         failedHardRequirementIds.add("clearance-compute");
       }
     } else if (!track) {
-      // track failed already, no field
-    } else if (hasPriorHardFailure) {
-      // Skip expensive clearance; relaxation rerun will compute after other hard constraint removed
+      // trackCompileFailed fail-closed: no valid track exists to certify
     }
   }
   const evaluation = {

@@ -443,7 +443,12 @@ export function computeClearanceField(
   const perSegmentLowerWitnessPos: Vec3[] = Array.from({
     length: count - 1,
   }) as Vec3[];
-  const allThresholdsForSeparation = [hard, ...thresholds];
+  const allThresholdsForSeparation = [
+    hard,
+    ...thresholds,
+    ...softThresholds,
+    effectiveCap,
+  ];
 
   if (env && !terrainBroadPhaseProven) {
     for (let segIdx = 0; segIdx < count - 1; segIdx++) {
@@ -774,6 +779,7 @@ export function computeClearanceField(
 
   const CHUNK_SIZE = 16;
   const maxCertificationThreshold = Math.max(
+    effectiveCap,
     hard,
     ...thresholds,
     ...softThresholds,
