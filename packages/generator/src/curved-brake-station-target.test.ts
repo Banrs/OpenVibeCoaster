@@ -18,7 +18,7 @@ import {
 } from "./pipeline";
 import { diagnoseSeams } from "./solver";
 import rawProfile from "../../../data/profiles/engineering-limits-v1.json";
-import type { BrakeParameters, StationParameters } from "./types";
+import type { BrakeParameters, ResidualSet, StationParameters } from "./types";
 import type { GenerationResult } from "./types";
 
 const testSeams = parseEngineeringLimitsProfile(rawProfile).seams;
@@ -33,7 +33,7 @@ const HARD_SEAM_KEYS = [
   "bankDerivativeRadPerM",
   "bankSecondDerivativeRadPerM2",
   "specificForceJumpG",
-] as const;
+] as const satisfies readonly (keyof ResidualSet)[];
 
 describe("curved brake and terminal station target packet", () => {
   let defaultGeneration!: GenerationResult;
@@ -167,11 +167,9 @@ describe("curved brake and terminal station target packet", () => {
     ).toHaveLength(2);
     for (const seam of adjacent) {
       for (const key of HARD_SEAM_KEYS) {
-        const actual = seam[key] as number;
-        const hardActual = (seam.hardResiduals as Record<string, number>)[
-          key
-        ] as number;
-        const limit = (testSeams as Record<string, number>)[key] as number;
+        const actual = seam[key];
+        const hardActual = seam.hardResiduals[key];
+        const limit = testSeams[key];
         expect(
           actual,
           `${seam.seamId} ${key} actual ${actual} exceeds limit ${limit}`,
@@ -401,12 +399,8 @@ describe("curved brake and terminal station target packet", () => {
       createDesignIntentV1(intentWithNewKeys),
     );
     const parsed = parseDesignIntentV1(serialized);
-    expect(
-      (parsed.elements[0]!.parameters as StationParameters).targetSpeed,
-    ).toBe(0);
-    expect((parsed.elements[1]!.parameters as BrakeParameters).angle).toBe(
-      Math.PI,
-    );
+    expect(parsed.elements[0]!.parameters?.targetSpeed).toBe(0);
+    expect(parsed.elements[1]!.parameters?.angle).toBe(Math.PI);
     expect(() =>
       parseDesignIntentV1(
         JSON.stringify({
@@ -705,7 +699,7 @@ describe("curved brake and terminal station target packet", () => {
     const stationElement = result.file.intent.elements.find(
       (e) => e.id === "station-010",
     )!;
-    expect((stationElement.parameters as StationParameters).closed).toBe(false);
+    expect(stationElement.parameters?.closed).toBe(false);
 
     // round-trip preserves semantic parameters plus physical reconstructed lengths
     const loaded = compileCoasterFile(result.serializedFile);
@@ -715,19 +709,13 @@ describe("curved brake and terminal station target packet", () => {
     const reloadedStation = loaded.file.intent.elements.find(
       (e) => e.id === "station-010",
     )!;
-    expect((reloadedBrake.parameters as BrakeParameters).angle).toBe(Math.PI);
-    expect((reloadedStation.parameters as StationParameters).targetSpeed).toBe(
-      0,
-    );
-    expect((reloadedStation.parameters as StationParameters).closed).toBe(
-      false,
-    );
-    expect((reloadedBrake.parameters as BrakeParameters).length).toBe(220);
+    expect(reloadedBrake.parameters?.angle).toBe(Math.PI);
+    expect(reloadedStation.parameters?.targetSpeed).toBe(0);
+    expect(reloadedStation.parameters?.closed).toBe(false);
+    expect(reloadedBrake.parameters?.length).toBe(220);
     expect(
-      (
-        loaded.file.intent.elements.find((e) => e.id === "magnetic-brakes-009")!
-          .parameters as BrakeParameters
-      ).length,
+      loaded.file.intent.elements.find((e) => e.id === "magnetic-brakes-009")!
+        .parameters?.length,
     ).toBe(110);
     for (const span of loaded.file.solvedSpans) {
       const reconstructed = reconstructSolvedSpan(span);
@@ -801,10 +789,8 @@ describe("curved brake and terminal station target packet", () => {
       expect(Math.abs(localSum - localCompiled.totalLength)).toBeLessThan(1e-9);
       const loaded = compileCoasterFile(local.generation.serializedFile);
       expect(
-        (
-          loaded.file.intent.elements.find((e) => e.id === "brake-008")!
-            .parameters as BrakeParameters
-        ).angle,
+        loaded.file.intent.elements.find((e) => e.id === "brake-008")!
+          .parameters?.angle,
       ).toBe(Math.PI);
 
       const fileLocal = regenerateCoasterFileLocal(
