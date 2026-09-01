@@ -19,15 +19,15 @@ describe("createExactSampleCache", () => {
     expect(sampler).toHaveBeenCalledWith(7);
   });
 
-  it("treats 12.5 and 12.5 + Number.EPSILON as distinct keys", () => {
+  it("treats adjacent representable numbers 1 and 1 + Number.EPSILON as distinct keys", () => {
     const sampler = vi.fn((distanceM: number) => ({ distanceM }));
     const cache = createExactSampleCache(sampler);
-    const a = cache.sample(12.5);
-    const b = cache.sample(12.5 + Number.EPSILON);
+    const a = cache.sample(1);
+    const b = cache.sample(1 + Number.EPSILON);
     expect(b).not.toBe(a);
     expect(sampler).toHaveBeenCalledTimes(2);
-    expect(a.distanceM).toBe(12.5);
-    expect(b.distanceM).toBe(12.5 + Number.EPSILON);
+    expect(a.distanceM).toBe(1);
+    expect(b.distanceM).toBe(1 + Number.EPSILON);
   });
 
   it("clear makes a repeated exact key invoke the base sampler again", () => {

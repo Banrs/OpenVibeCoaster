@@ -861,7 +861,14 @@ const boundedRk4 = (
   readonly boundaryError?: OpenTrackBoundaryError;
 } => {
   const checkedStep = (elapsedSeconds: number): readonly [number, number] => {
-    const state = rk4(track, config, distanceM, speedMps, elapsedSeconds, sampleAt);
+    const state = rk4(
+      track,
+      config,
+      distanceM,
+      speedMps,
+      elapsedSeconds,
+      sampleAt,
+    );
     if (!finite(state[0]) || !finite(state[1]))
       throw new SimulatorRangeError(
         "SIM_NUMERICAL",
@@ -2218,7 +2225,13 @@ export const simulateRide = (
             step * Math.max(1, Math.abs(nextDynamics.accelerationMps2)),
           ))
     ) {
-      const atRest = dynamicsAt(track, config, distanceM, 0, integrationSampleAt);
+      const atRest = dynamicsAt(
+        track,
+        config,
+        distanceM,
+        0,
+        integrationSampleAt,
+      );
       if (Math.abs(atRest.totalForce) <= atRest.staticStictionCapacityN)
         speedMps = 0;
     }
