@@ -728,6 +728,8 @@ export function handleCompileSimulate(
   let clearanceDiagnostics: readonly Diagnostic[] = [];
   try {
     const explicitValues: number[] = [];
+    const hardValues: number[] = [];
+    const softValues: number[] = [];
     const constraintDescriptors: {
       id: string;
       hard: boolean;
@@ -746,9 +748,12 @@ export function handleCompileSimulate(
         ]);
       }
       explicitValues.push(v as number);
+      const isHard = c.hard !== false;
+      if (isHard) hardValues.push(v as number);
+      else softValues.push(v as number);
       constraintDescriptors.push({
         id: c.id,
-        hard: c.hard !== false,
+        hard: isHard,
         threshold: v as number,
       });
     }
@@ -764,7 +769,8 @@ export function handleCompileSimulate(
       environment: envCs,
       closed: isClosed,
       hardClearanceM: 0.5,
-      explicitThresholds: explicitValues,
+      explicitThresholds: hardValues,
+      softThresholds: softValues,
       displayCapM: displayCap,
       segmentIds,
     });

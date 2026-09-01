@@ -24,7 +24,7 @@ export const DEFAULT_ENVELOPE: ClearanceTrainGeometry = Object.freeze({
   aboveRailM: 2.1,
   belowRailM: 0.8,
   carPitchM: 3.4,
-  noseTailMarginM: 0,
+  noseTailMarginM: 0.75,
 });
 
 export const DEFAULT_HARD_CLEARANCE_M = 0.5;
@@ -55,6 +55,10 @@ export interface ClearanceField {
   readonly globalWitnessPosition: Vec3;
   readonly globalRelatedIds: readonly string[];
   readonly globalSource: "terrain" | "self" | "cap";
+  readonly globalLowerRelatedIds: readonly string[];
+  readonly globalLowerSource: "terrain" | "self" | "cap";
+  readonly globalLowerWitnessS: number;
+  readonly globalLowerWitnessPosition: Vec3;
   readonly effectiveCap: number;
   readonly diagnostics: readonly Diagnostic[];
   readonly work: number;
@@ -65,6 +69,7 @@ export interface ClearanceFieldOptions {
   readonly envelope?: ClearanceTrainGeometry;
   readonly hardClearanceM?: number;
   readonly explicitThresholds?: readonly number[];
+  readonly softThresholds?: readonly number[];
   readonly displayCapM?: number;
   readonly maxWork?: number;
   readonly environment?: EnvironmentQuery | undefined;
@@ -86,12 +91,19 @@ function effectiveCapFor(
   displayCap: number,
   hard: number,
   thresholds: readonly number[],
+  softThresholds: readonly number[] = [],
 ): number {
   let cap = Math.max(finite(displayCap, "displayCap"), 0.5, hard);
   for (const t of thresholds) {
     finite(t, "threshold");
     if (t < 0 || !Number.isFinite(t))
       throw new RangeError("explicit threshold must be non-negative finite");
+    cap = Math.max(cap, t);
+  }
+  for (const t of softThresholds) {
+    finite(t, "softThreshold");
+    if (t < 0 || !Number.isFinite(t))
+      throw new RangeError("soft threshold must be non-negative finite");
     cap = Math.max(cap, t);
   }
   return cap;
@@ -125,11 +137,29 @@ function poseFromTrack(track: CompiledTrackData, index: number): ClearancePose {
     ),
   };
 }
+function elementIndexForInterval(
+  track: CompiledTrackData,
+  intervalIdx: number,
+): number {
+  const boundaries = track.elementBoundaries;
+  const nElements = boundaries.length / 2;
+  for (let ei = 0; ei < nElements; ei++) {
+    const s = boundaries[ei * 2]!;
+    const e = boundaries[ei * 2 + 1]!;
+    if (intervalIdx >= s && intervalIdx < e) return ei;
+  }
+  // Fallback: use elementIndices of interval start+1 for seam intervals, else start
+  const next = track.elementIndices[intervalIdx + 1];
+  if (next !== undefined) return next;
+  const cur = track.elementIndices[intervalIdx];
+  if (cur !== undefined) return cur;
+  return 0;
+}
 function fallbackSegmentId(
   track: CompiledTrackData,
-  sampleIndex: number,
+  intervalIdx: number,
 ): string {
-  const ei = track.elementIndices[sampleIndex] ?? 0;
+  const ei = elementIndexForInterval(track, intervalIdx);
   return `element-${ei}`;
 }
 function circumsphereRadius(g: ClearanceTrainGeometry): number {
@@ -295,7 +325,17 @@ export function computeClearanceField(
     finite(t, "threshold");
     if (t < 0) throw new RangeError("explicit threshold must be non-negative");
   }
-  const effectiveCap = effectiveCapFor(displayCap, hard, thresholds);
+  const softThresholds = options.softThresholds ?? [];
+  for (const t of softThresholds) {
+    finite(t, "softThreshold");
+    if (t < 0) throw new RangeError("soft threshold must be non-negative");
+  }
+  const effectiveCap = effectiveCapFor(
+    displayCap,
+    hard,
+    thresholds,
+    softThresholds,
+  );
   const maxWork = options.maxWork ?? 1_000_000;
   if (!Number.isSafeInteger(maxWork) || maxWork < 1)
     throw new RangeError("maxWork must be positive safe integer");
@@ -347,13 +387,14 @@ export function computeClearanceField(
 
   const segmentIds = options.segmentIds;
   const idForSegment = (idx: number): string => {
+    const ei = elementIndexForInterval(track, idx);
     if (
       segmentIds &&
-      idx < segmentIds.length &&
-      typeof segmentIds[idx] === "string" &&
-      segmentIds[idx]!.trim().length > 0
+      ei < segmentIds.length &&
+      typeof segmentIds[ei] === "string" &&
+      segmentIds[ei]!.trim().length > 0
     )
-      return segmentIds[idx]!;
+      return segmentIds[ei]!;
     return fallbackSegmentId(track, idx);
   };
 
@@ -392,6 +433,16 @@ export function computeClearanceField(
   const perSegmentSource: Array<"terrain" | "self" | "cap"> = Array.from({
     length: count - 1,
   }) as Array<"terrain" | "self" | "cap">;
+  const perSegmentLowerRelatedIds: string[][] = Array.from({
+    length: count - 1,
+  }) as string[][];
+  const perSegmentLowerSource: Array<"terrain" | "self" | "cap"> = Array.from({
+    length: count - 1,
+  }) as Array<"terrain" | "self" | "cap">;
+  const perSegmentLowerWitnessS = new Float64Array(count - 1);
+  const perSegmentLowerWitnessPos: Vec3[] = Array.from({
+    length: count - 1,
+  }) as Vec3[];
   const allThresholdsForSeparation = [hard, ...thresholds];
 
   if (env && !terrainBroadPhaseProven) {
@@ -410,9 +461,13 @@ export function computeClearanceField(
         perSegmentUpper[segIdx] = effectiveCap;
         perSegmentWitnessS[segIdx] = fallbackS;
         perSegmentWitnessPos[segIdx] = fallbackPos;
+        perSegmentLowerWitnessS[segIdx] = fallbackS;
+        perSegmentLowerWitnessPos[segIdx] = fallbackPos;
         perSegmentWork[segIdx] = 0;
         perSegmentRelatedIds[segIdx] = [segId];
         perSegmentSource[segIdx] = "terrain";
+        perSegmentLowerRelatedIds[segIdx] = [segId];
+        perSegmentLowerSource[segIdx] = "terrain";
         continue;
       }
       if (!charge(1)) {
@@ -421,9 +476,13 @@ export function computeClearanceField(
         perSegmentUpper[segIdx] = effectiveCap;
         perSegmentWitnessS[segIdx] = fallbackS;
         perSegmentWitnessPos[segIdx] = fallbackPos;
+        perSegmentLowerWitnessS[segIdx] = fallbackS;
+        perSegmentLowerWitnessPos[segIdx] = fallbackPos;
         perSegmentWork[segIdx] = 0;
         perSegmentRelatedIds[segIdx] = [segId];
         perSegmentSource[segIdx] = "terrain";
+        perSegmentLowerRelatedIds[segIdx] = [segId];
+        perSegmentLowerSource[segIdx] = "terrain";
         continue;
       }
       let rootEval: {
@@ -441,7 +500,6 @@ export function computeClearanceField(
           severity: "fatal",
           provenance: "PROJECT_ENGINEERING_LIMIT",
           message: `Terrain SDF non-finite at segment ${segIdx}: ${msg}`,
-          location: { s: seg.startS, position: seg.start.position },
           relatedIds: [segId],
         });
         perSegmentLower[segIdx] = CONSERVATIVE_LOWER_M;
@@ -580,7 +638,6 @@ export function computeClearanceField(
               severity: "fatal",
               provenance: "PROJECT_ENGINEERING_LIMIT",
               message: `Terrain SDF non-finite at segment ${segIdx}: ${msg}`,
-              location: { s: node.witnessS, position: node.witnessPos },
               relatedIds: [segId],
             });
             heap.length = 0;
@@ -612,9 +669,13 @@ export function computeClearanceField(
         perSegmentUpper[segIdx] = effectiveCap;
         perSegmentWitnessS[segIdx] = fallbackS;
         perSegmentWitnessPos[segIdx] = fallbackPos;
+        perSegmentLowerWitnessS[segIdx] = fallbackS;
+        perSegmentLowerWitnessPos[segIdx] = fallbackPos;
         perSegmentWork[segIdx] = workUsed;
         perSegmentRelatedIds[segIdx] = [segId];
         perSegmentSource[segIdx] = "terrain";
+        perSegmentLowerRelatedIds[segIdx] = [segId];
+        perSegmentLowerSource[segIdx] = "terrain";
         continue;
       }
       if (abortedDueToBudget || remaining <= 0) {
@@ -631,20 +692,29 @@ export function computeClearanceField(
           perSegmentUpper[segIdx] = effectiveCap;
           perSegmentWitnessS[segIdx] = fallbackS;
           perSegmentWitnessPos[segIdx] = fallbackPos;
+          perSegmentLowerWitnessS[segIdx] = fallbackS;
+          perSegmentLowerWitnessPos[segIdx] = fallbackPos;
           perSegmentWork[segIdx] = workUsed;
           perSegmentRelatedIds[segIdx] = [segId];
           perSegmentSource[segIdx] = "terrain";
+          perSegmentLowerRelatedIds[segIdx] = [segId];
+          perSegmentLowerSource[segIdx] = "terrain";
           continue;
         }
       }
       const globalLower = heap.length > 0 ? heap[0]!.lowerM : bestNode.lowerM;
+      const lowerWitness = heap.length > 0 ? heap[0]! : bestNode;
       perSegmentLower[segIdx] = globalLower;
       perSegmentUpper[segIdx] = bestUpper;
       perSegmentWitnessS[segIdx] = bestNode.witnessS;
       perSegmentWitnessPos[segIdx] = bestNode.witnessPos;
+      perSegmentLowerWitnessS[segIdx] = lowerWitness.witnessS;
+      perSegmentLowerWitnessPos[segIdx] = lowerWitness.witnessPos;
       perSegmentWork[segIdx] = workUsed;
       perSegmentRelatedIds[segIdx] = [segId];
       perSegmentSource[segIdx] = "terrain";
+      perSegmentLowerRelatedIds[segIdx] = [segId];
+      perSegmentLowerSource[segIdx] = "terrain";
       const isCert =
         thresholdsSeparated(
           globalLower,
@@ -679,13 +749,21 @@ export function computeClearanceField(
         track.positions[i * 3 + 1]!,
         track.positions[i * 3 + 2]!,
       );
+      perSegmentLowerWitnessS[i] = track.distances[i]!;
+      perSegmentLowerWitnessPos[i] = vec3(
+        track.positions[i * 3]!,
+        track.positions[i * 3 + 1]!,
+        track.positions[i * 3 + 2]!,
+      );
       perSegmentWork[i] = 0;
       perSegmentRelatedIds[i] = [idForSegment(i)];
       perSegmentSource[i] = terrainBroadPhaseProven ? "cap" : "terrain";
+      perSegmentLowerRelatedIds[i] = [idForSegment(i)];
+      perSegmentLowerSource[i] = terrainBroadPhaseProven ? "cap" : "terrain";
     }
   }
 
-  const localityM = nextUp((2 * radius + effectiveCap) * 4);
+  const localityM = nextUp(2 * radius);
   let cellSize = 1;
   try {
     cellSize = nextUp(Math.max(1, effectiveCap));
@@ -748,16 +826,27 @@ export function computeClearanceField(
             const key = `${x},${y},${z}`;
             const list = cellMap.get(key);
             if (!list) continue;
-            for (const j of list) if (j > i) candSet.add(j);
+            for (const j of list) {
+              if (!charge(1))
+                throw new RangeError("work budget exhausted on bucket visits");
+              if (j > i) candSet.add(j);
+            }
           }
         }
       }
       if (!charge(candSet.size))
         throw new RangeError("work budget exhausted on candidate visits");
       const sorted = [...candSet].sort((a, b) => a - b);
+      if (sorted.length > 1) {
+        const sortCost =
+          sorted.length * Math.ceil(Math.log2(sorted.length + 1));
+        if (!charge(sortCost))
+          throw new RangeError("work budget exhausted on candidate sort");
+      }
       for (const j of sorted) {
         const pairKey = `${i}:${j}`;
         if (seen.has(pairKey)) continue;
+        if (!charge(1)) throw new RangeError("work budget exhausted on dedup");
         seen.add(pairKey);
         const aabbA = sweptAabbs[i]!;
         const aabbB = sweptAabbs[j]!;
@@ -770,8 +859,16 @@ export function computeClearanceField(
         };
         const distLower = nextDown(Math.hypot(gap(0), gap(1), gap(2)));
         if (distLower > effectiveCap) continue;
+        if (!charge(1))
+          throw new RangeError("work budget exhausted on candidate insertion");
         candidatePairs.push([i, j]);
       }
+    }
+    if (candidatePairs.length > 1) {
+      const pairSortCost =
+        candidatePairs.length * Math.ceil(Math.log2(candidatePairs.length + 1));
+      if (!charge(pairSortCost))
+        throw new RangeError("work budget exhausted on pair sort");
     }
     candidatePairs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   } catch (e) {
@@ -791,6 +888,14 @@ export function computeClearanceField(
     }
     for (let i = 0; i < count - 1; i++) {
       perSegmentLower[i] = CONSERVATIVE_LOWER_M;
+      perSegmentLowerRelatedIds[i] = [idForSegment(i)];
+      perSegmentLowerSource[i] = "terrain";
+      perSegmentLowerWitnessS[i] = track.distances[i]!;
+      perSegmentLowerWitnessPos[i] = vec3(
+        track.positions[i * 3]!,
+        track.positions[i * 3 + 1]!,
+        track.positions[i * 3 + 2]!,
+      );
     }
   }
 
@@ -816,8 +921,16 @@ export function computeClearanceField(
           idForSegment(aIdx),
           idForSegment(bIdx),
         ]);
-        for (let i = 0; i < count - 1; i++)
+        for (let i = 0; i < count - 1; i++) {
           perSegmentLower[i] = CONSERVATIVE_LOWER_M;
+          perSegmentLowerRelatedIds[i] = [
+            idForSegment(aIdx),
+            idForSegment(bIdx),
+          ];
+          perSegmentLowerSource[i] = "self";
+          perSegmentLowerWitnessS[i] = sweptSegments[aIdx]!.startS;
+          perSegmentLowerWitnessPos[i] = sweptSegments[aIdx]!.start.position;
+        }
         break;
       }
       if (!charge(1)) {
@@ -825,8 +938,16 @@ export function computeClearanceField(
           idForSegment(aIdx),
           idForSegment(bIdx),
         ]);
-        for (let i = 0; i < count - 1; i++)
+        for (let i = 0; i < count - 1; i++) {
           perSegmentLower[i] = CONSERVATIVE_LOWER_M;
+          perSegmentLowerRelatedIds[i] = [
+            idForSegment(aIdx),
+            idForSegment(bIdx),
+          ];
+          perSegmentLowerSource[i] = "self";
+          perSegmentLowerWitnessS[i] = sweptSegments[aIdx]!.startS;
+          perSegmentLowerWitnessPos[i] = sweptSegments[aIdx]!.start.position;
+        }
         break;
       }
       let res: ReturnType<typeof certifiedSweptDistance>;
@@ -836,11 +957,26 @@ export function computeClearanceField(
           resolutionM: CERTIFICATE_RESOLUTION_M,
           localityM,
           ...(closed ? { closed: true, trackLengthM: track.totalLength } : {}),
+          separationThresholds: allThresholdsForSeparation,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         perSegmentLower[aIdx] = CONSERVATIVE_LOWER_M;
         perSegmentLower[bIdx] = CONSERVATIVE_LOWER_M;
+        perSegmentLowerRelatedIds[aIdx] = [
+          idForSegment(aIdx),
+          idForSegment(bIdx),
+        ];
+        perSegmentLowerRelatedIds[bIdx] = [
+          idForSegment(aIdx),
+          idForSegment(bIdx),
+        ];
+        perSegmentLowerSource[aIdx] = "self";
+        perSegmentLowerSource[bIdx] = "self";
+        perSegmentLowerWitnessS[aIdx] = segA.startS;
+        perSegmentLowerWitnessS[bIdx] = segB.startS;
+        perSegmentLowerWitnessPos[aIdx] = segA.start.position;
+        perSegmentLowerWitnessPos[bIdx] = segB.start.position;
         diagnostics.push({
           code: "CLEARANCE_UNCERTIFIED",
           severity: "fatal",
@@ -855,13 +991,35 @@ export function computeClearanceField(
           idForSegment(aIdx),
           idForSegment(bIdx),
         ]);
-        for (let i = 0; i < count - 1; i++)
+        for (let i = 0; i < count - 1; i++) {
           perSegmentLower[i] = CONSERVATIVE_LOWER_M;
+          perSegmentLowerRelatedIds[i] = [
+            idForSegment(aIdx),
+            idForSegment(bIdx),
+          ];
+          perSegmentLowerSource[i] = "self";
+          perSegmentLowerWitnessS[i] = sweptSegments[aIdx]!.startS;
+          perSegmentLowerWitnessPos[i] = sweptSegments[aIdx]!.start.position;
+        }
         break;
       }
       if (!res.ok) {
         perSegmentLower[aIdx] = CONSERVATIVE_LOWER_M;
         perSegmentLower[bIdx] = CONSERVATIVE_LOWER_M;
+        perSegmentLowerRelatedIds[aIdx] = [
+          idForSegment(aIdx),
+          idForSegment(bIdx),
+        ];
+        perSegmentLowerRelatedIds[bIdx] = [
+          idForSegment(aIdx),
+          idForSegment(bIdx),
+        ];
+        perSegmentLowerSource[aIdx] = "self";
+        perSegmentLowerSource[bIdx] = "self";
+        perSegmentLowerWitnessS[aIdx] = segA.startS;
+        perSegmentLowerWitnessS[bIdx] = segB.startS;
+        perSegmentLowerWitnessPos[aIdx] = segA.start.position;
+        perSegmentLowerWitnessPos[bIdx] = segB.start.position;
         emitBudgetFatal(undefined, undefined, undefined, hard, [
           idForSegment(aIdx),
           idForSegment(bIdx),
@@ -871,7 +1029,17 @@ export function computeClearanceField(
       if (res.excluded) continue;
       const lower = res.lowerM;
       const upper = res.upperM;
-      if (lower < perSegmentLower[aIdx]!) perSegmentLower[aIdx] = lower;
+      if (lower < perSegmentLower[aIdx]!) {
+        perSegmentLower[aIdx] = lower;
+        perSegmentLowerRelatedIds[aIdx] = [
+          idForSegment(aIdx),
+          idForSegment(bIdx),
+        ];
+        perSegmentLowerSource[aIdx] = "self";
+        perSegmentLowerWitnessS[aIdx] =
+          segA.startS + (segA.endS - segA.startS) * res.witnessU;
+        perSegmentLowerWitnessPos[aIdx] = res.pointA;
+      }
       if (upper < perSegmentUpper[aIdx]!) {
         perSegmentUpper[aIdx] = upper;
         perSegmentWitnessS[aIdx] =
@@ -880,7 +1048,17 @@ export function computeClearanceField(
         perSegmentRelatedIds[aIdx] = [idForSegment(aIdx), idForSegment(bIdx)];
         perSegmentSource[aIdx] = "self";
       }
-      if (lower < perSegmentLower[bIdx]!) perSegmentLower[bIdx] = lower;
+      if (lower < perSegmentLower[bIdx]!) {
+        perSegmentLower[bIdx] = lower;
+        perSegmentLowerRelatedIds[bIdx] = [
+          idForSegment(aIdx),
+          idForSegment(bIdx),
+        ];
+        perSegmentLowerSource[bIdx] = "self";
+        perSegmentLowerWitnessS[bIdx] =
+          segB.startS + (segB.endS - segB.startS) * res.witnessV;
+        perSegmentLowerWitnessPos[bIdx] = res.pointB;
+      }
       if (upper < perSegmentUpper[bIdx]!) {
         perSegmentUpper[bIdx] = upper;
         perSegmentWitnessS[bIdx] =
@@ -903,6 +1081,14 @@ export function computeClearanceField(
   );
   let globalRelatedIds: readonly string[] = [idForSegment(0)];
   let globalSource: "terrain" | "self" | "cap" = "terrain";
+  let globalLowerRelatedIds: readonly string[] = [idForSegment(0)];
+  let globalLowerSource: "terrain" | "self" | "cap" = "terrain";
+  let globalLowerWitnessS = track.distances[0]!;
+  let globalLowerWitnessPosition: Vec3 = vec3(
+    track.positions[0]!,
+    track.positions[1]!,
+    track.positions[2]!,
+  );
 
   for (let i = 0; i < count - 1; i++) {
     let lower = perSegmentLower[i]!;
@@ -932,7 +1118,17 @@ export function computeClearanceField(
       certified,
       source,
     });
-    if (lower < globalLowerM) globalLowerM = lower;
+    if (lower < globalLowerM) {
+      const lowerRelated = perSegmentLowerRelatedIds[i] ?? relatedIds;
+      const lowerSrc = perSegmentLowerSource[i] ?? source;
+      const lowerWS = perSegmentLowerWitnessS[i] ?? witnessS;
+      const lowerWP = perSegmentLowerWitnessPos[i] ?? witnessPos;
+      globalLowerM = lower;
+      globalLowerRelatedIds = Object.freeze([...lowerRelated]);
+      globalLowerSource = lowerSrc;
+      globalLowerWitnessS = lowerWS;
+      globalLowerWitnessPosition = lowerWP;
+    }
     if (upper < globalUpperM) {
       globalUpperM = upper;
       globalWitnessS = witnessS;
@@ -943,6 +1139,8 @@ export function computeClearanceField(
   }
   if (!Number.isFinite(globalLowerM)) globalLowerM = CONSERVATIVE_LOWER_M;
   if (!Number.isFinite(globalUpperM)) globalUpperM = effectiveCap;
+  if (!Number.isFinite(globalLowerWitnessS))
+    globalLowerWitnessS = track.distances[0]!;
   return {
     track,
     segments: Object.freeze(segments),
@@ -952,6 +1150,10 @@ export function computeClearanceField(
     globalWitnessPosition,
     globalRelatedIds: Object.freeze([...globalRelatedIds]),
     globalSource,
+    globalLowerRelatedIds: Object.freeze([...globalLowerRelatedIds]),
+    globalLowerSource,
+    globalLowerWitnessS,
+    globalLowerWitnessPosition,
     effectiveCap,
     diagnostics: Object.freeze(diagnostics),
     work: totalWork,
@@ -1011,16 +1213,30 @@ export function projectClearanceDiagnostics(
         ],
       });
     } else {
-      diagnostics.push({
-        code: "CLEARANCE_UNCERTIFIED",
-        severity: "fatal",
-        provenance: "PROJECT_ENGINEERING_LIMIT",
-        message: `Clearance uncertified straddling threshold ${limit.toFixed(6)} bracket [${field.globalLowerM.toFixed(6)}, ${field.globalUpperM.toFixed(6)}]`,
-        relatedIds: [
-          ...field.globalRelatedIds,
-          ...(c.id !== defaultConstraint.id ? [c.id] : []),
-        ],
-      });
+      const lowerIds = field.globalLowerRelatedIds;
+      if (c.hard) {
+        diagnostics.push({
+          code: "CLEARANCE_UNCERTIFIED",
+          severity: "fatal",
+          provenance: "PROJECT_ENGINEERING_LIMIT",
+          message: `Clearance uncertified straddling threshold ${limit.toFixed(6)} bracket [${field.globalLowerM.toFixed(6)}, ${field.globalUpperM.toFixed(6)}]`,
+          relatedIds: [
+            ...lowerIds,
+            ...(c.id !== defaultConstraint.id ? [c.id] : []),
+          ],
+        });
+      } else {
+        diagnostics.push({
+          code: "CLEARANCE_UNCERTIFIED",
+          severity: "warning",
+          provenance: "DESIGN_ASSUMPTION",
+          message: `Clearance uncertified straddling threshold ${limit.toFixed(6)} bracket [${field.globalLowerM.toFixed(6)}, ${field.globalUpperM.toFixed(6)}]`,
+          relatedIds: [
+            ...lowerIds,
+            ...(c.id !== defaultConstraint.id ? [c.id] : []),
+          ],
+        });
+      }
     }
   }
   return Object.freeze(diagnostics);

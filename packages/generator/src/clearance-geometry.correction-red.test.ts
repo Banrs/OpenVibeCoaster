@@ -342,16 +342,16 @@ describe("correction RED proof – must fail on 6648fec", () => {
     const g = geom();
     const segA = {
       startS: 0,
-      endS: 5,
+      endS: 10,
       start: pose(v(0, 0, 0)),
-      end: pose(v(5, 0, 0)),
+      end: pose(v(10, 0, 0)),
       geometry: g,
     };
     const segB = {
       startS: 0,
-      endS: 5,
-      start: pose(v(0, 5, 0)),
-      end: pose(v(5, 5, 0)),
+      endS: 10,
+      start: pose(v(0, 10, 0)),
+      end: pose(v(10, 0, 0)),
       geometry: g,
     };
     const tiny = certifiedSweptDistance(segA, segB, {

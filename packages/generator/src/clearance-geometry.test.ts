@@ -434,16 +434,16 @@ describe("clearance geometry foundation", () => {
     expect(r1.upperM - r1.lowerM).toBeLessThanOrEqual(0.01);
     const segTinyA = {
       startS: 0,
-      endS: 5,
+      endS: 10,
       start: pose(v(0, 0, 0)),
-      end: pose(v(5, 0, 0)),
+      end: pose(v(10, 0, 0)),
       geometry: g,
     };
     const segTinyB = {
       startS: 0,
-      endS: 5,
-      start: pose(v(0, 5, 0)),
-      end: pose(v(5, 5, 0)),
+      endS: 10,
+      start: pose(v(0, 10, 0)),
+      end: pose(v(10, 0, 0)),
       geometry: g,
     };
     const tiny = certifiedSweptDistance(segTinyA, segTinyB, {

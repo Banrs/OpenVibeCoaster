@@ -1,4 +1,4 @@
-import { vec3, type Vec3 } from "@openvibecoaster/core";
+import { interpolateTrackFrame, vec3, type Vec3 } from "@openvibecoaster/core";
 import { nextDown, nextUp } from "./polynomial-bounds";
 export interface ClearanceTrainGeometry {
   halfWidthM: number;
@@ -555,60 +555,6 @@ function quatFromFrame(b: Vec3, n: Vec3, t: Vec3): Quat {
 function quatDot(a: Quat, b: Quat): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
 }
-function quatSlerp(a: Quat, b: Quat, t: number): Quat {
-  let d = quatDot(a, b);
-  let bx = b[0],
-    by = b[1],
-    bz = b[2],
-    bw = b[3];
-  if (d < 0) {
-    d = -d;
-    bx = -bx;
-    by = -by;
-    bz = -bz;
-    bw = -bw;
-  }
-  d = Math.max(-1, Math.min(1, d));
-  if (d > 0.9995)
-    return quatNormalize([
-      a[0] + t * (bx - a[0]),
-      a[1] + t * (by - a[1]),
-      a[2] + t * (bz - a[2]),
-      a[3] + t * (bw - a[3]),
-    ]);
-  const th0 = Math.acos(d),
-    th = th0 * t,
-    sTh = Math.sin(th),
-    sTh0 = Math.sin(th0);
-  const s0 = Math.cos(th) - (d * sTh) / sTh0,
-    s1 = sTh / sTh0;
-  return quatNormalize([
-    a[0] * s0 + bx * s1,
-    a[1] * s0 + by * s1,
-    a[2] * s0 + bz * s1,
-    a[3] * s0 + bw * s1,
-  ]);
-}
-function quatToFrame(q: Quat): { b: Vec3; n: Vec3; t: Vec3 } {
-  const x = q[0],
-    y = q[1],
-    z = q[2],
-    w = q[3];
-  const xx = x * x,
-    yy = y * y,
-    zz = z * z,
-    xy = x * y,
-    xz = x * z,
-    yz = y * z,
-    wx = w * x,
-    wy = w * y,
-    wz = w * z;
-  return {
-    t: vec3(1 - 2 * (yy + zz), 2 * (xy + wz), 2 * (xz - wy)),
-    n: vec3(2 * (xy - wz), 1 - 2 * (xx + zz), 2 * (yz + wx)),
-    b: vec3(2 * (xz + wy), 2 * (yz - wx), 1 - 2 * (xx + yy)),
-  };
-}
 export function interpolatePose(
   s: SweptClearanceSegment,
   t: number,
@@ -621,11 +567,21 @@ export function interpolatePose(
     s.start.position[1] + (s.end.position[1] - s.start.position[1]) * tt,
     s.start.position[2] + (s.end.position[2] - s.start.position[2]) * tt,
   );
-  const qa = quatFromFrame(s.start.binormal, s.start.normal, s.start.tangent);
-  const qb = quatFromFrame(s.end.binormal, s.end.normal, s.end.tangent);
-  const q = quatSlerp(qa, qb, tt);
-  const f = quatToFrame(q);
-  return { position: pos, tangent: f.t, normal: f.n, binormal: f.b };
+  const frame = interpolateTrackFrame(
+    s.start.tangent,
+    s.start.normal,
+    s.start.binormal,
+    s.end.tangent,
+    s.end.normal,
+    s.end.binormal,
+    tt,
+  );
+  return {
+    position: pos,
+    tangent: frame.tangent,
+    normal: frame.normal,
+    binormal: frame.binormal,
+  };
 }
 function conservativeRadius(g: ClearanceTrainGeometry): number {
   const hx = g.halfWidthM;
@@ -793,10 +749,65 @@ export function closedArcIntervalDistance(
   }
   return { min, max };
 }
+function vecEqual(a: Vec3, b: Vec3): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+function isConstantOrientation(seg: SweptClearanceSegment): boolean {
+  return (
+    vecEqual(seg.start.tangent, seg.end.tangent) &&
+    vecEqual(seg.start.normal, seg.end.normal) &&
+    vecEqual(seg.start.binormal, seg.end.binormal)
+  );
+}
+function orientedBoxAabbOutward(box: OrientedBox): { min: Vec3; max: Vec3 } {
+  const c = box.center;
+  const ax = box.axes;
+  const he = box.halfExtents;
+  let min0: number, min1: number, min2: number;
+  let max0: number, max1: number, max2: number;
+  for (let j = 0 as 0 | 1 | 2; j < 3; j += 1) {
+    const term0 = nextUp(Math.abs(ax[0]![j]!) * he[0]!);
+    const term1 = nextUp(Math.abs(ax[1]![j]!) * he[1]!);
+    const term2 = nextUp(Math.abs(ax[2]![j]!) * he[2]!);
+    const projUp = nextUp(nextUp(term0 + term1) + term2);
+    if (j === 0) {
+      min0 = nextDown(c[0]! - projUp);
+      max0 = nextUp(c[0]! + projUp);
+    } else if (j === 1) {
+      min1 = nextDown(c[1]! - projUp);
+      max1 = nextUp(c[1]! + projUp);
+    } else {
+      min2 = nextDown(c[2]! - projUp);
+      max2 = nextUp(c[2]! + projUp);
+    }
+  }
+  return {
+    min: vec3(min0!, min1!, min2!),
+    max: vec3(max0!, max1!, max2!),
+  };
+}
 export function sweptAabb(seg: SweptClearanceSegment): {
   min: Vec3;
   max: Vec3;
 } {
+  if (isConstantOrientation(seg)) {
+    const box0 = createOrientedBoxFastInternal(seg.start, seg.geometry);
+    const box1 = createOrientedBoxFastInternal(seg.end, seg.geometry);
+    const aabb0 = orientedBoxAabbOutward(box0);
+    const aabb1 = orientedBoxAabbOutward(box1);
+    return {
+      min: vec3(
+        nextDown(Math.min(aabb0.min[0]!, aabb1.min[0]!)),
+        nextDown(Math.min(aabb0.min[1]!, aabb1.min[1]!)),
+        nextDown(Math.min(aabb0.min[2]!, aabb1.min[2]!)),
+      ),
+      max: vec3(
+        nextUp(Math.max(aabb0.max[0]!, aabb1.max[0]!)),
+        nextUp(Math.max(aabb0.max[1]!, aabb1.max[1]!)),
+        nextUp(Math.max(aabb0.max[2]!, aabb1.max[2]!)),
+      ),
+    };
+  }
   const r = conservativeRadius(seg.geometry);
   const rUp = nextUp(r);
   return {
@@ -811,6 +822,30 @@ export function sweptAabb(seg: SweptClearanceSegment): {
       nextUp(Math.max(seg.start.position[2], seg.end.position[2]) + rUp),
     ),
   };
+}
+function sweptAabbGapLower(
+  a: { min: Vec3; max: Vec3 },
+  b: { min: Vec3; max: Vec3 },
+): number {
+  let gx = 0;
+  let gy = 0;
+  let gz = 0;
+  if (a.max[0]! < b.min[0]!) gx = nextDown(b.min[0]! - nextUp(a.max[0]!));
+  else if (b.max[0]! < a.min[0]!) gx = nextDown(a.min[0]! - nextUp(b.max[0]!));
+  if (a.max[1]! < b.min[1]!) gy = nextDown(b.min[1]! - nextUp(a.max[1]!));
+  else if (b.max[1]! < a.min[1]!) gy = nextDown(a.min[1]! - nextUp(b.max[1]!));
+  if (a.max[2]! < b.min[2]!) gz = nextDown(b.min[2]! - nextUp(a.max[2]!));
+  else if (b.max[2]! < a.min[2]!) gz = nextDown(a.min[2]! - nextUp(b.max[2]!));
+  if (gx < 0) gx = 0;
+  if (gy < 0) gy = 0;
+  if (gz < 0) gz = 0;
+  if (gx === 0 && gy === 0 && gz === 0) return 0;
+  const sqX = nextDown(gx * gx);
+  const sqY = nextDown(gy * gy);
+  const sqZ = nextDown(gz * gz);
+  const sum = nextDown(nextDown(sqX + sqY) + sqZ);
+  if (sum <= 0) return 0;
+  return nextDown(Math.sqrt(sum));
 }
 function sInterval(
   s: SweptClearanceSegment,
@@ -872,6 +907,7 @@ export function certifiedSweptDistance(
     localityM?: number;
     closed?: boolean;
     trackLengthM?: number;
+    readonly separationThresholds?: readonly number[];
   },
 ): CertifiedDistanceResult {
   if (!Number.isSafeInteger(opts.maxWork) || opts.maxWork < 1)
@@ -891,6 +927,14 @@ export function certifiedSweptDistance(
     finiteScalar(opts.trackLengthM!, "trackLengthM");
     if (!(opts.trackLengthM! > 0))
       throw new RangeError("trackLengthM must be positive");
+  }
+  const separationThresholds = opts.separationThresholds ?? [];
+  if (!Array.isArray(separationThresholds))
+    throw new RangeError("separationThresholds must be array");
+  for (const t of separationThresholds) {
+    finiteScalar(t, "separationThreshold");
+    if (t < 0 || !Number.isFinite(t))
+      throw new RangeError("separationThreshold must be non-negative finite");
   }
   finiteScalar(segA.startS, "a");
   finiteScalar(segA.endS, "a");
@@ -913,6 +957,7 @@ export function certifiedSweptDistance(
   }
   const invA = getSegmentInvariants(segA);
   const invB = getSegmentInvariants(segB);
+  const aabbLower = sweptAabbGapLower(sweptAabb(segA), sweptAabb(segB));
   type QueueNode = {
     u0: number;
     u1: number;
@@ -1043,7 +1088,11 @@ export function certifiedSweptDistance(
         ),
       );
     } catch (e) {
-      if (e instanceof RangeError && e.message.includes("SAT ambiguous")) {
+      if (
+        e instanceof RangeError &&
+        (e.message.includes("SAT ambiguous") ||
+          e.message.includes("SAT intersect but no witness"))
+      ) {
         return { kind: "uncertain" };
       }
       throw e;
@@ -1249,9 +1298,39 @@ export function certifiedSweptDistance(
       work,
     };
   }
+  const thresholdsSeparatedForEarlyExit = (
+    lower: number,
+    upper: number,
+  ): boolean => {
+    for (const t of separationThresholds) {
+      if (lower >= t) continue;
+      if (upper < t) continue;
+      return false;
+    }
+    return true;
+  };
   while (heap.length > 0) {
-    const globalLower = heapPeek()!.lower;
+    const heapLower = heapPeek()!.lower;
+    const globalLower = Math.max(aabbLower, heapLower);
     if (bestWitness && bestUpper - globalLower <= opts.resolutionM) {
+      return {
+        ok: true,
+        excluded: false,
+        lowerM: globalLower,
+        upperM: bestUpper,
+        witnessU: bestWitness.wU,
+        witnessV: bestWitness.wV,
+        pointA: vec3(bestWitness.pa[0], bestWitness.pa[1], bestWitness.pa[2]),
+        pointB: vec3(bestWitness.pb[0], bestWitness.pb[1], bestWitness.pb[2]),
+        work,
+      };
+    }
+    if (
+      bestWitness &&
+      Number.isFinite(bestUpper) &&
+      separationThresholds.length > 0 &&
+      thresholdsSeparatedForEarlyExit(globalLower, bestUpper)
+    ) {
       return {
         ok: true,
         excluded: false,

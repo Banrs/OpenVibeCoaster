@@ -105,6 +105,17 @@ export interface EnvironmentRaycast {
   readonly point: Vec3;
   readonly normal: Vec3;
 }
+/**
+ * Environment signed-distance query for terrain clearance certification.
+ *
+ * Contract: `signedDistance` MUST return a finite conservative Euclidean
+ * signed-distance lower bound (negative inside, positive outside) that is
+ * 1-Lipschitz (|d(p)-d(q)| ≤ |p-q|) for the certificate to be sound. Any
+ * implementation that violates finiteness, conservatism, or Lipschitz
+ * invalidates the proof. Callers must treat exceptions/failures as
+ * conservative unknown and MUST NOT fabricate `actual`, `margin`, or a
+ * precise `location` from a failed query.
+ */
 export interface EnvironmentQuery {
   signedDistance(point: Vec3): number;
   sampleSolid?: (point: Vec3) => number;

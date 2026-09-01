@@ -1719,6 +1719,8 @@ const buildFileResult = (
   const explicitConstraintDescriptors: import("./clearance-field.js").ClearanceConstraintDescriptor[] =
     [];
   const explicitValues: number[] = [];
+  const hardValues: number[] = [];
+  const softValues: number[] = [];
   const validationDiagnostics: Diagnostic[] = [];
   for (const c of intent.constraints) {
     if (c.kind !== "track-clearance") continue;
@@ -1734,9 +1736,12 @@ const buildFileResult = (
       continue;
     }
     explicitValues.push(v);
+    const isHard = c.hard !== false;
+    if (isHard) hardValues.push(v as number);
+    else softValues.push(v as number);
     explicitConstraintDescriptors.push({
       id: c.id,
-      hard: c.hard !== false,
+      hard: isHard,
       threshold: v as number,
     });
   }
@@ -1753,7 +1758,8 @@ const buildFileResult = (
         environment: options.environment,
         closed: isClosedChain(evaluation.elements),
         hardClearanceM: 0.5,
-        explicitThresholds: explicitValues,
+        explicitThresholds: hardValues,
+        softThresholds: softValues,
         displayCapM: displayCap,
         segmentIds,
       });
@@ -2046,6 +2052,8 @@ const generationWithSpans = (
   const explicitConstraintDescriptors: import("./clearance-field.js").ClearanceConstraintDescriptor[] =
     [];
   const explicitValues: number[] = [];
+  const hardValues2: number[] = [];
+  const softValues2: number[] = [];
   const validationDiagnostics: Diagnostic[] = [];
   for (const c of intent.constraints) {
     if (c.kind !== "track-clearance") continue;
@@ -2061,9 +2069,12 @@ const generationWithSpans = (
       continue;
     }
     explicitValues.push(v as number);
+    const isHard = c.hard !== false;
+    if (isHard) hardValues2.push(v as number);
+    else softValues2.push(v as number);
     explicitConstraintDescriptors.push({
       id: c.id,
-      hard: c.hard !== false,
+      hard: isHard,
       threshold: v as number,
     });
   }
@@ -2080,7 +2091,8 @@ const generationWithSpans = (
       environment,
       closed: isClosedChain(resultElements),
       hardClearanceM: 0.5,
-      explicitThresholds: explicitValues,
+      explicitThresholds: hardValues2,
+      softThresholds: softValues2,
       displayCapM: displayCap,
       segmentIds: segmentIdsForField,
     });

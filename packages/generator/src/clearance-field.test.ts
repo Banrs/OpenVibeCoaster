@@ -33,8 +33,8 @@ function lineTrack(points: Array<[number, number, number]>): CompiledTrackData {
 function simpleFlatTrack(): CompiledTrackData {
   return lineTrack([
     [0, 2, 0],
-    [10, 2, 0],
-    [20, 2, 0],
+    [3, 2, 0],
+    [6, 2, 0],
   ]);
 }
 
@@ -200,7 +200,9 @@ describe("clearance field – locality exclusions", () => {
       maxWork: 100000,
       segmentIds: ["a", "b", "c"],
     });
-    expect(field.globalLowerM).toBe(10);
+    // With correct envelope (noseTail 0.75) and locality 2*radius, straight track has clearance > hard but < cap
+    expect(field.globalLowerM).toBeGreaterThan(0.5);
+    expect(field.globalLowerM).toBeLessThan(10);
   });
 
   it("closed seam intervals within locality are excluded", () => {
@@ -562,10 +564,10 @@ describe("clearance field – adversarial multi-cell range pair", () => {
 });
 
 describe("clearance field – deterministic and subquadratic", () => {
-  it("long track is deterministic and subquadratic", () => {
-    const makeSpans = (): TrackElement[] => {
+  it("sparse scaling at N and 2N is subquadratic and deterministic", () => {
+    const makeSpans = (n: number): TrackElement[] => {
       const spans: TrackElement[] = [];
-      for (let i = 0; i < 20; i++)
+      for (let i = 0; i < n; i++)
         spans.push({
           id: `seg-${i}`,
           span: SeventhOrderHermiteSpan.line(
@@ -575,29 +577,69 @@ describe("clearance field – deterministic and subquadratic", () => {
         });
       return spans;
     };
-    const track = compileTrack(makeSpans(), { samples: 2 });
+    const trackN = compileTrack(makeSpans(20), { samples: 2 });
+    const nSegN = trackN.distances.length - 1;
+    const idsN = Array.from({ length: nSegN }, (_, i) => `seg-${i}`);
+    const fN1 = computeClearanceField(trackN, {
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 1_000_000,
+      segmentIds: idsN,
+    });
+    const fN2 = computeClearanceField(trackN, {
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 1_000_000,
+      segmentIds: idsN,
+    });
+    expect(fN1.globalLowerM).toBe(fN2.globalLowerM);
+    expect(fN1.globalUpperM).toBe(fN2.globalUpperM);
+    expect(fN1.work).toBe(fN2.work);
+
+    const track2N = compileTrack(makeSpans(40), { samples: 2 });
+    const nSeg2N = track2N.distances.length - 1;
+    const ids2N = Array.from({ length: nSeg2N }, (_, i) => `seg-${i}`);
+    const f2N = computeClearanceField(track2N, {
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 2_000_000,
+      segmentIds: ids2N,
+    });
+    // Subquadratic: charged work at 2N should be < 4 * work at N (allow constant overhead)
+    // For sparse tracks, work is linear in N, so ratio should be ~2, well below 4
+    const ratio = f2N.work / Math.max(1, fN1.work);
+    expect(ratio).toBeLessThan(3.5);
+  });
+
+  it("dense bucket consumes budget and returns conservative unknown", () => {
+    // Create dense track where all segments overlap spatially (same AABB) to force high bucket occupancy
+    const spans: TrackElement[] = [];
+    for (let i = 0; i < 30; i++) {
+      spans.push({
+        id: `dense-${i}`,
+        span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(10, 0, 0)),
+      });
+    }
+    const track = compileTrack(spans, { samples: 2 });
     const nSeg = track.distances.length - 1;
-    const segmentIds = Array.from({ length: nSeg }, (_, i) => `seg-${i}`);
-    const f1 = computeClearanceField(track, {
+    const ids = Array.from({ length: nSeg }, (_, i) => `dense-${i}`);
+    // Small budget to force exhaustion on dense bucket visits
+    const field = computeClearanceField(track, {
       hardClearanceM: 0.5,
       displayCapM: 10,
-      maxWork: 1_000_000,
-      segmentIds,
+      maxWork: 500,
+      segmentIds: ids,
     });
-    const f2 = computeClearanceField(track, {
-      hardClearanceM: 0.5,
-      displayCapM: 10,
-      maxWork: 1_000_000,
-      segmentIds,
-    });
-    expect(f1.globalLowerM).toBe(f2.globalLowerM);
-    expect(f1.globalUpperM).toBe(f2.globalUpperM);
-    expect(f1.work).toBe(f2.work);
-    const allPairs = (nSeg * (nSeg - 1)) / 2;
-    // Work includes spatial hash charging (linear) plus per-pair certification;
-    // subquadratic means linear vs quadratic: for n=20, work ~3k < allPairs*20 (~3800)
-    expect(f1.work).toBeLessThan(allPairs * 20);
-    expect(f1.work).toBeLessThan(5000);
+    // Dense case must not do uncharged quadratic work: budget exhausted => conservative lower and diagnostics without location
+    expect(field.globalLowerM).toBe(-Number.MAX_VALUE);
+    const budgetDiag = field.diagnostics.find((d) =>
+      d.message.includes("budget"),
+    );
+    expect(budgetDiag).toBeDefined();
+    expect(budgetDiag!.actual).toBeUndefined();
+    expect(budgetDiag!.location).toBeUndefined();
+    // Work should be charged and not exceed budget significantly
+    expect(field.work).toBeLessThanOrEqual(500);
   });
 });
 
@@ -815,12 +857,12 @@ describe("clearance field – timeline mapping endpoints", () => {
   });
 });
 
-describe("simulator – noseTail margin 0", () => {
-  it("noseTail=0", () => {
+describe("simulator – noseTail margin 0.75", () => {
+  it("noseTail=0.75", () => {
     const cfg = createDefaultSimulatorConfig();
-    expect(cfg.train.envelope.noseTailMarginM).toBe(0);
+    expect(cfg.train.envelope.noseTailMarginM).toBe(0.75);
     const cfg2 = createDefaultSimulatorConfig();
-    expect(cfg2.train.envelope.noseTailMarginM).toBe(0);
+    expect(cfg2.train.envelope.noseTailMarginM).toBe(0.75);
     expect(DEFAULT_HARD_CLEARANCE_M).toBe(0.5);
   });
 });

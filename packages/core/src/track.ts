@@ -24,6 +24,64 @@ import type { Frame } from "./frames";
 import type { Vec3 } from "./math";
 import type { ParametricSpan } from "./spans";
 
+export function interpolateTrackFrame(
+  tangent0: Vec3,
+  normal0: Vec3,
+  binormal0: Vec3,
+  tangent1: Vec3,
+  normal1: Vec3,
+  binormal1: Vec3,
+  fraction: number,
+): { tangent: Vec3; normal: Vec3; binormal: Vec3 } {
+  const tangent = vec3Normalize(
+    vec3(
+      tangent0[0] * (1 - fraction) + tangent1[0] * fraction,
+      tangent0[1] * (1 - fraction) + tangent1[1] * fraction,
+      tangent0[2] * (1 - fraction) + tangent1[2] * fraction,
+    ),
+  );
+  const rawNormal = vec3(
+    normal0[0] * (1 - fraction) + normal1[0] * fraction,
+    normal0[1] * (1 - fraction) + normal1[1] * fraction,
+    normal0[2] * (1 - fraction) + normal1[2] * fraction,
+  );
+  const dot =
+    tangent[0] * rawNormal[0] +
+    tangent[1] * rawNormal[1] +
+    tangent[2] * rawNormal[2];
+  const projectedNormal = vec3(
+    rawNormal[0] - tangent[0] * dot,
+    rawNormal[1] - tangent[1] * dot,
+    rawNormal[2] - tangent[2] * dot,
+  );
+  const rawBinormal = vec3(
+    binormal0[0] * (1 - fraction) + binormal1[0] * fraction,
+    binormal0[1] * (1 - fraction) + binormal1[1] * fraction,
+    binormal0[2] * (1 - fraction) + binormal1[2] * fraction,
+  );
+  const normal =
+    projectedNormal[0] ** 2 +
+      projectedNormal[1] ** 2 +
+      projectedNormal[2] ** 2 >
+    1e-24
+      ? vec3Normalize(projectedNormal)
+      : vec3Normalize(
+          vec3(
+            rawBinormal[1] * tangent[2] - rawBinormal[2] * tangent[1],
+            rawBinormal[2] * tangent[0] - rawBinormal[0] * tangent[2],
+            rawBinormal[0] * tangent[1] - rawBinormal[1] * tangent[0],
+          ),
+        );
+  const binormal = vec3Normalize(
+    vec3(
+      tangent[1] * normal[2] - tangent[2] * normal[1],
+      tangent[2] * normal[0] - tangent[0] * normal[2],
+      tangent[0] * normal[1] - tangent[1] * normal[0],
+    ),
+  );
+  return { tangent, normal, binormal };
+}
+
 export interface TrackElement {
   readonly id: string;
   readonly span: ParametricSpan<Vec3>;
@@ -1359,63 +1417,18 @@ export const sampleCompiledTrack = (
   const { bankDerivative: bankDerivatives } = storage;
   const interpolate = (array: Float64Array): number =>
     array[low]! * (1 - fraction) + array[high]! * fraction;
-  const tangent = vec3Normalize(
+  const { tangent, normal, binormal } = interpolateTrackFrame(
+    vec3(tangents[low * 3]!, tangents[low * 3 + 1]!, tangents[low * 3 + 2]!),
+    vec3(normals[low * 3]!, normals[low * 3 + 1]!, normals[low * 3 + 2]!),
+    vec3(binormals[low * 3]!, binormals[low * 3 + 1]!, binormals[low * 3 + 2]!),
+    vec3(tangents[high * 3]!, tangents[high * 3 + 1]!, tangents[high * 3 + 2]!),
+    vec3(normals[high * 3]!, normals[high * 3 + 1]!, normals[high * 3 + 2]!),
     vec3(
-      tangents[low * 3]! * (1 - fraction) + tangents[high * 3]! * fraction,
-      tangents[low * 3 + 1]! * (1 - fraction) +
-        tangents[high * 3 + 1]! * fraction,
-      tangents[low * 3 + 2]! * (1 - fraction) +
-        tangents[high * 3 + 2]! * fraction,
+      binormals[high * 3]!,
+      binormals[high * 3 + 1]!,
+      binormals[high * 3 + 2]!,
     ),
-  );
-  const rawNormal = vec3(
-    normals[low * 3]! * (1 - fraction) + normals[high * 3]! * fraction,
-    normals[low * 3 + 1]! * (1 - fraction) + normals[high * 3 + 1]! * fraction,
-    normals[low * 3 + 2]! * (1 - fraction) + normals[high * 3 + 2]! * fraction,
-  );
-  const projectedNormal = vec3(
-    rawNormal[0] -
-      tangent[0] *
-        (tangent[0] * rawNormal[0] +
-          tangent[1] * rawNormal[1] +
-          tangent[2] * rawNormal[2]),
-    rawNormal[1] -
-      tangent[1] *
-        (tangent[0] * rawNormal[0] +
-          tangent[1] * rawNormal[1] +
-          tangent[2] * rawNormal[2]),
-    rawNormal[2] -
-      tangent[2] *
-        (tangent[0] * rawNormal[0] +
-          tangent[1] * rawNormal[1] +
-          tangent[2] * rawNormal[2]),
-  );
-  const rawBinormal = vec3(
-    binormals[low * 3]! * (1 - fraction) + binormals[high * 3]! * fraction,
-    binormals[low * 3 + 1]! * (1 - fraction) +
-      binormals[high * 3 + 1]! * fraction,
-    binormals[low * 3 + 2]! * (1 - fraction) +
-      binormals[high * 3 + 2]! * fraction,
-  );
-  const normal =
-    projectedNormal[0] ** 2 +
-      projectedNormal[1] ** 2 +
-      projectedNormal[2] ** 2 >
-    1e-24
-      ? vec3Normalize(projectedNormal)
-      : vec3Normalize(
-          vec3(
-            rawBinormal[1] * tangent[2] - rawBinormal[2] * tangent[1],
-            rawBinormal[2] * tangent[0] - rawBinormal[0] * tangent[2],
-            rawBinormal[0] * tangent[1] - rawBinormal[1] * tangent[0],
-          ),
-        );
-  const binormal = vec3Normalize(
-    vec3(
-      tangent[1] * normal[2] - tangent[2] * normal[1],
-      tangent[2] * normal[0] - tangent[0] * normal[2],
-      tangent[0] * normal[1] - tangent[1] * normal[0],
-    ),
+    fraction,
   );
   const curvatureVector = vec3(
     curvatureVectors[low * 3]! * (1 - fraction) +
