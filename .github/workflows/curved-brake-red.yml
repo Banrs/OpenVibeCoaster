@@ -1,0 +1,28 @@
+name: Curved brake RED
+
+on:
+  push:
+    branches:
+      - codex/curved-brake-red-ci
+
+permissions:
+  contents: read
+
+jobs:
+  focused-red:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install npm 11.17.0
+        run: npm install -g npm@11.17.0
+      - name: Install exact lockfile
+        run: npm ci
+      - name: Prove curved-brake RED
+        run: npx vitest run packages/generator/src/curved-brake-station-target.test.ts --reporter=verbose
