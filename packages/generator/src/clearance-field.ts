@@ -477,6 +477,7 @@ export function computeClearanceField(
   const perSegmentLowerWitnessPos: Vec3[] = Array.from({
     length: count - 1,
   }) as Vec3[];
+  const terrainHardThresholds: readonly number[] = [hard, ...thresholds];
   const allThresholdsForSeparation = [
     hard,
     ...thresholds,
@@ -634,10 +635,7 @@ export function computeClearanceField(
       let bestNode: TerrainHeapNode = heap[0]!;
       const checkCertified = (): boolean => {
         const gl = heap.length > 0 ? heap[0]!.lowerM : bestNode.lowerM;
-        return (
-          thresholdsSeparated(gl, bestUpper, allThresholdsForSeparation) ||
-          gl >= effectiveCap
-        );
+        return thresholdsSeparated(gl, bestUpper, terrainHardThresholds);
       };
       let certified = checkCertified();
       let abortedDueToBudget = false;
@@ -648,9 +646,8 @@ export function computeClearanceField(
           thresholdsSeparated(
             globalLowerHeap,
             bestUpper,
-            allThresholdsForSeparation,
-          ) ||
-          globalLowerHeap >= effectiveCap
+            terrainHardThresholds,
+          )
         ) {
           certified = true;
           break;
@@ -735,13 +732,11 @@ export function computeClearanceField(
         continue;
       }
       if (abortedDueToBudget || remaining <= 0) {
-        const stillUncertified =
-          !thresholdsSeparated(
-            heap.length > 0 ? heap[0]!.lowerM : bestNode.lowerM,
-            bestUpper,
-            allThresholdsForSeparation,
-          ) &&
-          (heap.length > 0 ? heap[0]!.lowerM : bestNode.lowerM) < effectiveCap;
+        const stillUncertified = !thresholdsSeparated(
+          heap.length > 0 ? heap[0]!.lowerM : bestNode.lowerM,
+          bestUpper,
+          terrainHardThresholds,
+        );
         if (stillUncertified) {
           emitBudgetFatal(undefined, undefined, undefined, hard, [segId]);
           perSegmentLower[segIdx] = CONSERVATIVE_LOWER_M;
@@ -771,12 +766,11 @@ export function computeClearanceField(
       perSegmentSource[segIdx] = "terrain";
       perSegmentLowerRelatedIds[segIdx] = [segId];
       perSegmentLowerSource[segIdx] = "terrain";
-      const isCert =
-        thresholdsSeparated(
-          globalLower,
-          bestUpper,
-          allThresholdsForSeparation,
-        ) || globalLower >= effectiveCap;
+      const isCert = thresholdsSeparated(
+        globalLower,
+        bestUpper,
+        terrainHardThresholds,
+      );
       if (!isCert) {
         if (remaining <= 0) {
           emitBudgetFatal(undefined, undefined, undefined, hard, [segId]);
