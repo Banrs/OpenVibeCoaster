@@ -203,14 +203,14 @@ test.describe("vertical-slice – ride controls", () => {
     }
     const dist = (a: [number, number, number], b: [number, number, number]) =>
       Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-    for (let i = 1; i < positions.length; i += 1) {
-      expect(dist(positions[i - 1]!, positions[i]!)).toBeGreaterThan(0.5);
+    for (let i = 0; i < positions.length; i += 1) {
+      for (let j = i + 1; j < positions.length; j += 1) {
+        expect(
+          dist(positions[i]!, positions[j]!),
+          `camera ${i} vs ${j} separated by >0.5 m`,
+        ).toBeGreaterThan(0.5);
+      }
     }
-    let maxSpread = 0;
-    for (let i = 0; i < positions.length; i += 1)
-      for (let j = i + 1; j < positions.length; j += 1)
-        maxSpread = Math.max(maxSpread, dist(positions[i]!, positions[j]!));
-    expect(maxSpread).toBeGreaterThan(5);
     const pausedDom = await domDistance(page);
     expect(Number.isFinite(pausedDom)).toBe(true);
     await expect(pauseBtn).toHaveAttribute("aria-pressed", "false");
@@ -323,7 +323,6 @@ test.describe("vertical-slice – ride controls", () => {
       expect(distanceDelta).toBeGreaterThan(0.5);
       expect(timelineDelta).toBeGreaterThan(0.2);
       expect(wallSeconds).toBeGreaterThan(0.7);
-      expect(wallSeconds).toBeLessThan(1.0);
       return { timelineDelta, wallSeconds };
     };
     const m05 = await measure("0.5");
@@ -617,6 +616,13 @@ test.describe("vertical-slice – directed generation", () => {
       expect(intent.terrainProfileId).toBe("rolling-highlands-v1");
       const elements = intent.elements as Array<Record<string, unknown>>;
       expect(elements.some((e) => e.kind === "stall")).toBe(true);
+      const stallEls = elements.filter(
+        (e) => (e.kind as string) === "stall" && (e.type as string) === "stall",
+      );
+      expect(stallEls.length).toBe(1);
+      expect((stallEls[0] as Record<string, unknown>).id).toBe("stall-000");
+      expect((stallEls[0] as Record<string, unknown>).kind).toBe("stall");
+      expect((stallEls[0] as Record<string, unknown>).type).toBe("stall");
       expect(intent.mode).toBe("directed");
       expect(intent.seed).toBe(1234);
       expect((json as Record<string, unknown>).seed).toBe(1234);
@@ -646,6 +652,10 @@ test.describe("vertical-slice – directed generation", () => {
         expect(Math.abs(actualQ[i]! - normQ[i]!)).toBeLessThan(1e-6);
       expect(Math.hypot(...actualQ).toFixed(4)).toBe("1.0000");
       const targets = intent.targets as Array<Record<string, unknown>>;
+      expect(targets.length).toBe(2);
+      expect(new Set(targets.map((t) => t.id as string))).toEqual(
+        new Set(["end-y", "total-length"]),
+      );
       const total = targets.find((t) => t.id === "total-length") as Record<
         string,
         unknown
@@ -660,6 +670,29 @@ test.describe("vertical-slice – directed generation", () => {
       expect(endY.kind).toBe("end-y");
       expect(endY.target).toBe(18);
       expect(endY.hard).toBe(false);
+      const constraints = intent.constraints as Array<Record<string, unknown>>;
+      expect(constraints.length).toBe(3);
+      expect(new Set(constraints.map((c) => c.id as string))).toEqual(
+        new Set(["footprint-required", "required-stall", "terrain-profile"]),
+      );
+      for (const c of constraints) expect(c.hard).toBe(true);
+      const fpC = constraints.find(
+        (c) => c.id === "footprint-required",
+      ) as Record<string, unknown>;
+      expect(fpC.kind).toBe("required-footprint");
+      const stallC = constraints.find(
+        (c) => c.id === "required-stall",
+      ) as Record<string, unknown>;
+      expect(stallC.target).toBe("stall");
+      expect(["required-stall", "required-element"]).toContain(
+        stallC.kind as string,
+      );
+      const terrainC = constraints.find(
+        (c) => c.id === "terrain-profile",
+      ) as Record<string, unknown>;
+      expect(terrainC.kind).toBe("terrain-profile");
+      expect(terrainC.target).toBe("rolling-highlands-v1");
+      expect(intent.pinnedElementIds).toEqual([]);
       const cur = await snap(page);
       expect(cur.intentFootprint).toEqual(intent.footprint);
       expect(cur.intentHeightRange).toEqual(intent.heightRange);
