@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
 
 vi.mock("./clearance-field.js", async () => {
-  const actual = await vi.importActual("./clearance-field.js") as Record<string, unknown>;
+  const actual = await vi.importActual<typeof import("./clearance-field.js")>("./clearance-field.js");
   return {
-    ...(actual as object),
+    ...actual,
     computeClearanceField: vi.fn(),
   };
 });
 
-import { createDesignIntentV1, vec3 } from "@openvibecoaster/core";
+import { createDesignIntentV1, vec3, type ConstraintV1 } from "@openvibecoaster/core";
 import { generateCoaster } from "./pipeline.js";
 import { computeClearanceField } from "./clearance-field.js";
 import type { ClearanceField } from "./clearance-field.js";
@@ -20,8 +20,8 @@ function alignedField(
   globalUpperM: number,
 ): ClearanceField {
   const n = track.distances.length - 1;
-  const boundaries = track.elementBoundaries as readonly number[];
-  const indices = track.elementIndices as readonly number[];
+  const boundaries: Uint32Array = track.elementBoundaries;
+  const indices: Uint32Array = track.elementIndices;
   const nElements = boundaries.length / 2;
   const segments = Array.from({ length: n }, (_, i) => {
     let ei = -1;
@@ -151,9 +151,9 @@ describe("pipeline candidate skip mocked", () => {
       gates: [],
       targets: [],
       constraints: [
-        { id: "hard-req-stall", kind: "required-stall", hard: true } as unknown as Record<string, unknown>,
-        { id: "hard-clear-1", kind: "track-clearance", value: 1.0, hard: true } as unknown as Record<string, unknown>,
-      ] as never,
+        { id: "hard-req-stall", kind: "required-stall", hard: true },
+        { id: "hard-clear-1", kind: "track-clearance", value: 1.0, hard: true },
+      ] satisfies readonly ConstraintV1[],
       pinnedElementIds: [],
     });
 

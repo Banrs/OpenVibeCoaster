@@ -73,14 +73,16 @@ describe("threshold completeness – display cap and soft prevent premature sepa
       resolutionM: 0.01,
       separationThresholds: [0.5, 10],
     });
-    expect(resHardOnly.ok && !resHardOnly.excluded).toBe(true);
-    expect(resWithDisplay.ok && !resWithDisplay.excluded).toBe(true);
-    if (resHardOnly.ok && !resHardOnly.excluded && resWithDisplay.ok && !resWithDisplay.excluded) {
-      expect(resHardOnly.lowerM).toBeGreaterThanOrEqual(0.5);
-      expect(resWithDisplay.lowerM).toBeGreaterThanOrEqual(0.5);
-      expect(resWithDisplay.lowerM).toBeLessThan(10);
-      expect(resWithDisplay.upperM).toBeLessThan(10);
-    }
+    expect(resHardOnly.ok).toBe(true);
+    expect(resHardOnly.excluded).toBe(false);
+    expect(resWithDisplay.ok).toBe(true);
+    expect(resWithDisplay.excluded).toBe(false);
+    if (!resHardOnly.ok || resHardOnly.excluded) throw new Error("resHardOnly not certified");
+    if (!resWithDisplay.ok || resWithDisplay.excluded) throw new Error("resWithDisplay not certified");
+    expect(resHardOnly.lowerM).toBeGreaterThanOrEqual(0.5);
+    expect(resWithDisplay.lowerM).toBeGreaterThanOrEqual(0.5);
+    expect(resWithDisplay.lowerM).toBeLessThan(10);
+    expect(resWithDisplay.upperM).toBeLessThan(10);
 
     const [segC, segD] = makeOffsetSegments(12.5);
     const resStraddleHard = certifiedSweptDistance(segC, segD, {
@@ -93,15 +95,16 @@ describe("threshold completeness – display cap and soft prevent premature sepa
       resolutionM: 0.01,
       separationThresholds: [0.5, 10],
     });
-    expect(resStraddleHard.ok && !resStraddleHard.excluded).toBe(true);
-    expect(resStraddleFull.ok && !resStraddleFull.excluded).toBe(true);
-    if (resStraddleHard.ok && !resStraddleHard.excluded && resStraddleFull.ok && !resStraddleFull.excluded) {
-      expect(resStraddleHard.lowerM).toBeGreaterThanOrEqual(0.5);
-      const straddlesDisplay = resStraddleFull.lowerM < 10 && resStraddleFull.upperM >= 10;
-      if (straddlesDisplay) {
-        expect(resStraddleFull.work).toBeGreaterThanOrEqual(resStraddleHard.work);
-      }
-    }
+    expect(resStraddleHard.ok).toBe(true);
+    expect(resStraddleHard.excluded).toBe(false);
+    expect(resStraddleFull.ok).toBe(true);
+    expect(resStraddleFull.excluded).toBe(false);
+    if (!resStraddleHard.ok || resStraddleHard.excluded) throw new Error("resStraddleHard not certified");
+    if (!resStraddleFull.ok || resStraddleFull.excluded) throw new Error("resStraddleFull not certified");
+    expect(resStraddleHard.lowerM).toBeGreaterThanOrEqual(0.5);
+    expect(resStraddleFull.lowerM).toBeLessThan(10);
+    expect(resStraddleFull.upperM).toBeGreaterThanOrEqual(10);
+    expect(resStraddleFull.work).toBeGreaterThanOrEqual(resStraddleHard.work);
   });
 
   it("soft threshold prevents premature separation – terrain and self use same complete set", () => {
@@ -180,7 +183,11 @@ describe("threshold completeness – display cap and soft prevent premature sepa
       resolutionM: 0.01,
       separationThresholds: [0.5, 2, 10],
     });
-    expect(resHard.ok && !resHard.excluded).toBe(true);
-    expect(resWithSoft.ok && !resWithSoft.excluded).toBe(true);
+    expect(resHard.ok).toBe(true);
+    expect(resHard.excluded).toBe(false);
+    expect(resWithSoft.ok).toBe(true);
+    expect(resWithSoft.excluded).toBe(false);
+    if (!resHard.ok || resHard.excluded) throw new Error("resHard not certified");
+    if (!resWithSoft.ok || resWithSoft.excluded) throw new Error("resWithSoft not certified");
   });
 });
