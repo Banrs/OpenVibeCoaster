@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import { compileTrack, vec3 } from "@openvibecoaster/core";
-import { RideTimeline } from "@openvibecoaster/simulator";
 import { createRendererController } from "./controller.js";
 import { getCarIndexForCamera, getCameraState } from "./cameras.js";
 import type { RendererHandle } from "./renderer.js";
@@ -54,26 +53,6 @@ function makeCompleteSnapshot(): RidePlaybackSnapshot {
   const tanRear = vec3(1, 0, 0);
   const normRear = vec3(0, 1, 0);
   const binRear = vec3(0, 0, 1);
-  const carPos = (v: ReturnType<typeof vec3>): ReturnType<typeof vec3> => v;
-  const timeline = new RideTimeline({
-    sampleRateHz: 120,
-    timeSeconds: new Float64Array([0, 1]),
-    headDistanceM: new Float64Array([0, 5]),
-    speedMps: new Float64Array([5, 5]),
-    carCount: 3,
-    carPositionsXYZ: new Float64Array(2 * 3 * 3),
-    carTangentsXYZ: new Float64Array(2 * 3 * 3),
-    carNormalsXYZ: new Float64Array(2 * 3 * 3),
-    carBinormalsXYZ: new Float64Array(2 * 3 * 3),
-    perCarVerticalG: new Float64Array(2 * 3),
-    perCarRollRateRadPerSec: new Float64Array(2 * 3),
-    perCarLongitudinalG: new Float64Array(2 * 3),
-    perCarLateralG: new Float64Array(2 * 3),
-    perCarBankRad: new Float64Array(2 * 3),
-    perCarSpecificForceXYZ: new Float64Array(2 * 3 * 3),
-    perCarJerkXYZ: new Float64Array(2 * 3 * 3),
-    frames: [],
-  });
   // Build minimal cars and selections with complete telemetry
   const makeCar = (idx: number, pos: ReturnType<typeof vec3>) => ({
     index: idx,
