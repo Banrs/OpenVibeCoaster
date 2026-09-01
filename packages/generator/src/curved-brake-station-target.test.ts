@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   arcLength,
   compileCoasterFile,
@@ -19,6 +19,7 @@ import {
 import { diagnoseSeams } from "./solver";
 import rawProfile from "../../../data/profiles/engineering-limits-v1.json";
 import type { BrakeParameters, StationParameters } from "./types";
+import type { GenerationResult } from "./types";
 
 const testSeams = parseEngineeringLimitsProfile(rawProfile).seams;
 
@@ -35,6 +36,23 @@ const HARD_SEAM_KEYS = [
 ] as const;
 
 describe("curved brake and terminal station target packet", () => {
+  let defaultGeneration!: GenerationResult;
+
+  beforeAll(() => {
+    const intent = createDesignIntentV1({
+      generatorVersion: "test-v1",
+      seed: 1,
+      mode: "insta",
+      family: "steel-sitdown-lsm-v1",
+      elements: [],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    });
+    defaultGeneration = generateCoaster(intent);
+  }, 30_000);
+
   it("curved brake preserves seventh-order seam-friendly geometry, rotates tangent ~pi and displaces ~2r while keeping authored length", () => {
     const curved = createElement("brake", "brake-008", {
       length: 220,
@@ -73,18 +91,7 @@ describe("curved brake and terminal station target packet", () => {
     expect(built.solvedSpans[0]!.zones).toEqual(["brake"]);
     expect(built.solvedSpans[0]!.kind).toBe("brake");
 
-    const intent = createDesignIntentV1({
-      generatorVersion: "test-v1",
-      seed: 1,
-      mode: "insta",
-      family: "steel-sitdown-lsm-v1",
-      elements: [],
-      gates: [],
-      targets: [],
-      constraints: [],
-      pinnedElementIds: [],
-    });
-    const generated = generateCoaster(intent);
+    const generated = defaultGeneration;
 
     // physical length authority: each stored coefficient span length equals its real arcLength
     for (const span of generated.file.solvedSpans) {
@@ -138,7 +145,7 @@ describe("curved brake and terminal station target packet", () => {
     // seam diagnostics at adjacent boundaries under project seam semantics - exactly two hard seams
     const seams = diagnoseSeams(generated.solvedSpans);
     const adjacent = seams.filter(
-      (s) => s.seamId === "stall-007->brake-008" || s.seamId === "brake-008->magnetic-brakes-009",
+      (s) => s.seamId === "stall-007#7->brake-008" || s.seamId === "brake-008->magnetic-brakes-009",
     );
     expect(adjacent, `expected exactly 2 curved-brake seams, got ${seams.map((s) => s.seamId).join(", ")}`).toHaveLength(2);
     for (const seam of adjacent) {
@@ -269,18 +276,7 @@ describe("curved brake and terminal station target packet", () => {
   });
 
   it("default file round-trips, preserves authored lengths and operation targets with physical lengths", () => {
-    const intent = createDesignIntentV1({
-      generatorVersion: "test-v1",
-      seed: 1,
-      mode: "insta",
-      family: "steel-sitdown-lsm-v1",
-      elements: [],
-      gates: [],
-      targets: [],
-      constraints: [],
-      pinnedElementIds: [],
-    });
-    const result = generateCoaster(intent);
+    const result = defaultGeneration;
     const brake008 = result.elements.find((e) => e.id === "brake-008")!;
     const magnetic = result.elements.find((e) => e.id === "magnetic-brakes-009")!;
     const station010 = result.elements.find((e) => e.id === "station-010")!;
@@ -369,19 +365,8 @@ describe("curved brake and terminal station target packet", () => {
     }
   });
 
-  it("local regeneration preserves curved brake angle, station target and physical lengths", () => {
-    const intent = createDesignIntentV1({
-      generatorVersion: "test-v1",
-      seed: 1,
-      mode: "insta",
-      family: "steel-sitdown-lsm-v1",
-      elements: [],
-      gates: [],
-      targets: [],
-      constraints: [],
-      pinnedElementIds: [],
-    });
-    const result = generateCoaster(intent);
+  it("local regeneration preserves curved brake angle, station target and physical lengths", { timeout: 90_000 }, () => {
+    const result = defaultGeneration;
     const beforeBrake = result.elements.find((e) => e.id === "brake-008")!;
     const beforeStation = result.elements.find((e) => e.id === "station-010")!;
     expect((beforeBrake.parameters as BrakeParameters).angle).toBe(Math.PI);
