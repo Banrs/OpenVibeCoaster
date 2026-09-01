@@ -29,7 +29,9 @@ export const DEFAULT_ENVELOPE: ClearanceTrainGeometry = Object.freeze({
 
 export const DEFAULT_HARD_CLEARANCE_M = 0.5;
 export const CERTIFICATE_RESOLUTION_M = 0.01;
-export const MAX_TERRAIN_WORK_PER_SEGMENT = 512; // bounds proof search, never certifies an unresolved constraint.
+const MAX_TERRAIN_WORK_PER_SEGMENT = 512;
+// Bounds proof search budget per terrain segment.
+// Never certifies an unresolved hard constraint.
 export const DEFAULT_DISPLAY_CAP_M = 10;
 const CONSERVATIVE_LOWER_M = -Number.MAX_VALUE;
 
@@ -653,43 +655,24 @@ export function computeClearanceField(
           certified = true;
           break;
         }
-        if (remaining <= 0) {
-          abortedDueToBudget = true;
-          break;
-        }
-        if (
-          workUsed >= MAX_TERRAIN_WORK_PER_SEGMENT &&
-          !thresholdsSeparated(
-            heap[0]!.lowerM,
-            bestUpper,
-            terrainHardThresholds,
-          )
-        ) {
-          break;
-        }
         const cur = heap[0]!;
         if (cur.lowerM >= bestUpper) {
           pop();
           continue;
         }
+        const midProbe = (cur.u0 + cur.u1) / 2;
+        if (midProbe === cur.u0 || midProbe === cur.u1) break;
+        if (workUsed + 2 > MAX_TERRAIN_WORK_PER_SEGMENT) break;
+        if (!charge(2)) {
+          abortedDueToBudget = true;
+          break;
+        }
         const node = pop();
         const mid = (node.u0 + node.u1) / 2;
-        if (mid === node.u0 || mid === node.u1) break;
         for (const [u0, u1] of [
           [node.u0, mid],
           [mid, node.u1],
         ] as const) {
-          if (workUsed >= MAX_TERRAIN_WORK_PER_SEGMENT) {
-            break;
-          }
-          if (remaining <= 0) {
-            abortedDueToBudget = true;
-            break;
-          }
-          if (!charge(1)) {
-            abortedDueToBudget = true;
-            break;
-          }
           let ev: {
             lowerM: number;
             upperM: number;
@@ -727,7 +710,7 @@ export function computeClearanceField(
           }
           if (child.lowerM < bestUpper) push(child);
         }
-        if (abortedDueToBudget || abortedDueToNonFinite) break;
+        if (abortedDueToNonFinite) break;
         if (heap.length === 0) break;
         if (checkCertified()) certified = true;
       }

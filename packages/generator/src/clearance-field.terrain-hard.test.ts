@@ -103,6 +103,8 @@ describe("clearance field – terrain hard-only certification", () => {
     const seg = field.segments[0]!;
     expect(seg.work).toBeGreaterThan(1);
     expect(seg.work).toBeLessThanOrEqual(512);
+    expect(seg.work % 2).toBe(1);
+    expect(field.work % 2).toBe(1);
     expect(field.work).toBeLessThan(maxWork);
     expect(seg.lowerM).toBeLessThan(8);
     expect(seg.upperM).toBeGreaterThanOrEqual(8);
