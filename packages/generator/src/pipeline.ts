@@ -78,6 +78,11 @@ import type {
   ElementParameterMap,
 } from "./types";
 
+const DEFAULT_PROFILE_VERSION = "project-engineering-limits-v1" as const;
+const DEFAULT_RESEARCH_SNAPSHOT_IDS = Object.freeze(
+  ["records-2026-08-29"] as const,
+);
+
 const toCompileFatalDiagnostic = (
   error: unknown,
   relatedIds: readonly string[] = [],
@@ -1761,8 +1766,10 @@ const buildFileResult = (
     solvedSpans: serializedSpans,
     seed: intent.seed,
     generatorVersion: options.generatorVersion ?? intent.generatorVersion,
-    profileVersion: options.profileVersion ?? "profile-v1",
-    researchSnapshotIds: options.researchSnapshotIds ?? [],
+    profileVersion: options.profileVersion ?? DEFAULT_PROFILE_VERSION,
+    researchSnapshotIds: [
+      ...(options.researchSnapshotIds ?? DEFAULT_RESEARCH_SNAPSHOT_IDS),
+    ],
     compiledDataChecksum: canonicalTrack.checksum,
   });
   const serializedFile = serializeCoasterFileV1(file);
