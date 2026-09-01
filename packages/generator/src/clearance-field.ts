@@ -407,9 +407,11 @@ export function computeClearanceField(
   }
 
   let terrainBroadPhaseProven = false;
+  let envMaxY: number | undefined = undefined;
   if (env?.bounds) {
     try {
       const b = env.bounds();
+      envMaxY = b.max[1]!;
       let minSweptY = Infinity;
       for (let i = 0; i < count - 1; i++)
         minSweptY = Math.min(minSweptY, sweptAabbs[i]!.min[1]!);
@@ -417,6 +419,7 @@ export function computeClearanceField(
       if (proven >= effectiveCap) terrainBroadPhaseProven = true;
     } catch {
       terrainBroadPhaseProven = false;
+      envMaxY = undefined;
     }
   }
 
@@ -460,6 +463,23 @@ export function computeClearanceField(
         track.positions[segIdx * 3 + 2]!,
       );
       const fallbackS = track.distances[segIdx]!;
+      if (envMaxY !== undefined) {
+        const sweptMinY = sweptAabbs[segIdx]!.min[1]!;
+        if (nextDown(sweptMinY - nextUp(envMaxY)) >= effectiveCap) {
+          perSegmentLower[segIdx] = effectiveCap;
+          perSegmentUpper[segIdx] = effectiveCap;
+          perSegmentWitnessS[segIdx] = fallbackS;
+          perSegmentWitnessPos[segIdx] = fallbackPos;
+          perSegmentLowerWitnessS[segIdx] = fallbackS;
+          perSegmentLowerWitnessPos[segIdx] = fallbackPos;
+          perSegmentWork[segIdx] = 0;
+          perSegmentRelatedIds[segIdx] = [segId];
+          perSegmentSource[segIdx] = "cap";
+          perSegmentLowerRelatedIds[segIdx] = [segId];
+          perSegmentLowerSource[segIdx] = "cap";
+          continue;
+        }
+      }
       if (remaining <= 0) {
         emitBudgetFatal(undefined, undefined, undefined, hard, [segId]);
         perSegmentLower[segIdx] = CONSERVATIVE_LOWER_M;

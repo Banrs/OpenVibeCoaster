@@ -309,6 +309,47 @@ const pointSegmentDistance = (point: Vec3, a: Vec3, b: Vec3): number => {
   );
 };
 
+const bvhNextDown = (value: number): number => {
+  if (Number.isNaN(value)) throw new RangeError("bvhNextDown received NaN");
+  if (value === Number.NEGATIVE_INFINITY) return value;
+  if (value === 0) return -Number.MIN_VALUE;
+  floatView.setFloat64(0, value, false);
+  let word = floatView.getBigUint64(0, false);
+  word = value > 0 ? word - 1n : word + 1n;
+  floatView.setBigUint64(0, word, false);
+  return floatView.getFloat64(0, false);
+};
+
+const pointToAabbLower = (point: Vec3, min: Vec3, max: Vec3): number => {
+  let dx = 0;
+  let dy = 0;
+  let dz = 0;
+  if (point[0] < min[0]) dx = bvhNextDown(min[0] - point[0]);
+  else if (point[0] > max[0]) dx = bvhNextDown(point[0] - max[0]);
+  if (point[1] < min[1]) dy = bvhNextDown(min[1] - point[1]);
+  else if (point[1] > max[1]) dy = bvhNextDown(point[1] - max[1]);
+  if (point[2] < min[2]) dz = bvhNextDown(min[2] - point[2]);
+  else if (point[2] > max[2]) dz = bvhNextDown(point[2] - max[2]);
+  if (dx < 0) dx = 0;
+  if (dy < 0) dy = 0;
+  if (dz < 0) dz = 0;
+  if (dx === 0 && dy === 0 && dz === 0) return 0;
+  const dx2 = bvhNextDown(dx * dx);
+  const dy2 = bvhNextDown(dy * dy);
+  const dz2 = bvhNextDown(dz * dz);
+  const sum = bvhNextDown(bvhNextDown(dx2 + dy2) + dz2);
+  if (sum <= 0) return 0;
+  return bvhNextDown(Math.sqrt(sum));
+};
+
+interface BvhNode {
+  readonly min: Vec3;
+  readonly max: Vec3;
+  readonly left: number;
+  readonly right: number;
+  readonly triangles: readonly number[] | undefined;
+}
+
 export class HeightfieldEnvironment implements EnvironmentQuery {
   public readonly width: number;
   public readonly depth: number;
@@ -317,6 +358,11 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
   public readonly origin: readonly [number, number];
   private readonly maximumX: number;
   private readonly maximumZ: number;
+  private readonly triangleList: HeightfieldTriangle[];
+  private readonly triangleAabbs: Array<{ min: Vec3; max: Vec3 }>;
+  private readonly triangleCentroids: Vec3[];
+  private readonly bvhNodes: BvhNode[];
+  private readonly bvhRoot: number;
 
   public constructor(options: HeightfieldOptions) {
     if (options === null || typeof options !== "object")
@@ -401,6 +447,138 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     this.origin = Object.freeze([origin[0], origin[1]]);
     this.maximumX = maximumX;
     this.maximumZ = maximumZ;
+
+    const tris: HeightfieldTriangle[] = [];
+    const aabbs: Array<{ min: Vec3; max: Vec3 }> = [];
+    const centroids: Vec3[] = [];
+    for (let row = 0; row < this.depth - 1; row += 1)
+      for (let column = 0; column < this.width - 1; column += 1)
+        for (const first of [true, false] as const) {
+          const tri = this.buildTriangle(column, row, first);
+          tris.push(tri);
+          const min = vec3(
+            Math.min(tri.a[0], tri.b[0], tri.c[0]),
+            Math.min(tri.a[1], tri.b[1], tri.c[1]),
+            Math.min(tri.a[2], tri.b[2], tri.c[2]),
+          );
+          const max = vec3(
+            Math.max(tri.a[0], tri.b[0], tri.c[0]),
+            Math.max(tri.a[1], tri.b[1], tri.c[1]),
+            Math.max(tri.a[2], tri.b[2], tri.c[2]),
+          );
+          aabbs.push({ min, max });
+          centroids.push(
+            vec3(
+              (tri.a[0] + tri.b[0] + tri.c[0]) / 3,
+              (tri.a[1] + tri.b[1] + tri.c[1]) / 3,
+              (tri.a[2] + tri.b[2] + tri.c[2]) / 3,
+            ),
+          );
+        }
+    this.triangleList = tris;
+    this.triangleAabbs = aabbs;
+    this.triangleCentroids = centroids;
+    const built = this.buildBvh();
+    this.bvhNodes = built.nodes;
+    this.bvhRoot = built.root;
+  }
+
+  private buildTriangle(
+    column: number,
+    row: number,
+    first: boolean,
+  ): HeightfieldTriangle {
+    const p00 = this.surfacePoint(column, row);
+    const p10 = this.surfacePoint(column + 1, row);
+    const p01 = this.surfacePoint(column, row + 1);
+    const p11 = this.surfacePoint(column + 1, row + 1);
+    const xDifference = requireFinite(
+      (first ? p10[1] : p11[1]) - (first ? p00[1] : p01[1]),
+      "Heightfield x difference",
+    );
+    const zDifference = requireFinite(
+      (first ? p11[1] : p01[1]) - (first ? p10[1] : p00[1]),
+      "Heightfield z difference",
+    );
+    const plane = vec3(-xDifference, this.cellSize, -zDifference);
+    return {
+      a: p00,
+      b: first ? p10 : p11,
+      c: first ? p11 : p01,
+      plane,
+      normal: robustNormalize(plane, "Heightfield normal"),
+      column,
+      row,
+      first,
+    };
+  }
+
+  private buildBvh(): { nodes: BvhNode[]; root: number } {
+    const n = this.triangleList.length;
+    const nodes: BvhNode[] = [];
+    const LEAF_SIZE = 8;
+    const build = (indices: number[]): number => {
+      let minX = Infinity;
+      let minY = Infinity;
+      let minZ = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let maxZ = -Infinity;
+      for (const idx of indices) {
+        const ab = this.triangleAabbs[idx]!;
+        minX = Math.min(minX, ab.min[0]);
+        minY = Math.min(minY, ab.min[1]);
+        minZ = Math.min(minZ, ab.min[2]);
+        maxX = Math.max(maxX, ab.max[0]);
+        maxY = Math.max(maxY, ab.max[1]);
+        maxZ = Math.max(maxZ, ab.max[2]);
+      }
+      const min = vec3(minX, minY, minZ);
+      const max = vec3(maxX, maxY, maxZ);
+      if (indices.length <= LEAF_SIZE) {
+        const node: BvhNode = {
+          min,
+          max,
+          left: -1,
+          right: -1,
+          triangles: Object.freeze([...indices]),
+        };
+        const id = nodes.length;
+        nodes.push(node);
+        return id;
+      }
+      const extentX = maxX - minX;
+      const extentY = maxY - minY;
+      const extentZ = maxZ - minZ;
+      let axis: 0 | 1 | 2 = 0;
+      if (extentY > extentX && extentY >= extentZ) axis = 1;
+      else if (extentZ > extentX && extentZ > extentY) axis = 2;
+      const sorted = [...indices].sort((a, b) => {
+        const ca = this.triangleCentroids[a]![axis];
+        const cb = this.triangleCentroids[b]![axis];
+        if (ca < cb) return -1;
+        if (ca > cb) return 1;
+        if (a < b) return -1;
+        if (a > b) return 1;
+        return 0;
+      });
+      const mid = Math.floor(sorted.length / 2);
+      const leftIdx = build(sorted.slice(0, mid));
+      const rightIdx = build(sorted.slice(mid));
+      const node: BvhNode = {
+        min,
+        max,
+        left: leftIdx,
+        right: rightIdx,
+        triangles: undefined,
+      };
+      const id = nodes.length;
+      nodes.push(node);
+      return id;
+    };
+    const all = Array.from({ length: n }, (_, i) => i);
+    const root = build(all);
+    return { nodes, root };
   }
 
   private sample(column: number, row: number): number {
@@ -632,16 +810,89 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return requireDistanceCandidate(Math.hypot(perpendicular, planarDistance));
   }
 
-  private closestSurfaceDistance(point: Vec3): number {
-    let closest = Number.POSITIVE_INFINITY;
-    for (let row = 0; row < this.depth - 1; row += 1)
-      for (let column = 0; column < this.width - 1; column += 1)
-        for (const first of [true, false])
-          closest = minimumDistance(
-            closest,
-            this.triangleDistance(point, this.triangle(column, row, first)),
-          );
+  private closestTriangleDistance(point: Vec3): number {
+    let best = Number.POSITIVE_INFINITY;
+    type HeapEntry = { node: number; lower: number; seq: number };
+    const heap: HeapEntry[] = [];
+    let seq = 0;
+    const rootNode = this.bvhNodes[this.bvhRoot]!;
+    const rootLower = pointToAabbLower(point, rootNode.min, rootNode.max);
+    const push = (nodeIdx: number, lower: number): void => {
+      if (lower >= best) return;
+      heap.push({ node: nodeIdx, lower, seq: seq++ });
+      let i = heap.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        const a = heap[i]!;
+        const b = heap[p]!;
+        if (a.lower > b.lower || (a.lower === b.lower && a.seq >= b.seq))
+          break;
+        heap[i] = b;
+        heap[p] = a;
+        i = p;
+      }
+    };
+    const pop = (): HeapEntry | undefined => {
+      if (heap.length === 0) return undefined;
+      const top = heap[0]!;
+      const last = heap.pop()!;
+      if (heap.length > 0) {
+        heap[0] = last;
+        let i = 0;
+        for (;;) {
+          const l = i * 2 + 1;
+          const r = l + 1;
+          let smallest = i;
+          if (l < heap.length) {
+            const a = heap[l]!;
+            const b = heap[smallest]!;
+            if (a.lower < b.lower || (a.lower === b.lower && a.seq < b.seq))
+              smallest = l;
+          }
+          if (r < heap.length) {
+            const a = heap[r]!;
+            const b = heap[smallest]!;
+            if (a.lower < b.lower || (a.lower === b.lower && a.seq < b.seq))
+              smallest = r;
+          }
+          if (smallest === i) break;
+          const tmp = heap[i]!;
+          heap[i] = heap[smallest]!;
+          heap[smallest] = tmp;
+          i = smallest;
+        }
+      }
+      return top;
+    };
+    push(this.bvhRoot, rootLower);
+    while (heap.length > 0) {
+      const cur = pop()!;
+      if (cur.lower >= best) break;
+      const node = this.bvhNodes[cur.node]!;
+      if (node.triangles !== undefined) {
+        for (const triIdx of node.triangles) {
+          const d = this.triangleDistance(point, this.triangleList[triIdx]!);
+          if (d < best) best = d;
+        }
+      } else {
+        const left = this.bvhNodes[node.left]!;
+        const right = this.bvhNodes[node.right]!;
+        const lLower = pointToAabbLower(point, left.min, left.max);
+        const rLower = pointToAabbLower(point, right.min, right.max);
+        if (lLower < rLower) {
+          if (rLower < best) push(node.right, rLower);
+          if (lLower < best) push(node.left, lLower);
+        } else {
+          if (lLower < best) push(node.left, lLower);
+          if (rLower < best) push(node.right, rLower);
+        }
+      }
+    }
+    return best;
+  }
 
+  private closestSurfaceDistance(point: Vec3): number {
+    let closest = this.closestTriangleDistance(point);
     for (let column = 0; column < this.width - 1; column += 1) {
       closest = minimumDistance(
         closest,
