@@ -76,15 +76,26 @@ const validateParameters = <K extends ElementKind>(
       const p = parameters as ElementParameterMap["station"];
       range("length", p.length, 2, 500);
       angle("bank", p.bank, -Math.PI, Math.PI);
+      if (p.targetSpeed !== undefined) range("targetSpeed", p.targetSpeed, 0, 120);
       break;
     }
     case "launch":
-    case "boost":
-    case "brake": {
+    case "boost": {
       const p = parameters as ElementParameterMap["launch"];
       range("length", p.length, 2, 500);
       range("targetSpeed", p.targetSpeed, 0, 120);
       angle("bank", p.bank, -Math.PI, Math.PI);
+      break;
+    }
+    case "brake": {
+      const p = parameters as ElementParameterMap["brake"];
+      range("length", p.length, 2, 500);
+      range("targetSpeed", p.targetSpeed, 0, 120);
+      angle("bank", p.bank, -Math.PI, Math.PI);
+      if (p.angle !== undefined) {
+        angle("angle", p.angle, -Math.PI * 2, Math.PI * 2);
+        if (p.angle === 0) throw new RangeError("angle must not be zero");
+      }
       break;
     }
     case "transition": {
@@ -641,12 +652,33 @@ export const buildElement = (
       break;
     }
     case "launch":
-    case "boost":
-    case "brake": {
+    case "boost": {
       const p = element.parameters as ElementParameterMap["launch"];
       const line = lineSpan(normalizedPose, p.length, p.bank);
       span = line.span;
       endPose = line.endPose;
+      endBank = p.bank;
+      break;
+    }
+    case "brake": {
+      const p = element.parameters as ElementParameterMap["brake"];
+      if (p.angle !== undefined) {
+        const radius = p.length / Math.abs(p.angle);
+        const turns = Math.abs(p.angle) / (2 * Math.PI);
+        const signed = Math.sign(p.angle) || 1;
+        const curve = transitionedCircularSpan(
+          normalizedPose,
+          radius,
+          turns,
+          signed,
+        );
+        span = curve.span;
+        endPose = { ...curve.endPose, bank: p.bank };
+      } else {
+        const line = lineSpan(normalizedPose, p.length, p.bank);
+        span = line.span;
+        endPose = line.endPose;
+      }
       endBank = p.bank;
       break;
     }
