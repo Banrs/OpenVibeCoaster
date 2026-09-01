@@ -156,50 +156,82 @@ test.describe("vertical-slice – ride controls", () => {
       timeout: 5_000,
     });
     const positions: Array<[number, number, number]> = [];
-    let prev: [number, number, number] | null = null;
     for (const cam of ["front", "middle", "rear", "chase", "orbit"] as const) {
       await page.locator(`input[name="camera"][value="${cam}"]`).click();
       await expect(
         page.locator(`input[name="camera"][value="${cam}"]`),
       ).toBeChecked();
-      await page.evaluate(
+      const settled = (await page.evaluate(
         () =>
-          new Promise<void>((resolve) => {
-            let c = 0;
-            function tick() {
-              if (++c >= 2) resolve();
-              else requestAnimationFrame(tick);
+          new Promise<[number, number, number]>((resolve, reject) => {
+            const threshold = 0.05;
+            const required = 3;
+            let stable = 0;
+            let lastPos: [number, number, number] | null = null;
+            let lastTime: number | null = null;
+            let frames = 0;
+            const maxFrames = 900;
+            function tick(now: number): void {
+              frames += 1;
+              if (frames > maxFrames) {
+                reject(
+                  new Error(`camera settle timeout after ${frames} frames`),
+                );
+                return;
+              }
+              const snap = (
+                window as unknown as {
+                  __vibecoasterSnapshot?: () => {
+                    cameraX: number;
+                    cameraY: number;
+                    cameraZ: number;
+                  };
+                }
+              ).__vibecoasterSnapshot?.();
+              const cur: [number, number, number] = [
+                snap?.cameraX as number,
+                snap?.cameraY as number,
+                snap?.cameraZ as number,
+              ];
+              const finite =
+                Number.isFinite(cur[0]) &&
+                Number.isFinite(cur[1]) &&
+                Number.isFinite(cur[2]);
+              if (!finite) {
+                stable = 0;
+                lastPos = null;
+                lastTime = null;
+                requestAnimationFrame(tick);
+                return;
+              }
+              if (lastPos === null || lastTime === null) {
+                lastPos = cur;
+                lastTime = now;
+                stable = 0;
+                requestAnimationFrame(tick);
+                return;
+              }
+              const dt = (now - lastTime) / 1000;
+              const d = Math.hypot(
+                cur[0] - lastPos[0],
+                cur[1] - lastPos[1],
+                cur[2] - lastPos[2],
+              );
+              const velocity = dt > 0 ? d / dt : Number.POSITIVE_INFINITY;
+              if (velocity < threshold) stable += 1;
+              else stable = 0;
+              lastPos = cur;
+              lastTime = now;
+              if (stable >= required) {
+                resolve(cur);
+                return;
+              }
+              requestAnimationFrame(tick);
             }
             requestAnimationFrame(tick);
           }),
-      );
-      await expect
-        .poll(
-          async () => {
-            const v = await snap(page);
-            if (
-              !Number.isFinite(v.cameraX) ||
-              !Number.isFinite(v.cameraY) ||
-              !Number.isFinite(v.cameraZ)
-            )
-              return null;
-            if (prev) {
-              const d = Math.hypot(
-                v.cameraX - prev[0],
-                v.cameraY - prev[1],
-                v.cameraZ - prev[2],
-              );
-              return d > 0.5 ? `${v.cameraX},${v.cameraY},${v.cameraZ}` : null;
-            }
-            return `${v.cameraX},${v.cameraY},${v.cameraZ}`;
-          },
-          { timeout: 5_000 },
-        )
-        .not.toBeNull();
-      const v = await snap(page);
-      const cur: [number, number, number] = [v.cameraX, v.cameraY, v.cameraZ];
-      positions.push(cur);
-      prev = cur;
+      )) as [number, number, number];
+      positions.push(settled);
     }
     const dist = (a: [number, number, number], b: [number, number, number]) =>
       Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -615,6 +647,23 @@ test.describe("vertical-slice – directed generation", () => {
       expect(hr.max).toBe(100);
       expect(intent.terrainProfileId).toBe("rolling-highlands-v1");
       const elements = intent.elements as Array<Record<string, unknown>>;
+      expect(elements.length).toBe(14);
+      expect(elements.map((e) => e.id)).toEqual([
+        "station-000",
+        "overbankedTurn-001",
+        "launch-002",
+        "overbankedTurn-300",
+        "boost-004",
+        "overbankedTurn-301",
+        "brake-006",
+        "overbankedTurn-302",
+        "station-008",
+        "overbankedTurn-303",
+        "station-104",
+        "overbankedTurn-007",
+        "topHat-009",
+        "stall-000",
+      ]);
       expect(elements.some((e) => e.kind === "stall")).toBe(true);
       const stallEls = elements.filter(
         (e) => (e.kind as string) === "stall" && (e.type as string) === "stall",
