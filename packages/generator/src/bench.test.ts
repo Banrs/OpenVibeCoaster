@@ -294,7 +294,7 @@ it("runs the deterministic generation benchmark", () => {
     },
   ];
   const misses = representative
-    .filter(({ totalMs }) => totalMs > 1000)
+    .filter(({ totalMs }) => totalMs >= 1000)
     .map(({ name, totalMs }) => ({
       name,
       totalMs,
@@ -369,7 +369,7 @@ it("runs the deterministic generation benchmark", () => {
     },
     target: {
       p95Ms: 1000,
-      met: p95Ms <= 1000,
+      met: p95Ms < 1000,
       misses,
     },
     feasible: results.every((result) => result.feasible),
