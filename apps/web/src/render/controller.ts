@@ -85,6 +85,7 @@ export interface RendererController {
     railColorHash: string | null;
     seamSignature: string | null;
     highlightDistance: number | null;
+    highlightWorldPosition: readonly [number, number, number] | null;
     trainWorldPositions: readonly [number, number, number][] | null;
     metric: MetricId;
     metricAvailable: boolean;
@@ -511,7 +512,18 @@ export function createRendererController(
           const posAttr = colorMesh.geometry.getAttribute("position") as
             THREE.BufferAttribute | undefined;
           const indexAttr = colorMesh.geometry.getIndex();
+          const seamColorAttr = colorMesh.geometry.getAttribute("color") as
+            THREE.BufferAttribute | undefined;
           let seamHash = 0;
+          if (seamColorAttr && seamColorAttr.array) {
+            const carr = seamColorAttr.array as ArrayLike<number>;
+            for (let i = 0; i < Math.min(carr.length, 3000); i++) {
+              seamHash =
+                (seamHash * 31 +
+                  Math.round(((carr[i] as number) ?? 0) * 1000)) >>>
+                0;
+            }
+          }
           if (posAttr && posAttr.array) {
             const parr = posAttr.array as ArrayLike<number>;
             for (let i = 0; i < Math.min(parr.length, 3000); i++) {
@@ -525,21 +537,6 @@ export function createRendererController(
             const iarr = indexAttr.array as ArrayLike<number>;
             for (let i = 0; i < Math.min(iarr.length, 600); i++) {
               seamHash = (seamHash * 31 + ((iarr[i] as number) ?? 0)) >>> 0;
-            }
-          }
-
-          if (highlightMarker && highlightDistance !== null) {
-            const firstChild = highlightMarker.group.children[0] as
-              THREE.Mesh | undefined;
-            const hg = firstChild?.geometry?.getAttribute("position") as
-              THREE.BufferAttribute | undefined;
-            if (hg && hg.array) {
-              const harr = hg.array as ArrayLike<number>;
-              for (let i = 0; i < Math.min(harr.length, 300); i++)
-                seamHash =
-                  (seamHash * 31 +
-                    Math.round(((harr[i] as number) ?? 0) * 100)) >>>
-                  0;
             }
           }
           lastSeamSignature = seamHash.toString(16).padStart(8, "0");
@@ -928,10 +925,26 @@ export function createRendererController(
           trainPositions.push([car.position.x, car.position.y, car.position.z]);
         }
       }
+      let highlightWorldPosition: readonly [number, number, number] | null =
+        null;
+      if (highlightMarker && highlightMarker.group.visible) {
+        const wp = new THREE.Vector3();
+        try {
+          highlightMarker.group.getWorldPosition(wp);
+        } catch {
+          wp.set(
+            highlightMarker.group.position.x,
+            highlightMarker.group.position.y,
+            highlightMarker.group.position.z,
+          );
+        }
+        highlightWorldPosition = [wp.x, wp.y, wp.z];
+      }
       return {
         railColorHash: lastRailColorHash,
         seamSignature: lastSeamSignature,
         highlightDistance,
+        highlightWorldPosition,
         trainWorldPositions: trainPositions.length > 0 ? trainPositions : null,
         metric: currentMetric,
         metricAvailable: lastMetricAvailable!,

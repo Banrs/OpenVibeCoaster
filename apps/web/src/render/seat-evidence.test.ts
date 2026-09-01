@@ -235,10 +235,8 @@ describe("render evidence seat", () => {
     const sOn = ctrl.getDiagnosticSnapshot()!.seamSignature;
     expect(sOff).not.toBeNull();
     expect(sOn).not.toBeNull();
-    // After fix, seamSignature is derived only from actual position/index buffers and visible marker.
-    // Toggling seamInspection does not mutate position/index buffers, so signatures must be equal.
-    // This catches regression where stateStr was synthesized into hash.
-    expect(sOff).toBe(sOn);
+    // Seam inspection visually changes the actual rendered rail color BufferAttribute; signature must observe color.
+    expect(sOff).not.toBe(sOn);
   });
 
   it("highlight/train world XYZ mutate via actual car objects", () => {
@@ -263,9 +261,34 @@ describe("render evidence seat", () => {
       }
     }
     expect(mutated).toBe(true);
+    // Highlight world position is null when no marker or hidden
+    expect(ctrl.getDiagnosticSnapshot()!.highlightWorldPosition).toBeNull();
+    expect(ctrl.getDiagnosticSnapshot()!.highlightDistance).toBeNull();
     ctrl.setHighlight(10);
-    const withHighlight = ctrl.getDiagnosticSnapshot()!.highlightDistance;
-    expect(withHighlight).toBe(10);
+    const withHighlight = ctrl.getDiagnosticSnapshot()!;
+    expect(withHighlight.highlightDistance).toBe(10);
+    expect(withHighlight.highlightWorldPosition).not.toBeNull();
+    const firstPos = withHighlight.highlightWorldPosition!;
+    expect(firstPos[0]).toBeTypeOf("number");
+    expect(firstPos[1]).toBeTypeOf("number");
+    expect(firstPos[2]).toBeTypeOf("number");
+    // Changing to a different distance must change actual XYZ
+    ctrl.setHighlight(20);
+    const second = ctrl.getDiagnosticSnapshot()!.highlightWorldPosition;
+    expect(second).not.toBeNull();
+    expect(
+      second![0] !== firstPos[0] ||
+        second![1] !== firstPos[1] ||
+        second![2] !== firstPos[2],
+    ).toBe(true);
+    // Clearing/hiding makes it null
+    ctrl.setHighlight(null);
+    expect(ctrl.getDiagnosticSnapshot()!.highlightWorldPosition).toBeNull();
+    expect(ctrl.getDiagnosticSnapshot()!.highlightDistance).toBeNull();
+    ctrl.setHighlight(5);
+    expect(ctrl.getDiagnosticSnapshot()!.highlightWorldPosition).not.toBeNull();
+    ctrl.setHighlight(NaN);
+    expect(ctrl.getDiagnosticSnapshot()!.highlightWorldPosition).toBeNull();
     expect(ctrl.getDiagnosticSnapshot()!.seamSignature).not.toBeNull();
   });
 
