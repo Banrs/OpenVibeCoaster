@@ -400,6 +400,7 @@ export function computeClearanceField(
 
   const sweptSegments: SweptClearanceSegment[] = [];
   const sweptAabbs: Array<{ min: Vec3; max: Vec3 }> = [];
+  console.info("[ovc:diag] clearance samples", count, "maxWork", maxWork); // DIAG-REMOVE
   for (let i = 0; i < count - 1; i++) {
     const seg = sweptSegment(track, i, i + 1, geometry);
     sweptSegments.push(seg);
@@ -451,7 +452,15 @@ export function computeClearanceField(
   ];
 
   if (env && !terrainBroadPhaseProven) {
+    console.info("[ovc:diag] terrain certification start"); // DIAG-REMOVE
     for (let segIdx = 0; segIdx < count - 1; segIdx++) {
+      if (segIdx % 1000 === 0)
+        console.info(
+          "[ovc:diag] terrain progress",
+          segIdx,
+          "remaining",
+          remaining,
+        ); // DIAG-REMOVE
       const seg = sweptSegments[segIdx]!;
       const segId = idForSegment(segIdx);
       const fallbackPos = vec3(
@@ -769,6 +778,7 @@ export function computeClearanceField(
   }
 
   const localityM = nextUp(2 * radius);
+  console.info("[ovc:diag] self-clearance start", "remaining", remaining); // DIAG-REMOVE
   let cellSize = 1;
   try {
     cellSize = nextUp(Math.max(1, effectiveCap));
