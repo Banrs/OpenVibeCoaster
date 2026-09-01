@@ -283,7 +283,10 @@ export function handleGenerate(
   intent: unknown,
 ): EngineeringWorkerSuccess | EngineeringWorkerFailure {
   try {
+    const _diagValidateStart = getNowMs(); // DIAG-REMOVE
+    console.info("[ovc:diag] handleGenerate validate start", requestId); // DIAG-REMOVE
     validateDesignIntentV1(intent as DesignIntentV1);
+    console.info("[ovc:diag] handleGenerate validate end", getNowMs() - _diagValidateStart); // DIAG-REMOVE
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(
@@ -295,7 +298,10 @@ export function handleGenerate(
   const typedIntent = intent as DesignIntentV1;
   let env: ReturnType<typeof resolveTerrainEnvironment>;
   try {
+    const _diagTerrainStart = getNowMs(); // DIAG-REMOVE
+    console.info("[ovc:diag] handleGenerate terrain start", requestId); // DIAG-REMOVE
     env = resolveEnvForProfile(typedIntent.terrainProfileId);
+    console.info("[ovc:diag] handleGenerate terrain end", getNowMs() - _diagTerrainStart); // DIAG-REMOVE
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(
@@ -307,7 +313,10 @@ export function handleGenerate(
   }
   let generation: ReturnType<typeof generateCoaster>;
   try {
+    const _diagGenerateStart = getNowMs(); // DIAG-REMOVE
+    console.info("[ovc:diag] handleGenerate generateCoaster start", requestId); // DIAG-REMOVE
     generation = generateCoaster(typedIntent, env ? { environment: env } : {});
+    console.info("[ovc:diag] handleGenerate generateCoaster end", getNowMs() - _diagGenerateStart); // DIAG-REMOVE
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(
@@ -326,7 +335,10 @@ export function handleGenerate(
     ]);
   }
   const track = generation.track;
+  const _diagSimStart = getNowMs(); // DIAG-REMOVE
+  console.info("[ovc:diag] handleGenerate simulateForTrack start", requestId); // DIAG-REMOVE
   const sim = simulateForTrack(track, generation.file);
+  console.info("[ovc:diag] handleGenerate simulateForTrack end", getNowMs() - _diagSimStart); // DIAG-REMOVE
   if (!sim.ok) return failure(requestId, [sim.diagnostic]);
   if (
     sim.diagnostics.some(
@@ -345,12 +357,15 @@ export function handleGenerate(
     );
   }
   const spanIds = generation.file.solvedSpans.map((s) => s.id);
+  const _diagLimitsStart = getNowMs(); // DIAG-REMOVE
+  console.info("[ovc:diag] handleGenerate validateEngineeringLimits start", requestId); // DIAG-REMOVE
   const limitDiags = validateEngineeringLimits(
     sim.frames,
     track,
     engineeringLimitsProfile,
     spanIds,
   );
+  console.info("[ovc:diag] handleGenerate validateEngineeringLimits end", getNowMs() - _diagLimitsStart); // DIAG-REMOVE
   const hasFatal = limitDiags.some((d) => d.severity === "fatal");
   if (hasFatal) {
     return failure(
@@ -373,6 +388,8 @@ export function handleGenerate(
   }
   // Required finite Float64Array clearanceM derived from owned field and actual train offsets (no default hidden offsets)
   let clearanceM: Float64Array;
+  const _diagClearanceStart = getNowMs(); // DIAG-REMOVE
+  console.info("[ovc:diag] handleGenerate clearance start", requestId); // DIAG-REMOVE
   try {
     const cfg = createDefaultSimulatorConfig();
     const offsets = cfg.train.cars.map((_, i) => i * cfg.train.spacingM);
@@ -392,6 +409,7 @@ export function handleGenerate(
       if (!Number.isFinite(clearanceM[i]!))
         throw new RangeError(`clearanceM[${i}] must be finite`);
   } catch (err) {
+    console.info("[ovc:diag] handleGenerate clearance end", getNowMs() - _diagClearanceStart); // DIAG-REMOVE
     return failure(requestId, [
       toDiagnostic(
         "CLEARANCE_UNCERTIFIED",
@@ -400,6 +418,8 @@ export function handleGenerate(
       ),
     ]);
   }
+  console.info("[ovc:diag] handleGenerate clearance end", getNowMs() - _diagClearanceStart); // DIAG-REMOVE
+  console.info("[ovc:diag] handleGenerate success", requestId); // DIAG-REMOVE
   return {
     type: "success",
     requestId,
@@ -766,6 +786,7 @@ if (
   typeof g.postMessage === "function"
 ) {
   g.addEventListener?.("message", (event: MessageEvent) => {
+    console.info("[ovc:diag] worker message"); // DIAG-REMOVE
     const data = (event as MessageEvent).data as EngineeringWorkerRequest;
     let req: EngineeringWorkerRequest | undefined;
     try {

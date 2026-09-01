@@ -4,7 +4,9 @@ import type { WorkerLike } from "./client";
 import EngineeringWorker from "./worker?worker&inline";
 
 export function createEngineeringWorker(): WorkerLike {
+  console.info("[ovc:diag] factory create start"); // DIAG-REMOVE
   const worker = new EngineeringWorker();
+  console.info("[ovc:diag] factory create end"); // DIAG-REMOVE
   return worker as unknown as WorkerLike;
 }
 
