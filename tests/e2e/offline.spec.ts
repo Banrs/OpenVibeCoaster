@@ -15,10 +15,15 @@ test("portable artifact runs directly from file://", async ({ page }) => {
 
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
+    if (message.text().includes("[ovc:diag]")) console.log(message.text()); // DIAG-REMOVE
     if (message.type() === "error") {
       consoleErrors.push(message.text());
     }
   });
+  page.on("worker", (worker) => { // DIAG-REMOVE
+    console.log(`[ovc:diag] worker created ${worker.url()}`); // DIAG-REMOVE
+    try { worker.on("close", () => console.log(`[ovc:diag] worker closed ${worker.url()}`)); } catch {} // DIAG-REMOVE
+  }); // DIAG-REMOVE
   page.on("request", (request) => {
     const url = request.url();
     const allowed =
@@ -38,10 +43,18 @@ test("portable artifact runs directly from file://", async ({ page }) => {
   await expect(page.locator("#seed-input")).toBeEnabled();
   await page.locator("#seed-input").fill("1337");
   await page.locator("#generate-btn").click();
+  try { // DIAG-REMOVE
   // realistic engineering bound: 90s as per acceptance-helpers
   await expect(page.locator("#status")).toHaveAttribute("data-state", "ready", {
     timeout: 90_000,
   });
+  } catch (error) { // DIAG-REMOVE
+    const _diagStatusText = await page.locator("#status").textContent().catch(() => null); // DIAG-REMOVE
+    const _diagDataState = await page.locator("#status").getAttribute("data-state").catch(() => null); // DIAG-REMOVE
+    const _diagWorkerUrls = page.workers().map((w) => w.url()); // DIAG-REMOVE
+    console.log(`[ovc:diag] ready timeout status=${String(_diagStatusText)} data-state=${String(_diagDataState)} workers=${_diagWorkerUrls.join(",")}`); // DIAG-REMOVE
+    throw error; // DIAG-REMOVE
+  } // DIAG-REMOVE
   const checksumEl = page.locator('[data-testid="compiled-checksum"]');
   await expect(checksumEl).toBeVisible();
   const checksumAttr =

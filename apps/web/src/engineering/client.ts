@@ -277,6 +277,7 @@ export class EngineeringWorkerClient {
   }
 
   private handleWorkerError(event: Event): void {
+    console.error("[ovc:diag] handleWorkerError", String(event)); // DIAG-REMOVE
     try {
       if (this.terminated) return;
       const active = [...this.pending.entries()].find(
@@ -352,6 +353,7 @@ export class EngineeringWorkerClient {
     try {
       const receiptEpochMs = this.clientEpochMs();
       const response = (event.data ?? event) as EngineeringWorkerResponse;
+      console.info("[ovc:diag] handleMessage", response?.type, response?.requestId); // DIAG-REMOVE
       if (!response || typeof response.requestId !== "string") return;
       const entry = this.pending.get(response.requestId);
       if (!entry) return;
@@ -458,6 +460,7 @@ export class EngineeringWorkerClient {
       }
       if (this.hasActive()) return;
       entry.postedEpoch = this.epoch;
+      console.info("[ovc:diag] enqueue postMessage", request.requestId, request.type); // DIAG-REMOVE
       try {
         this.binding.worker.postMessage(request);
       } catch (error) {
