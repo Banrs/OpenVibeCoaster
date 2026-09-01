@@ -91,13 +91,13 @@ describe("threshold completeness – display cap and soft prevent premature sepa
       separationThresholds: [0.5, 10],
     });
     expect(resHardOnly.ok).toBe(true);
+    if (!resHardOnly.ok) throw new Error("resHardOnly not certified");
     expect(resHardOnly.excluded).toBe(false);
+    if (resHardOnly.excluded) throw new Error("resHardOnly not certified");
     expect(resWithDisplay.ok).toBe(true);
+    if (!resWithDisplay.ok) throw new Error("resWithDisplay not certified");
     expect(resWithDisplay.excluded).toBe(false);
-    if (!resHardOnly.ok || resHardOnly.excluded)
-      throw new Error("resHardOnly not certified");
-    if (!resWithDisplay.ok || resWithDisplay.excluded)
-      throw new Error("resWithDisplay not certified");
+    if (resWithDisplay.excluded) throw new Error("resWithDisplay not certified");
     expect(resHardOnly.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resWithDisplay.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resWithDisplay.lowerM).toBeLessThan(10);
@@ -115,13 +115,13 @@ describe("threshold completeness – display cap and soft prevent premature sepa
       separationThresholds: [0.5, 10],
     });
     expect(resStraddleHard.ok).toBe(true);
+    if (!resStraddleHard.ok) throw new Error("resStraddleHard not certified");
     expect(resStraddleHard.excluded).toBe(false);
+    if (resStraddleHard.excluded) throw new Error("resStraddleHard not certified");
     expect(resStraddleFull.ok).toBe(true);
+    if (!resStraddleFull.ok) throw new Error("resStraddleFull not certified");
     expect(resStraddleFull.excluded).toBe(false);
-    if (!resStraddleHard.ok || resStraddleHard.excluded)
-      throw new Error("resStraddleHard not certified");
-    if (!resStraddleFull.ok || resStraddleFull.excluded)
-      throw new Error("resStraddleFull not certified");
+    if (resStraddleFull.excluded) throw new Error("resStraddleFull not certified");
     expect(resStraddleHard.lowerM).toBeGreaterThanOrEqual(0.5);
     expect(resStraddleFull.lowerM).toBeLessThan(10);
     expect(resStraddleFull.upperM).toBeGreaterThanOrEqual(10);
@@ -210,12 +210,12 @@ describe("threshold completeness – display cap and soft prevent premature sepa
       separationThresholds: [0.5, 2, 10],
     });
     expect(resHard.ok).toBe(true);
+    if (!resHard.ok) throw new Error("resHard not certified");
     expect(resHard.excluded).toBe(false);
+    if (resHard.excluded) throw new Error("resHard not certified");
     expect(resWithSoft.ok).toBe(true);
+    if (!resWithSoft.ok) throw new Error("resWithSoft not certified");
     expect(resWithSoft.excluded).toBe(false);
-    if (!resHard.ok || resHard.excluded)
-      throw new Error("resHard not certified");
-    if (!resWithSoft.ok || resWithSoft.excluded)
-      throw new Error("resWithSoft not certified");
+    if (resWithSoft.excluded) throw new Error("resWithSoft not certified");
   });
 });
