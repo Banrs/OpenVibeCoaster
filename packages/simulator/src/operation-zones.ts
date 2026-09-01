@@ -14,6 +14,14 @@ function semanticOwner(id: string): string {
   return id;
 }
 
+type MutableOperationZone = {
+  id: string;
+  kind: OperationZone["kind"];
+  startDistanceM: number;
+  endDistanceM: number;
+  targetSpeedMps?: number;
+};
+
 export function operationZonesFromCoasterFile(
   file: CoasterFileV1,
 ): readonly OperationZone[] {
@@ -23,8 +31,7 @@ export function operationZonesFromCoasterFile(
     intentById.set(element.id, element);
   }
 
-  const zonesByOwner = new Map<string, OperationZone>();
-  const mutableByOwner = new Map<string, OperationZone & Record<string, unknown>>();
+  const zonesByOwner = new Map<string, MutableOperationZone>();
 
   let cumulative = 0;
   let lastOwner: string | undefined;
@@ -47,7 +54,7 @@ export function operationZonesFromCoasterFile(
     }
     const kind = rawKind as OperationZone["kind"];
 
-    const existing = mutableByOwner.get(owner);
+    const existing = zonesByOwner.get(owner);
     if (existing) {
       if (lastOwner !== owner) {
         throw new RangeError(
@@ -65,16 +72,14 @@ export function operationZonesFromCoasterFile(
         targetSpeedMps = 0;
       }
 
-      const zone: OperationZone = {
+      const zone: MutableOperationZone = {
         id: owner,
         kind,
         startDistanceM: start,
         endDistanceM: end,
         ...(targetSpeedMps !== undefined ? { targetSpeedMps } : {}),
-      } as OperationZone;
+      };
 
-      const mutable = zone as unknown as OperationZone & Record<string, unknown>;
-      mutableByOwner.set(owner, mutable);
       zonesByOwner.set(owner, zone);
     }
     lastOwner = owner;
@@ -87,5 +92,5 @@ export function operationZonesFromCoasterFile(
   for (const zone of zones) {
     Object.freeze(zone);
   }
-  return Object.freeze(zones);
+  return Object.freeze(zones) as readonly OperationZone[];
 }

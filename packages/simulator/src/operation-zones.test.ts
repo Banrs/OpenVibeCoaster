@@ -7,12 +7,12 @@ import type {
 } from "@openvibecoaster/core";
 import { operationZonesFromCoasterFile } from "./operation-zones.js";
 
-const positionCoefficients = [
+const positionCoefficients: readonly (readonly number[])[] = [
   [0, 10, 0, 0, 0, 0, 0, 0],
   [0, 0, 0, 0, 0, 0, 0, 0],
   [0, 0, 0, 0, 0, 0, 0, 0],
-] as const;
-const rollCoefficients = [0, 0, 0, 0, 0, 0] as const;
+];
+const rollCoefficients: readonly number[] = [0, 0, 0, 0, 0, 0];
 
 function span(
   id: string,
@@ -22,8 +22,8 @@ function span(
   return {
     id,
     kind,
-    positionCoefficients: positionCoefficients.map((row) => [...row]) as unknown as readonly (readonly number[])[],
-    rollCoefficients: [...rollCoefficients] as unknown as readonly number[],
+    positionCoefficients: positionCoefficients.map((row) => [...row]),
+    rollCoefficients: [...rollCoefficients],
     length,
   };
 }
@@ -56,7 +56,7 @@ function file(
 }
 
 describe("operationZonesFromCoasterFile", () => {
-  it("exact cumulative distances, child suffix ownership, authored launch/brake targets", () => {
+  it("exact cumulative distances, child suffix ownership, authored launch/brake/boost targets", () => {
     const f = file(
       [
         {
@@ -77,16 +77,23 @@ describe("operationZonesFromCoasterFile", () => {
           type: "brake",
           parameters: { length: 12, targetSpeed: 5, bank: 0 },
         },
+        {
+          id: "boostC",
+          kind: "boost",
+          type: "boost",
+          parameters: { length: 10, targetSpeed: 22, bank: 0 },
+        },
       ],
       [
         span("launchA#1", "launch", 10),
         span("launchA#2", "launch", 20),
         span("hill", "transition", 15),
         span("brakeB", "brake", 12),
+        span("boostC", "boost", 10),
       ],
     );
     const zones = operationZonesFromCoasterFile(f);
-    expect(zones).toHaveLength(2);
+    expect(zones).toHaveLength(3);
     expect(zones[0]!.id).toBe("launchA");
     expect(zones[0]!.kind).toBe("launch");
     expect(zones[0]!.startDistanceM).toBe(0);
@@ -97,6 +104,11 @@ describe("operationZonesFromCoasterFile", () => {
     expect(zones[1]!.startDistanceM).toBe(45);
     expect(zones[1]!.endDistanceM).toBe(57);
     expect(zones[1]!.targetSpeedMps).toBe(5);
+    expect(zones[2]!.id).toBe("boostC");
+    expect(zones[2]!.kind).toBe("boost");
+    expect(zones[2]!.startDistanceM).toBe(57);
+    expect(zones[2]!.endDistanceM).toBe(67);
+    expect(zones[2]!.targetSpeedMps).toBe(22);
   });
 
   it("two adjacent same-kind semantic elements remain two zones", () => {
@@ -267,19 +279,19 @@ describe("operationZonesFromCoasterFile", () => {
     const zones = operationZonesFromCoasterFile(f);
     expect(Object.isFrozen(zones)).toBe(true);
     expect(Object.isFrozen(zones[0]!)).toBe(true);
-    expect(() => {
-      (zones as unknown as { push: (v: unknown) => void }).push({
-        id: "evil",
-        kind: "brake",
-        startDistanceM: 0,
-        endDistanceM: 1,
-      });
-    }).toThrow();
+    expect(() =>
+      Reflect.apply(Array.prototype.push, zones, [
+        {
+          id: "evil",
+          kind: "brake",
+          startDistanceM: 0,
+          endDistanceM: 1,
+        },
+      ]),
+    ).toThrow();
     expect(zones).toHaveLength(1);
     const original = zones[0]!.targetSpeedMps;
-    expect(() => {
-      (zones[0] as unknown as Record<string, unknown>).targetSpeedMps = 999;
-    }).toThrow();
+    expect(Reflect.set(zones[0]!, "targetSpeedMps", 999)).toBe(false);
     expect(zones[0]!.targetSpeedMps).toBe(original);
   });
 });
