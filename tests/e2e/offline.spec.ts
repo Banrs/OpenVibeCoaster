@@ -38,10 +38,22 @@ test("portable artifact runs directly from file://", async ({ page }) => {
   await expect(page.locator("#seed-input")).toBeEnabled();
   await page.locator("#seed-input").fill("1337");
   await page.locator("#generate-btn").click();
-  // realistic engineering bound: 90s as per acceptance-helpers
-  await expect(page.locator("#status")).toHaveAttribute("data-state", "ready", {
-    timeout: 90_000,
-  });
+  // Diagnostic branch only: stop on either terminal state and expose the
+  // authoritative UI diagnostics in the Actions log.
+  const status = page.locator("#status");
+  await expect
+    .poll(() => status.getAttribute("data-state"), { timeout: 90_000 })
+    .toMatch(/^(ready|error)$/);
+  const terminalState = await status.getAttribute("data-state");
+  if (terminalState !== "ready") {
+    const statusText = await status.textContent();
+    const diagnostics = await page
+      .locator("#diagnostics-list li")
+      .allTextContents();
+    throw new Error(
+      `Portable generation terminal=${terminalState}; status=${statusText}; diagnostics=${JSON.stringify(diagnostics)}`,
+    );
+  }
   const checksumEl = page.locator('[data-testid="compiled-checksum"]');
   await expect(checksumEl).toBeVisible();
   const checksumAttr =
