@@ -311,7 +311,7 @@ export function handleGenerate(
       ),
     ]);
   }
-  let generation: ReturnType<typeof generateCoaster>;
+  let generation: ReturnType<typeof generateCoasterForBenchmark>;
   try {
     const _diagGenerateStart = getNowMs(); // DIAG-REMOVE
     console.info("[ovc:diag] handleGenerate generateCoaster start", requestId); // DIAG-REMOVE
