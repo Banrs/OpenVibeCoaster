@@ -1380,58 +1380,36 @@ describe("EngineeringWorkerClient single-active adversarial proofs", () => {
     const workers: MockWorker[] = [];
     const factory: WorkerFactory = () => {
       const w = new MockWorker();
-      workers.push(w);
-      return w;
-    };
-    // Initial client with one worker
-    const client = new EngineeringWorkerClient(factory);
-    const p1 = client.generate("rrs1", validIntent);
-    const p2 = client.generate("rrs2", validIntent);
-    const p3 = client.generate("rrs3", validIntent);
-    // Verify single-active: only rrs1 posted initially
-    expect(
-      workers[0]!.posted.map((m) => (m as { requestId: string }).requestId),
-    ).toEqual(["rrs1"]);
-    // Install synchronous success hook on replacement worker's first post
-    let replacementHookInstalled = false;
-    // Monkey-patch factory for replacement: create worker that on first post
-    // synchronously emits valid success for that requestId and returns normally
-    const patchedFactory: WorkerFactory = () => {
-      const w = new MockWorker();
-      if (!replacementHookInstalled && workers.length === 1) {
-        replacementHookInstalled = true;
+      if (workers.length === 1) {
         const origPost = w.postMessage.bind(w);
         w.postMessage = (msg: unknown) => {
           const rid = (msg as { requestId: string }).requestId;
           origPost(msg);
-          // Only the first replayed survivor (rrs2) succeeds synchronously
-          if (rid === "rrs2") {
-            w.emitMessage(makeSuccess(rid));
-          }
+          if (rid === "rrs2") w.emitMessage(makeSuccess(rid));
         };
       }
       workers.push(w);
       return w;
     };
-    // Replace client's factory for next replacement
-    (client as unknown as { factory: WorkerFactory }).factory = patchedFactory;
+    const client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("rrs1", validIntent);
+    const p2 = client.generate("rrs2", validIntent);
+    const p3 = client.generate("rrs3", validIntent);
+    expect(
+      workers[0]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["rrs1"]);
     client.cancel("rrs1");
     await expect(p1).rejects.toThrow(/cancelled/);
-    // After cancel, replacement worker should have posted exactly rrs2 synchronously
-    // and, via reentrant drain, also posted rrs3 exactly once without bulk
     expect(workers).toHaveLength(2);
     const repl = workers[1]!;
     expect(
       repl.posted.map((m) => (m as { requestId: string }).requestId),
     ).toEqual(["rrs2", "rrs3"]);
-    // rrs2 should already be resolved synchronously (no throw)
     await expect(p2).resolves.toMatchObject({ requestId: "rrs2" });
     expect(client.getPendingCount()).toBe(1);
-    // rrs3 is now active on same replacement worker; async success still works
     repl.emitMessage(makeSuccess("rrs3"));
     await expect(p3).resolves.toMatchObject({ requestId: "rrs3" });
     expect(client.getPendingCount()).toBe(0);
-    // Ensure no double settlement or duplicate posts
     expect(
       repl.posted.filter(
         (m) => (m as { requestId: string }).requestId === "rrs2",

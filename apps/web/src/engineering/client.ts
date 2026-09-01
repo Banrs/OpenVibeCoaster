@@ -249,10 +249,8 @@ export class EngineeringWorkerClient {
       }
       const [id, entry] = next;
       entry.postedEpoch = transition.epoch;
-      let posted = false;
       try {
         binding.worker.postMessage(entry.request);
-        posted = true;
       } catch (error) {
         if (this.pending.get(id) !== entry) continue;
         if (this.transition !== transition || this.binding !== binding) return;
@@ -260,7 +258,6 @@ export class EngineeringWorkerClient {
         entry.reject(error instanceof Error ? error : new Error(String(error)));
         continue;
       }
-      if (!posted) continue;
       // If postMessage synchronously settled the entry (e.g., mock emitted
       // success during postMessage and handleMessage resolved it), handleMessage
       // would have attempted postNextIfIdle but returned due to non-null
