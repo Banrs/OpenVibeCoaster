@@ -6,6 +6,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
+  // Portable generation has a 90s engineering bound (offline.spec.ts: toHaveAttribute ready).
+  // Keep test timeout above that assertion so the 90s bound governs, not the 30s default.
+  timeout: 120_000,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     trace: "retain-on-failure",
