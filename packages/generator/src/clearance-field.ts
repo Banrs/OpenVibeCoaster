@@ -488,7 +488,7 @@ export function computeClearanceField(
   if (env && !terrainBroadPhaseProven) {
     console.info("[ovc:diag] terrain certification start"); // DIAG-REMOVE
     for (let segIdx = 0; segIdx < count - 1; segIdx++) {
-      if (segIdx % 1000 === 0)
+      if (segIdx % 100 === 0)
         console.info(
           "[ovc:diag] terrain progress",
           segIdx,
