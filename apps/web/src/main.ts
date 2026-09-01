@@ -62,6 +62,7 @@ import {
   createRidePlayback,
   type RidePlaybackController,
   type RidePlaybackSnapshot,
+  type RideSelectionId,
 } from "./ride/controller.js";
 import {
   getSeatOptionByValue,
@@ -909,11 +910,19 @@ function updateSeatTelemetryFromSnapshot(snap: RidePlaybackSnapshot): void {
   el.textContent = `Seat ${label} — car ${carNumber}/${carCount} — vertical ${verticalG!.toFixed(2)} g, lateral ${lateralG!.toFixed(2)} g, longitudinal ${longitudinalG!.toFixed(2)} g, jerk ${jerkMag2.toFixed(2)} m/s³ (x ${(jerkVec![0] ?? 0).toFixed(2)} y ${(jerkVec![1] ?? 0).toFixed(2)} z ${(jerkVec![2] ?? 0).toFixed(2)}), roll ${rollRate!.toFixed(3)} rad/s, bank ${((bank! * 180) / Math.PI).toFixed(1)}° (${bank!.toFixed(3)} rad), height ${heightY.toFixed(1)} m — train-wide: speed ${speedTrainWide.toFixed(1)} m/s, energy ${energyTrainWide.toFixed(1)} J, LSM ${launchTrainWide}, brake ${brakeTrainWide}, clearance train-wide`;
 }
 
+function isSeatMetric(metric: MetricId): boolean {
+  return metric === "gForce" || metric === "rollRate";
+}
+
+function getCurrentSeatId(): RideSelectionId {
+  return ridePlayback?.getSnapshot().selectedSeat ?? "front";
+}
+
 function updateMetricForSeat(snap: RidePlaybackSnapshot): void {
   const auth = getAuthoritativeResult();
   if (!auth) return;
   const seatId = snap.selectedSeat;
-  if (state.metric === "gForce" || state.metric === "rollRate") {
+  if (isSeatMetric(state.metric)) {
     const metricData = deriveSeatMetricData(state.metric, auth, seatId);
     if (metricData) {
       lifecycle.setMetric(state.metric, metricData);
@@ -1286,13 +1295,23 @@ const controller = createExperienceController({
       }
       // Draw graph selection line
       if (timeline && authoritative?.track) {
-        const series = getMetricSeries(
-          state.metric,
-          authoritative.track,
-          timeline,
-          authoritative.clearanceM ?? null,
-        );
-        drawTimelineGraph(telemetryGraph, series, selection.index);
+        if (isSeatMetric(state.metric)) {
+          const seatId = getCurrentSeatId();
+          const series = getSeatMetricSeries(
+            state.metric,
+            authoritative,
+            seatId,
+          );
+          drawTimelineGraph(telemetryGraph, series, selection.index);
+        } else {
+          const series = getMetricSeries(
+            state.metric,
+            authoritative.track,
+            timeline,
+            authoritative.clearanceM ?? null,
+          );
+          drawTimelineGraph(telemetryGraph, series, selection.index);
+        }
       }
     }
     syncTelemetryGraphA11y();
@@ -1363,12 +1382,10 @@ unsubscribeController = controller.subscribe((expState) => {
     const result = expState.result;
     const track = result.track;
     const timeline = result.timeline;
-    const initialSeat: import("./ride/controller.js").RideSelectionId = "front";
-    const seatMetricAvailable =
-      state.metric === "gForce" || state.metric === "rollRate";
+    const initialSeat: RideSelectionId = getCurrentSeatId();
+    const seatMetricAvailable = isSeatMetric(state.metric);
     const metricData = seatMetricAvailable
-      ? (deriveSeatMetricData(state.metric, result, initialSeat) ??
-        deriveMetricData(state.metric, result))
+      ? deriveSeatMetricData(state.metric, result, initialSeat)
       : deriveMetricData(state.metric, result);
 
     // Attach track through lifecycle — handle WebGL failure queuing
@@ -1745,10 +1762,8 @@ metricSelect.addEventListener("change", () => {
   state.metric = selectMetric(metricSelect.value as MetricId, state.metric);
   const authoritative = getAuthoritativeResult();
   if (authoritative) {
-    const seatId = ridePlayback?.getSnapshot().selectedSeat ?? "front";
-    const isSeatMetric =
-      state.metric === "gForce" || state.metric === "rollRate";
-    if (isSeatMetric) {
+    const seatId = getCurrentSeatId();
+    if (isSeatMetric(state.metric)) {
       const metricData = deriveSeatMetricData(
         state.metric,
         authoritative,

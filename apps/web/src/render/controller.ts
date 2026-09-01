@@ -396,8 +396,8 @@ export function createRendererController(
       tiesGeom = built.ties;
       built = null;
 
-      const env = handle.scene.userData.terrainEnv as unknown as
-        { raycast?: unknown } | undefined;
+      const rawEnv: unknown = handle.scene.userData.terrainEnv;
+      const env = rawEnv as { raycast?: unknown } | undefined;
 
       leftMat = new THREE.MeshStandardMaterial({
         vertexColors: true,
@@ -463,7 +463,7 @@ export function createRendererController(
       if (env && typeof (env as { raycast?: unknown }).raycast === "function") {
         const supports = buildSupportColumns(
           data,
-          env as unknown as EnvironmentQuery,
+          env as EnvironmentQuery,
           10,
         );
         supportMeshesLocal = supports.meshes;
@@ -496,7 +496,7 @@ export function createRendererController(
         if (colorMesh) {
           const colorAttr = colorMesh.geometry.getAttribute("color") as
             THREE.BufferAttribute | undefined;
-          if (colorAttr && colorAttr.array) {
+          if (newMetricAvailable && colorAttr && colorAttr.array) {
             let hash = 0;
             const arr = colorAttr.array as ArrayLike<number>;
             for (let i = 0; i < Math.min(arr.length, 3000); i++) {
@@ -527,9 +527,7 @@ export function createRendererController(
               seamHash = (seamHash * 31 + ((iarr[i] as number) ?? 0)) >>> 0;
             }
           }
-          const stateStr = `${String(newSeamEnabled)}:${(newSeams ?? []).join(",")}:${String(selectedElementIndex ?? "none")}:${String(highlightDistance ?? "none")}`;
-          for (let i = 0; i < stateStr.length; i++)
-            seamHash = (seamHash * 31 + stateStr.charCodeAt(i)) >>> 0;
+
           if (highlightMarker && highlightDistance !== null) {
             const firstChild = highlightMarker.group.children[0] as
               THREE.Mesh | undefined;

@@ -1,11 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { compileTrack, vec3 } from "@openvibecoaster/core";
+import {
+  compileTrack,
+  vec3,
+  createDesignIntentV1,
+  createCoasterFileV1,
+} from "@openvibecoaster/core";
 import { RideTimeline } from "@openvibecoaster/simulator";
 import {
   deriveSeatMetricData,
   getSeatMetricSeries,
   getSeatCarIndex,
 } from "./metricData.js";
+import type { AuthoritativeExperienceResult } from "../experienceController.js";
 
 function makeTrack() {
   return compileTrack(
@@ -83,6 +89,45 @@ function makeTimeline(carCount: number, withPerCar: boolean) {
   });
 }
 
+function makeResult(
+  track: ReturnType<typeof makeTrack>,
+  timeline: RideTimeline,
+  clearanceM: Float64Array | null = null,
+): AuthoritativeExperienceResult {
+  const intent = createDesignIntentV1({
+    generatorVersion: "generator-v1",
+    seed: 1,
+    mode: "insta",
+    family: "steel-sitdown-lsm-v1",
+    elements: [],
+    gates: [],
+    targets: [],
+    constraints: [],
+    terrainProfileId: "rolling-highlands-v1",
+    pinnedElementIds: [],
+  });
+  const file = createCoasterFileV1({
+    name: "test",
+    intent,
+    solvedSpans: [],
+    seed: 1,
+    generatorVersion: "generator-v1",
+    profileVersion: "profile-v1",
+    researchSnapshotIds: [],
+    compiledDataChecksum: track.checksum,
+  });
+  const result: AuthoritativeExperienceResult = {
+    track,
+    timeline,
+    clearanceM,
+    file,
+    diagnostics: [],
+    relaxations: [],
+    spanHashes: { dummy: "00000000" },
+  };
+  return result;
+}
+
 describe("seat metricData", () => {
   it("getSeatCarIndex middle floor((n-1)/2)", () => {
     expect(getSeatCarIndex("front", 2)).toBe(0);
@@ -96,15 +141,7 @@ describe("seat metricData", () => {
   it("gForce uses signed vertical G per car not magnitude", () => {
     const track = makeTrack();
     const timeline = makeTimeline(2, true);
-    const result = {
-      track,
-      timeline,
-      clearanceM: null,
-      file: null as unknown as never,
-      diagnostics: [],
-      relaxations: [],
-      spanHashes: {},
-    } as unknown as import("../experienceController.js").AuthoritativeExperienceResult;
+    const result = makeResult(track, timeline);
     const frontSeries = getSeatMetricSeries("gForce", result, "front");
     const rearSeries = getSeatMetricSeries("gForce", result, "rear");
     expect(frontSeries.available).toBe(true);
@@ -133,15 +170,7 @@ describe("seat metricData", () => {
   it("rollRate per car resampling exact values", () => {
     const track = makeTrack();
     const timeline = makeTimeline(3, true);
-    const result = {
-      track,
-      timeline,
-      clearanceM: null,
-      file: null as unknown as never,
-      diagnostics: [],
-      relaxations: [],
-      spanHashes: {},
-    } as unknown as import("../experienceController.js").AuthoritativeExperienceResult;
+    const result = makeResult(track, timeline);
     const seriesFront = getSeatMetricSeries("rollRate", result, "front");
     const seriesRear = getSeatMetricSeries("rollRate", result, "rear");
     expect(seriesFront.values[0]).toBeCloseTo(0);
@@ -157,15 +186,7 @@ describe("seat metricData", () => {
   it("missing perCar buffers yields unavailable not fiction", () => {
     const track = makeTrack();
     const timeline = makeTimeline(2, false);
-    const result = {
-      track,
-      timeline,
-      clearanceM: null,
-      file: null as unknown as never,
-      diagnostics: [],
-      relaxations: [],
-      spanHashes: {},
-    } as unknown as import("../experienceController.js").AuthoritativeExperienceResult;
+    const result = makeResult(track, timeline);
     const s = getSeatMetricSeries("gForce", result, "front");
     expect(s.available).toBe(false);
     expect(deriveSeatMetricData("gForce", result, "front")).toBeUndefined();
@@ -177,20 +198,23 @@ describe("seat metricData", () => {
   it("speed/energy/clearance remain train-wide", () => {
     const track = makeTrack();
     const timeline = makeTimeline(2, true);
-    // add speed series to timeline via speeds
-    const result = {
-      track,
-      timeline,
-      clearanceM: null,
-      file: null as unknown as never,
-      diagnostics: [],
-      relaxations: [],
-      spanHashes: {},
-    } as unknown as import("../experienceController.js").AuthoritativeExperienceResult;
+    const result = makeResult(track, timeline);
     const speedSeriesFront = getSeatMetricSeries("speed", result, "front");
     const speedSeriesRear = getSeatMetricSeries("speed", result, "rear");
     // both should be train-wide derived from head speed timeline via getMetricSeries, not per-car
     expect(speedSeriesFront.values).toEqual(speedSeriesRear.values);
     expect(speedSeriesFront.available).toBe(true);
+  });
+
+  it("deriveSeatMetricData preserves unavailable as undefined without train fallback", () => {
+    const track = makeTrack();
+    const timeline = makeTimeline(2, false);
+    const result = makeResult(track, timeline);
+    // G/roll with missing per-car must stay unavailable, not fallback to head magnitude
+    expect(deriveSeatMetricData("gForce", result, "front")).toBeUndefined();
+    expect(deriveSeatMetricData("rollRate", result, "front")).toBeUndefined();
+    // Train-wide still available via direct deriveMetricData path (speed) – but via seat path, speed remains train-wide
+    const speedViaSeat = deriveSeatMetricData("speed", result, "front");
+    expect(speedViaSeat?.speed).toBeDefined();
   });
 });
