@@ -23,7 +23,7 @@
     "format:check": "prettier --check .",
     "bench": "node scripts/bench.mjs",
     "bench:engineering": "npm run bench -w @openvibecoaster/generator",
-    "bench:browser": "playwright test --project=chromium tests/e2e/browser-benchmark.acceptance.spec.ts",
+    "bench:browser": "playwright test --config=playwright.benchmark.config.ts --project=chromium",
     "verify": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build"
   },
   "devDependencies": {

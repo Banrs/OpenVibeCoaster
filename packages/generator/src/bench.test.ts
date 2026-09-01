@@ -115,6 +115,8 @@ const timedGeneration = (
   >;
 } => {
   const starts = new Map<string, number>();
+  const startCounts = new Map<string, number>();
+  const endCounts = new Map<string, number>();
   const timings = {
     candidateSearchInclusiveMs: 0,
     solvingMs: 0,
@@ -142,15 +144,48 @@ const timedGeneration = (
     }
     const key = `${mapped}Ms` as keyof typeof timings;
     if (boundary === "start") {
+      startCounts.set(mapped, (startCounts.get(mapped) ?? 0) + 1);
       starts.set(mapped, now());
       return;
     }
+    endCounts.set(mapped, (endCounts.get(mapped) ?? 0) + 1);
     const start = starts.get(mapped);
     if (start === undefined)
       throw new Error(`Missing benchmark stage ${mapped}`);
     timings[key] += now() - start;
   };
   const result = generateCoasterForBenchmark(measuredIntent, options, observer);
+  const requiredStages = [
+    "candidateSearchInclusive",
+    "solving",
+    "validation",
+    "compilation",
+    "total",
+  ] as const;
+  const oneShotStages = new Set<string>([
+    "candidateSearchInclusive",
+    "compilation",
+    "total",
+  ]);
+  for (const stage of requiredStages) {
+    const startsForStage = startCounts.get(stage) ?? 0;
+    const endsForStage = endCounts.get(stage) ?? 0;
+    if (startsForStage === 0) {
+      throw new Error(
+        `Missing benchmark stage ${stage}: no start event (required)`,
+      );
+    }
+    if (endsForStage !== startsForStage) {
+      throw new Error(
+        `Mismatched benchmark stage ${stage}: start count ${startsForStage} != end count ${endsForStage}`,
+      );
+    }
+    if (oneShotStages.has(stage) && startsForStage !== 1) {
+      throw new Error(
+        `Invalid duplicate benchmark stage ${stage}: expected exactly one start/end, got ${startsForStage}`,
+      );
+    }
+  }
   return { result, timings };
 };
 
@@ -189,28 +224,6 @@ describe("generation benchmark observer – inclusive search", () => {
         expect(occurrence).toBeLessThan(searchEnd);
       }
     }
-    // One start/end must contribute exactly once: simulated observer with synthetic clock shows no double.
-    let fakeNow = 0;
-    const starts = new Map<string, number>();
-    const counts = new Map<string, number>();
-    const inclusiveObserver = (event: GenerationBenchmarkEvent): void => {
-      const [stage, boundary] = event.split(":") as [string, "start" | "end"];
-      const mapped = stage === "search" ? "candidateSearchInclusive" : stage;
-      if (mapped !== "candidateSearchInclusive") return;
-      if (boundary === "start") {
-        starts.set(mapped, fakeNow);
-        fakeNow += 10;
-        counts.set(mapped, (counts.get(mapped) ?? 0) + 1);
-        return;
-      }
-      fakeNow += 60;
-      const s = starts.get(mapped);
-      if (s === undefined) throw new Error("missing");
-      counts.set(mapped, (counts.get(mapped) ?? 0) + 1);
-    };
-    for (const e of events) inclusiveObserver(e);
-    // Exactly 2 events (one start, one end) for inclusive interval.
-    expect(counts.get("candidateSearchInclusive")).toBe(2);
   });
 });
 

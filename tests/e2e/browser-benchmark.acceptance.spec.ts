@@ -280,10 +280,9 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
         const values = measures[name] ?? [];
         expect(
           values.length,
-          `seed ${seed}: required measure "${name}" missing – app must emit performance.measure("${name}") (cannot derive worker transfer from total latency)`,
-        ).toBeGreaterThan(0);
-        // If multiple samples, take the last for per-seed stages (generation/simulation/mesh) – but forbid pretending total is a stage.
-        const duration = values[values.length - 1] as number;
+          `seed ${seed}: required measure "${name}" must have exactly one entry, got ${values.length} – app must emit exactly one performance.measure("${name}") per seed`,
+        ).toBe(1);
+        const duration = values[0] as number;
         expect(
           Number.isFinite(duration),
           `seed ${seed}: measure "${name}" duration must be finite, got ${duration}`,
@@ -362,15 +361,26 @@ test.describe("browser-benchmark – real-browser acceptance (chromium, 1080p)",
       expect(warmState.lengthNum as number).toBeLessThanOrEqual(2200);
       expect(warmState.checksum.trim()).not.toBe("");
       expect(warmState.checksum.trim().length).toBeGreaterThanOrEqual(8);
-      // Warm-up must also emit mandatory ovc:generation-total and required browser stages – fail if absent.
+      // Warm-up must also emit mandatory ovc:generation-total and required browser stages – fail if absent or duplicated.
       const warmMeasures = await getMeasureDurations();
       for (const name of REQUIRED_MEASURES) {
+        // Frame may accumulate multiple samples after ready; singular browser stages must be exactly one.
+        if (name === MEASURE_FRAME) {
+          const values = warmMeasures[name] ?? [];
+          expect(
+            values.length,
+            `warmup seed ${seed}: required measure "${name}" missing`,
+          ).toBeGreaterThan(0);
+          const d = values[0] as number;
+          expect(Number.isFinite(d) && d >= 0).toBe(true);
+          continue;
+        }
         const values = warmMeasures[name] ?? [];
         expect(
           values.length,
-          `warmup seed ${seed}: required measure "${name}" missing`,
-        ).toBeGreaterThan(0);
-        const d = values[values.length - 1] as number;
+          `warmup seed ${seed}: required measure "${name}" must have exactly one entry, got ${values.length}`,
+        ).toBe(1);
+        const d = values[0] as number;
         expect(Number.isFinite(d) && d >= 0).toBe(true);
       }
       // Clear to avoid warm-up measures leaking into measured window.

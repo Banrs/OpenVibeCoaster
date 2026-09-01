@@ -907,15 +907,7 @@ const controller = createExperienceController({
         relaxations: hydrated.relaxations,
         spanHashes: hydrated.spanHashes,
       };
-      const ok = controller.setResult(result, numericId);
-      if (ok) {
-        try {
-          performance.measure("ovc:generation-total", {
-            start: "ovc:generation-total-start",
-          });
-        } catch {}
-        // also record total via custom? Already done
-      }
+      controller.setResult(result, numericId);
       // Clear failure caches on success
       lastFailureDiagnostics = [];
       lastFailureRelaxations = [];

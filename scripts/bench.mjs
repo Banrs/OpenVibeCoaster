@@ -8,6 +8,8 @@
  * Portable npm spawn: uses process.execPath + npm_execpath when present, with win32 npm.cmd fallback.
  */
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 export function getNpmSpawnInfo({
   platform = process.platform,
@@ -85,7 +87,9 @@ async function main() {
   );
 }
 
-if (process.argv[1]?.endsWith("bench.mjs")) {
+const benchEntrypoint = fileURLToPath(import.meta.url);
+const invokedEntrypoint = process.argv[1] ? resolve(process.argv[1]) : "";
+if (invokedEntrypoint === resolve(benchEntrypoint)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

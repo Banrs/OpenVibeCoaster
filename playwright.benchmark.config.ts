@@ -2,16 +2,15 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "tests/e2e",
-  testIgnore: "browser-benchmark.acceptance.spec.ts",
+  testMatch: "browser-benchmark.acceptance.spec.ts",
   fullyParallel: false,
-  // Single worker keeps heavy generation suites serial and the browser benchmark uncontended.
   workers: 1,
   retries: 0,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: "http://127.0.0.1:4173",
-    trace: "retain-on-failure",
-    screenshot: "only-on-failure",
+    trace: "off",
+    screenshot: "off",
   },
   webServer: {
     command:
@@ -24,9 +23,6 @@ export default defineConfig({
       name: "chromium",
       use: {
         ...devices["Desktop Chrome"],
-        // Exercise full Chromium's production headless path. The legacy
-        // chrome-headless-shell process is not stable for the hour-long,
-        // SwiftShader-backed 53-seed benchmark on Windows.
         channel: "chromium",
         launchOptions: {
           args: [
