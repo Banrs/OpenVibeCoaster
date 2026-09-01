@@ -1081,6 +1081,7 @@ const controller = createExperienceController({
         diagnostics: hydrated.diagnostics,
         relaxations: hydrated.relaxations,
         spanHashes: hydrated.spanHashes,
+        clearanceM: hydrated.clearanceM,
       };
       controller.setResult(result, numericId);
       // Clear failure caches on success
@@ -1166,6 +1167,7 @@ const controller = createExperienceController({
         diagnostics: hydrated.diagnostics,
         relaxations: hydrated.relaxations,
         spanHashes: hydrated.spanHashes,
+        clearanceM: hydrated.clearanceM,
       };
       const ok = controller.setResult(result, numericId);
       if (ok) {
@@ -1213,6 +1215,7 @@ const controller = createExperienceController({
         diagnostics: hydrated.diagnostics,
         relaxations: hydrated.relaxations,
         spanHashes: hydrated.spanHashes,
+        clearanceM: hydrated.clearanceM,
       };
       controller.setResult(result, numericId);
       lastFailureDiagnostics = [];
@@ -1414,7 +1417,7 @@ unsubscribeController = controller.subscribe((expState) => {
     renderMetricLegend(state.metric);
     lifecycle.setMetric(state.metric, metricData);
 
-    {
+<    {
       const series = seatMetricAvailable
         ? getSeatMetricSeries(state.metric, result, initialSeat)
         : getMetricSeries(
@@ -1579,7 +1582,7 @@ unsubscribeController = controller.subscribe((expState) => {
         state.metric,
         errorAuthoritative.track,
         errorAuthoritative.timeline,
-        errorAuthoritative.clearanceM ?? null,
+        errorAuthoritative.clearanceM,
       );
       drawTimelineGraph(telemetryGraph, s, getSelectedTimelineIndex());
     }

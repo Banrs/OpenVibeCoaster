@@ -63,7 +63,7 @@ export const createDefaultSimulatorConfig = (): SimulatorConfig => ({
       halfWidthM: 1.25,
       aboveRailM: 2.1,
       belowRailM: 0.8,
-      noseTailMarginM: 0.75,
+      noseTailMarginM: 0,
     },
   },
 });

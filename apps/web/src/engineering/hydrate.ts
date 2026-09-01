@@ -21,6 +21,7 @@ export function hydrateEngineeringSuccess(response: unknown): {
   readonly spanHashes: Readonly<Record<string, string>>;
   readonly diagnostics: readonly import("@openvibecoaster/core").Diagnostic[];
   readonly relaxations: readonly string[];
+  readonly clearanceM: Float64Array;
 } {
   validateEngineeringWorkerResponse(response);
   const success = response as EngineeringWorkerSuccess;
@@ -108,6 +109,8 @@ export function hydrateEngineeringSuccess(response: unknown): {
   const spanHashes = Object.freeze({ ...success.spanHashes });
   const rawFile = structuredClone(success.file);
   const file = deepFreeze(Object.freeze(rawFile));
+  // Owned copy of clearanceM – hydration must not alias worker buffer, exact timeline length already validated
+  const clearanceM = new Float64Array(success.clearanceM);
   return {
     track,
     timeline,
@@ -115,5 +118,6 @@ export function hydrateEngineeringSuccess(response: unknown): {
     spanHashes,
     diagnostics,
     relaxations,
+    clearanceM,
   };
 }

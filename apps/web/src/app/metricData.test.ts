@@ -74,6 +74,7 @@ function makeValidResult(): AuthoritativeExperienceResult {
     diagnostics: [],
     relaxations: [],
     spanHashes: { dummy: "abc12345" },
+    clearanceM: new Float64Array(8).fill(5),
   };
 }
 
@@ -118,9 +119,19 @@ describe("metricData helpers", () => {
   it("getMetricSeries centralizes height vs timeline choice", () => {
     const track = makeTrack();
     const timeline = makeTimeline(4);
-    const heightSeries = getMetricSeries("height", track, timeline, null);
+    const heightSeries = getMetricSeries(
+      "height",
+      track,
+      timeline,
+      new Float64Array(4).fill(5),
+    );
     expect(heightSeries.metric).toBe("height");
-    const speedSeries = getMetricSeries("speed", track, timeline, null);
+    const speedSeries = getMetricSeries(
+      "speed",
+      track,
+      timeline,
+      new Float64Array(4).fill(5),
+    );
     expect(speedSeries.metric).toBe("speed");
     expect(speedSeries.available).toBe(true);
   });

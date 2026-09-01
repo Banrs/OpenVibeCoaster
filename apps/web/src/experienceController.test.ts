@@ -80,6 +80,7 @@ function makeResult(
     }),
     diagnostics: [],
     spanHashes: { [fileId]: hash, a: hash },
+    clearanceM: new Float64Array([1, 1]),
   };
 }
 
@@ -663,6 +664,7 @@ describe("ExperienceController – injection and epochs", () => {
       }),
       diagnostics: [],
       spanHashes: { a: "x" },
+      clearanceM: new Float64Array([1, 1]),
     } as unknown as AuthoritativeExperienceResult;
     const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
     expect(ctrl.setResult(badResult, id)).toBe(false);
@@ -696,6 +698,7 @@ describe("ExperienceController – injection and epochs", () => {
       }),
       diagnostics: [],
       spanHashes: { a: "hash-a", b: "hash-b" },
+      clearanceM: new Float64Array([1, 1]),
     } as unknown as AuthoritativeExperienceResult;
     const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
     ctrl.setResult(baseResult, id);
@@ -729,6 +732,7 @@ describe("ExperienceController – injection and epochs", () => {
       }),
       diagnostics: [],
       spanHashes: { a: "hash-a", b: "hash-b" },
+      clearanceM: new Float64Array([1, 1]),
     } as unknown as AuthoritativeExperienceResult;
     const id2 = ctrl.requestGenerate({ mode: "insta", seed: 2 });
     ctrl.setResult(twoResult, id2);
@@ -815,6 +819,7 @@ describe("ExperienceController – injection and epochs", () => {
       }),
       diagnostics: [],
       spanHashes: { a: "hash-a" },
+      clearanceM: new Float64Array([1, 1]),
     } as unknown as AuthoritativeExperienceResult;
     const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
     ctrl.setResult(baseResult, id);
@@ -859,6 +864,7 @@ describe("ExperienceController – injection and epochs", () => {
       }),
       diagnostics: [],
       spanHashes: { a: "hash-a" },
+      clearanceM: new Float64Array([1, 1]),
     } as unknown as AuthoritativeExperienceResult;
     const id = ctrl.requestGenerate({ mode: "insta", seed: 1 });
     ctrl.setResult(baseResult, id);
@@ -910,6 +916,7 @@ describe("ExperienceController – injection and epochs", () => {
       }),
       diagnostics: [],
       spanHashes: { a: "hash-a" },
+      clearanceM: new Float64Array([1, 1]),
     } as unknown as AuthoritativeExperienceResult;
     const id1 = ctrl.requestGenerate({ mode: "insta", seed: 1 });
     expect(ctrl.setResult(goodResult, id1)).toBe(true);
@@ -997,6 +1004,7 @@ describe("ExperienceController – defensive-copy amplification regression", () 
       timeline,
       diagnostics: [],
       spanHashes: { "station-000": "hash-a", a: "hash-a" },
+      clearanceM: new Float64Array(length).fill(1),
     };
     // Spy via prototype getter wrapping (instances are frozen, so instance defineProperty fails)
     const proto = RideTimeline.prototype as unknown as Record<string, unknown>;

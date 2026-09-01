@@ -19,11 +19,13 @@ export {
   compileCoasterFile,
   generate,
   generateCoaster,
+  isClosedChain,
   localRegenerate,
   regenerateCoasterFileLocal,
   regenerateLocal,
 } from "./pipeline";
 export { validateClearance } from "./clearance";
+export * from "./clearance-field.js";
 export type {
   CertifiedDistanceResult,
   ClearancePose,

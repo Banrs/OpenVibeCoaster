@@ -38,6 +38,7 @@ function makeInstaResult() {
     timeline,
     diagnostics: [],
     spanHashes: { dummy: "abc" },
+    clearanceM: new Float64Array([1, 1]),
   };
 }
 

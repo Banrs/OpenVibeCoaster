@@ -188,6 +188,8 @@ export interface GenerationOptions {
 
 export type StoredGenerationOptions = Omit<GenerationOptions, "environment">;
 
+import type { ClearanceField } from "./clearance-field";
+
 export interface GenerationResult {
   readonly feasible: boolean;
   readonly intent: DesignIntentV1;
@@ -213,6 +215,7 @@ export interface GenerationResult {
   readonly spanBytes: Readonly<Record<string, string>>;
   readonly relaxationEvidence: readonly RelaxationEvidence[];
   readonly options: StoredGenerationOptions;
+  readonly clearanceField?: ClearanceField;
 }
 
 export interface RelaxationEvidence {

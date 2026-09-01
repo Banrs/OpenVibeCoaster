@@ -45,6 +45,10 @@ import {
   certifiedPolynomialBounds,
   certifyPolynomialThreshold,
 } from "./polynomial-bounds";
+import {
+  computeClearanceField,
+  projectClearanceDiagnostics,
+} from "./clearance-field.js";
 import { certifyFootprintSpan } from "./footprint-certifier";
 import {
   buildElement,
@@ -1265,9 +1269,18 @@ const validateGenerationConstraints = (
   }
   return sanitizeDiagnostics(diagnostics);
 };
-const isClosedChain = (elements: readonly AnySemanticElement[]): boolean =>
-  elements[0]?.type === "station" &&
-  (elements[0].parameters as ElementParameterMap["station"]).closed === true;
+export const isClosedChain = (
+  elements: readonly {
+    readonly type: string;
+    readonly parameters: Record<string, unknown>;
+  }[],
+): boolean => {
+  const first = elements[0] as unknown as AnySemanticElement | undefined;
+  if (!first) return false;
+  if (first.type !== "station") return false;
+  const params = first.parameters as ElementParameterMap["station"];
+  return params.closed === true;
+};
 const targetError = (
   target: DesignIntentV1["targets"][number],
   position: Vec3,
@@ -1366,7 +1379,9 @@ export type GenerationBenchmarkEvent =
   | "compilation:start"
   | "compilation:end"
   | "validation:start"
-  | "validation:end";
+  | "validation:end"
+  | "clearance:start"
+  | "clearance:end";
 
 type GenerationBenchmarkObserver = (event: GenerationBenchmarkEvent) => void;
 
@@ -1527,15 +1542,6 @@ const evaluateCandidate = (
         });
       }
     }
-  const requiredTrackClearance = intent.constraints
-    .filter(
-      (constraint) =>
-        constraint.kind === "track-clearance" &&
-        constraint.hard !== false &&
-        typeof (constraint.target ?? constraint.value) === "number",
-    )
-    .map((constraint) => (constraint.target ?? constraint.value) as number)
-    .reduce((maximum, value) => Math.max(maximum, value), 0);
   let track: ReturnType<typeof compileTrack> | undefined;
   if (intent.targets.some((target) => target.kind === "total-length")) {
     try {
@@ -1570,47 +1576,25 @@ const evaluateCandidate = (
     (diagnostic) =>
       diagnostic.severity === "error" || diagnostic.severity === "fatal",
   );
+  // Cheap candidate clearance must not use circumsphere band as proof of collision.
+  // Soft constraints never reject; hard 0.5/thresholds are authoritative via exactly-once final field.
+  // Use legacy validator only for proven centerline intersection (radius=0, clearance=0) or skip.
   if (!hasHardFailure) {
     const clearance = validateClearance(spans, options.environment, {
-      ...(options.trainEnvelopeRadius === undefined
-        ? {}
-        : { trainEnvelopeRadius: options.trainEnvelopeRadius }),
-      trackClearance: Math.max(
-        options.trackClearance ?? 0,
-        requiredTrackClearance,
-      ),
+      trainEnvelopeRadius: 0,
+      trackClearance: 0,
       closed: isClosedChain(elements),
     });
-    const clearanceConstraintIds = intent.constraints
-      .filter((constraint) => constraint.kind === "track-clearance")
-      .map((constraint) => constraint.id);
-    for (const constraint of intent.constraints) {
-      const required = constraint.target ?? constraint.value;
-      if (
-        constraint.kind === "track-clearance" &&
-        constraint.hard !== false &&
-        typeof required === "number" &&
-        clearance.some(
-          (item) =>
-            item.code === "TRACK_CLEARANCE" &&
-            (item.actual === undefined || item.actual < required),
-        )
-      )
-        failedHardRequirementIds.add(constraint.id);
+    for (const item of clearance) {
+      if (item.code === "TRACK_CLEARANCE") {
+        // centerline intersection is hard failure for any hard constraint? Treat as hard requirement failure
+        for (const c of intent.constraints) {
+          if (c.kind === "track-clearance" && c.hard !== false)
+            failedHardRequirementIds.add(c.id);
+        }
+      }
     }
-    diagnostics.push(
-      ...clearance.map((item) =>
-        item.code === "TRACK_CLEARANCE" && clearanceConstraintIds.length > 0
-          ? {
-              ...item,
-              relatedIds: [
-                ...(item.relatedIds ?? []),
-                ...clearanceConstraintIds,
-              ],
-            }
-          : item,
-      ),
-    );
+    diagnostics.push(...clearance);
   }
   const evaluation = {
     elements,
@@ -1725,8 +1709,79 @@ const buildFileResult = (
     compileDiagnostics = Object.freeze([...evaluation.diagnostics, diagnostic]);
     track = canonicalTrack;
   }
+  const hasCompileFatal = compileDiagnostics.some(
+    (d) => d.severity === "error" || d.severity === "fatal",
+  );
+  observer?.("compilation:end");
+  // Exactly one clearance field per final generation (owned runtime result)
+  let clearanceField: import("./clearance-field.js").ClearanceField | undefined;
+  let fieldDiagnostics: readonly Diagnostic[] = [];
+  const explicitConstraintDescriptors: import("./clearance-field.js").ClearanceConstraintDescriptor[] =
+    [];
+  const explicitValues: number[] = [];
+  const validationDiagnostics: Diagnostic[] = [];
+  for (const c of intent.constraints) {
+    if (c.kind !== "track-clearance") continue;
+    const v = (c.target ?? c.value) as unknown;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      validationDiagnostics.push({
+        code: "TRACK_CLEARANCE",
+        severity: "fatal",
+        provenance: "PROJECT_ENGINEERING_LIMIT",
+        message: `track-clearance ${c.id} has invalid threshold ${String(v)}`,
+        relatedIds: [c.id],
+      });
+      continue;
+    }
+    explicitValues.push(v);
+    explicitConstraintDescriptors.push({
+      id: c.id,
+      hard: c.hard !== false,
+      threshold: v as number,
+    });
+  }
+  const displayCap = Math.max(10, 0.5, ...explicitValues);
+  // Build real span ids for honest diagnostics (stable, not surrogate element-N)
+  const segmentIds = canonicalSpans.map((s) => s.id);
+  const hasFatalNoField =
+    hasCompileFatal ||
+    validationDiagnostics.some((d) => d.severity === "fatal");
+  if (!hasFatalNoField) {
+    observer?.("clearance:start");
+    try {
+      clearanceField = computeClearanceField(track, {
+        environment: options.environment,
+        closed: isClosedChain(evaluation.elements),
+        hardClearanceM: 0.5,
+        explicitThresholds: explicitValues,
+        displayCapM: displayCap,
+        segmentIds,
+      });
+    } catch (e) {
+      observer?.("clearance:end");
+      throw e;
+    }
+    observer?.("clearance:end");
+    const projected = projectClearanceDiagnostics(
+      clearanceField,
+      explicitConstraintDescriptors,
+    );
+    fieldDiagnostics = Object.freeze([
+      ...clearanceField.diagnostics,
+      ...projected,
+      ...validationDiagnostics,
+    ]);
+  } else {
+    fieldDiagnostics = Object.freeze([...validationDiagnostics]);
+    // No field computed for infeasible compilation; explicitly absent rather than invented
+    clearanceField = undefined;
+  }
+  const mergedDiagnostics = Object.freeze([
+    ...compileDiagnostics,
+    ...fieldDiagnostics,
+  ]);
   const result: GenerationResult = {
-    feasible: !compileDiagnostics.some(
+    feasible: !mergedDiagnostics.some(
       (diagnostic) =>
         diagnostic.severity === "error" || diagnostic.severity === "fatal",
     ),
@@ -1736,7 +1791,7 @@ const buildFileResult = (
     track,
     file,
     serializedFile,
-    diagnostics: Object.freeze(compileDiagnostics),
+    diagnostics: mergedDiagnostics,
     relaxations: Object.freeze(relaxationEvidence.map((item) => item.change)),
     relaxationEvidence: Object.freeze(relaxationEvidence),
     candidatesTested,
@@ -1757,8 +1812,8 @@ const buildFileResult = (
     spanHashes: hashes,
     spanBytes: bytes,
     options: ownedGenerationOptions(options),
-  };
-  observer?.("compilation:end");
+    ...(clearanceField ? { clearanceField } : {}),
+  } as GenerationResult;
   return deepFreeze(result);
 };
 
@@ -1924,6 +1979,7 @@ const generationWithSpans = (
   spans: readonly SolvedSpan[],
   intent: DesignIntentV1,
   diagnostics: readonly Diagnostic[] = candidate.diagnostics,
+  environment?: EnvironmentQuery,
 ): GenerationResult => {
   const elementById = new Map(
     candidate.elements.map((element) => [element.id, element]),
@@ -1986,6 +2042,62 @@ const generationWithSpans = (
     candidate.options.samples === undefined
       ? canonicalTrack
       : compileTrack(canonicalSpans, { samples: candidate.options.samples });
+  // recompute clearance field once for new track (owned runtime result)
+  const explicitConstraintDescriptors: import("./clearance-field.js").ClearanceConstraintDescriptor[] =
+    [];
+  const explicitValues: number[] = [];
+  const validationDiagnostics: Diagnostic[] = [];
+  for (const c of intent.constraints) {
+    if (c.kind !== "track-clearance") continue;
+    const v = (c.target ?? c.value) as unknown;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      validationDiagnostics.push({
+        code: "TRACK_CLEARANCE",
+        severity: "fatal",
+        provenance: "PROJECT_ENGINEERING_LIMIT",
+        message: `track-clearance ${c.id} has invalid threshold ${String(v)}`,
+        relatedIds: [c.id],
+      });
+      continue;
+    }
+    explicitValues.push(v as number);
+    explicitConstraintDescriptors.push({
+      id: c.id,
+      hard: c.hard !== false,
+      threshold: v as number,
+    });
+  }
+  const displayCap = Math.max(10, 0.5, ...explicitValues);
+  const segmentIdsForField = canonicalSpans.map((s) => s.id);
+  const hasHardEarlier =
+    diagnostics.some((d) => d.severity === "error" || d.severity === "fatal") ||
+    validationDiagnostics.some((d) => d.severity === "fatal");
+  let clearanceField: import("./clearance-field.js").ClearanceField | undefined;
+  let fieldDiagnostics: readonly import("@openvibecoaster/core").Diagnostic[] =
+    Object.freeze([...validationDiagnostics]);
+  if (!hasHardEarlier) {
+    clearanceField = computeClearanceField(track, {
+      environment,
+      closed: isClosedChain(resultElements),
+      hardClearanceM: 0.5,
+      explicitThresholds: explicitValues,
+      displayCapM: displayCap,
+      segmentIds: segmentIdsForField,
+    });
+    const projected = projectClearanceDiagnostics(
+      clearanceField,
+      explicitConstraintDescriptors,
+    );
+    fieldDiagnostics = Object.freeze([
+      ...clearanceField.diagnostics,
+      ...projected,
+      ...validationDiagnostics,
+    ]);
+  }
+  const mergedDiagnostics = Object.freeze([
+    ...diagnostics,
+    ...fieldDiagnostics,
+  ]);
   const result: GenerationResult = {
     ...candidate,
     intent: ownedIntent,
@@ -1996,13 +2108,14 @@ const generationWithSpans = (
     serializedFile,
     spanBytes: spanBytesMap,
     spanHashes: spanHashesMap,
-    diagnostics: Object.freeze(diagnostics),
+    diagnostics: mergedDiagnostics,
     options: ownedGenerationOptions(candidate.options),
-    feasible: !diagnostics.some(
+    ...(clearanceField ? { clearanceField } : {}),
+    feasible: !mergedDiagnostics.some(
       (diagnostic) =>
         diagnostic.severity === "error" || diagnostic.severity === "fatal",
     ),
-  };
+  } as GenerationResult;
   return deepFreeze(result);
 };
 
@@ -2557,40 +2670,18 @@ const mergedDiagnostics = (
             : "PROJECT_ENGINEERING_LIMIT",
       });
   }
-  const hardTrackClearance = intent.constraints
-    .filter(
-      (constraint) =>
-        constraint.kind === "track-clearance" &&
-        constraint.hard !== false &&
-        typeof (constraint.target ?? constraint.value) === "number",
-    )
-    .map((constraint) => (constraint.target ?? constraint.value) as number)
-    .reduce((maximum, value) => Math.max(maximum, value), 0);
   const hasHardFailure = diagnostics.some(
     (diagnostic) =>
       diagnostic.severity === "error" || diagnostic.severity === "fatal",
   );
+  // Skip cheap clearance when hard failure already present; final field is authoritative.
   if (!hasHardFailure) {
     const clearance = validateClearance(spans, environment, {
-      ...(options.trainEnvelopeRadius === undefined
-        ? {}
-        : { trainEnvelopeRadius: options.trainEnvelopeRadius }),
-      trackClearance: Math.max(options.trackClearance ?? 0, hardTrackClearance),
+      trainEnvelopeRadius: 0,
+      trackClearance: 0,
       closed: isClosedChain(elements),
     });
-    const clearanceIds = intent.constraints
-      .filter((constraint) => constraint.kind === "track-clearance")
-      .map((constraint) => constraint.id);
-    diagnostics.push(
-      ...clearance.map((item) =>
-        item.code === "TRACK_CLEARANCE" && clearanceIds.length > 0
-          ? {
-              ...item,
-              relatedIds: [...(item.relatedIds ?? []), ...clearanceIds],
-            }
-          : item,
-      ),
-    );
+    diagnostics.push(...clearance);
   }
   return sanitizeDiagnostics(diagnostics);
 };
@@ -2908,6 +2999,7 @@ export const regenerateLocal = (
         mergedSpans,
         changedIntent,
         diagnostics,
+        options.environment,
       );
       if (
         !diagnostics.some(
@@ -3019,6 +3111,7 @@ export function regenerateCoasterFileLocal(
     }
   }
   // Loaded file has no candidate-search history; represent honestly – stored generation options remain adaptive (no fixed samples)
+  // Do not compute an adapter field that is immediately discarded – internal field remains absent until generationWithSpans computes final changed track
   const adapter = {
     feasible: true,
     intent: file.intent,
@@ -3040,8 +3133,8 @@ export function regenerateCoasterFileLocal(
     spanBytes: Object.freeze({ ...bytes }),
     relaxationEvidence: Object.freeze([] as RelaxationEvidence[]),
     options: Object.freeze({} satisfies StoredGenerationOptions),
-  } satisfies GenerationResult;
-  return regenerateLocal(adapter, elementId, options);
+  } as GenerationResult;
+  return regenerateLocal(adapter as GenerationResult, elementId, options);
 }
 
 export const generate = generateCoaster;

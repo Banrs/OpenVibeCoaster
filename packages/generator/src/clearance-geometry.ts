@@ -823,6 +823,31 @@ function sInterval(
   const bHi = nextUp(s.startS + nextUp(nextUp(s.endS - s.startS) * u1));
   return [nextDown(Math.min(aLo, bLo)), nextUp(Math.max(aHi, bHi))];
 }
+export function areSweptIntervalsWithinLocality(
+  segA: SweptClearanceSegment,
+  segB: SweptClearanceSegment,
+  localityM: number,
+  closed: boolean,
+  trackLengthM: number,
+): boolean {
+  finiteScalar(segA.startS, "aStartS");
+  finiteScalar(segA.endS, "aEndS");
+  finiteScalar(segB.startS, "bStartS");
+  finiteScalar(segB.endS, "bEndS");
+  finiteScalar(localityM, "localityM");
+  if (localityM < 0) throw new RangeError("localityM must be non-negative");
+  if (closed) {
+    finiteScalar(trackLengthM, "trackLengthM");
+    if (!(trackLengthM > 0))
+      throw new RangeError("trackLengthM must be positive");
+  }
+  const [a0, a1] = sInterval(segA, 0, 1);
+  const [b0, b1] = sInterval(segB, 0, 1);
+  const d0 = closed
+    ? closedArcIntervalDistance(a0, a1, b0, b1, trackLengthM)
+    : openArcIntervalDistance(a0, a1, b0, b1);
+  return d0.max <= localityM;
+}
 function pointArcDistance(
   segA: SweptClearanceSegment,
   segB: SweptClearanceSegment,
@@ -880,12 +905,9 @@ export function certifiedSweptDistance(
   const localityM = opts.localityM;
   const trackLen = opts.trackLengthM ?? 0;
   if (localityM !== undefined) {
-    const [a0, a1] = sInterval(segA, 0, 1);
-    const [b0, b1] = sInterval(segB, 0, 1);
-    const d0 = closed
-      ? closedArcIntervalDistance(a0, a1, b0, b1, trackLen)
-      : openArcIntervalDistance(a0, a1, b0, b1);
-    if (d0.max <= localityM) {
+    if (
+      areSweptIntervalsWithinLocality(segA, segB, localityM, closed, trackLen)
+    ) {
       return { ok: true, excluded: true, work: 0 };
     }
   }

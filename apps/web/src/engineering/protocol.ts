@@ -75,6 +75,7 @@ export type EngineeringWorkerSuccess = {
   readonly relaxations: readonly string[];
   readonly spanHashes: Readonly<Record<string, string>>;
   readonly timings: EngineeringWorkerTimings;
+  readonly clearanceM: Float64Array;
 };
 
 export type EngineeringWorkerFailure = {
@@ -230,6 +231,13 @@ export function validateEngineeringWorkerResponse(
       timings.workerSendEpochMs < 0
     )
       fail("response.timings.workerSendEpochMs", "finite non-negative number");
+    if (!(rec.clearanceM instanceof Float64Array))
+      fail("response.clearanceM", "Float64Array");
+    const cm = rec.clearanceM as Float64Array;
+    if (cm.length !== (rec.timeline as unknown as { length: number }).length)
+      fail("response.clearanceM", "length must match timeline length");
+    for (let i = 0; i < cm.length; i++)
+      if (!Number.isFinite(cm[i]!)) fail(`response.clearanceM[${i}]`, "finite");
     // strict: no extra fields
     const allowed = new Set([
       "type",
@@ -241,6 +249,7 @@ export function validateEngineeringWorkerResponse(
       "relaxations",
       "spanHashes",
       "timings",
+      "clearanceM",
     ]);
     for (const key of Object.keys(rec))
       if (!allowed.has(key)) fail(`response.${key}`, "no extra field");

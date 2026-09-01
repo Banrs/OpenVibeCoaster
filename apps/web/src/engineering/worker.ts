@@ -7,7 +7,11 @@ import {
 } from "@openvibecoaster/core";
 import {
   coasterFileSpanHashes,
+  computeClearanceField,
   generateCoaster,
+  isClosedChain,
+  mapClearanceToTimeline,
+  projectClearanceDiagnostics,
   regenerateCoasterFileLocal,
 } from "@openvibecoaster/generator";
 import {
@@ -447,6 +451,35 @@ export function handleGenerate(
       toDiagnostic("SPAN_HASH_ERROR", "Missing spanHashes", "fatal"),
     ]);
   }
+  // Required finite Float64Array clearanceM derived from owned field and actual train offsets (no default hidden offsets)
+  let clearanceM: Float64Array;
+  try {
+    const cfg = createDefaultSimulatorConfig();
+    const offsets = cfg.train.cars.map((_, i) => i * cfg.train.spacingM);
+    for (const o of offsets)
+      if (!Number.isFinite(o) || o < 0)
+        throw new RangeError("train offset must be finite non-negative");
+    if (!generation.clearanceField)
+      throw new RangeError("clearanceField missing for feasible generation");
+    clearanceM = mapClearanceToTimeline(
+      generation.clearanceField!,
+      sim.timeline.headDistanceM,
+      offsets,
+    );
+    if (clearanceM.length !== sim.timeline.length)
+      throw new RangeError("clearanceM length must match timeline length");
+    for (let i = 0; i < clearanceM.length; i++)
+      if (!Number.isFinite(clearanceM[i]!))
+        throw new RangeError(`clearanceM[${i}] must be finite`);
+  } catch (err) {
+    return failure(requestId, [
+      toDiagnostic(
+        "CLEARANCE_UNCERTIFIED",
+        err instanceof Error ? err.message : String(err),
+        "fatal",
+      ),
+    ]);
+  }
   return {
     type: "success",
     requestId,
@@ -462,6 +495,7 @@ export function handleGenerate(
     relaxations: [...generation.relaxations],
     spanHashes: generation.spanHashes,
     timings: createTimings(sim.simulationMs),
+    clearanceM,
   };
 }
 
@@ -569,6 +603,34 @@ export function handleRegenerate(
       toDiagnostic("SPAN_HASH_ERROR", "Missing spanHashes", "fatal"),
     ]);
   }
+  let clearanceMReg: Float64Array;
+  try {
+    const cfg = createDefaultSimulatorConfig();
+    const offsets = cfg.train.cars.map((_, i) => i * cfg.train.spacingM);
+    for (const o of offsets)
+      if (!Number.isFinite(o) || o < 0)
+        throw new RangeError("train offset must be finite non-negative");
+    if (!generation.clearanceField)
+      throw new RangeError("clearanceField missing for feasible regeneration");
+    clearanceMReg = mapClearanceToTimeline(
+      generation.clearanceField!,
+      sim.timeline.headDistanceM,
+      offsets,
+    );
+    if (clearanceMReg.length !== sim.timeline.length)
+      throw new RangeError("clearanceM length must match timeline length");
+    for (let i = 0; i < clearanceMReg.length; i++)
+      if (!Number.isFinite(clearanceMReg[i]!))
+        throw new RangeError(`clearanceM[${i}] must be finite`);
+  } catch (err) {
+    return failure(requestId, [
+      toDiagnostic(
+        "CLEARANCE_UNCERTIFIED",
+        err instanceof Error ? err.message : String(err),
+        "fatal",
+      ),
+    ]);
+  }
   return {
     type: "success",
     requestId,
@@ -584,6 +646,7 @@ export function handleRegenerate(
     relaxations: [...generation.relaxations],
     spanHashes: generation.spanHashes,
     timings: createTimings(sim.simulationMs),
+    clearanceM: clearanceMReg,
   };
 }
 
@@ -601,6 +664,19 @@ export function handleCompileSimulate(
       toDiagnostic(
         "INVALID_FILE",
         err instanceof Error ? err.message : String(err),
+      ),
+    ]);
+  }
+  // Resolve terrain profile on all paths (compile-simulate)
+  let envCs: ReturnType<typeof resolveTerrainEnvironment>;
+  try {
+    envCs = resolveEnvForProfile(loaded.file.intent.terrainProfileId);
+  } catch (err) {
+    return failure(requestId, [
+      toDiagnostic(
+        "TERRAIN_PROFILE_UNKNOWN",
+        err instanceof Error ? err.message : String(err),
+        "fatal",
       ),
     ]);
   }
@@ -647,6 +723,96 @@ export function handleCompileSimulate(
       ),
     ]);
   }
+  // Compute clearance field once because CoasterFile does not persist it – must call projectClearanceDiagnostics with structured file constraints
+  let clearanceMCS: Float64Array;
+  let clearanceDiagnostics: readonly Diagnostic[] = [];
+  try {
+    const explicitValues: number[] = [];
+    const constraintDescriptors: {
+      id: string;
+      hard: boolean;
+      threshold: number;
+    }[] = [];
+    for (const c of loaded.file.intent.constraints) {
+      if (c.kind !== "track-clearance") continue;
+      const v = (c.target ?? c.value) as unknown;
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+        return failure(requestId, [
+          toDiagnostic(
+            "TRACK_CLEARANCE",
+            `track-clearance ${c.id} has invalid threshold ${String(v)}`,
+            "fatal",
+          ),
+        ]);
+      }
+      explicitValues.push(v as number);
+      constraintDescriptors.push({
+        id: c.id,
+        hard: c.hard !== false,
+        threshold: v as number,
+      });
+    }
+    const displayCap = Math.max(10, 0.5, ...explicitValues);
+    const isClosed = isClosedChain(
+      loaded.file.intent.elements as unknown as readonly {
+        type: string;
+        parameters: Record<string, unknown>;
+      }[],
+    );
+    const segmentIds = loaded.file.solvedSpans.map((s) => s.id);
+    const field = computeClearanceField(track, {
+      environment: envCs,
+      closed: isClosed,
+      hardClearanceM: 0.5,
+      explicitThresholds: explicitValues,
+      displayCapM: displayCap,
+      segmentIds,
+    });
+    const projected = projectClearanceDiagnostics(field, constraintDescriptors);
+    clearanceDiagnostics = [...field.diagnostics, ...projected];
+    const hasHardFatal = clearanceDiagnostics.some(
+      (d) => d.severity === "error" || d.severity === "fatal",
+    );
+    if (hasHardFatal) {
+      return failure(
+        requestId,
+        [
+          ...(sim.diagnostics as Diagnostic[]),
+          ...limitDiagsCs,
+          ...clearanceDiagnostics,
+        ],
+        [],
+      );
+    }
+    const cfg = createDefaultSimulatorConfig();
+    const offsets = cfg.train.cars.map((_, i) => i * cfg.train.spacingM);
+    for (const o of offsets)
+      if (!Number.isFinite(o) || o < 0)
+        throw new RangeError("train offset must be finite non-negative");
+    clearanceMCS = mapClearanceToTimeline(
+      field,
+      sim.timeline.headDistanceM,
+      offsets,
+    );
+    if (clearanceMCS.length !== sim.timeline.length)
+      throw new RangeError("clearanceM length must match timeline length");
+    for (let i = 0; i < clearanceMCS.length; i++)
+      if (!Number.isFinite(clearanceMCS[i]!))
+        throw new RangeError(`clearanceM[${i}] must be finite`);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("track-clearance")) {
+      return failure(requestId, [
+        toDiagnostic("TRACK_CLEARANCE", err.message, "fatal"),
+      ]);
+    }
+    return failure(requestId, [
+      toDiagnostic(
+        "CLEARANCE_UNCERTIFIED",
+        err instanceof Error ? err.message : String(err),
+        "fatal",
+      ),
+    ]);
+  }
   return {
     type: "success",
     requestId,
@@ -654,10 +820,15 @@ export function handleCompileSimulate(
     track: trackToTransfer(track),
     timeline:
       sim.timeline.toTransferable() as unknown as RideTimelineCompactTransfer,
-    diagnostics: [...(sim.diagnostics as Diagnostic[]), ...limitDiagsCs],
+    diagnostics: [
+      ...(sim.diagnostics as Diagnostic[]),
+      ...limitDiagsCs,
+      ...clearanceDiagnostics,
+    ],
     relaxations: [],
     spanHashes,
     timings: createTimings(sim.simulationMs),
+    clearanceM: clearanceMCS,
   };
 }
 
@@ -700,11 +871,8 @@ if (
       if (response.type === "success") {
         // Build transfer list first so the send-epoch timestamp is captured
         // in the immediately-next step before the actual postMessage, as
-        // required by the User Timing contract.
-        const transfers = collectTransferables({
-          track: response.track,
-          timeline: response.timeline,
-        });
+        // required by the User Timing contract. Must include clearanceM buffer exactly once.
+        const transfers = collectTransferables(response);
         const refreshed: EngineeringWorkerSuccess = {
           ...response,
           timings: {

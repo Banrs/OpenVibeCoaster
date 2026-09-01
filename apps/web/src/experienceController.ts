@@ -29,7 +29,7 @@ export interface AuthoritativeExperienceResult {
   readonly diagnostics: readonly ExperienceDiagnostic[];
   readonly relaxations?: readonly string[];
   readonly spanHashes: SpanHashInput;
-  readonly clearanceM?: Float64Array;
+  readonly clearanceM: Float64Array;
 }
 
 export type GenerateRequest =
@@ -227,15 +227,13 @@ const validateResult = (
       )
         return "timeline arrays must be finite";
     }
-    if (result.clearanceM !== undefined && result.clearanceM !== null) {
-      if (!(result.clearanceM instanceof Float64Array))
-        return "clearanceM must be Float64Array if supplied";
-      if (result.clearanceM.length !== timeline.length)
-        return "clearanceM length must match timeline length";
-      for (let i = 0; i < result.clearanceM.length; i += 1)
-        if (!Number.isFinite(result.clearanceM[i]!))
-          return "clearanceM must be finite";
-    }
+    if (!(result.clearanceM instanceof Float64Array))
+      return "clearanceM must be Float64Array";
+    if (result.clearanceM.length !== timeline.length)
+      return "clearanceM length must match timeline length";
+    for (let i = 0; i < result.clearanceM.length; i += 1)
+      if (!Number.isFinite(result.clearanceM[i]!))
+        return "clearanceM must be finite";
     // Ensure spanHashes present
     if (!result.spanHashes) return "spanHashes required";
     const hashes = normalizeSpanHashes(result.spanHashes);
@@ -523,10 +521,8 @@ export function createExperienceController(
         ? state.selectedElementId
         : null;
 
-      // Deep-copy typed data ownership: clearanceM if supplied
-      let ownedClearance: Float64Array | undefined;
-      if (result.clearanceM)
-        ownedClearance = new Float64Array(result.clearanceM);
+      // Deep-copy typed data ownership: clearanceM required
+      const ownedClearance = new Float64Array(result.clearanceM);
 
       // Freeze owned result graph without mutating caller's object
       let ownedFile: CoasterFileV1;
@@ -545,7 +541,7 @@ export function createExperienceController(
           ? { relaxations: Object.freeze([...result.relaxations]) }
           : {}),
         spanHashes: Object.freeze({ ...nextHashes }),
-        ...(ownedClearance ? { clearanceM: ownedClearance } : {}),
+        clearanceM: ownedClearance,
       });
 
       lastGoodResult = ownedResult;

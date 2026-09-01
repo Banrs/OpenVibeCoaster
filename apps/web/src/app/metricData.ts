@@ -59,7 +59,7 @@ export function getMetricSeries(
   metric: MetricId,
   track: CompiledTrackData,
   timeline: RideTimeline,
-  clearanceM: Float64Array | null,
+  clearanceM: Float64Array,
 ): TimelineSeries {
   if (metric === "height") return getHeightSeries(track, timeline);
   const timelineMetric = toTimelineMetricId(metric);
@@ -107,7 +107,7 @@ export function deriveMetricData(
     result.timeline,
     timelineMetric,
     result.track,
-    result.clearanceM ?? null,
+    result.clearanceM,
   );
   if (!series.available) return undefined;
   const resampled = resampleToTrack(

@@ -378,6 +378,7 @@ describe("EngineeringWorkerResponse timings validation", () => {
         simulationMs: 15.2,
         workerSendEpochMs: performance.timeOrigin + performance.now(),
       },
+      clearanceM: new Float64Array([1, 1]),
     } as unknown as Record<string, unknown>;
   }
 
