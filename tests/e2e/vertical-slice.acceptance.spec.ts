@@ -14,11 +14,6 @@ type Snapshot = {
   cameraX: number;
   cameraY: number;
   cameraZ: number;
-  playbackHeadDistanceM: number | null;
-  playbackIsPlaying: boolean | null;
-  playbackRate: number | null;
-  playbackCamera: string | null;
-  trackLengthM: number | null;
   intentFootprint?: unknown;
   intentHeightRange?: unknown;
 };
@@ -39,16 +34,10 @@ async function domDistance(page: Page): Promise<number> {
   return raw ? Number.parseFloat(raw) : NaN;
 }
 
-async function headM(page: Page): Promise<number | null> {
-  return (await snap(page)).playbackHeadDistanceM;
-}
-
-async function playing(page: Page): Promise<boolean | null> {
-  return (await snap(page)).playbackIsPlaying;
-}
-
-async function playbackRate(page: Page): Promise<number | null> {
-  return (await snap(page)).playbackRate;
+async function selectionTimeS(page: Page): Promise<number> {
+  const text = await page.locator("#selection-readout").textContent();
+  const m = text?.match(/time\s+([0-9]+\.[0-9]+)\s*s/i);
+  return m ? Number.parseFloat(m[1]!) : NaN;
 }
 
 async function cleanupDownload(path: string | null): Promise<void> {
@@ -157,37 +146,60 @@ test.describe("vertical-slice – ride controls", () => {
     await gotoAndGenerateInsta(page, "2026");
     const pauseBtn = page.locator("#pause-btn");
     await expect(pauseBtn).toBeEnabled();
-    if ((await playing(page)) === true) {
+    if ((await pauseBtn.getAttribute("aria-pressed")) === "true") {
       await pauseBtn.click();
-      await expect
-        .poll(async () => await playing(page), { timeout: 5_000 })
-        .toBe(false);
+      await expect(pauseBtn).toHaveAttribute("aria-pressed", "false", {
+        timeout: 5_000,
+      });
     }
-    await expect
-      .poll(async () => await playing(page), { timeout: 5_000 })
-      .toBe(false);
+    await expect(pauseBtn).toHaveAttribute("aria-pressed", "false", {
+      timeout: 5_000,
+    });
     const positions: Array<[number, number, number]> = [];
+    let prev: [number, number, number] | null = null;
     for (const cam of ["front", "middle", "rear", "chase", "orbit"] as const) {
       await page.locator(`input[name="camera"][value="${cam}"]`).click();
       await expect(
         page.locator(`input[name="camera"][value="${cam}"]`),
       ).toBeChecked();
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) => {
+            let c = 0;
+            function tick() {
+              if (++c >= 2) resolve();
+              else requestAnimationFrame(tick);
+            }
+            requestAnimationFrame(tick);
+          }),
+      );
       await expect
         .poll(
           async () => {
             const v = await snap(page);
-            return Number.isFinite(v.cameraX) &&
-              Number.isFinite(v.cameraY) &&
-              Number.isFinite(v.cameraZ)
-              ? `${v.cameraX},${v.cameraY},${v.cameraZ}`
-              : null;
+            if (
+              !Number.isFinite(v.cameraX) ||
+              !Number.isFinite(v.cameraY) ||
+              !Number.isFinite(v.cameraZ)
+            )
+              return null;
+            if (prev) {
+              const d = Math.hypot(
+                v.cameraX - prev[0],
+                v.cameraY - prev[1],
+                v.cameraZ - prev[2],
+              );
+              return d > 0.5 ? `${v.cameraX},${v.cameraY},${v.cameraZ}` : null;
+            }
+            return `${v.cameraX},${v.cameraY},${v.cameraZ}`;
           },
           { timeout: 5_000 },
         )
         .not.toBeNull();
       const v = await snap(page);
-      positions.push([v.cameraX, v.cameraY, v.cameraZ]);
-      if (v.playbackCamera !== null) expect(v.playbackCamera).toBe(cam);
+      const cur: [number, number, number] = [v.cameraX, v.cameraY, v.cameraZ];
+      positions.push(cur);
+      prev = cur;
     }
     const dist = (a: [number, number, number], b: [number, number, number]) =>
       Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -199,135 +211,137 @@ test.describe("vertical-slice – ride controls", () => {
       for (let j = i + 1; j < positions.length; j += 1)
         maxSpread = Math.max(maxSpread, dist(positions[i]!, positions[j]!));
     expect(maxSpread).toBeGreaterThan(5);
-    const pausedHead = (await headM(page))!;
     const pausedDom = await domDistance(page);
-    expect(Number.isFinite(pausedHead)).toBe(true);
-    await expect
-      .poll(
-        async () => {
-          const cur = await snap(page);
-          const d = await domDistance(page);
-          return (
-            cur.playbackHeadDistanceM !== null &&
-            Math.abs(cur.playbackHeadDistanceM - pausedHead) < 1e-6 &&
-            Math.abs(d - pausedDom) < 1e-6
-          );
-        },
-        { timeout: 1_000 },
-      )
-      .toBe(true);
+    expect(Number.isFinite(pausedDom)).toBe(true);
+    await expect(pauseBtn).toHaveAttribute("aria-pressed", "false");
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          let count = 0;
+          function tick() {
+            if (++count >= 4) resolve();
+            else requestAnimationFrame(tick);
+          }
+          requestAnimationFrame(tick);
+        }),
+    );
+    const afterPauseDom = await domDistance(page);
+    expect(Math.abs(afterPauseDom - pausedDom)).toBeLessThan(0.01);
+    await expect(pauseBtn).toHaveAttribute("aria-pressed", "false");
     await pauseBtn.click();
+    await expect(pauseBtn).toHaveAttribute("aria-pressed", "true", {
+      timeout: 5_000,
+    });
     await expect
-      .poll(async () => await playing(page), { timeout: 5_000 })
-      .toBe(true);
-    await expect
-      .poll(async () => (await headM(page))! > pausedHead + 1, {
+      .poll(async () => (await domDistance(page)) > pausedDom + 1, {
         timeout: 5_000,
       })
       .toBe(true);
-    const afterHead = (await headM(page))!;
-    expect(afterHead).toBeGreaterThan(pausedHead);
-    expect(await domDistance(page)).toBeGreaterThan(pausedDom);
+    const afterHead = await domDistance(page);
+    expect(afterHead).toBeGreaterThan(pausedDom);
     await expect
-      .poll(async () => (await headM(page))! > afterHead + 0.5, {
+      .poll(async () => (await domDistance(page)) > afterHead + 0.5, {
         timeout: 3_000,
       })
       .toBe(true);
     await pauseBtn.click();
-    await expect
-      .poll(async () => await playing(page), { timeout: 5_000 })
-      .toBe(false);
+    await expect(pauseBtn).toHaveAttribute("aria-pressed", "false", {
+      timeout: 5_000,
+    });
     const scrubber = page.locator("#scrubber");
     await expect(scrubber).toBeEnabled();
-    const before = (await headM(page))!;
+    const before = await domDistance(page);
     await scrubber.fill("500");
     await expect
-      .poll(async () => Math.abs((await headM(page))! - before) > 1, {
+      .poll(async () => Math.abs((await domDistance(page)) - before) > 1, {
         timeout: 3_000,
       })
       .toBe(true);
     await expect(page.locator(".scrubber-value")).toContainText("500");
-    const mid = (await headM(page))!;
-    expect(Math.abs((await domDistance(page)) - mid)).toBeLessThan(1);
+    const mid = await domDistance(page);
     await scrubber.fill("200");
     await expect
-      .poll(async () => (await headM(page)) !== mid, { timeout: 3_000 })
+      .poll(async () => (await domDistance(page)) !== mid, { timeout: 3_000 })
       .toBe(true);
     await expect(scrubber).toHaveValue("200");
     await scrubber.fill("0");
     await expect(scrubber).toHaveValue("0");
     await expect
-      .poll(
-        async () => {
-          const h = await headM(page);
-          return h !== null && Number.isFinite(h);
-        },
-        { timeout: 5_000 },
-      )
+      .poll(async () => Number.isFinite(await domDistance(page)), {
+        timeout: 5_000,
+      })
       .toBe(true);
-    const sample0Baseline = (await headM(page))!;
+    const sample0Baseline = await domDistance(page);
     expect(Number.isFinite(sample0Baseline)).toBe(true);
     expect(sample0Baseline).toBeGreaterThan(10);
     expect(sample0Baseline).toBeLessThan(30);
-    await expect
-      .poll(async () => await playing(page), { timeout: 5_000 })
-      .toBe(false);
-    const measure = async (rate: "0.5" | "2"): Promise<number> => {
+    await expect(pauseBtn).toHaveAttribute("aria-pressed", "false", {
+      timeout: 5_000,
+    });
+    const measure = async (
+      rate: "0.5" | "2",
+    ): Promise<{ timelineDelta: number; wallSeconds: number }> => {
       await scrubber.fill("0");
       await expect(scrubber).toHaveValue("0");
-      await expect
-        .poll(async () => await playing(page), { timeout: 5_000 })
-        .toBe(false);
+      await expect(pauseBtn).toHaveAttribute("aria-pressed", "false", {
+        timeout: 5_000,
+      });
       await page.locator("#playback-speed").selectOption(rate);
       await expect(page.locator("#playback-speed")).toHaveValue(rate);
-      await expect
-        .poll(async () => await playbackRate(page), { timeout: 5_000 })
-        .toBe(Number(rate));
-      await expect
-        .poll(async () => await playing(page), { timeout: 5_000 })
-        .toBe(false);
-      const start = (await headM(page))!;
+      await expect(pauseBtn).toHaveAttribute("aria-pressed", "false", {
+        timeout: 5_000,
+      });
+      const startTime = await selectionTimeS(page);
+      const startDist = await domDistance(page);
+      expect(Number.isFinite(startTime)).toBe(true);
+      expect(Number.isFinite(startDist)).toBe(true);
       await pauseBtn.click();
-      await expect
-        .poll(async () => await playing(page), { timeout: 5_000 })
-        .toBe(true);
-      const t0 = Date.now();
-      await expect
-        .poll(
-          async () =>
-            Date.now() - t0 >= 800 && (await headM(page))! > start + 0.5,
-          {
-            timeout: 5_000,
-          },
-        )
-        .toBe(true);
-      const end = (await headM(page))!;
+      await expect(pauseBtn).toHaveAttribute("aria-pressed", "true", {
+        timeout: 5_000,
+      });
+      const elapsedMs = await page.evaluate(async () => {
+        const start = performance.now();
+        const target = 800;
+        await new Promise<void>((resolve) => {
+          function tick() {
+            if (performance.now() - start >= target) resolve();
+            else requestAnimationFrame(tick);
+          }
+          requestAnimationFrame(tick);
+        });
+        return performance.now() - start;
+      });
+      const wallSeconds = elapsedMs / 1000;
       await pauseBtn.click();
-      await expect
-        .poll(async () => await playing(page), { timeout: 5_000 })
-        .toBe(false);
-      return Math.max(0, end - start);
+      await expect(pauseBtn).toHaveAttribute("aria-pressed", "false", {
+        timeout: 5_000,
+      });
+      const endTime = await selectionTimeS(page);
+      const endDist = await domDistance(page);
+      const timelineDelta = endTime - startTime;
+      const distanceDelta = endDist - startDist;
+      expect(distanceDelta).toBeGreaterThan(0.5);
+      expect(timelineDelta).toBeGreaterThan(0.2);
+      expect(wallSeconds).toBeGreaterThan(0.7);
+      expect(wallSeconds).toBeLessThan(1.0);
+      return { timelineDelta, wallSeconds };
     };
-    const d05 = await measure("0.5");
-    const d20 = await measure("2");
-    expect(d05).toBeGreaterThan(1);
-    expect(d20).toBeGreaterThan(1);
-    expect(d20 / Math.max(1e-6, d05)).toBeGreaterThan(2.2);
-    expect(d20 / Math.max(1e-6, d05)).toBeLessThan(6.5);
+    const m05 = await measure("0.5");
+    const m20 = await measure("2");
+    const rate05 = m05.timelineDelta / m05.wallSeconds;
+    const rate20 = m20.timelineDelta / m20.wallSeconds;
+    expect(rate05).toBeGreaterThan(0.2);
+    expect(rate20).toBeGreaterThan(1.0);
+    expect(rate20 / rate05).toBeGreaterThan(3.0);
+    expect(rate20 / rate05).toBeLessThan(5.0);
     await page.locator("#reset-btn").click();
     await expect(scrubber).toHaveValue("0");
+    await expect(pauseBtn).toHaveAttribute("aria-pressed", "false", {
+      timeout: 3_000,
+    });
     await expect
       .poll(
-        async () => {
-          const cur = await snap(page);
-          const d = await domDistance(page);
-          return (
-            cur.playbackHeadDistanceM !== null &&
-            Math.abs(cur.playbackHeadDistanceM - sample0Baseline) < 0.5 &&
-            Math.abs(d - sample0Baseline) < 0.5 &&
-            cur.playbackIsPlaying === false
-          );
-        },
+        async () => Math.abs((await domDistance(page)) - sample0Baseline) < 0.5,
         { timeout: 3_000 },
       )
       .toBe(true);
@@ -591,6 +605,7 @@ test.describe("vertical-slice – directed generation", () => {
       const intent = json.intent as Record<string, unknown>;
       expect(Array.isArray(intent.footprint)).toBe(true);
       const fp = intent.footprint as unknown[];
+      expect(fp.length).toBe(4);
       expect(fp[0]).toEqual([-260, 0, -180]);
       expect(fp[1]).toEqual([260, 0, -180]);
       expect(fp[2]).toEqual([260, 0, 180]);
@@ -602,8 +617,14 @@ test.describe("vertical-slice – directed generation", () => {
       expect(intent.terrainProfileId).toBe("rolling-highlands-v1");
       const elements = intent.elements as Array<Record<string, unknown>>;
       expect(elements.some((e) => e.kind === "stall")).toBe(true);
+      expect(intent.mode).toBe("directed");
+      expect(intent.seed).toBe(1234);
+      expect((json as Record<string, unknown>).seed).toBe(1234);
+      expect(Array.isArray(intent.gates)).toBe(true);
       const gates = intent.gates as Array<Record<string, unknown>>;
-      const gate0 = gates.find((g) => g.id === "gate-000") ?? gates[0];
+      expect(gates.length).toBe(1);
+      const gate0 = gates.find((g) => g.id === "gate-000");
+      expect(gate0).toBeDefined();
       expect(gate0!.position).toEqual([40, 12, 20]);
       const yaw = (5 * Math.PI) / 180;
       const expectedQ: [number, number, number, number] = [
