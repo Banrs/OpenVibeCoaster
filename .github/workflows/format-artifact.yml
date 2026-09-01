@@ -1,0 +1,38 @@
+name: Format artifact
+
+on:
+  push:
+    branches:
+      - codex/format-artifact
+
+permissions:
+  contents: read
+
+jobs:
+  prettier-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install npm 11.17.0
+        run: npm install -g npm@11.17.0
+      - name: Install exact lockfile
+        run: npm ci
+      - name: Format with pinned Prettier
+        run: npx prettier --write .
+      - name: Create product-only patch
+        run: |
+          git diff --binary -- . ':(exclude).github/workflows/format-artifact.yml' > prettier.patch
+          test -s prettier.patch
+      - name: Upload formatting patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: prettier-patch-${{ github.sha }}
+          path: prettier.patch
+          if-no-files-found: error
