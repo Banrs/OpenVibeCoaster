@@ -8,7 +8,11 @@ import {
   beforeAll,
 } from "vitest";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
-import { EngineeringWorkerClient, type WorkerLike } from "./client";
+import {
+  EngineeringWorkerClient,
+  type WorkerFactory,
+  type WorkerLike,
+} from "./client";
 import type { EngineeringWorkerSuccess } from "./protocol";
 import { validateEngineeringWorkerResponse } from "./protocol";
 import { handleGenerate } from "./worker";
@@ -73,9 +77,11 @@ class MockWorker implements WorkerLike {
     const set = this.listeners.get("message");
     if (set)
       for (const fn of set) (fn as unknown as (e: MessageEvent) => void)(ev);
-    // also support onmessage
-    if ((this as any).onmessage) {
-      (this as any).onmessage(ev);
+    const withOnMessage = this as unknown as {
+      onmessage?: (e: MessageEvent) => void;
+    };
+    if (withOnMessage.onmessage) {
+      withOnMessage.onmessage(ev);
     }
   }
   public emitError(message = "mock worker error"): void {
@@ -83,8 +89,9 @@ class MockWorker implements WorkerLike {
     (ev as { message: string }).message = message;
     const set = this.listeners.get("error");
     if (set) for (const fn of set) (fn as unknown as (e: Event) => void)(ev);
-    if ((this as any).onerror) {
-      (this as any).onerror(ev);
+    const withOnError = this as unknown as { onerror?: (e: Event) => void };
+    if (withOnError.onerror) {
+      withOnError.onerror(ev);
     }
   }
   public emitMessageError(): void {
@@ -289,9 +296,11 @@ describe("EngineeringWorkerClient lifecycle", () => {
     await expect(first).rejects.toThrow(/cancelled/);
     const second = client.generate("c2", validIntent);
     expect(client.getWorker()).toBe(workers[1]!);
-    expect(workers[1]!.posted.some((m) => (m as any).requestId === "c2")).toBe(
-      true,
-    );
+    expect(
+      workers[1]!.posted.some(
+        (m) => (m as { requestId: string }).requestId === "c2",
+      ),
+    ).toBe(true);
     workers[1]!.emitMessage(makeSuccess("c2"));
     const res = await second;
     expect(res.requestId).toBe("c2");
@@ -946,16 +955,20 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
     client.cancel("q1");
     await expect(p1).rejects.toThrow(/cancelled/);
     expect(pNew).not.toBeNull();
-    expect(workers[1]!.posted.map((m: any) => m.requestId)).toEqual([
-      "q2",
-      "q3",
-      "qNew",
-    ]);
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q2"]);
     workers[1]!.emitMessage(makeSuccess("q2"));
-    workers[1]!.emitMessage(makeSuccess("q3"));
-    workers[1]!.emitMessage(makeSuccess("qNew"));
     await expect(p2).resolves.toMatchObject({ requestId: "q2" });
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q2", "q3"]);
+    workers[1]!.emitMessage(makeSuccess("q3"));
     await expect(p3).resolves.toMatchObject({ requestId: "q3" });
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q2", "q3", "qNew"]);
+    workers[1]!.emitMessage(makeSuccess("qNew"));
     await expect(pNew!).resolves.toMatchObject({ requestId: "qNew" });
   });
   it("terminate hook cancel+generate settles coherently", async () => {
@@ -983,13 +996,15 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
     await expect(p1).rejects.toThrow(/cancelled/);
     await expect(p2).rejects.toThrow(/cancelled/);
     expect(pHook).not.toBeNull();
-    expect(workers[1]!.posted.map((m: any) => m.requestId)).toEqual([
-      "q3",
-      "qHook",
-    ]);
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q3"]);
     workers[1]!.emitMessage(makeSuccess("q3"));
-    workers[1]!.emitMessage(makeSuccess("qHook"));
     await expect(p3).resolves.toMatchObject({ requestId: "q3" });
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q3", "qHook"]);
+    workers[1]!.emitMessage(makeSuccess("qHook"));
     await expect(pHook!).resolves.toMatchObject({ requestId: "qHook" });
   });
   it("sticky old listeners cannot settle replayed work", async () => {
@@ -1022,16 +1037,19 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
     const workers: WorkerLike[] = [];
     let client!: EngineeringWorkerClient;
     const factory = (): WorkerLike => {
-      const w = new MockWorker() as any;
+      const w = new MockWorker() as unknown as WorkerLike & {
+        removeEventListener?: unknown;
+      };
       const origAdd = w.addEventListener!.bind(w);
       w.addEventListener = (t: string, l: EventListener) => {
         addCalls += 1;
         return origAdd(t, l);
       };
-      (w as any).removeEventListener = undefined;
+      (w as unknown as { removeEventListener: unknown }).removeEventListener =
+        undefined;
       w.onmessage = pm as unknown as (ev: MessageEvent) => void;
       w.onerror = pe as unknown as (ev: Event) => void;
-      w.onmessageerror = undefined;
+      (w as unknown as { onmessageerror?: unknown }).onmessageerror = undefined;
       workers.push(w);
       return w;
     };
@@ -1041,9 +1059,15 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
     client.cancel("q1");
     await expect(p1).rejects.toThrow(/cancelled/);
     expect(addCalls).toBe(0);
-    expect((workers[0] as any).onmessage).toBe(pm);
-    expect((workers[0] as any).onerror).toBe(pe);
-    expect((workers[0] as any).onmessageerror).toBe(undefined);
+    expect((workers[0] as unknown as WorkerLike).onmessage).toBe(
+      pm as unknown as (ev: MessageEvent) => void,
+    );
+    expect((workers[0] as unknown as WorkerLike).onerror).toBe(
+      pe as unknown as (ev: Event) => void,
+    );
+    expect((workers[0] as unknown as WorkerLike).onmessageerror).toBe(
+      undefined,
+    );
     const w2 = workers[1] as WorkerLike & { posted: unknown[] };
     expect(
       w2.posted.map((m) => (m as { requestId: string }).requestId),
@@ -1088,6 +1112,7 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
   it("first replay error rejects survivors exactly once no zombie", async () => {
     const workers: MockWorker[] = [];
     let client!: EngineeringWorkerClient;
+    let shouldError = true;
     const factory = (): WorkerLike => {
       if (workers.length === 0) {
         const w = new MockWorker();
@@ -1096,11 +1121,10 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
       }
       const w = new MockWorker();
       const orig = w.postMessage.bind(w);
-      let first = true;
       w.postMessage = (msg: unknown) => {
         orig(msg);
-        if (first) {
-          first = false;
+        if (shouldError) {
+          shouldError = false;
           w.emitError("replay crash");
         }
       };
@@ -1116,14 +1140,19 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
     client.cancel("q1");
     await expect(p1).rejects.toThrow(/cancelled/);
     await expect(p2).rejects.toThrow(/worker-error/i);
-    await expect(p3).rejects.toThrow(/worker-error/i);
     const crashing = workers[1]!;
-    expect(crashing.posted.map((m: any) => m.requestId)).toEqual(["q2"]);
-    const allPosted = workers
-      .slice(1)
-      .flatMap((w) => w.posted.map((m: any) => m.requestId));
-    expect(allPosted.filter((id) => id === "q3")).toHaveLength(0);
+    expect(
+      crashing.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q2"]);
+    expect(client.getPendingCount()).toBe(1);
     expect(client.getWorker()).not.toBe(crashing);
+    const fresh = workers[2]!;
+    expect(fresh).toBeDefined();
+    expect(
+      fresh.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["q3"]);
+    fresh.emitMessage(makeSuccess("q3"));
+    await expect(p3).resolves.toMatchObject({ requestId: "q3" });
   });
   it("replay success then throw resolves exactly once", async () => {
     const workers: MockWorker[] = [];
@@ -1157,5 +1186,193 @@ describe("EngineeringWorkerClient cancellation races (RED packet)", () => {
     expect(rc).toBe(1);
     expect(rj).toBe(0);
     await expect(p2).resolves.toMatchObject({ requestId: "q2" });
+  });
+});
+
+describe("EngineeringWorkerClient single-active adversarial proofs", () => {
+  it("single-active FIFO posts exactly one at a time and drains in order", async () => {
+    const workers: MockWorker[] = [];
+    const factory: WorkerFactory = () => {
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("sa1", validIntent);
+    const p2 = client.generate("sa2", validIntent);
+    const p3 = client.generate("sa3", validIntent);
+    expect(
+      workers[0]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["sa1"]);
+    expect(client.getPendingCount()).toBe(3);
+    workers[0]!.emitMessage(makeSuccess("sa1"));
+    await expect(p1).resolves.toMatchObject({ requestId: "sa1" });
+    expect(
+      workers[0]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["sa1", "sa2"]);
+    workers[0]!.emitMessage(makeSuccess("sa2"));
+    await expect(p2).resolves.toMatchObject({ requestId: "sa2" });
+    expect(
+      workers[0]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["sa1", "sa2", "sa3"]);
+    workers[0]!.emitMessage(makeSuccess("sa3"));
+    await expect(p3).resolves.toMatchObject({ requestId: "sa3" });
+    expect(client.getPendingCount()).toBe(0);
+  });
+
+  it("queued response is ignored without settlement or timing", async () => {
+    const workers: MockWorker[] = [];
+    const factory: WorkerFactory = () => {
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(factory);
+    const measureSpy = vi
+      .spyOn(performance, "measure")
+      .mockImplementation(() => ({}) as PerformanceMeasure);
+    const p1 = client.generate("qa1", validIntent);
+    const p2 = client.generate("qa2", validIntent);
+    expect(
+      workers[0]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["qa1"]);
+    workers[0]!.emitMessage(makeSuccess("qa2"));
+    expect(measureSpy).not.toHaveBeenCalled();
+    expect(client.getPendingCount()).toBe(2);
+    let p2Settled = false;
+    p2.then(() => (p2Settled = true)).catch(() => (p2Settled = true));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(p2Settled).toBe(false);
+    workers[0]!.emitMessage(makeSuccess("qa1"));
+    await expect(p1).resolves.toMatchObject({ requestId: "qa1" });
+    expect(measureSpy).toHaveBeenCalledTimes(2);
+    measureSpy.mockClear();
+    workers[0]!.emitMessage(makeSuccess("qa2"));
+    await expect(p2).resolves.toMatchObject({ requestId: "qa2" });
+    expect(measureSpy).toHaveBeenCalledTimes(2);
+    vi.restoreAllMocks();
+  });
+
+  it("duplicate success response is ignored without double settlement", async () => {
+    const workers: MockWorker[] = [];
+    const factory: WorkerFactory = () => {
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(factory);
+    const measureSpy = vi
+      .spyOn(performance, "measure")
+      .mockImplementation(() => ({}) as PerformanceMeasure);
+    const p1 = client.generate("dup1", validIntent);
+    workers[0]!.emitMessage(makeSuccess("dup1"));
+    await expect(p1).resolves.toMatchObject({ requestId: "dup1" });
+    expect(measureSpy).toHaveBeenCalledTimes(2);
+    measureSpy.mockClear();
+    workers[0]!.emitMessage(makeSuccess("dup1"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(measureSpy).not.toHaveBeenCalled();
+    expect(client.getPendingCount()).toBe(0);
+    vi.restoreAllMocks();
+  });
+
+  it("cancel-after-response is ignored and does not terminate", async () => {
+    const workers: MockWorker[] = [];
+    const factory: WorkerFactory = () => {
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("car1", validIntent);
+    workers[0]!.emitMessage(makeSuccess("car1"));
+    await expect(p1).resolves.toMatchObject({ requestId: "car1" });
+    const epochBefore = client.getEpoch();
+    client.cancel("car1");
+    expect(workers[0]!.terminateCount).toBe(0);
+    expect(client.getEpoch()).toBe(epochBefore);
+    expect(client.getPendingCount()).toBe(0);
+  });
+
+  it("error-after-response is ignored without state corruption", async () => {
+    const workers: MockWorker[] = [];
+    const factory: WorkerFactory = () => {
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("ear1", validIntent);
+    workers[0]!.emitMessage(makeSuccess("ear1"));
+    await p1;
+    const epochBefore = client.getEpoch();
+    workers[0]!.emitError("late error");
+    expect(client.getEpoch()).toBe(epochBefore);
+    expect(workers).toHaveLength(1);
+    expect(client.getPendingCount()).toBe(0);
+    const p2 = client.generate("ear2", validIntent);
+    workers[0]!.emitMessage(makeSuccess("ear2"));
+    await expect(p2).resolves.toMatchObject({ requestId: "ear2" });
+  });
+
+  it("worker error rejects only active and preserves queued FIFO", async () => {
+    const workers: MockWorker[] = [];
+    const factory: WorkerFactory = () => {
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(factory);
+    const p1 = client.generate("we1", validIntent);
+    const p2 = client.generate("we2", validIntent);
+    const p3 = client.generate("we3", validIntent);
+    expect(
+      workers[0]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["we1"]);
+    workers[0]!.emitError("crash active");
+    await expect(p1).rejects.toThrow(/worker-error/i);
+    expect(client.getPendingCount()).toBe(2);
+    expect(client.getEpoch()).toBe(1);
+    expect(workers).toHaveLength(2);
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["we2"]);
+    workers[1]!.emitMessage(makeSuccess("we2"));
+    await expect(p2).resolves.toMatchObject({ requestId: "we2" });
+    expect(
+      workers[1]!.posted.map((m) => (m as { requestId: string }).requestId),
+    ).toEqual(["we2", "we3"]);
+    workers[1]!.emitMessage(makeSuccess("we3"));
+    await expect(p3).resolves.toMatchObject({ requestId: "we3" });
+  });
+
+  it("stale epoch response after active cancel is ignored without measure", async () => {
+    const workers: MockWorker[] = [];
+    const factory: WorkerFactory = () => {
+      const w = new MockWorker();
+      workers.push(w);
+      return w;
+    };
+    const client = new EngineeringWorkerClient(factory);
+    const measureSpy = vi
+      .spyOn(performance, "measure")
+      .mockImplementation(() => ({}) as PerformanceMeasure);
+    const p1 = client.generate("se1", validIntent);
+    const p2 = client.generate("se2", validIntent);
+    client.cancel("se1");
+    await expect(p1).rejects.toThrow(/cancelled/);
+    expect(client.getEpoch()).toBe(1);
+    workers[0]!.emitMessage(makeSuccess("se1"));
+    expect(measureSpy).not.toHaveBeenCalled();
+    expect(client.getPendingCount()).toBe(1);
+    workers[0]!.emitMessage(makeSuccess("se2"));
+    expect(measureSpy).not.toHaveBeenCalled();
+    expect(client.getPendingCount()).toBe(1);
+    workers[1]!.emitMessage(makeSuccess("se2"));
+    await expect(p2).resolves.toMatchObject({ requestId: "se2" });
+    expect(measureSpy).toHaveBeenCalledTimes(2);
+    vi.restoreAllMocks();
   });
 });

@@ -204,6 +204,34 @@ export class EngineeringWorkerClient {
     this.replay(transition, candidate);
   }
 
+  private hasActive(): boolean {
+    return [...this.pending.values()].some(
+      (entry) => entry.postedEpoch === this.epoch,
+    );
+  }
+
+  private postNextIfIdle(): void {
+    if (this.terminated || this.transition || !this.binding) return;
+    if (this.hasActive()) return;
+    const next = [...this.pending.entries()].find(
+      ([, entry]) =>
+        entry.epoch === this.epoch && entry.postedEpoch !== this.epoch,
+    );
+    if (!next) return;
+    const [id, entry] = next;
+    const binding = this.binding;
+    entry.postedEpoch = this.epoch;
+    try {
+      binding.worker.postMessage(entry.request);
+    } catch (error) {
+      if (this.pending.get(id) !== entry) return;
+      if (this.transition || this.binding !== binding) return;
+      this.pending.delete(id);
+      entry.reject(error instanceof Error ? error : new Error(String(error)));
+      this.postNextIfIdle();
+    }
+  }
+
   private replay(transition: Transition, binding: WorkerBinding): void {
     while (
       this.transition === transition &&
@@ -223,6 +251,8 @@ export class EngineeringWorkerClient {
       entry.postedEpoch = transition.epoch;
       try {
         binding.worker.postMessage(entry.request);
+        this.transition = null;
+        return;
       } catch (error) {
         if (this.pending.get(id) !== entry) continue;
         if (this.transition !== transition || this.binding !== binding) return;
@@ -234,20 +264,46 @@ export class EngineeringWorkerClient {
 
   private handleWorkerError(event: Event): void {
     try {
+      if (this.terminated) return;
+      const active = [...this.pending.entries()].find(
+        ([, entry]) =>
+          entry.epoch === this.epoch && entry.postedEpoch === this.epoch,
+      );
+      if (!active) return;
       const message =
         (event as ErrorEvent).message ??
         (event as { data?: unknown }).data?.toString() ??
         "Worker error";
       const [transition, oldBinding, oldEpoch] = this.beginTransition();
-      const affected = [...this.pending.entries()].filter(
+      const entriesForOldEpoch = [...this.pending.entries()].filter(
         ([, entry]) => entry.epoch === oldEpoch,
       );
-      for (const [id] of affected) this.pending.delete(id);
+      let activeId: string | null = null;
+      for (const [id, entry] of entriesForOldEpoch) {
+        if (entry.postedEpoch === oldEpoch) {
+          activeId = id;
+          break;
+        }
+      }
+      for (const [id, entry] of entriesForOldEpoch) {
+        if (id === activeId) continue;
+        entry.epoch = transition.epoch;
+        delete entry.postedEpoch;
+      }
+      if (activeId) {
+        const activeEntry = this.pending.get(activeId);
+        if (activeEntry) {
+          this.pending.delete(activeId);
+          activeEntry.reject(
+            requestError(
+              "worker-error",
+              activeId,
+              `worker-error: ${String(message)}`,
+            ),
+          );
+        }
+      }
       this.dispose(oldBinding);
-      for (const [id, entry] of affected)
-        entry.reject(
-          requestError("worker-error", id, `worker-error: ${String(message)}`),
-        );
       if (this.isCurrent(transition)) this.replaceAndReplay(transition);
     } catch {
       this.worker = null;
@@ -287,20 +343,15 @@ export class EngineeringWorkerClient {
       if (!entry) return;
       if (entry.epoch !== this.epoch) {
         this.pending.delete(response.requestId);
-        entry.reject(
-          requestError(
-            "epoch-mismatch",
-            response.requestId,
-            `Stale epoch for ${response.requestId}`,
-          ),
-        );
         return;
       }
+      if (entry.postedEpoch !== this.epoch) return;
       try {
         validateEngineeringWorkerResponse(response);
       } catch (error) {
         this.pending.delete(response.requestId);
         entry.reject(error instanceof Error ? error : new Error(String(error)));
+        this.postNextIfIdle();
         return;
       }
       this.pending.delete(response.requestId);
@@ -317,6 +368,7 @@ export class EngineeringWorkerClient {
               { rawTransferMs: transferMs },
             ),
           );
+          this.postNextIfIdle();
           return;
         }
         this.recordTimings(
@@ -347,6 +399,7 @@ export class EngineeringWorkerClient {
           ),
         );
       }
+      this.postNextIfIdle();
     } catch {}
   }
 
@@ -387,6 +440,7 @@ export class EngineeringWorkerClient {
         this.replaceAndReplay(transition);
         return;
       }
+      if (this.hasActive()) return;
       entry.postedEpoch = this.epoch;
       try {
         this.binding.worker.postMessage(request);
@@ -394,6 +448,7 @@ export class EngineeringWorkerClient {
         if (this.pending.get(request.requestId) !== entry) return;
         this.pending.delete(request.requestId);
         reject(error instanceof Error ? error : new Error(String(error)));
+        this.postNextIfIdle();
       }
     });
   }
@@ -421,9 +476,6 @@ export class EngineeringWorkerClient {
       if (!entry) return;
       if (entry.epoch !== this.epoch) {
         this.pending.delete(requestId);
-        entry.reject(
-          requestError("epoch-mismatch", requestId, `Stale ${requestId}`),
-        );
         return;
       }
       const activeId = [...this.pending.entries()].find(
@@ -438,8 +490,6 @@ export class EngineeringWorkerClient {
             `Request ${requestId} cancelled`,
           ),
         );
-        if (entry.postedEpoch === this.epoch)
-          safely(() => this.worker?.postMessage({ type: "cancel", requestId }));
         return;
       }
 
