@@ -10,6 +10,7 @@ import type {
   TrackSample,
   Vec3,
 } from "@openvibecoaster/core";
+import { createExactSampleCache } from "./exact-sample-cache";
 import { RideTimeline } from "./timeline";
 import type {
   CarConfiguration,
@@ -619,6 +620,7 @@ const dynamicsAt = (
   config: SimulatorConfig,
   headDistanceM: number,
   speedMps: number,
+  sampleAt?: (distanceM: number) => TrackSample,
 ): DynamicsSample => {
   const violation = openTrackViolation(track, config, headDistanceM);
   if (violation)
@@ -633,10 +635,12 @@ const dynamicsAt = (
   const forces = config.train.cars.map((car, index) => {
     const distanceM = headDistanceM - index * config.train.spacingM;
     const forceField = `train.cars[${index}].force`;
-    const sample = sampleTrackAtDistance(
-      track,
-      trackDistance(track, config, distanceM),
-    );
+    const sample = sampleAt
+      ? sampleAt(trackDistance(track, config, distanceM))
+      : sampleTrackAtDistance(
+          track,
+          trackDistance(track, config, distanceM),
+        );
     const zones = activeZones(track, config, distanceM);
     const gravity = checkedFinite(
       car.massKg * dot(gVec, sample.tangent),
@@ -795,8 +799,9 @@ const derivative = (
   config: SimulatorConfig,
   distanceM: number,
   speedMps: number,
+  sampleAt?: (distanceM: number) => TrackSample,
 ): readonly [number, number] => {
-  const sample = dynamicsAt(track, config, distanceM, speedMps);
+  const sample = dynamicsAt(track, config, distanceM, speedMps, sampleAt);
   if (
     Math.abs(speedMps) <= SPEED_EPSILON &&
     Math.abs(sample.totalForce) <= sample.staticStictionCapacityN
@@ -811,25 +816,29 @@ const rk4 = (
   distanceM: number,
   speedMps: number,
   stepSeconds: number,
+  sampleAt?: (distanceM: number) => TrackSample,
 ): readonly [number, number] => {
-  const k1 = derivative(track, config, distanceM, speedMps);
+  const k1 = derivative(track, config, distanceM, speedMps, sampleAt);
   const k2 = derivative(
     track,
     config,
     distanceM + 0.5 * stepSeconds * k1[0],
     speedMps + 0.5 * stepSeconds * k1[1],
+    sampleAt,
   );
   const k3 = derivative(
     track,
     config,
     distanceM + 0.5 * stepSeconds * k2[0],
     speedMps + 0.5 * stepSeconds * k2[1],
+    sampleAt,
   );
   const k4 = derivative(
     track,
     config,
     distanceM + stepSeconds * k3[0],
     speedMps + stepSeconds * k3[1],
+    sampleAt,
   );
   const distanceIncrement =
     (stepSeconds * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0])) / 6;
@@ -844,6 +853,7 @@ const boundedRk4 = (
   distanceM: number,
   speedMps: number,
   stepSeconds: number,
+  sampleAt?: (distanceM: number) => TrackSample,
 ): {
   readonly distanceM: number;
   readonly speedMps: number;
@@ -851,7 +861,7 @@ const boundedRk4 = (
   readonly boundaryError?: OpenTrackBoundaryError;
 } => {
   const checkedStep = (elapsedSeconds: number): readonly [number, number] => {
-    const state = rk4(track, config, distanceM, speedMps, elapsedSeconds);
+    const state = rk4(track, config, distanceM, speedMps, elapsedSeconds, sampleAt);
     if (!finite(state[0]) || !finite(state[1]))
       throw new SimulatorRangeError(
         "SIM_NUMERICAL",
@@ -926,13 +936,16 @@ const makeCars = (
   headDistanceM: number,
   speedMps: number,
   accelerationMps2: number,
+  sampleAt?: (distanceM: number) => TrackSample,
 ): readonly CarState[] =>
   config.train.cars.map((car, index) => {
     const distanceM = headDistanceM - index * config.train.spacingM;
-    const sample = sampleTrackAtDistance(
-      track,
-      trackDistance(track, config, distanceM),
-    );
+    const sample = sampleAt
+      ? sampleAt(trackDistance(track, config, distanceM))
+      : sampleTrackAtDistance(
+          track,
+          trackDistance(track, config, distanceM),
+        );
     const offsets = seatPositions(car);
     const telemetry = carTelemetry(
       sample,
@@ -947,10 +960,12 @@ const makeCars = (
         `state.train.cars[${index}].seats[${seatIndex}].distanceM`,
         "Seat distance must be finite",
       );
-      const seatFrame = sampleTrackAtDistance(
-        track,
-        trackDistance(track, config, seatDistanceM),
-      );
+      const seatFrame = sampleAt
+        ? sampleAt(trackDistance(track, config, seatDistanceM))
+        : sampleTrackAtDistance(
+            track,
+            trackDistance(track, config, seatDistanceM),
+          );
       return {
         index: seatIndex,
         distanceM: seatDistanceM,
@@ -1060,13 +1075,14 @@ const makeTelemetry = (
   initialEnergyJ: number,
   launchActivity: boolean,
   brakeActivity: boolean,
+  sampleAt?: (distanceM: number) => TrackSample,
 ): RideTelemetry => {
   const gravity = gravityVector(config);
   const perCar = cars.map((car) => car.telemetry);
   const first =
     perCar[0] ??
     carTelemetry(
-      sampleTrackAtDistance(track, 0),
+      sampleAt ? sampleAt(0) : sampleTrackAtDistance(track, 0),
       vec3(),
       gravity,
       config.gravityMps2,
@@ -1372,6 +1388,10 @@ const makeTimeline = (
   frames: readonly SimulationFrame[],
   config: SimulatorConfig,
   compact = false,
+  timelineCache?: {
+    sample: (distanceM: number) => TrackSample;
+    clear: () => void;
+  },
 ): RideTimeline => {
   if (frames.length === 0)
     return new RideTimeline({
@@ -1525,10 +1545,12 @@ const makeTimeline = (
         const leftCar = left.cars[carIndex]!;
         const rightCar = right.cars[carIndex] ?? leftCar;
         const distanceM = blend(leftCar.distanceM, rightCar.distanceM);
-        const sampled = sampleTrackAtDistance(
-          track,
-          trackDistance(track, config, distanceM),
-        );
+        const sampled = timelineCache
+          ? timelineCache.sample(trackDistance(track, config, distanceM))
+          : sampleTrackAtDistance(
+              track,
+              trackDistance(track, config, distanceM),
+            );
         const baseOffset = (outIndex * carCount + carIndex) * 3;
         carPositionsXYZ[baseOffset] = sampled.position[0]!;
         carPositionsXYZ[baseOffset + 1] = sampled.position[1]!;
@@ -1561,6 +1583,7 @@ const makeTimeline = (
         perCarJerkXYZ[vecBase + 1] = carTele.jerkMps3[1]!;
         perCarJerkXYZ[vecBase + 2] = carTele.jerkMps3[2]!;
       }
+      timelineCache?.clear();
     }
     return new RideTimeline({
       sampleRateHz: timelineSampleRate(config.timelineStepSeconds),
@@ -1609,10 +1632,12 @@ const makeTimeline = (
     const cars = left.cars.map((car, carIndex) => {
       const other = right.cars[carIndex] ?? car;
       const distanceM = blend(car.distanceM, other.distanceM);
-      const frame = sampleTrackAtDistance(
-        track,
-        trackDistance(track, config, distanceM),
-      );
+      const frame = timelineCache
+        ? timelineCache.sample(trackDistance(track, config, distanceM))
+        : sampleTrackAtDistance(
+            track,
+            trackDistance(track, config, distanceM),
+          );
       const telemetry = interpolateTelemetry(
         car.telemetry,
         other.telemetry,
@@ -1625,10 +1650,12 @@ const makeTimeline = (
           `timeline.frames.cars[${carIndex}].seats[${seatIndex}].distanceM`,
           "Seat distance must be finite",
         );
-        const seatFrame = sampleTrackAtDistance(
-          track,
-          trackDistance(track, config, seatDistanceM),
-        );
+        const seatFrame = timelineCache
+          ? timelineCache.sample(trackDistance(track, config, seatDistanceM))
+          : sampleTrackAtDistance(
+              track,
+              trackDistance(track, config, seatDistanceM),
+            );
         const offset = car.seatOffsets[seatIndex] ?? vec3();
         return {
           ...seat,
@@ -1714,7 +1741,11 @@ const makeTimeline = (
       },
     };
   };
-  const selected = outputTimes.map(interpolateFrame);
+  const selected: SimulationFrame[] = [];
+  for (const time of outputTimes) {
+    selected.push(interpolateFrame(time));
+    timelineCache?.clear();
+  }
   const flatten = (pick: (car: CarState) => Vec3): Float64Array => {
     const output = new Float64Array(selected.length * carCount * 3);
     selected.forEach((frame, frameIndex) =>
@@ -1870,6 +1901,14 @@ export const simulateRide = (
     };
 
   const { config, initial } = request;
+  const integrationCache = createExactSampleCache<TrackSample>((distanceM) =>
+    sampleTrackAtDistance(track, distanceM),
+  );
+  const integrationSampleAt = (distanceM: number) =>
+    integrationCache.sample(distanceM);
+  const timelineCache = createExactSampleCache<TrackSample>((distanceM) =>
+    sampleTrackAtDistance(track, distanceM),
+  );
   let mass: number;
   let initialDynamics: DynamicsSample;
   try {
@@ -1879,6 +1918,7 @@ export const simulateRide = (
       config,
       initial.headDistanceM,
       initial.speedMps,
+      integrationSampleAt,
     );
   } catch (error) {
     diagnostics.push(diagnosticFromError(error));
@@ -1935,6 +1975,7 @@ export const simulateRide = (
       initial.headDistanceM,
       initial.speedMps,
       initialDynamics.accelerationMps2,
+      integrationSampleAt,
     );
     const gravity = gravityVector(config);
     const initialPotentialJ = sumFinite(
@@ -2019,13 +2060,20 @@ export const simulateRide = (
     currentSpeed: number,
     previousSpeed: number,
   ): void => {
-    const dynamics = dynamicsAt(track, config, currentDistance, currentSpeed);
+    const dynamics = dynamicsAt(
+      track,
+      config,
+      currentDistance,
+      currentSpeed,
+      integrationSampleAt,
+    );
     const cars = makeCars(
       track,
       config,
       currentDistance,
       currentSpeed,
       dynamics.accelerationMps2,
+      integrationSampleAt,
     );
     const telemetry = makeTelemetry(
       track,
@@ -2036,6 +2084,7 @@ export const simulateRide = (
       initialEnergyJ,
       dynamics.forces.some((force) => force.launchActive),
       dynamics.forces.some((force) => force.brakeActive),
+      integrationSampleAt,
     );
     const staticLimit = dynamics.staticStictionCapacityN;
     const computedStatus = statusFor(
@@ -2085,6 +2134,7 @@ export const simulateRide = (
       diagnostics,
     };
   }
+  integrationCache.clear();
   while (timeSeconds < request.durationSeconds - 1e-12) {
     const step = Math.min(
       config.fixedStepSeconds,
@@ -2104,7 +2154,13 @@ export const simulateRide = (
     const previousSpeed = speedMps;
     let previousDynamics: DynamicsSample;
     try {
-      previousDynamics = dynamicsAt(track, config, distanceM, speedMps);
+      previousDynamics = dynamicsAt(
+        track,
+        config,
+        distanceM,
+        speedMps,
+        integrationSampleAt,
+      );
     } catch (error) {
       diagnostics.push(diagnosticFromError(error));
       break;
@@ -2112,7 +2168,14 @@ export const simulateRide = (
     let elapsedStep = step;
     let boundaryError: OpenTrackBoundaryError | undefined;
     try {
-      const advanced = boundedRk4(track, config, distanceM, speedMps, step);
+      const advanced = boundedRk4(
+        track,
+        config,
+        distanceM,
+        speedMps,
+        step,
+        integrationSampleAt,
+      );
       distanceM = advanced.distanceM;
       speedMps = advanced.speedMps;
       elapsedStep = advanced.elapsedSeconds;
@@ -2123,7 +2186,13 @@ export const simulateRide = (
     }
     let nextDynamics: DynamicsSample;
     try {
-      nextDynamics = dynamicsAt(track, config, distanceM, speedMps);
+      nextDynamics = dynamicsAt(
+        track,
+        config,
+        distanceM,
+        speedMps,
+        integrationSampleAt,
+      );
     } catch (error) {
       diagnostics.push(diagnosticFromError(error));
       break;
@@ -2149,7 +2218,7 @@ export const simulateRide = (
             step * Math.max(1, Math.abs(nextDynamics.accelerationMps2)),
           ))
     ) {
-      const atRest = dynamicsAt(track, config, distanceM, 0);
+      const atRest = dynamicsAt(track, config, distanceM, 0, integrationSampleAt);
       if (Math.abs(atRest.totalForce) <= atRest.staticStictionCapacityN)
         speedMps = 0;
     }
@@ -2214,6 +2283,7 @@ export const simulateRide = (
       diagnostics.push(diagnosticFromError(error));
       break;
     }
+    integrationCache.clear();
     if (boundaryError) {
       diagnostics.push({
         code: boundaryError.diagnosticCode,
@@ -2252,6 +2322,7 @@ export const simulateRide = (
       completedFrames,
       config,
       Boolean(request.compactTimeline),
+      timelineCache,
     );
   } catch (error) {
     diagnostics.push(diagnosticFromError(error));
