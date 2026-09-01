@@ -27,6 +27,7 @@ export interface StationParameters {
   readonly length: number;
   readonly bank: number;
   readonly closed: boolean;
+  readonly targetSpeed?: number;
 }
 export interface LaunchParameters {
   readonly length: number;
@@ -37,6 +38,7 @@ export interface BrakeParameters {
   readonly length: number;
   readonly targetSpeed: number;
   readonly bank: number;
+  readonly angle?: number;
 }
 export interface TransitionParameters {
   readonly length: number;

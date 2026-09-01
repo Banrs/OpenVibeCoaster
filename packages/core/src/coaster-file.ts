@@ -172,10 +172,10 @@ const validateElement = (value: unknown, path: string): void => {
   if (element.parameters !== undefined) {
     const parameters = record(element.parameters, `${path}.parameters`);
     const parameterNames: Record<string, readonly string[]> = {
-      station: ["length", "bank", "closed"],
+      station: ["length", "bank", "closed", "targetSpeed"],
       launch: ["length", "targetSpeed", "bank"],
       boost: ["length", "targetSpeed", "bank"],
-      brake: ["length", "targetSpeed", "bank"],
+      brake: ["length", "targetSpeed", "bank", "angle"],
       transition: ["length", "rise", "pitch", "bank"],
       topHat: ["height", "width", "bank"],
       airtimeHill: [

@@ -179,12 +179,20 @@ const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
       roll: Math.PI * 2,
     }),
     createElement("stall", "stall-007", { length: 100, height: 18 }),
-    createElement("brake", "brake-008", { length: 220, targetSpeed: 8 }),
+    createElement("brake", "brake-008", {
+      length: 220,
+      targetSpeed: 8,
+      angle: Math.PI,
+    }),
     createElement("brake", "magnetic-brakes-009", {
       length: 110,
       targetSpeed: 5,
     }),
-    createElement("station", "station-010", { length: 160, closed: false }),
+    createElement("station", "station-010", {
+      length: 160,
+      closed: false,
+      targetSpeed: 0,
+    }),
   ];
   return elements;
 };
