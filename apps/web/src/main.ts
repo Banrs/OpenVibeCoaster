@@ -942,7 +942,7 @@ function updateMetricForSeat(snap: RidePlaybackSnapshot): void {
     state.metric,
     auth.track,
     auth.timeline,
-    auth.clearanceM ?? null,
+    auth.clearanceM,
   );
   drawTimelineGraph(telemetryGraph, series, snap.sampleIndex);
 }
@@ -1311,7 +1311,7 @@ const controller = createExperienceController({
             state.metric,
             authoritative.track,
             timeline,
-            authoritative.clearanceM ?? null,
+            authoritative.clearanceM,
           );
           drawTimelineGraph(telemetryGraph, series, selection.index);
         }
@@ -1417,15 +1417,10 @@ unsubscribeController = controller.subscribe((expState) => {
     renderMetricLegend(state.metric);
     lifecycle.setMetric(state.metric, metricData);
 
-<    {
+    {
       const series = seatMetricAvailable
         ? getSeatMetricSeries(state.metric, result, initialSeat)
-        : getMetricSeries(
-            state.metric,
-            track,
-            timeline,
-            result.clearanceM ?? null,
-          );
+        : getMetricSeries(state.metric, track, timeline, result.clearanceM);
       drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());
     }
 
@@ -1781,7 +1776,7 @@ metricSelect.addEventListener("change", () => {
         state.metric,
         authoritative.track,
         authoritative.timeline,
-        authoritative.clearanceM ?? null,
+        authoritative.clearanceM,
       );
       renderMetricLegend(state.metric);
       drawTimelineGraph(telemetryGraph, series, getSelectedTimelineIndex());

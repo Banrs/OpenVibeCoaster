@@ -155,12 +155,7 @@ export function getSeatMetricSeries(
   const timeline = result.timeline;
   const carCount = timeline.carCount;
   if (carCount === 0) {
-    return getMetricSeries(
-      metric,
-      result.track,
-      timeline,
-      result.clearanceM ?? null,
-    );
+    return getMetricSeries(metric, result.track, timeline, result.clearanceM);
   }
   const carIndex = getSeatCarIndex(seatId, carCount);
   const distances = Array.from(timeline.headDistanceM);
@@ -236,12 +231,7 @@ export function getSeatMetricSeries(
       range: { min, max },
     };
   }
-  return getMetricSeries(
-    metric,
-    result.track,
-    timeline,
-    result.clearanceM ?? null,
-  );
+  return getMetricSeries(metric, result.track, timeline, result.clearanceM);
 }
 
 export function deriveSeatMetricData(

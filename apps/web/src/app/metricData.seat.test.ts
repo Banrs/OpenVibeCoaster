@@ -92,7 +92,7 @@ function makeTimeline(carCount: number, withPerCar: boolean) {
 function makeResult(
   track: ReturnType<typeof makeTrack>,
   timeline: RideTimeline,
-  clearanceM: Float64Array | null = null,
+  clearanceM: Float64Array = new Float64Array(timeline.length).fill(1.5),
 ): AuthoritativeExperienceResult {
   const intent = createDesignIntentV1({
     generatorVersion: "generator-v1",
@@ -204,6 +204,10 @@ describe("seat metricData", () => {
     // both should be train-wide derived from head speed timeline via getMetricSeries, not per-car
     expect(speedSeriesFront.values).toEqual(speedSeriesRear.values);
     expect(speedSeriesFront.available).toBe(true);
+    const clearanceFront = getSeatMetricSeries("clearance", result, "front");
+    const clearanceRear = getSeatMetricSeries("clearance", result, "rear");
+    expect(clearanceFront.available).toBe(true);
+    expect(clearanceFront.values).toEqual(clearanceRear.values);
   });
 
   it("deriveSeatMetricData preserves unavailable as undefined without train fallback", () => {
