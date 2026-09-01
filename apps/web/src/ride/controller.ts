@@ -50,6 +50,8 @@ export interface RidePlaybackSnapshot {
   readonly reducedMotion: boolean;
   readonly disposed: boolean;
   readonly selections: Readonly<Record<RideSelectionId, RideSelection>>;
+  readonly cars: readonly CarState[];
+  readonly carCount: number;
 }
 
 export type RidePlaybackListener = (snapshot: RidePlaybackSnapshot) => void;
@@ -1058,6 +1060,90 @@ export function createRidePlayback(
     });
   };
 
+  const carsAtTime = (bracket: {
+    index: number;
+    nextIndex: number;
+    fraction: number;
+  }): readonly CarState[] => {
+    const frame = frameAtTime(bracket);
+    if (frame) return frame.cars;
+    if (data.carCount === 0) return Object.freeze([]);
+    // Compact SoA fallback: build minimal CarState per car from interpolated vectors
+    const cars: CarState[] = [];
+    const headDist = scalarAtTime(data.distances, timeSeconds);
+    for (let carIndex = 0; carIndex < data.carCount; carIndex++) {
+      const pos = vectorAtTime(data.positions, carIndex, bracket);
+      const tan = vectorAtTime(data.tangents, carIndex, bracket);
+      const nor = vectorAtTime(data.normals, carIndex, bracket);
+      const bin = vectorAtTime(data.binormals, carIndex, bracket);
+      if (!pos || !tan || !nor || !bin) continue;
+      const axes = interpolateAxes(tan, nor, bin, tan, nor, bin, 0, "timeline");
+      // telemetry per car via compact arrays if available, else zero
+      const sIdx = bracket.index * data.carCount + carIndex;
+      const eIdx = bracket.nextIndex * data.carCount + carIndex;
+      const lerpPer = (arr: Float64Array): number =>
+        lerp(arr[sIdx] ?? 0, arr[eIdx] ?? 0, bracket.fraction);
+      const sVec = sIdx * 3;
+      const eVec = eIdx * 3;
+      const lerpVec3 = (arr: Float64Array): Vec3 => [
+        lerp(arr[sVec] ?? 0, arr[eVec] ?? 0, bracket.fraction),
+        lerp(arr[sVec + 1] ?? 0, arr[eVec + 1] ?? 0, bracket.fraction),
+        lerp(arr[sVec + 2] ?? 0, arr[eVec + 2] ?? 0, bracket.fraction),
+      ];
+      const telemetryPerCar: CarTelemetry = {
+        longitudinalG:
+          data.perCarLongitudinalG.length > 0
+            ? lerpPer(data.perCarLongitudinalG)
+            : 0,
+        lateralG:
+          data.perCarLateralG.length > 0 ? lerpPer(data.perCarLateralG) : 0,
+        verticalG:
+          data.perCarVerticalG.length > 0 ? lerpPer(data.perCarVerticalG) : 1,
+        specificForceMps2:
+          data.perCarSpecificForceXYZ.length > 0
+            ? lerpVec3(data.perCarSpecificForceXYZ)
+            : ([0, 0, 9.80665] as Vec3),
+        jerkMps3:
+          data.perCarJerkXYZ.length > 0
+            ? lerpVec3(data.perCarJerkXYZ)
+            : ([0, 0, 0] as Vec3),
+        bankRad:
+          data.perCarBankRad.length > 0 ? lerpPer(data.perCarBankRad) : 0,
+        rollRateRadPerSec:
+          data.perCarRollRateRadPerSec.length > 0
+            ? lerpPer(data.perCarRollRateRadPerSec)
+            : 0,
+      };
+      const frameSample = {
+        position: pos,
+        tangent: axes.tangent,
+        normal: axes.normal,
+        binormal: axes.binormal,
+        distance: headDist,
+        curvature: 0,
+        curvatureVector: [0, 0, 0] as Vec3,
+        bank: telemetryPerCar.bankRad,
+        bankDerivative: 0,
+      };
+      cars.push(
+        Object.freeze({
+          index: carIndex,
+          distanceM: headDist,
+          position: pos,
+          tangent: axes.tangent,
+          normal: axes.normal,
+          binormal: axes.binormal,
+          frame: frameSample,
+          seatOffsets: Object.freeze([]),
+          seatPositions: Object.freeze([]),
+          telemetry: telemetryPerCar,
+          seats: Object.freeze([]),
+        }) as CarState,
+      );
+    }
+    return Object.freeze(cars);
+  };
+
   const getSnapshot = (): RidePlaybackSnapshot => {
     const sampleIndex = sampleIndexAtTime(timeSeconds);
     const bracket = timeBracket(timeSeconds);
@@ -1073,6 +1159,7 @@ export function createRidePlayback(
       middle: selectionFor("middle", bracket, frame),
       rear: selectionFor("rear", bracket, frame),
     });
+    const cars = carsAtTime(bracket);
     return Object.freeze({
       timeSeconds,
       sampleIndex,
@@ -1087,6 +1174,8 @@ export function createRidePlayback(
       reducedMotion,
       disposed,
       selections,
+      cars,
+      carCount: data.carCount,
     });
   };
 

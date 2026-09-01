@@ -43,35 +43,29 @@ describe("playbackOptions helpers", () => {
     }
   });
 
-  it("SEAT_OPTIONS has four entries front/0, middle/0, middle/1, rear/0", () => {
-    expect(SEAT_OPTIONS).toHaveLength(4);
+  it("SEAT_OPTIONS has three entries front/middle/rear", () => {
+    expect(SEAT_OPTIONS).toHaveLength(3);
     expect(SEAT_OPTIONS[0]).toEqual({
-      value: "0",
+      value: "front",
       seatId: "front",
       seatIndex: 0,
     });
     expect(SEAT_OPTIONS[1]).toEqual({
-      value: "1",
+      value: "middle",
       seatId: "middle",
       seatIndex: 0,
     });
     expect(SEAT_OPTIONS[2]).toEqual({
-      value: "2",
-      seatId: "middle",
-      seatIndex: 1,
-    });
-    expect(SEAT_OPTIONS[3]).toEqual({
-      value: "3",
+      value: "rear",
       seatId: "rear",
       seatIndex: 0,
     });
   });
 
   it("getSeatOptionByValue returns correct mapping and undefined for invalid", () => {
-    expect(getSeatOptionByValue("0")?.seatId).toBe("front");
-    expect(getSeatOptionByValue("1")?.seatIndex).toBe(0);
-    expect(getSeatOptionByValue("2")?.seatIndex).toBe(1);
-    expect(getSeatOptionByValue("3")?.seatId).toBe("rear");
+    expect(getSeatOptionByValue("front")?.seatId).toBe("front");
+    expect(getSeatOptionByValue("middle")?.seatIndex).toBe(0);
+    expect(getSeatOptionByValue("rear")?.seatId).toBe("rear");
     expect(getSeatOptionByValue("99")).toBeUndefined();
     expect(getSeatOptionByValue("invalid")).toBeUndefined();
   });
@@ -82,15 +76,11 @@ describe("playbackOptions helpers", () => {
       rate: 1,
       selectedSeat: "front",
     });
-    // front/0
-    expect(getSeatValueFromSnapshot(ctrl.getSnapshot())).toBe("0");
+    expect(getSeatValueFromSnapshot(ctrl.getSnapshot())).toBe("front");
     ctrl.selectSeat("middle", 0);
-    expect(getSeatValueFromSnapshot(ctrl.getSnapshot())).toBe("1");
-    ctrl.selectSeat("middle", 1);
-    expect(getSeatValueFromSnapshot(ctrl.getSnapshot())).toBe("2");
+    expect(getSeatValueFromSnapshot(ctrl.getSnapshot())).toBe("middle");
     ctrl.selectSeat("rear", 0);
-    expect(getSeatValueFromSnapshot(ctrl.getSnapshot())).toBe("3");
-    // round-trip via option
+    expect(getSeatValueFromSnapshot(ctrl.getSnapshot())).toBe("rear");
     for (const opt of SEAT_OPTIONS) {
       ctrl.selectSeat(opt.seatId, opt.seatIndex);
       expect(getSeatValueFromSnapshot(ctrl.getSnapshot())).toBe(opt.value);

@@ -31,6 +31,8 @@ export interface AppLifecycleConfig {
   createController?: typeof createRendererController;
   getCameraId?: () => CameraId;
   getReducedMotion?: () => boolean;
+  getSnapshot?: () =>
+    import("../ride/controller.js").RidePlaybackSnapshot | null;
   metrics?: RenderMetrics;
   onResize2D?: () => void;
   getWindow?: () => Window & typeof globalThis;
@@ -43,7 +45,11 @@ export interface AppLifecycle {
   reinitialize(): boolean;
   attachTrack(data: CompiledTrackData, options?: AttachOptions): void;
   clearTrack(): void;
-  updatePlayback(distance: number, speed: number): void;
+  updatePlayback(
+    distance: number,
+    speed: number,
+    snapshot?: import("../ride/controller.js").RidePlaybackSnapshot | null,
+  ): void;
   setMetric(metric: MetricId, metricData?: MetricData): void;
   setHighlight(distance: number | null): void;
   updateSelection(options: {
@@ -364,9 +370,14 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
       }
       const camId = config.getCameraId?.() ?? ("orbit" as CameraId);
       const reduced = config.getReducedMotion?.() ?? false;
+      const snapshot = config.getSnapshot?.() ?? null;
       let runtimeError: unknown = null;
       try {
-        controller.applyCamera(camId, { reducedMotion: reduced, deltaMs });
+        controller.applyCamera(camId, {
+          reducedMotion: reduced,
+          deltaMs,
+          snapshot,
+        });
       } catch (e) {
         runtimeError = e;
       }
@@ -589,10 +600,14 @@ export function createAppLifecycle(config: AppLifecycleConfig): AppLifecycle {
     }
   };
 
-  const updatePlayback = (distance: number, speed: number): void => {
+  const updatePlayback = (
+    distance: number,
+    speed: number,
+    snapshot?: import("../ride/controller.js").RidePlaybackSnapshot | null,
+  ): void => {
     if (controller) {
       lastPlayback = { distance, speed };
-      controller.updatePlayback(distance, speed);
+      controller.updatePlayback(distance, speed, snapshot ?? null);
     } else {
       if (pendingAttachment) {
         pendingPlayback = { distance, speed };

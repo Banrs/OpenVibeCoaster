@@ -49,9 +49,9 @@ export function getCarTransforms(
   carCount: number = TRAIN_CAR_COUNT,
   carPitch: number = CAR_PITCH_M,
 ): CarTransform[] {
+  // Legacy fallback: reconstruct spacing from pitch (deprecated – retained only for degenerate/legacy empty timelines)
   const total = data.totalLength;
   if (total <= 1e-9) {
-    // Degenerate track: all cars at origin
     return Array.from({ length: carCount }, () => ({
       position: [0, 0, 0] as Vec3,
       quaternion: [0, 0, 0, 1] as Quat,
@@ -63,7 +63,6 @@ export function getCarTransforms(
     const distance = clamp(frontDistance - i * carPitch);
     const t = total === 0 ? 0 : distance / total;
     const sample = sampleCompiledTrack(data, t);
-    // Ride height offset: car sits slightly above rail (visual)
     const upOffset = 0.55;
     const pos: Vec3 = [
       sample.position[0] + sample.normal[0] * upOffset,
@@ -71,6 +70,28 @@ export function getCarTransforms(
       sample.position[2] + sample.normal[2] * upOffset,
     ] as unknown as Vec3;
     const quat = quatFromBasis(sample.tangent, sample.normal, sample.binormal);
+    result.push({ position: pos, quaternion: quat });
+  }
+  return result;
+}
+
+export function getCarTransformsFromCars(
+  cars: readonly {
+    position: Vec3;
+    tangent: Vec3;
+    normal: Vec3;
+    binormal: Vec3;
+  }[],
+): CarTransform[] {
+  const result: CarTransform[] = [];
+  for (const car of cars) {
+    const upOffset = 0.55;
+    const pos: Vec3 = [
+      car.position[0] + car.normal[0] * upOffset,
+      car.position[1] + car.normal[1] * upOffset,
+      car.position[2] + car.normal[2] * upOffset,
+    ] as unknown as Vec3;
+    const quat = quatFromBasis(car.tangent, car.normal, car.binormal);
     result.push({ position: pos, quaternion: quat });
   }
   return result;
@@ -194,10 +215,14 @@ export function updateTrainTransforms(
   group: TrainGroup,
   transforms: CarTransform[],
 ): void {
-  for (let i = 0; i < Math.min(group.cars.length, transforms.length); i++) {
-    const car = group.cars[i];
+  for (let i = 0; i < group.cars.length; i++) {
+    const car = group.cars[i]!;
     const tr = transforms[i];
-    if (!car || !tr) continue;
+    if (!tr) {
+      car.visible = false;
+      continue;
+    }
+    car.visible = true;
     car.position.set(
       tr.position[0] ?? 0,
       tr.position[1] ?? 0,

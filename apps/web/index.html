@@ -89,6 +89,20 @@
         >
           Unlock audio
         </button>
+        <div
+          id="audio-status"
+          data-testid="audio-status"
+          data-status="locked"
+          data-muted="false"
+          data-effective-gain="0"
+          data-audible="false"
+          role="status"
+          aria-live="polite"
+          aria-label="Audio status"
+          class="audio-status"
+        >
+          Audio locked — muted false — gain 0 — audible false
+        </div>
       </div>
     </header>
 
@@ -664,10 +678,9 @@
         <label class="field inline" for="seat-select">
           <span>Seat</span>
           <select id="seat-select" disabled>
-            <option value="0">Front — rider eye, lead car</option>
-            <option value="1">Middle — seat 1</option>
-            <option value="2">Middle — seat 2</option>
-            <option value="3">Rear — last car</option>
+            <option value="front">Front</option>
+            <option value="middle">Middle</option>
+            <option value="rear">Rear</option>
           </select>
         </label>
 
@@ -742,6 +755,29 @@
           disabled
         />
         <span class="scrubber-value" aria-live="polite">0 / 1000</span>
+      </div>
+      <div
+        id="seat-telemetry"
+        data-testid="seat-telemetry"
+        data-car-index="0"
+        data-car-count="0"
+        data-vertical-g="0"
+        data-lateral-g="0"
+        data-longitudinal-g="0"
+        data-jerk="0"
+        data-jerk-x="0"
+        data-jerk-y="0"
+        data-jerk-z="0"
+        data-roll-rate="0"
+        data-bank="0"
+        data-height="0"
+        role="status"
+        aria-live="polite"
+        aria-label="Seat telemetry"
+        class="seat-telemetry"
+      >
+        Seat Front — car 1/1 — vertical 0.00 g (train-wide:
+        speed/energy/brake/LSM/clearance)
       </div>
     </section>
 

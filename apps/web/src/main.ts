@@ -377,7 +377,22 @@ function render(): void {
     input.checked = input.value === state.camera;
   }
   metricSelect.value = state.metric;
-  seatSelect.value = String(state.seatIndex);
+  // Map legacy numeric seatIndex to seatId for production observability
+  {
+    const snapForSeat = ridePlayback?.getSnapshot() ?? null;
+    if (snapForSeat) {
+      seatSelect.value = getSeatValueFromSnapshot(snapForSeat);
+    } else {
+      const seatIdFromIndex =
+        state.seatIndex === 0
+          ? "front"
+          : state.seatIndex === 3
+            ? "rear"
+            : "middle";
+      const opt = getSeatOptionByValue(seatIdFromIndex);
+      seatSelect.value = opt?.value ?? "front";
+    }
+  }
   playbackSelect.value = String(state.playbackSpeed);
   scrubberValue.textContent = `${scrubber.value} / ${scrubber.max}`;
 
@@ -424,6 +439,7 @@ const lifecycle = createAppLifecycle({
   metrics,
   getCameraId: () => state.camera,
   getReducedMotion: () => state.reducedMotion,
+  getSnapshot: () => ridePlayback?.getSnapshot() ?? null,
   onResize2D: () => resizeCanvases(),
   onWebGLFailure: () => {
     hasWebGL = false;
@@ -454,7 +470,7 @@ const lifecycle = createAppLifecycle({
           });
         } catch {}
       }
-      lifecycle.updatePlayback(snap.headDistanceM, snap.speedMps);
+      lifecycle.updatePlayback(snap.headDistanceM, snap.speedMps, snap);
     }
   },
 });
@@ -805,16 +821,198 @@ function updatePlaybackDomFromSnapshot(
   }
 }
 
+function getSeatCarIndex(seatId: string, carCount: number): number {
+  if (seatId === "front") return 0;
+  if (seatId === "rear") return Math.max(0, carCount - 1);
+  return Math.floor(Math.max(0, carCount - 1) / 2);
+}
+
+function updateSeatTelemetryFromSnapshot(snap: RidePlaybackSnapshot): void {
+  const el = document.getElementById("seat-telemetry") as HTMLElement | null;
+  if (!el) return;
+  const carCount = snap.carCount;
+  const seatId = snap.selectedSeat;
+  const carIndex = getSeatCarIndex(seatId, carCount);
+  // Resolve per-car telemetry: prefer car object, fallback to snapshot telemetry perCar
+  const selection = snap.selections[seatId as keyof typeof snap.selections];
+  const car = selection?.car ?? snap.cars[carIndex];
+  const perCarTelemetry =
+    car?.telemetry ?? snap.telemetry?.perCar[carIndex] ?? snap.telemetry;
+  const verticalG = perCarTelemetry?.verticalG ?? 0;
+  const lateralG = perCarTelemetry?.lateralG ?? 0;
+  const longitudinalG = perCarTelemetry?.longitudinalG ?? 0;
+  const jerkVec = perCarTelemetry?.jerkMps3 ?? ([0, 0, 0] as const);
+  const jerkMag = Math.hypot(jerkVec[0] ?? 0, jerkVec[1] ?? 0, jerkVec[2] ?? 0);
+  const rollRate = perCarTelemetry?.rollRateRadPerSec ?? 0;
+  const bank = perCarTelemetry?.bankRad ?? 0;
+  const heightY = car?.position?.[1] ?? selection?.position?.[1] ?? 0;
+  const label = seatId.charAt(0).toUpperCase() + seatId.slice(1);
+  const carNumber = carIndex + 1;
+  const speedTrainWide = snap.speedMps;
+  const energyTrainWide = snap.telemetry?.energyErrorJ ?? 0;
+  const launchTrainWide = snap.telemetry?.launchActivity ? "active" : "idle";
+  const brakeTrainWide = snap.telemetry?.brakeActivity ? "active" : "idle";
+  el.setAttribute("data-car-index", String(carIndex));
+  el.setAttribute("data-car-count", String(carCount));
+  el.setAttribute("data-vertical-g", String(verticalG));
+  el.setAttribute("data-lateral-g", String(lateralG));
+  el.setAttribute("data-longitudinal-g", String(longitudinalG));
+  el.setAttribute("data-jerk", String(jerkMag));
+  el.setAttribute("data-jerk-x", String(jerkVec[0] ?? 0));
+  el.setAttribute("data-jerk-y", String(jerkVec[1] ?? 0));
+  el.setAttribute("data-jerk-z", String(jerkVec[2] ?? 0));
+  el.setAttribute("data-roll-rate", String(rollRate));
+  el.setAttribute("data-bank", String(bank));
+  el.setAttribute("data-height", String(heightY));
+  el.textContent = `Seat ${label} — car ${carNumber}/${carCount} — vertical ${verticalG.toFixed(2)} g, lateral ${lateralG.toFixed(2)} g, longitudinal ${longitudinalG.toFixed(2)} g, jerk ${jerkMag.toFixed(2)} m/s³ (x ${(jerkVec[0] ?? 0).toFixed(2)} y ${(jerkVec[1] ?? 0).toFixed(2)} z ${(jerkVec[2] ?? 0).toFixed(2)}), roll ${rollRate.toFixed(3)} rad/s, bank ${((bank * 180) / Math.PI).toFixed(1)}° (${bank.toFixed(3)} rad), height ${heightY.toFixed(1)} m — train-wide: speed ${speedTrainWide.toFixed(1)} m/s, energy ${energyTrainWide.toFixed(1)} J, LSM ${launchTrainWide}, brake ${brakeTrainWide}, clearance train-wide`;
+}
+
+function updateMetricForSeat(snap: RidePlaybackSnapshot): void {
+  const auth = getAuthoritativeResult();
+  if (!auth) return;
+  const seatId = snap.selectedSeat;
+  if (state.metric === "gForce" || state.metric === "rollRate") {
+    const metricData = deriveMetricDataForSeatProxy(state.metric, auth, seatId);
+    if (metricData) {
+      lifecycle.setMetric(
+        state.metric,
+        metricData as unknown as import("./render/metricContract.js").MetricData,
+      );
+      const series = getMetricSeries(
+        state.metric,
+        auth.track,
+        auth.timeline,
+        auth.clearanceM ?? null,
+      );
+      drawTimelineGraph(telemetryGraph, series, snap.sampleIndex);
+    }
+  }
+}
+
+function deriveMetricDataForSeatProxy(
+  metric: import("./viewState.js").MetricId,
+  result: import("./experienceController.js").AuthoritativeExperienceResult,
+  seatId: string,
+): import("./render/metricContract.js").MetricData | undefined {
+  // Inline per-car resampling without importing new module at top to avoid circular
+  const carCount = result.timeline.carCount;
+  const carIndex = getSeatCarIndex(seatId, carCount);
+  const trackDistances = result.track.distances;
+  const timeline = result.timeline;
+  if (metric === "rollRate") {
+    const perCar = timeline.perCarRollRateRadPerSec;
+    if (perCar.length === timeline.length * carCount) {
+      const values: number[] = [];
+      for (let i = 0; i < timeline.length; i++)
+        values.push(perCar[i * carCount + carIndex] ?? 0);
+      // resample onto track distances
+      const distances = Array.from(timeline.headDistanceM);
+      const resampled = new Float64Array(trackDistances.length);
+      let ti = 0;
+      for (let i = 0; i < trackDistances.length; i++) {
+        const d = trackDistances[i]!;
+        while (ti + 1 < distances.length && distances[ti + 1]! < d) ti++;
+        if (ti + 1 >= distances.length)
+          resampled[i] = values[values.length - 1]!;
+        else if (distances[ti]! === d) resampled[i] = values[ti]!;
+        else {
+          const d0 = distances[ti]!;
+          const d1 = distances[ti + 1]!;
+          const v0 = values[ti]!;
+          const v1 = values[ti + 1]!;
+          const t = d1 === d0 ? 0 : (d - d0) / (d1 - d0);
+          resampled[i] = v0 + (v1 - v0) * t;
+        }
+      }
+      return {
+        rollRate: resampled,
+      } as unknown as import("./render/metricContract.js").MetricData;
+    }
+  } else if (metric === "gForce") {
+    const perLat = timeline.perCarLateralG;
+    const perVert = timeline.perCarVerticalG;
+    const perLong = timeline.perCarLongitudinalG;
+    if (
+      perLat.length === timeline.length * carCount &&
+      perVert.length === timeline.length * carCount &&
+      perLong.length === timeline.length * carCount
+    ) {
+      const values: number[] = [];
+      for (let i = 0; i < timeline.length; i++) {
+        const idx = i * carCount + carIndex;
+        values.push(
+          Math.hypot(perVert[idx] ?? 0, perLat[idx] ?? 0, perLong[idx] ?? 0),
+        );
+      }
+      const distances = Array.from(timeline.headDistanceM);
+      const resampled = new Float64Array(trackDistances.length);
+      let ti = 0;
+      for (let i = 0; i < trackDistances.length; i++) {
+        const d = trackDistances[i]!;
+        while (ti + 1 < distances.length && distances[ti + 1]! < d) ti++;
+        if (ti + 1 >= distances.length)
+          resampled[i] = values[values.length - 1]!;
+        else if (distances[ti]! === d) resampled[i] = values[ti]!;
+        else {
+          const d0 = distances[ti]!;
+          const d1 = distances[ti + 1]!;
+          const v0 = values[ti]!;
+          const v1 = values[ti + 1]!;
+          const t = d1 === d0 ? 0 : (d - d0) / (d1 - d0);
+          resampled[i] = v0 + (v1 - v0) * t;
+        }
+      }
+      return {
+        gForce: resampled,
+      } as unknown as import("./render/metricContract.js").MetricData;
+    }
+  }
+  return undefined;
+}
+
+function updateAudioStatus(): void {
+  const el = document.getElementById("audio-status") as HTMLElement | null;
+  if (!el) return;
+  const stateAudio = audioEngine?.getState() ?? null;
+  const status = stateAudio?.status ?? "locked";
+  const muted = stateAudio?.muted ?? state.isMuted;
+  let effectiveGain = 0;
+  let audible = false;
+  if (stateAudio) {
+    const layers = stateAudio.layers;
+    const sum =
+      (layers.wind.gain ?? 0) +
+      (layers.rail.gain ?? 0) +
+      (layers.lsm.gain ?? 0) +
+      (layers.brake.gain ?? 0);
+    effectiveGain = muted ? 0 : sum;
+    audible = effectiveGain > 1e-6 && status === "ready" && !muted;
+    if (status === "unsupported" || status === "failed") {
+      effectiveGain = 0;
+      audible = false;
+    }
+  }
+  el.setAttribute("data-status", status);
+  el.setAttribute("data-muted", String(muted));
+  el.setAttribute("data-effective-gain", String(effectiveGain));
+  el.setAttribute("data-audible", String(audible));
+  el.textContent = `Audio ${status} — muted ${muted} — gain ${effectiveGain.toFixed(3)} — audible ${audible}`;
+}
+
 function syncPlaybackControlsFromSnapshot(snap: RidePlaybackSnapshot): void {
   state.isPaused = !snap.isPlaying;
   state.playbackSpeed = snap.rate;
   const seatValue = getSeatValueFromSnapshot(snap);
-  state.seatIndex = Number.parseInt(seatValue, 10);
+  // keep numeric seatIndex for legacy graph label, map seatId to 0/1/2
+  state.seatIndex = seatValue === "front" ? 0 : seatValue === "rear" ? 2 : 1;
   pauseBtn.setAttribute("aria-pressed", String(!state.isPaused));
   pauseBtn.textContent = state.isPaused ? "Play" : "Pause";
   playbackSelect.value = String(snap.rate);
   seatSelect.value = seatValue;
   updatePlaybackDomFromSnapshot(snap);
+  updateSeatTelemetryFromSnapshot(snap);
+  updateMetricForSeat(snap);
+  updateAudioStatus();
   syncTelemetryGraphA11y();
 }
 
@@ -1282,7 +1480,8 @@ unsubscribeController = controller.subscribe((expState) => {
       });
       ridePlayback.pause();
       const snap = ridePlayback.getSnapshot();
-      lifecycle.updatePlayback(snap.headDistanceM, snap.speedMps);
+      lifecycle.updatePlayback(snap.headDistanceM, snap.speedMps, snap);
+      syncPlaybackControlsFromSnapshot(snap);
     } catch {
       // contained playback creation failure remains visible via error status without console
     }
@@ -1321,9 +1520,11 @@ unsubscribeController = controller.subscribe((expState) => {
           paused: !snap.isPlaying,
         });
       }
+      updateAudioStatus();
     } catch {
       // Unsupported audio is visible/operable without console/page errors -> set to null but keep mute operable
       audioEngine = null;
+      updateAudioStatus();
     }
 
     // Selection readout initial
@@ -1551,6 +1752,7 @@ for (const input of cameraInputs) {
         lifecycle.getController()?.applyCamera(state.camera, {
           reducedMotion: state.reducedMotion,
           deltaMs: 16,
+          snapshot: ridePlayback?.getSnapshot() ?? null,
         });
       } catch (error) {
         handleVisibleUnexpectedError(error);
@@ -1585,13 +1787,18 @@ metricSelect.addEventListener("change", () => {
 seatSelect.addEventListener("change", () => {
   const opt = getSeatOptionByValue(seatSelect.value);
   if (!opt) {
-    seatSelect.value = String(state.seatIndex);
+    const fallback = getSeatValueFromSnapshot(
+      ridePlayback?.getSnapshot() ??
+        ({ selectedSeat: "front" } as unknown as RidePlaybackSnapshot),
+    );
+    seatSelect.value = fallback;
     return;
   }
   if (ridePlayback) {
     ridePlayback.selectSeat(opt.seatId, opt.seatIndex);
   } else {
-    state.seatIndex = Number.parseInt(opt.value, 10);
+    state.seatIndex =
+      opt.seatId === "front" ? 0 : opt.seatId === "rear" ? 2 : 1;
     render();
   }
 });
@@ -1799,6 +2006,7 @@ document.addEventListener(
     if (event.key === "m" || event.key === "M") {
       state.isMuted = !state.isMuted;
       if (audioEngine) audioEngine.setMuted(state.isMuted);
+      updateAudioStatus();
       render();
     } else if (event.key === " ") {
       event.preventDefault();
@@ -1825,6 +2033,8 @@ audioUnlockBtn.addEventListener("click", async () => {
   try {
     await audioEngine.unlock();
   } catch {}
+  updateAudioStatus();
+  render();
 });
 muteBtn.addEventListener("click", () => {
   state.isMuted = !state.isMuted;
@@ -1833,6 +2043,7 @@ muteBtn.addEventListener("click", () => {
       audioEngine.setMuted(state.isMuted);
     } catch {}
   }
+  updateAudioStatus();
   render();
 });
 
@@ -1912,6 +2123,10 @@ function __vibecoasterSnapshot(): Readonly<{
   intentFootprint: readonly import("@openvibecoaster/core").Vec3[] | undefined;
   intentHeightRange: import("@openvibecoaster/core").HeightRangeV1 | undefined;
   gateContradictions: readonly import("@openvibecoaster/core").Diagnostic[];
+  railColorHash: string | null;
+  seamSignature: string | null;
+  highlightDistance: number | null;
+  trainWorldPositions: readonly [number, number, number][] | null;
 }> {
   const cam = lifecycle.getCamera();
   const loaded =
@@ -1945,6 +2160,7 @@ function __vibecoasterSnapshot(): Readonly<{
     };
     gateContradictions = detectGateContradictions(input);
   }
+  const diag = lifecycle.getController()?.getDiagnosticSnapshot() ?? null;
   return Object.freeze({
     rendererReady: lifecycle.isRendererReady(),
     successfulRenderCount: lifecycle.getSuccessfulRenderCount(),
@@ -1958,6 +2174,10 @@ function __vibecoasterSnapshot(): Readonly<{
     intentFootprint,
     intentHeightRange,
     gateContradictions,
+    railColorHash: diag?.railColorHash ?? null,
+    seamSignature: diag?.seamSignature ?? null,
+    highlightDistance: diag?.highlightDistance ?? null,
+    trainWorldPositions: diag?.trainWorldPositions ?? null,
   });
 }
 window.__vibecoasterSnapshot = __vibecoasterSnapshot;
