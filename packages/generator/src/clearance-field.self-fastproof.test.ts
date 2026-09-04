@@ -55,6 +55,26 @@ function squareTrack() {
   );
 }
 
+function parallelThresholdTrack() {
+  return compileTrack(
+    [
+      {
+        id: "parallel-0",
+        span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 0, 10)),
+      },
+      {
+        id: "spacer-1",
+        span: SeventhOrderHermiteSpan.line(vec3(50, 0, 10), vec3(50, 0, 80)),
+      },
+      {
+        id: "parallel-2",
+        span: SeventhOrderHermiteSpan.line(vec3(5, 0, 10), vec3(5, 0, 0)),
+      },
+    ],
+    { samples: 2 },
+  );
+}
+
 function project(field: ClearanceField) {
   return {
     globalLowerM: field.globalLowerM,
@@ -125,18 +145,17 @@ describe("clearance field display-only self fast proof", () => {
   it("retains exact refinement when a real threshold exceeds the AABB proof", () => {
     exactCalls.count = 0;
     exactCalls.aabbLowerBounds.length = 0;
-    const field = computeClearanceField(squareTrack(), {
+    const field = computeClearanceField(parallelThresholdTrack(), {
       hardClearanceM: 0.5,
-      explicitThresholds: [9],
+      explicitThresholds: [3],
       displayCapM: 10,
       maxWork: 100_000,
-      closed: true,
-      segmentIds: ["square-0", "square-1", "square-2", "square-3"],
+      segmentIds: ["parallel-0", "spacer-1", "parallel-2"],
     });
 
     expect(exactCalls.count).toBeGreaterThan(0);
     expect(
-      exactCalls.aabbLowerBounds.some((lower) => lower >= 0.5 && lower < 9),
+      exactCalls.aabbLowerBounds.some((lower) => lower >= 0.5 && lower < 3),
     ).toBe(true);
     expect(field.diagnostics.some((item) => item.severity === "fatal")).toBe(
       false,
