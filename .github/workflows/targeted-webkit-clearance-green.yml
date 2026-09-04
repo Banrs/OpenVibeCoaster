@@ -1,0 +1,29 @@
+name: Targeted WebKit clearance GREEN
+
+on:
+  push:
+    branches:
+      - codex/webkit-clearance-green-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify terrain clearance proof semantics
+        run: >-
+          npm run test --
+          packages/generator/src/clearance-field.fastproof.test.ts
+          packages/generator/src/clearance-field.terrain-hard.test.ts
+          packages/generator/src/clearance-field.terrain-invariants.test.ts
+          packages/generator/src/clearance-field.terrain-outward.test.ts
+          packages/generator/src/clearance-threshold-display-soft.test.ts
+      - name: Verify generator types
+        run: npm run typecheck -w @openvibecoaster/generator
