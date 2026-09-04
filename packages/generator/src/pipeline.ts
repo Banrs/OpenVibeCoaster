@@ -179,7 +179,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("launch", "launch-001", {
       length: 260,
-      targetSpeed: 60,
+      targetSpeed: 58,
     }),
   );
   append(
@@ -216,13 +216,13 @@ export const recordHybridDefaultElements = (
       length: 170,
       targetSpeed: 0,
       holdSeconds: 3,
-      releaseSpeed: 20,
+      releaseSpeed: 40,
     }),
   );
   append(
     createElement("diveDrop", "diveDrop-008", {
       dropHeight: 210,
-      angleDeg: 110,
+      angleDeg: 106,
       approachRadius: 90,
       exitRadius: 160,
       bank: 0,
@@ -238,7 +238,7 @@ export const recordHybridDefaultElements = (
   appendForceHill("airtimeHill-010", 190, 0.98, 44);
   append(
     createElement("topHat", "topHat-011", {
-      height: 91,
+      height: 90.6,
       width: 180,
       bank: 0,
     }),
@@ -308,7 +308,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("brake", "brake-018", {
-      length: 320,
+      length: 300,
       targetSpeed: 0,
       bank: 0,
     }),
