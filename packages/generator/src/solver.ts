@@ -589,7 +589,13 @@ const semanticVariables = (
         -1.2,
         5,
       );
-    if (typeof parameters.bank === "number")
+    if (
+      typeof parameters.bank === "number" &&
+      !(
+        element.type === "overbankedTurn" &&
+        Math.abs(parameters.bank) > Math.PI / 2
+      )
+    )
       add(elementIndex, "bank", parameters.bank, -Math.PI, Math.PI);
   }
   return variables;
@@ -636,10 +642,33 @@ const buildChain = (
         ...element,
         parameters: { ...element.parameters, bank: 0 },
       } as AnySemanticElement;
-      const geometry = buildElement(geometryElement, pose, referenceSpeed);
+      const antipodal =
+        Math.abs(Math.abs(element.parameters.angle) - Math.PI) < 1e-6;
+      const geometry = antipodal
+        ? (() => {
+            const halfElement = {
+              ...geometryElement,
+              parameters: {
+                ...geometryElement.parameters,
+                angle: element.parameters.angle / 2,
+              },
+            } as AnySemanticElement;
+            const left = buildElement(halfElement, pose, referenceSpeed);
+            const right = buildElement(
+              halfElement,
+              left.endPose,
+              referenceSpeed,
+            );
+            return {
+              solvedSpans: [left.solvedSpans[0]!, right.solvedSpans[0]!],
+              endPose: right.endPose,
+            };
+          })()
+        : buildElement(geometryElement, pose, referenceSpeed);
       const startBank = pose.bank;
       const peakBank = element.parameters.bank;
-      const sourceSpan = geometry.solvedSpans[0]!;
+      const leftSourceSpan = geometry.solvedSpans[0]!;
+      const rightSourceSpan = geometry.solvedSpans[antipodal ? 1 : 0]!;
       const leftBank = new QuinticScalarSpan({
         v0: startBank,
         d10: 0,
@@ -656,8 +685,12 @@ const buildChain = (
         d11: 0,
         d21: 0,
       });
-      const leftGeometry = subspan(sourceSpan.span, 0, 0.5);
-      const rightGeometry = subspan(sourceSpan.span, 0.5, 1);
+      const leftGeometry = antipodal
+        ? leftSourceSpan.span
+        : subspan(leftSourceSpan.span, 0, 0.5);
+      const rightGeometry = antipodal
+        ? rightSourceSpan.span
+        : subspan(rightSourceSpan.span, 0.5, 1);
       const leftPoints = Array.from({ length: 33 }, (_, i) =>
         leftGeometry.position(i / 32),
       );
@@ -665,16 +698,16 @@ const buildChain = (
         rightGeometry.position(i / 32),
       );
       const leftSpan: SolvedSpan = {
-        ...sourceSpan,
-        id: `${sourceSpan.id}#0`,
+        ...leftSourceSpan,
+        id: `${element.id}#0`,
         span: leftGeometry,
         bank: leftBank,
         rollCoefficients: leftBank.coefficients,
         bounds: aabbFromPoints(leftPoints),
       };
       const rightSpan: SolvedSpan = {
-        ...sourceSpan,
-        id: `${sourceSpan.id}#1`,
+        ...rightSourceSpan,
+        id: `${element.id}#1`,
         span: rightGeometry,
         bank: rightBank,
         rollCoefficients: rightBank.coefficients,

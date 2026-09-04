@@ -364,14 +364,13 @@ const forceProfileSpan = (
   const basis = basisFor(pose);
   const gravityTangent = vec3Dot(worldGravity, basis.tangent);
   const gravityNormal = vec3Dot(worldGravity, basis.normal);
-  const targetNormalForce = (u: number): number =>
-    1 + (targetForceG - 1) * sustainedForceProfile(u);
   const headingRate = (u: number, heading: number): number => {
     const normalGravity =
       -gravityTangent * Math.sin(heading) + gravityNormal * Math.cos(heading);
     return (
+      sustainedForceProfile(u) *
       (length / referenceSpeed ** 2) *
-      (targetNormalForce(u) * gravity + normalGravity)
+      (targetForceG * gravity + normalGravity)
     );
   };
   const integrateStep = (
@@ -433,12 +432,15 @@ const forceProfileSpan = (
     const [heading] = integrateState(u);
     const tangent = vec3(Math.cos(heading), Math.sin(heading), 0);
     const normal = vec3(-Math.sin(heading), Math.cos(heading), 0);
+    const normalGravity =
+      -gravityTangent * Math.sin(heading) + gravityNormal * Math.cos(heading);
     const thetaPrime = headingRate(u, heading);
     const thetaSecond =
       (length / referenceSpeed ** 2) *
-      (gravity * (targetForceG - 1) * sustainedForceProfile(u, 1) +
-        (-gravityTangent * Math.cos(heading) -
-          gravityNormal * Math.sin(heading)) *
+      (sustainedForceProfile(u, 1) * (targetForceG * gravity + normalGravity) +
+        sustainedForceProfile(u) *
+          (-gravityTangent * Math.cos(heading) -
+            gravityNormal * Math.sin(heading)) *
           thetaPrime);
     if (order === 1) return vec3Scale(tangent, length);
     if (order === 2) return vec3Scale(normal, length * thetaPrime);
@@ -910,6 +912,7 @@ const verticalLoopSpans = (
   const apexSecondDerivative = vec3Scale(basis.normal, -shapeRadius * 0.5);
   const entryDerivative = vec3Scale(basis.tangent, shapeRadius);
   const invertedDerivative = vec3Scale(basis.tangent, -shapeRadius);
+  const recoveryDerivative = vec3Scale(basis.tangent, -shapeRadius * 0.25);
   const firstEnd = vec3Add(
     vec3Add(pose.position, vec3Scale(basis.tangent, shapeRadius * 0.5)),
     vec3Scale(basis.normal, parameters.height),
@@ -917,7 +920,7 @@ const verticalLoopSpans = (
   const secondEnd = vec3Add(firstEnd, vec3Scale(basis.tangent, -shapeRadius));
   const loopExit = vec3Add(
     pose.position,
-    vec3Scale(basis.tangent, parameters.height * 0.2),
+    vec3Scale(basis.tangent, -parameters.height * 1.2),
   );
   const canonicalPosition = (
     span: SeventhOrderHermiteSpan<Vec3>,
@@ -943,7 +946,7 @@ const verticalLoopSpans = (
         d20: apexSecondDerivative,
         d30: zero,
         p1: secondEnd,
-        d11: invertedDerivative,
+        d11: recoveryDerivative,
         d21: apexSecondDerivative,
         d31: zero,
       }),
@@ -951,7 +954,7 @@ const verticalLoopSpans = (
     canonicalPosition(
       new SeventhOrderHermiteSpan({
         p0: secondEnd,
-        d10: invertedDerivative,
+        d10: recoveryDerivative,
         d20: apexSecondDerivative,
         d30: zero,
         p1: loopExit,
