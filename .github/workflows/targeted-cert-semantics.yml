@@ -1,0 +1,28 @@
+name: Targeted clearance certification fixture GREEN
+
+on:
+  push:
+    branches:
+      - codex/cert-semantics-fixture-fix-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify certification fixtures and terrain proof regressions
+        run: >-
+          npm run test --
+          packages/generator/src/clearance-field.fastproof.test.ts
+          packages/generator/src/clearance-field.terrain-hard.test.ts
+          packages/generator/src/clearance-threshold-display-soft.test.ts
+          packages/generator/src/clearance-field.terrain-invariants.test.ts
+          packages/generator/src/clearance-field.terrain-outward.test.ts
+
