@@ -364,14 +364,13 @@ const forceProfileSpan = (
   const basis = basisFor(pose);
   const gravityTangent = vec3Dot(worldGravity, basis.tangent);
   const gravityNormal = vec3Dot(worldGravity, basis.normal);
-  const targetNormalForce = (u: number): number =>
-    1 + (targetForceG - 1) * sustainedForceProfile(u);
   const headingRate = (u: number, heading: number): number => {
     const normalGravity =
       -gravityTangent * Math.sin(heading) + gravityNormal * Math.cos(heading);
     return (
+      sustainedForceProfile(u) *
       (length / referenceSpeed ** 2) *
-      (targetNormalForce(u) * gravity + normalGravity)
+      (targetForceG * gravity + normalGravity)
     );
   };
   const integrateStep = (
@@ -433,12 +432,16 @@ const forceProfileSpan = (
     const [heading] = integrateState(u);
     const tangent = vec3(Math.cos(heading), Math.sin(heading), 0);
     const normal = vec3(-Math.sin(heading), Math.cos(heading), 0);
+    const normalGravity =
+      -gravityTangent * Math.sin(heading) + gravityNormal * Math.cos(heading);
     const thetaPrime = headingRate(u, heading);
     const thetaSecond =
       (length / referenceSpeed ** 2) *
-      (gravity * (targetForceG - 1) * sustainedForceProfile(u, 1) +
-        (-gravityTangent * Math.cos(heading) -
-          gravityNormal * Math.sin(heading)) *
+      (sustainedForceProfile(u, 1) *
+        (targetForceG * gravity + normalGravity) +
+        sustainedForceProfile(u) *
+          (-gravityTangent * Math.cos(heading) -
+            gravityNormal * Math.sin(heading)) *
           thetaPrime);
     if (order === 1) return vec3Scale(tangent, length);
     if (order === 2) return vec3Scale(normal, length * thetaPrime);
