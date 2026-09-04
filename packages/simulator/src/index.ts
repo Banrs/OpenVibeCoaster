@@ -504,6 +504,8 @@ const validate = (
       ["lsmForcePerCarN", zone.lsmForcePerCarN],
       ["lsmPowerPerCarW", zone.lsmPowerPerCarW],
       ["brakeForcePerCarN", zone.brakeForcePerCarN],
+      ["holdSeconds", zone.holdSeconds],
+      ["releaseTargetSpeedMps", zone.releaseTargetSpeedMps],
     ] as const)
       if (value !== undefined && (!finite(value) || value < 0))
         diagnostics.push({
@@ -1934,6 +1936,7 @@ export const simulateRide = (
     };
 
   const { config, initial } = request;
+  let operatingConfig = config;
   const integrationCache = createExactSampleCache<TrackSample>((distanceM) =>
     sampleTrackAtDistance(track, distanceM),
   );
@@ -1948,7 +1951,7 @@ export const simulateRide = (
     mass = totalMass(config.train);
     initialDynamics = dynamicsAt(
       track,
-      config,
+      operatingConfig,
       initial.headDistanceM,
       initial.speedMps,
       integrationSampleAt,
@@ -2066,6 +2069,13 @@ export const simulateRide = (
   let distanceM = initial.headDistanceM;
   let speedMps = initial.speedMps;
   let hasStalled = false;
+  let heldBrake:
+    | {
+        readonly id: string;
+        readonly distanceM: number;
+        readonly releaseTimeSeconds: number;
+      }
+    | undefined;
   const initialDirection = speedMps < 0 ? "reverse" : "forward";
   const zoneOccupancy = new Map(
     config.zones.map((zone) => [
@@ -2175,6 +2185,29 @@ export const simulateRide = (
   integrationCache.clear();
   let currentDynamics = initialDynamics;
   while (timeSeconds < request.durationSeconds - 1e-12) {
+    if (heldBrake && timeSeconds >= heldBrake.releaseTimeSeconds - 1e-12) {
+      const releasedId = heldBrake.id;
+      operatingConfig = {
+        ...config,
+        zones: config.zones.map((zone) =>
+          zone.id === releasedId
+            ? {
+                ...zone,
+                kind: "launch" as const,
+                targetSpeedMps: zone.releaseTargetSpeedMps ?? 0,
+              }
+            : zone,
+        ),
+      };
+      heldBrake = undefined;
+      currentDynamics = dynamicsAt(
+        track,
+        operatingConfig,
+        distanceM,
+        speedMps,
+        integrationSampleAt,
+      );
+    }
     const step = Math.min(
       config.fixedStepSeconds,
       request.durationSeconds - timeSeconds,
@@ -2195,19 +2228,24 @@ export const simulateRide = (
     let elapsedStep = step;
     let boundaryError: OpenTrackBoundaryError | undefined;
     try {
-      const advanced = boundedRk4(
-        track,
-        config,
-        distanceM,
-        speedMps,
-        step,
-        integrationSampleAt,
-        previousDynamics,
-      );
-      distanceM = advanced.distanceM;
-      speedMps = advanced.speedMps;
-      elapsedStep = advanced.elapsedSeconds;
-      boundaryError = advanced.boundaryError;
+      if (heldBrake) {
+        distanceM = heldBrake.distanceM;
+        speedMps = 0;
+      } else {
+        const advanced = boundedRk4(
+          track,
+          operatingConfig,
+          distanceM,
+          speedMps,
+          step,
+          integrationSampleAt,
+          previousDynamics,
+        );
+        distanceM = advanced.distanceM;
+        speedMps = advanced.speedMps;
+        elapsedStep = advanced.elapsedSeconds;
+        boundaryError = advanced.boundaryError;
+      }
     } catch (error) {
       diagnostics.push(diagnosticFromError(error));
       break;
@@ -2216,7 +2254,7 @@ export const simulateRide = (
     try {
       nextDynamics = dynamicsAt(
         track,
-        config,
+        operatingConfig,
         distanceM,
         speedMps,
         integrationSampleAt,
@@ -2258,6 +2296,30 @@ export const simulateRide = (
         currentDynamics = atRest;
       } else currentDynamics = nextDynamics;
     } else currentDynamics = nextDynamics;
+    if (!heldBrake && Math.abs(speedMps) <= 0.5) {
+      const holdingZone = activeZones(track, operatingConfig, distanceM).find(
+        (zone) =>
+          zone.kind === "brake" &&
+          (zone.holdSeconds ?? 0) > 0 &&
+          zone.releaseTargetSpeedMps !== undefined,
+      );
+      if (holdingZone) {
+        speedMps = 0;
+        heldBrake = {
+          id: holdingZone.id,
+          distanceM,
+          releaseTimeSeconds: nextTime + holdingZone.holdSeconds!,
+        };
+        nextDynamics = dynamicsAt(
+          track,
+          operatingConfig,
+          distanceM,
+          0,
+          integrationSampleAt,
+        );
+        currentDynamics = nextDynamics;
+      }
+    }
     const averageForces = previousDynamics.forces.map((force, index) => {
       const next = nextDynamics.forces[index];
       return {

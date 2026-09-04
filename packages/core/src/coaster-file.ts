@@ -178,7 +178,14 @@ const validateElement = (value: unknown, path: string): void => {
       station: ["length", "bank", "closed", "targetSpeed"],
       launch: ["length", "targetSpeed", "bank"],
       boost: ["length", "targetSpeed", "bank"],
-      brake: ["length", "targetSpeed", "bank", "angle"],
+      brake: [
+        "length",
+        "targetSpeed",
+        "bank",
+        "angle",
+        "holdSeconds",
+        "releaseSpeed",
+      ],
       transition: ["length", "rise", "pitch", "bank"],
       topHat: ["height", "width", "bank"],
       airtimeHill: [
@@ -220,17 +227,26 @@ const validateElement = (value: unknown, path: string): void => {
       "approachRadius",
       "exitRadius",
       "exitHeadingDeg",
+      "holdSeconds",
+      "releaseSpeed",
     ]);
     for (const [key, parameter] of Object.entries(parameters)) {
       if (key === "closed") boolean(parameter, `${path}.parameters.${key}`);
       else if (numericParameters.has(key)) {
         finite(parameter, `${path}.parameters.${key}`);
-        if (key === "targetSpeed") {
+        if (key === "targetSpeed" || key === "releaseSpeed") {
           const value = parameter as number;
           if (value < 0 || value > 120)
             fail(
               `${path}.parameters.${key}`,
-              "finite number between 0 and 120 for targetSpeed",
+              `finite number between 0 and 120 for ${key}`,
+            );
+        } else if (key === "holdSeconds") {
+          const value = parameter as number;
+          if (value < 0 || value > 120)
+            fail(
+              `${path}.parameters.${key}`,
+              "finite number between 0 and 120 for holdSeconds",
             );
         } else if (key === "angle") {
           const value = parameter as number;

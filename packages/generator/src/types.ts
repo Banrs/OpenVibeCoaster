@@ -42,6 +42,8 @@ export interface BrakeParameters {
   readonly targetSpeed: number;
   readonly bank: number;
   readonly angle?: number;
+  readonly holdSeconds?: number;
+  readonly releaseSpeed?: number;
 }
 export interface TransitionParameters {
   readonly length: number;

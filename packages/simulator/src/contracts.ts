@@ -16,6 +16,8 @@ export interface OperationZone {
   readonly lsmForcePerCarN?: number;
   readonly lsmPowerPerCarW?: number;
   readonly brakeForcePerCarN?: number;
+  readonly holdSeconds?: number;
+  readonly releaseTargetSpeedMps?: number;
   readonly blockId?: string;
 }
 

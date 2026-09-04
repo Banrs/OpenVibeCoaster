@@ -20,6 +20,8 @@ type MutableOperationZone = {
   startDistanceM: number;
   endDistanceM: number;
   targetSpeedMps?: number;
+  holdSeconds?: number;
+  releaseTargetSpeedMps?: number;
 };
 
 export function operationZonesFromCoasterFile(
@@ -65,6 +67,8 @@ export function operationZonesFromCoasterFile(
     } else {
       const params = (element.parameters ?? {}) as Record<string, unknown>;
       const rawTarget = params.targetSpeed;
+      const rawHoldSeconds = params.holdSeconds;
+      const rawReleaseSpeed = params.releaseSpeed;
       let targetSpeedMps: number | undefined;
       if (typeof rawTarget === "number" && Number.isFinite(rawTarget)) {
         targetSpeedMps = rawTarget;
@@ -78,6 +82,14 @@ export function operationZonesFromCoasterFile(
         startDistanceM: start,
         endDistanceM: end,
         ...(targetSpeedMps !== undefined ? { targetSpeedMps } : {}),
+        ...(typeof rawHoldSeconds === "number" &&
+        Number.isFinite(rawHoldSeconds)
+          ? { holdSeconds: rawHoldSeconds }
+          : {}),
+        ...(typeof rawReleaseSpeed === "number" &&
+        Number.isFinite(rawReleaseSpeed)
+          ? { releaseTargetSpeedMps: rawReleaseSpeed }
+          : {}),
       };
 
       zonesByOwner.set(owner, zone);

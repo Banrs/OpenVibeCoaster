@@ -107,6 +107,10 @@ const validateParameters = <K extends ElementKind>(
         angle("angle", p.angle, -Math.PI * 2, Math.PI * 2);
         if (p.angle === 0) throw new RangeError("angle must not be zero");
       }
+      if (p.holdSeconds !== undefined)
+        range("holdSeconds", p.holdSeconds, 0, 120);
+      if (p.releaseSpeed !== undefined)
+        range("releaseSpeed", p.releaseSpeed, 0, 120);
       break;
     }
     case "transition": {
