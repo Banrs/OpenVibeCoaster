@@ -947,8 +947,8 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return result;
   }
 
-  public certifiedSurfaceBounds(): Aabb {
-    return this.bounds();
+  public certifiedSurfaceMaximumY(): number {
+    return this.bounds().max[1];
   }
 
   private triangleAt(x: number, z: number): HeightfieldTriangle {
