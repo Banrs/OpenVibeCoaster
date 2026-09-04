@@ -285,7 +285,7 @@ export const recordHybridDefaultElements = (
     createElement("overbankedTurn", "overbankedTurn-014", {
       radius: 60,
       angle: finaleTurnAngle,
-      bank: 1.8,
+      bank: 2.8,
     }),
   );
   append(
@@ -297,7 +297,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("stall", "stall-016", {
       length: 300,
-      height: 30,
+      height: 13.5,
       bank: Math.PI,
     }),
   );
@@ -311,7 +311,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("brake", "brake-018", {
-      length: 300,
+      length: 420,
       targetSpeed: 0,
       bank: 0,
     }),
