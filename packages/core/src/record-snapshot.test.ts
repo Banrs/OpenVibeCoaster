@@ -21,10 +21,6 @@ type RecordEntry = {
   readonly facts: readonly SourceFact[];
 };
 
-type ProjectComparison = {
-  readonly provenance: string;
-};
-
 const records = snapshot.records as readonly RecordEntry[];
 
 const expectFacts = (
@@ -34,28 +30,20 @@ const expectFacts = (
     readonly metric: RegExp;
     readonly value: number;
     readonly unit: string;
+    readonly sourceUrls: readonly string[];
   }>,
 ): void => {
   expect(record).toBeDefined();
   for (const fact of expected) {
-    expect(
-      record?.facts.some(
-        (candidate) =>
-          fact.metric.test(candidate.metric) &&
-          candidate.value === fact.value &&
-          candidate.unit === fact.unit,
-      ),
-      fact.label,
-    ).toBe(true);
+    const actual = record?.facts.find(
+      (candidate) =>
+        fact.metric.test(candidate.metric) &&
+        candidate.value === fact.value &&
+        candidate.unit === fact.unit,
+    );
+    expect(actual, fact.label).toBeDefined();
+    expect(actual?.sourceUrls, fact.label).toEqual(fact.sourceUrls);
   }
-};
-
-const numericValues = (value: unknown): number[] => {
-  if (typeof value === "number") return [value];
-  if (Array.isArray(value)) return value.flatMap(numericValues);
-  if (typeof value === "object" && value !== null)
-    return Object.values(value).flatMap(numericValues);
-  return [];
 };
 
 test("the dated snapshot preserves its provenance vocabulary and source facts", () => {
@@ -73,45 +61,125 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       metric: /height/i,
       value: 195,
       unit: "m",
+      sourceUrls: [
+        "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+        "https://www.intamin.com/category/innovation/",
+        "https://www.intamin.com/company/about-us/",
+      ],
     },
     {
       label: "Falcons Flight speed",
       metric: /speed/i,
       value: 250,
       unit: "km/h",
+      sourceUrls: [
+        "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+        "https://www.intamin.com/category/innovation/",
+        "https://www.intamin.com/company/about-us/",
+      ],
     },
     {
       label: "Falcons Flight length",
       metric: /length/i,
       value: 4325,
       unit: "m",
+      sourceUrls: [
+        "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
+        "https://www.intamin.com/category/innovation/",
+        "https://www.intamin.com/company/about-us/",
+      ],
     },
   ]);
 
   const tormenta = records.find((record) => /tormenta/i.test(record.name));
   expectFacts(tormenta, [
-    { label: "Tormenta height", metric: /height/i, value: 94, unit: "m" },
+    {
+      label: "Tormenta height",
+      metric: /height/i,
+      value: 94,
+      unit: "m",
+      sourceUrls: [
+        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+      ],
+    },
     {
       label: "Tormenta drop",
       metric: /drop.*height|height.*drop/i,
       value: 87,
       unit: "m",
+      sourceUrls: [
+        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+      ],
     },
-    { label: "Tormenta drop angle", metric: /angle/i, value: 95, unit: "deg" },
-    { label: "Tormenta speed", metric: /speed/i, value: 140, unit: "km/h" },
+    {
+      label: "Tormenta drop angle",
+      metric: /angle/i,
+      value: 95,
+      unit: "deg",
+      sourceUrls: [
+        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+      ],
+    },
+    {
+      label: "Tormenta speed",
+      metric: /speed/i,
+      value: 140,
+      unit: "km/h",
+      sourceUrls: [
+        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+      ],
+    },
     {
       label: "Tormenta Immelmann",
       metric: /immelmann/i,
       value: 66,
       unit: "m",
+      sourceUrls: [
+        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+      ],
     },
-    { label: "Tormenta vertical loop", metric: /loop/i, value: 55, unit: "m" },
-    { label: "Tormenta length", metric: /length/i, value: 1280, unit: "m" },
+    {
+      label: "Tormenta vertical loop",
+      metric: /loop/i,
+      value: 55,
+      unit: "m",
+      sourceUrls: [
+        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+      ],
+    },
+    {
+      label: "Tormenta length",
+      metric: /length/i,
+      value: 1280,
+      unit: "m",
+      sourceUrls: [
+        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+      ],
+    },
   ]);
 
   const spitfire = records.find((record) => /spitfire/i.test(record.name));
   expectFacts(spitfire, [
-    { label: "Spitfire inversion", metric: /inversion/i, value: 73, unit: "m" },
+    {
+      label: "Spitfire inversion",
+      metric: /inversion/i,
+      value: 73,
+      unit: "m",
+      sourceUrls: [
+        "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
+        "https://www.intamin.com/category/innovation/",
+      ],
+    },
+    {
+      label: "Spitfire speed",
+      metric: /speed/i,
+      value: 127,
+      unit: "km/h",
+      sourceUrls: [
+        "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
+        "https://www.intamin.com/category/innovation/",
+      ],
+    },
   ]);
 
   for (const record of records) {
@@ -124,41 +192,44 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
 });
 
 test("every project comparison is an authored design target", () => {
-  const comparisons = Object.values(
-    snapshot.projectComparison,
-  ) as ProjectComparison[];
-
-  expect(comparisons).toHaveLength(6);
-  for (const comparison of comparisons) {
-    expect(comparison.provenance).toBe("DESIGN_TARGET");
-    expect(comparison.provenance).not.toBe("SOURCE_VERIFIED");
-  }
-
-  const expectedComputations = [
-    { label: "length", baseline: 4325, target: 5200, increasePercent: 20.2 },
-    { label: "height", baseline: 195, target: 225, increasePercent: 15.4 },
-    { label: "speed", baseline: 250, target: 285, increasePercent: 14.0 },
-    {
-      label: "inverted top hat",
+  expect(snapshot.projectComparison).toEqual({
+    totalLengthM: {
+      baseline: 4325,
+      target: 5200,
+      increasePercent: 20.2,
+      provenance: "DESIGN_TARGET",
+    },
+    maxHeightM: {
+      baseline: 195,
+      target: 225,
+      increasePercent: 15.4,
+      provenance: "DESIGN_TARGET",
+    },
+    maxSpeedKmh: {
+      baseline: 250,
+      target: 285,
+      increasePercent: 14.0,
+      provenance: "DESIGN_TARGET",
+    },
+    invertedTopHatM: {
       baseline: 73,
       target: 90,
       increasePercent: 23.3,
+      provenance: "DESIGN_TARGET",
     },
-    { label: "Immelmann", baseline: 66, target: 80, increasePercent: 21.2 },
-    { label: "vertical loop", baseline: 55, target: 66, increasePercent: 20.0 },
-  ] as const;
-
-  for (const expected of expectedComputations) {
-    const match = comparisons.find((comparison) => {
-      const values = numericValues(comparison);
-      return (
-        values.includes(expected.baseline) &&
-        values.includes(expected.target) &&
-        values.includes(expected.increasePercent)
-      );
-    });
-    expect(match, expected.label).toBeDefined();
-  }
+    immelmannM: {
+      baseline: 66,
+      target: 80,
+      increasePercent: 21.2,
+      provenance: "DESIGN_TARGET",
+    },
+    verticalLoopM: {
+      baseline: 55,
+      target: 66,
+      increasePercent: 20.0,
+      provenance: "DESIGN_TARGET",
+    },
+  });
 });
 
 test("the dated snapshot contains no standards or compliance claim", () => {

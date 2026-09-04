@@ -5,6 +5,7 @@ import profile from "../../../data/profiles/record-targets-v1.json" with {
 import { validateRecordTargetsProfile } from "./record-targets.js";
 
 test("accepts the exact project engineering record targets", () => {
+  expect(profile.profileId).toBe("record-targets-v1");
   expect(profile.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
   expect(profile.totalLengthM).toEqual([5200, 5400]);
   expect(profile.maxHeightM).toEqual([225, 235]);
