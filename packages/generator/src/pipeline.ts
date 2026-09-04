@@ -1530,13 +1530,17 @@ const flagshipBankProfile = (
   automatic: boolean,
 ): readonly SolvedSpan[] => {
   if (!automatic) return spans;
-  const overbank = elements.find(
-    (element) => element.type === "overbankedTurn",
+  const overbanks = new Map(
+    elements
+      .filter((element) => element.type === "overbankedTurn")
+      .map((element) => [
+        element.id,
+        (element.parameters as { readonly bank: number }).bank,
+      ] as const),
   );
-  if (!overbank) return spans;
-  const amplitude = (overbank.parameters as { readonly bank: number }).bank;
   return spans.flatMap((span) => {
-    if (span.id !== overbank.id) return [span];
+    const amplitude = overbanks.get(span.id);
+    if (amplitude === undefined) return [span];
     const base = span.bank
       ? new QuinticScalarSpan({
           v0: span.bank.position(0),
@@ -1606,7 +1610,8 @@ const evaluateCandidate = (
     intent.mode === "directed"
       ? elements
       : elements.map((element) =>
-          element.type === "overbankedTurn"
+          element.type === "overbankedTurn" &&
+          Math.abs(element.parameters.bank) <= Math.PI / 2
             ? ({
                 ...element,
                 parameters: { ...element.parameters, bank: 0 },
