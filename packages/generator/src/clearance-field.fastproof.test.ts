@@ -194,10 +194,11 @@ describe("clearance field per-interval fast proof", () => {
         ),
       ).toBe(true);
       expect(
-        first.diagnostics.some(
-          (diagnostic) =>
-            diagnostic.severity === "fatal" &&
-            diagnostic.message.includes("Terrain"),
+        first.diagnostics.some((diagnostic) => diagnostic.severity === "fatal"),
+      ).toBe(false);
+      expect(
+        second.diagnostics.some(
+          (diagnostic) => diagnostic.severity === "fatal",
         ),
       ).toBe(false);
       expect(second.work).toBe(first.work);
