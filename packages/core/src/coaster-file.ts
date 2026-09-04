@@ -194,6 +194,7 @@ const validateElement = (value: unknown, path: string): void => {
         "targetForceG",
         "referenceSpeed",
         "bank",
+        "trimSpeed",
       ],
       overbankedTurn: ["radius", "angle", "bank"],
       zeroGRoll: ["length", "roll"],
@@ -229,12 +230,17 @@ const validateElement = (value: unknown, path: string): void => {
       "exitHeadingDeg",
       "holdSeconds",
       "releaseSpeed",
+      "trimSpeed",
     ]);
     for (const [key, parameter] of Object.entries(parameters)) {
       if (key === "closed") boolean(parameter, `${path}.parameters.${key}`);
       else if (numericParameters.has(key)) {
         finite(parameter, `${path}.parameters.${key}`);
-        if (key === "targetSpeed" || key === "releaseSpeed") {
+        if (
+          key === "targetSpeed" ||
+          key === "releaseSpeed" ||
+          key === "trimSpeed"
+        ) {
           const value = parameter as number;
           if (value < 0 || value > 120)
             fail(

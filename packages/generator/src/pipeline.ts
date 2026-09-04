@@ -153,6 +153,7 @@ export const recordHybridDefaultElements = (
     length: number,
     targetForceG: number,
     referenceSpeed: number,
+    trimSpeed?: number,
   ): void => {
     const provisional = createElement("airtimeHill", id, {
       length,
@@ -160,6 +161,7 @@ export const recordHybridDefaultElements = (
       targetForceG,
       referenceSpeed,
       bank: 0,
+      ...(trimSpeed !== undefined ? { trimSpeed } : {}),
     });
     const end = buildElement(provisional, pose, referenceSpeed).endPose;
     const height = vec3Dot(vec3Sub(end.position, pose.position), pose.normal);
@@ -170,6 +172,7 @@ export const recordHybridDefaultElements = (
         targetForceG,
         referenceSpeed,
         bank: 0,
+        ...(trimSpeed !== undefined ? { trimSpeed } : {}),
       }),
       referenceSpeed,
     );
@@ -184,7 +187,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("transition", "transition-002", {
-      length: 220 + variation,
+      length: 170 + variation,
       rise: 60,
       pitch: 0.1,
       bank: 0,
@@ -231,14 +234,14 @@ export const recordHybridDefaultElements = (
   append(
     createElement("launch", "launch-009", {
       length: 380,
-      targetSpeed: 55,
+      targetSpeed: 80,
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 0.98, 44);
+  appendForceHill("airtimeHill-010", 190, 0.98, 44, 50);
   append(
     createElement("topHat", "topHat-011", {
-      height: 90.6,
+      height: 88.5,
       width: 300,
       bank: 0,
     }),

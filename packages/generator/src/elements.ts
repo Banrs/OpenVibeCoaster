@@ -136,6 +136,7 @@ const validateParameters = <K extends ElementKind>(
       range("targetForceG", p.targetForceG, -1.2, 5);
       range("referenceSpeed", p.referenceSpeed, 0.1, 120);
       angle("bank", p.bank, -Math.PI, Math.PI);
+      if (p.trimSpeed !== undefined) range("trimSpeed", p.trimSpeed, 0, 120);
       break;
     }
     case "overbankedTurn": {

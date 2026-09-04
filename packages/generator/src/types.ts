@@ -62,6 +62,7 @@ export interface AirtimeHillParameters {
   readonly targetForceG: number;
   readonly referenceSpeed: number;
   readonly bank: number;
+  readonly trimSpeed?: number;
 }
 export interface OverbankedTurnParameters {
   readonly radius: number;

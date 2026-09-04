@@ -50,11 +50,22 @@ export function operationZonesFromCoasterFile(
       continue;
     }
     const rawKind = (element.kind ?? element.type) as string | undefined;
-    if (!rawKind || !OPERATION_KINDS.has(rawKind as OperationZone["kind"])) {
+    const params = (element.parameters ?? {}) as Record<string, unknown>;
+    const trimSpeed = params.trimSpeed;
+    const isTrimBrake =
+      rawKind === "airtimeHill" &&
+      typeof trimSpeed === "number" &&
+      Number.isFinite(trimSpeed);
+    if (
+      !rawKind ||
+      (!OPERATION_KINDS.has(rawKind as OperationZone["kind"]) && !isTrimBrake)
+    ) {
       lastOwner = owner;
       continue;
     }
-    const kind = rawKind as OperationZone["kind"];
+    const kind = isTrimBrake
+      ? ("brake" as const)
+      : (rawKind as OperationZone["kind"]);
 
     const existing = zonesByOwner.get(owner);
     if (existing) {
@@ -65,8 +76,7 @@ export function operationZonesFromCoasterFile(
       }
       existing.endDistanceM = end;
     } else {
-      const params = (element.parameters ?? {}) as Record<string, unknown>;
-      const rawTarget = params.targetSpeed;
+      const rawTarget = isTrimBrake ? trimSpeed : params.targetSpeed;
       const rawHoldSeconds = params.holdSeconds;
       const rawReleaseSpeed = params.releaseSpeed;
       let targetSpeedMps: number | undefined;
