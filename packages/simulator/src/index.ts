@@ -1311,6 +1311,7 @@ const zoneCrossings = (
 
 const withJerk = (
   frames: readonly SimulationFrame[],
+  gravityMps2: number,
 ): readonly SimulationFrame[] =>
   frames.map((frame, index) => {
     const previousFrame = frames[Math.max(0, index - 1)] ?? frame;
@@ -1324,6 +1325,12 @@ const withJerk = (
             "Jerk telemetry must be finite",
           )
         : vec3();
+    const riderFrameSpecificForce = (telemetry: CarTelemetry): Vec3 =>
+      vec3(
+        telemetry.longitudinalG * gravityMps2,
+        telemetry.lateralG * gravityMps2,
+        telemetry.verticalG * gravityMps2,
+      );
     const cars = frame.cars.map((car, carIndex) => {
       const previousCar = previousFrame.cars[carIndex] ?? car;
       const nextCar = nextFrame.cars[carIndex] ?? car;
@@ -1335,8 +1342,8 @@ const withJerk = (
           telemetry: {
             ...seat.telemetry,
             jerkMps3: jerk(
-              previousSeat.telemetry.specificForceMps2,
-              nextSeat.telemetry.specificForceMps2,
+              riderFrameSpecificForce(previousSeat.telemetry),
+              riderFrameSpecificForce(nextSeat.telemetry),
             ),
           },
         };
@@ -1346,8 +1353,8 @@ const withJerk = (
         telemetry: {
           ...car.telemetry,
           jerkMps3: jerk(
-            previousCar.telemetry.specificForceMps2,
-            nextCar.telemetry.specificForceMps2,
+            riderFrameSpecificForce(previousCar.telemetry),
+            riderFrameSpecificForce(nextCar.telemetry),
           ),
         },
         seats,
@@ -2414,7 +2421,7 @@ export const simulateRide = (
   }
   let completedFrames: readonly SimulationFrame[];
   try {
-    completedFrames = withJerk(frames);
+    completedFrames = withJerk(frames, config.gravityMps2);
   } catch (error) {
     diagnostics.push(diagnosticFromError(error));
     completedFrames = [];
