@@ -114,8 +114,19 @@ test(
       },
     );
 
+    const inversionDiagnostics = diagnostics.filter(
+      ({ code }) => code === "RECORD_INVERSION",
+    );
     expect(
-      diagnostics.filter(({ code }) => code === "RECORD_INVERSION"),
+      inversionDiagnostics,
+      JSON.stringify({
+        inversionDiagnostics,
+        measurement: localHeightForKind(
+          generated.track,
+          generated.file,
+          "topHat",
+        ),
+      }),
     ).toHaveLength(0);
     expect(
       diagnostics.filter(({ code }) => code === "RECORD_IMMELMANN"),
