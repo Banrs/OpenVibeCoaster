@@ -7,6 +7,7 @@ export * from "./arc-length";
 export * from "./frames";
 export * from "./contracts";
 export * from "./environment";
+export * from "./environments/cliff-valley.js";
 export * from "./track";
 export * from "./coaster-file";
 export * from "./engineering-limits";
