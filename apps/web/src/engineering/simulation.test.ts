@@ -174,7 +174,7 @@ describe("full-ride simulation", () => {
         JSON.stringify({
           totalLength: hydrated.track.totalLength,
           lastHead,
-          lastSpeed: timeline.signedSpeedMps[timeline.signedSpeedMps.length - 1],
+          lastSpeed: timeline.speedMps[timeline.speedMps.length - 1],
           duration: timeline.timeSeconds[timeline.timeSeconds.length - 1],
           finalStartSample: hydrated.track.elementBoundaries.at(-2),
         }),

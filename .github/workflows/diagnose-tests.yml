@@ -21,12 +21,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: directed
-            file: packages/generator/src/directed-requirement.test.ts
-            test: exact fixture passes with default options
-          - id: local-regeneration
-            file: packages/generator/src/wave3.test.ts
-            test: regenerates only the selected neighborhood
           - id: simulation
             file: apps/web/src/engineering/simulation.test.ts
             test: flagship 1.6-2.2km
