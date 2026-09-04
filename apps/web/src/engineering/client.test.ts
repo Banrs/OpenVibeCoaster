@@ -487,6 +487,31 @@ describe("EngineeringWorkerClient User Timing", () => {
     expect(simCall![1]).not.toEqual({ duration: 0 });
   });
 
+  it("measures worker transfer with the shared wall clock when realm performance origins disagree", async () => {
+    const client = new EngineeringWorkerClient(factory);
+    const measureSpy = vi
+      .spyOn(performance, "measure")
+      .mockImplementation(() => ({}) as PerformanceMeasure);
+    Object.defineProperty(performance, "timeOrigin", {
+      value: 1000,
+      configurable: true,
+    });
+    vi.spyOn(performance, "now").mockReturnValue(50);
+    vi.spyOn(Date, "now").mockReturnValue(20050);
+    const promise = client.generate("realm-clock", validIntent);
+    workers[0]!.emitMessage(
+      makeSuccess("realm-clock", {
+        simulationMs: 5,
+        workerSendEpochMs: 20042,
+      }),
+    );
+    await expect(promise).resolves.toBeDefined();
+    const transferCall = measureSpy.mock.calls.find(
+      (call) => call[0] === "ovc:worker-transfer",
+    );
+    expect((transferCall![1] as { duration: number }).duration).toBe(8);
+  });
+
   it("uses cross-context epoch normalization, not naive now delta", async () => {
     const client = new EngineeringWorkerClient(factory);
     const measureSpy = vi
