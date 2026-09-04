@@ -475,6 +475,94 @@ const forceProfileSpan = (
   };
 };
 
+const containedZeroGProfileSpan = (
+  pose: Pose,
+  length: number,
+  referenceSpeed: number,
+): { span: ParametricSpan<Vec3>; endPose: Pose } => {
+  const basis = basisFor(pose);
+  const ballistic = forceProfileSpan(pose, length, 0, referenceSpeed).span;
+  const recoveryStart = 0.75;
+  const recoveryWidth = 1 - recoveryStart;
+  const startDerivative = ballistic.derivative(recoveryStart, 1);
+  const startTangent = vec3Normalize(startDerivative);
+  const startNormal = vec3Normalize(
+    vec3Add(
+      basis.normal,
+      vec3Scale(startTangent, -vec3Dot(basis.normal, startTangent)),
+    ),
+  );
+  const startHeading = Math.atan2(
+    vec3Dot(startTangent, basis.normal),
+    vec3Dot(startTangent, basis.tangent),
+  );
+  const startHeadingRate =
+    vec3Dot(ballistic.derivative(recoveryStart, 2), startNormal) / length;
+  const startHeadingGradient =
+    vec3Dot(ballistic.derivative(recoveryStart, 3), startNormal) / length;
+  const recoveryHeading = new QuinticScalarSpan({
+    v0: startHeading,
+    d10: startHeadingRate * recoveryWidth,
+    d20: startHeadingGradient * recoveryWidth ** 2,
+    v1: 0,
+    d11: 0,
+    d21: 0,
+  });
+  const recoveryOrigin = ballistic.position(recoveryStart);
+  const recoveryOffset = (upper: number): Vec3 => {
+    const steps = 96;
+    const step = upper / steps;
+    let tangent = 0;
+    let normal = 0;
+    for (let index = 0; index <= steps; index += 1) {
+      const weight = index === 0 || index === steps ? 1 : index % 2 ? 4 : 2;
+      const heading = recoveryHeading.position(index * step);
+      tangent += weight * Math.cos(heading);
+      normal += weight * Math.sin(heading);
+    }
+    const scale = (length * recoveryWidth * step) / 3;
+    return vec3(tangent * scale, normal * scale, 0);
+  };
+  const span: ParametricSpan<Vec3> = {
+    position: (u) => {
+      if (u <= recoveryStart) return ballistic.position(u);
+      const local = (u - recoveryStart) / recoveryWidth;
+      return vec3Add(recoveryOrigin, worldVector(basis, recoveryOffset(local)));
+    },
+    derivative: (u, order = 1) => {
+      if (u <= recoveryStart) return ballistic.derivative(u, order);
+      const local = (u - recoveryStart) / recoveryWidth;
+      const heading = recoveryHeading.position(local);
+      const headingRate = recoveryHeading.derivative(local, 1) / recoveryWidth;
+      const headingGradient =
+        recoveryHeading.derivative(local, 2) / recoveryWidth ** 2;
+      const tangent = vec3(Math.cos(heading), Math.sin(heading), 0);
+      const normal = vec3(-Math.sin(heading), Math.cos(heading), 0);
+      if (order === 1) return worldVector(basis, vec3Scale(tangent, length));
+      if (order === 2)
+        return worldVector(basis, vec3Scale(normal, length * headingRate));
+      if (order === 3)
+        return worldVector(
+          basis,
+          vec3Add(
+            vec3Scale(normal, length * headingGradient),
+            vec3Scale(tangent, -length * headingRate ** 2),
+          ),
+        );
+      return vec3(0, 0, 0);
+    },
+  };
+  return {
+    span,
+    endPose: orthonormalizePose({
+      position: span.position(1),
+      tangent: vec3Normalize(span.derivative(1, 1)),
+      normal: basis.normal,
+      bank: pose.bank,
+    }),
+  };
+};
+
 const topHatSpans = (
   pose: Pose,
   height: number,
@@ -1215,10 +1303,9 @@ export const buildElement = (
     }
     case "zeroGRoll": {
       const p = element.parameters as ElementParameterMap["zeroGRoll"];
-      const profile = forceProfileSpan(
+      const profile = containedZeroGProfileSpan(
         normalizedPose,
         p.length,
-        0,
         referenceSpeed,
       );
       span = profile.span;
