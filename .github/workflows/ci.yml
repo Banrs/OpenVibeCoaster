@@ -35,8 +35,8 @@ jobs:
           test "$(npm --version)" = "11.17.0"
       - name: Install dependencies (exact lockfile)
         run: npm ci
-      - name: Compact timeline regression
-        run: npx vitest run packages/simulator/src/compact.timeline.test.ts
+      - name: Worker clock regression
+        run: npx vitest run apps/web/src/engineering/client.test.ts
 
   portable:
     if: false
