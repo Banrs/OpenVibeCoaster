@@ -821,6 +821,9 @@ if (
         g.postMessage(response);
       }
     } catch (err) {
+      console.log(
+        `[OVC_WORKER_PROBE] exception ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
+      );
       const diag = toDiagnostic(
         "WORKER_ERROR",
         err instanceof Error ? err.message : String(err),
