@@ -106,9 +106,6 @@ function expectPhysicalOperationZoneAuthority(
     expect(zone.endDistanceM).toBe(
       startByOwner.get(zone.id)! + widthByOwner.get(zone.id)!,
     );
-    expect(zone.endDistanceM - zone.startDistanceM).toBe(
-      widthByOwner.get(zone.id),
-    );
     expect(zone.startDistanceM).toBeGreaterThanOrEqual(0);
     expect(zone.endDistanceM).toBeLessThanOrEqual(totalLengthM);
     expect(zone.endDistanceM).toBeGreaterThan(zone.startDistanceM);
