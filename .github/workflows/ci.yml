@@ -13,9 +13,17 @@ concurrency:
 
 jobs:
   quality:
-    name: quality-e2e-bench (linux)
+    name: task-07 (${{ matrix.test-file }})
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        test-file:
+          - packages/core/src/environments/cliff-valley.test.ts
+          - packages/generator/src/clearance-cliff.test.ts
+          - packages/generator/src/gates-pins.test.ts
+          - apps/web/src/terrain/environment.test.ts
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,8 +43,8 @@ jobs:
           test "$(npm --version)" = "11.17.0"
       - name: Install dependencies (exact lockfile)
         run: npm ci
-      - name: Task 07 RED
-        run: npx vitest run packages/core/src/environments/cliff-valley.test.ts packages/generator/src/clearance-cliff.test.ts packages/generator/src/gates-pins.test.ts apps/web/src/terrain/environment.test.ts
+      - name: Task 07 focused test
+        run: npx vitest run ${{ matrix.test-file }}
 
   portable:
     if: false
