@@ -700,37 +700,47 @@ const diveDropSpans = (
     parameters.exitRadius,
   );
   const levelDerivative = vec3Scale(basis.tangent, parameters.exitRadius);
+  const canonicalPosition = (
+    span: SeventhOrderHermiteSpan<Vec3>,
+  ): SeventhOrderHermiteSpan<Vec3> =>
+    SeventhOrderHermiteSpan.fromCoefficients<Vec3>(span.coefficients);
   const spans = [
-    new SeventhOrderHermiteSpan({
-      p0: pose.position,
-      d10: approachDerivative,
-      d20: zero,
-      d30: zero,
-      p1: lip,
-      d11: dropApproachDerivative,
-      d21: zero,
-      d31: zero,
-    }),
-    new SeventhOrderHermiteSpan({
-      p0: lip,
-      d10: dropApproachDerivative,
-      d20: zero,
-      d30: zero,
-      p1: bottom,
-      d11: dropExitDerivative,
-      d21: zero,
-      d31: zero,
-    }),
-    new SeventhOrderHermiteSpan({
-      p0: bottom,
-      d10: dropExitDerivative,
-      d20: zero,
-      d30: zero,
-      p1: recoveryEnd,
-      d11: levelDerivative,
-      d21: zero,
-      d31: zero,
-    }),
+    canonicalPosition(
+      new SeventhOrderHermiteSpan({
+        p0: pose.position,
+        d10: approachDerivative,
+        d20: zero,
+        d30: zero,
+        p1: lip,
+        d11: dropApproachDerivative,
+        d21: zero,
+        d31: zero,
+      }),
+    ),
+    canonicalPosition(
+      new SeventhOrderHermiteSpan({
+        p0: lip,
+        d10: dropApproachDerivative,
+        d20: zero,
+        d30: zero,
+        p1: bottom,
+        d11: dropExitDerivative,
+        d21: zero,
+        d31: zero,
+      }),
+    ),
+    canonicalPosition(
+      new SeventhOrderHermiteSpan({
+        p0: bottom,
+        d10: dropExitDerivative,
+        d20: zero,
+        d30: zero,
+        p1: recoveryEnd,
+        d11: levelDerivative,
+        d21: zero,
+        d31: zero,
+      }),
+    ),
   ] as const;
   const canonicalRoll = (from: number, to: number): QuinticScalarSpan =>
     QuinticScalarSpan.fromCoefficients(
