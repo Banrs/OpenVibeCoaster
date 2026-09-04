@@ -178,7 +178,7 @@ export const recordHybridDefaultElements = (
     );
   };
 
-  append(createElement("station", "station-000", { length: 180 }));
+  append(createElement("station", "station-000", { length: 170 }));
   append(
     createElement("launch", "launch-001", {
       length: 260,
@@ -216,7 +216,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("brake", "brake-007", {
-      length: 170,
+      length: 155,
       targetSpeed: 0,
       holdSeconds: 3,
       releaseSpeed: 60,
@@ -227,7 +227,7 @@ export const recordHybridDefaultElements = (
       dropHeight: 214,
       angleDeg: 114,
       approachRadius: 55,
-      exitRadius: 125,
+      exitRadius: 180,
       bank: 0,
     }),
   );
@@ -238,11 +238,11 @@ export const recordHybridDefaultElements = (
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 0.98, 44, 60);
+  appendForceHill("airtimeHill-010", 190, 0.98, 44, 65);
   append(
     createElement("topHat", "topHat-011", {
-      height: 88.5,
-      width: 440,
+      height: 86,
+      width: 500,
       bank: 0,
     }),
   );
@@ -318,7 +318,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("station", "station-019", {
-      length: 180,
+      length: 160,
       closed: false,
     }),
   );

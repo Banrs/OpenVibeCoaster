@@ -53,7 +53,7 @@ test(
     expect(summitBrake?.releaseTargetSpeedMps).toBe(60);
     const trimBrake = zones.find(({ id }) => id === "airtimeHill-010");
     expect(trimBrake?.kind).toBe("brake");
-    expect(trimBrake?.targetSpeedMps).toBe(60);
+    expect(trimBrake?.targetSpeedMps).toBe(65);
     const terminalBrake = zones.find(({ id }) => id === "brake-018");
     expect(terminalBrake).toBeDefined();
 
@@ -94,9 +94,9 @@ test(
       let end = 0;
       for (const span of generated.file.solvedSpans) {
         end += span.length;
-        if (distanceM <= end) return span.id.replace(/#\d+$/, "");
+        if (distanceM <= end) return span.id;
       }
-      return generated.file.solvedSpans.at(-1)?.id.replace(/#\d+$/, "");
+      return generated.file.solvedSpans.at(-1)?.id;
     };
     const maxSpeedIndex = speed.indexOf(maxSpeed);
     const evidence = JSON.stringify({
@@ -111,6 +111,23 @@ test(
       totalLength: generated.track.totalLength,
       terminalSpeed,
       holdSeconds,
+      routeParameters: generated.file.intent.elements
+        .filter(({ id }) =>
+          [
+            "brake-007",
+            "diveDrop-008",
+            "airtimeHill-010",
+            "topHat-011",
+            "immelmann-012",
+            "verticalLoop-013",
+          ].includes(id),
+        )
+        .map(({ id, parameters }) => ({ id, parameters })),
+      recordSpanLengths: generated.file.solvedSpans
+        .filter(({ id }) =>
+          /^(diveDrop-008|topHat-011|immelmann-012|verticalLoop-013)#/.test(id),
+        )
+        .map(({ id, length }) => ({ id, length })),
       diagnostics,
       extrema: (
         [
