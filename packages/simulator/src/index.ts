@@ -1881,6 +1881,7 @@ export const simulateRide = (
   track: CompiledTrackData,
   request: SimulationRequest,
 ): SimulationResult => {
+  const simulationProbeStart = Date.now();
   const diagnostics = [...validate(request, track)];
   if (!finite(track.totalLength) || track.totalLength < 0)
     diagnostics.push({
@@ -2299,6 +2300,9 @@ export const simulateRide = (
       break;
     }
   }
+  console.log(
+    `[OVC_SIM_PROBE] integration ${Date.now() - simulationProbeStart}ms frames=${frames.length}`,
+  );
   let completedFrames: readonly SimulationFrame[];
   try {
     completedFrames = withJerk(frames);
@@ -2306,6 +2310,9 @@ export const simulateRide = (
     diagnostics.push(diagnosticFromError(error));
     completedFrames = [];
   }
+  console.log(
+    `[OVC_SIM_PROBE] jerk ${Date.now() - simulationProbeStart}ms frames=${completedFrames.length}`,
+  );
   const finalZones = activeZonesForTrain(track, config, distanceM);
   const eventKeys = new Set<string>();
   const uniqueEvents = events.filter((event) => {
@@ -2338,6 +2345,9 @@ export const simulateRide = (
       speedMps: new Float64Array(),
     });
   }
+  console.log(
+    `[OVC_SIM_PROBE] timeline ${Date.now() - simulationProbeStart}ms length=${timeline.length}`,
+  );
   return {
     frames: completedFrames,
     timeline,
