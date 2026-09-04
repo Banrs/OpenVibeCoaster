@@ -1,5 +1,6 @@
 import {
   CANONICAL_TRACK_COMPILE_OPTIONS,
+  CLIFF_VALLEY_RIDGE_SEED_Z_M,
   CoasterFileError,
   SeventhOrderHermiteSpan,
   QuinticScalarSpan,
@@ -1624,9 +1625,35 @@ const evaluateCandidate = (
   const gateStartPose = isRequirementStyleDirectedIntent(intent)
     ? deriveGateStartPose(intent)
     : undefined;
+  const flagshipStartPose = (() => {
+    if (
+      intent.mode === "directed" ||
+      !elements.some(({ id }) => id === "brake-007")
+    )
+      return undefined;
+    let pose = defaultPose();
+    for (const element of elements) {
+      const built = buildElement(element, pose, 44);
+      if (element.id === "brake-007") {
+        const center = built.solvedSpans[0]!.span.position(0.5);
+        const start = defaultPose();
+        return {
+          ...start,
+          position: vec3(
+            start.position[0],
+            start.position[1],
+            start.position[2] + CLIFF_VALLEY_RIDGE_SEED_Z_M - center[2],
+          ),
+        };
+      }
+      pose = built.endPose;
+    }
+    return undefined;
+  })();
+  const startPose = gateStartPose ?? flagshipStartPose;
   const rawSolved = solver.solveSemanticChain(solveElements, {
     ...(targets && targets.length > 0 ? { targets } : {}),
-    ...(gateStartPose ? { startPose: gateStartPose } : {}),
+    ...(startPose ? { startPose } : {}),
     referenceSpeed: 44,
     maxIterations:
       intent.mode === "directed"
@@ -1658,6 +1685,17 @@ const evaluateCandidate = (
       failedHardRequirementIds,
     ),
   ];
+  for (const constraint of intent.constraints)
+    if (
+      constraint.hard !== false &&
+      diagnostics.some(
+        (diagnostic) =>
+          diagnostic.relatedIds?.includes(constraint.id) &&
+          (diagnostic.severity === "error" ||
+            diagnostic.severity === "fatal"),
+      )
+    )
+      failedHardRequirementIds.add(constraint.id);
   const targetLocationS = spans.reduce((sum, span) => {
     try {
       return sum + arcLength(span.span);

@@ -39,6 +39,7 @@ test(
       field.diagnostics.some(
         (diagnostic) => diagnostic.code === "CLEARANCE_UNCERTIFIED",
       ),
+      JSON.stringify({ work: field.work, diagnostics: field.diagnostics }),
     ).toBe(false);
     expect(field.work).toBeLessThan(1_000_000);
     expect(Number.isFinite(field.minClearanceM)).toBe(true);

@@ -1,8 +1,12 @@
 import { HeightfieldEnvironment } from "../environment.js";
 
 export const CLIFF_VALLEY_TERRAIN_PROFILE_ID = "cliff-valley-v1";
+export const CLIFF_VALLEY_RIDGE_SEED_Z_M = 980;
+
+let cachedEnvironment: HeightfieldEnvironment | undefined;
 
 export function createCliffValleyEnvironment(): HeightfieldEnvironment {
+  if (cachedEnvironment) return cachedEnvironment;
   const width = 420;
   const depth = 280;
   const cellSize = 10;
@@ -16,18 +20,21 @@ export function createCliffValleyEnvironment(): HeightfieldEnvironment {
     for (let column = 0; column < width; column += 1) {
       const worldX = origin[0] + column * cellSize;
       const worldZ = origin[1] + row * cellSize;
-      const ridge = 240 * Math.exp(-(((worldZ - 980) / 120) ** 2));
+      const ridge =
+        240 *
+        Math.exp(-(((worldZ - CLIFF_VALLEY_RIDGE_SEED_Z_M) / 120) ** 2));
       const detail =
         0.6 * Math.sin(worldX * 0.02) * Math.cos(worldZ * 0.02);
       heights[row * width + column] = -15 + ridge + detail;
     }
   }
 
-  return new HeightfieldEnvironment({
+  cachedEnvironment = new HeightfieldEnvironment({
     width,
     depth,
     cellSize,
     heights,
     origin,
   });
+  return cachedEnvironment;
 }
