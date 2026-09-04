@@ -906,64 +906,115 @@ const verticalLoopSpans = (
   elementId: string,
 ): ElementBuildResult => {
   const basis = basisFor(pose);
-  const zero = vec3(0, 0, 0);
-  const shapeRadius =
-    (parameters.height / 2.05) * (parameters.referenceSpeed / 38) ** 2;
-  const apexSecondDerivative = vec3Scale(basis.normal, -shapeRadius * 0.5);
-  const entryDerivative = vec3Scale(basis.tangent, shapeRadius);
-  const invertedDerivative = vec3Scale(basis.tangent, -shapeRadius);
-  const recoveryDerivative = vec3Scale(basis.tangent, -shapeRadius * 0.25);
-  const firstEnd = vec3Add(
-    vec3Add(pose.position, vec3Scale(basis.tangent, shapeRadius * 0.5)),
-    vec3Scale(basis.normal, parameters.height),
-  );
-  const secondEnd = vec3Add(firstEnd, vec3Scale(basis.tangent, -shapeRadius));
-  const loopExit = vec3Add(
-    pose.position,
-    vec3Scale(basis.tangent, -parameters.height * 1.2),
-  );
   const canonicalPosition = (
     span: SeventhOrderHermiteSpan<Vec3>,
   ): SeventhOrderHermiteSpan<Vec3> =>
     SeventhOrderHermiteSpan.fromCoefficients<Vec3>(span.coefficients);
-  const spans = [
-    canonicalPosition(
-      new SeventhOrderHermiteSpan({
-        p0: pose.position,
-        d10: entryDerivative,
-        d20: zero,
-        d30: zero,
-        p1: firstEnd,
-        d11: invertedDerivative,
-        d21: apexSecondDerivative,
-        d31: zero,
-      }),
-    ),
-    canonicalPosition(
-      new SeventhOrderHermiteSpan({
-        p0: firstEnd,
-        d10: invertedDerivative,
-        d20: apexSecondDerivative,
-        d30: zero,
-        p1: secondEnd,
-        d11: recoveryDerivative,
-        d21: apexSecondDerivative,
-        d31: zero,
-      }),
-    ),
-    canonicalPosition(
-      new SeventhOrderHermiteSpan({
-        p0: secondEnd,
-        d10: recoveryDerivative,
-        d20: apexSecondDerivative,
-        d30: zero,
-        p1: loopExit,
-        d11: entryDerivative,
-        d21: zero,
-        d31: zero,
-      }),
-    ),
-  ] as const;
+  const speedShape = (parameters.referenceSpeed / 38) ** 2 - 1;
+  const curvatureNormalization = 0.5 + (3 * speedShape) / 8;
+  const headingAt = (distanceFraction: number): number => {
+    const angle = Math.PI * distanceFraction;
+    const sin2 = Math.sin(2 * angle);
+    const sin4 = Math.sin(4 * angle);
+    const sinSquaredIntegral = distanceFraction / 2 - sin2 / (4 * Math.PI);
+    const sinFourthIntegral =
+      (3 * distanceFraction) / 8 - sin2 / (4 * Math.PI) + sin4 / (32 * Math.PI);
+    return (
+      (2 * Math.PI * (sinSquaredIntegral + speedShape * sinFourthIntegral)) /
+      curvatureNormalization
+    );
+  };
+  const curvatureAt = (distanceFraction: number): number => {
+    const sine = Math.sin(Math.PI * distanceFraction);
+    const sineSquared = sine ** 2;
+    return (
+      (2 * Math.PI * sineSquared * (1 + speedShape * sineSquared)) /
+      curvatureNormalization
+    );
+  };
+  const curvatureGradientAt = (distanceFraction: number): number => {
+    const angle = Math.PI * distanceFraction;
+    return (
+      (2 *
+        Math.PI ** 2 *
+        Math.sin(2 * angle) *
+        (1 + 2 * speedShape * Math.sin(angle) ** 2)) /
+      curvatureNormalization
+    );
+  };
+  const positionAt = (distanceFraction: number): Vec3 => {
+    const steps = 96;
+    const step = distanceFraction / steps;
+    let tangent = 0;
+    let normal = 0;
+    for (let index = 0; index <= steps; index += 1) {
+      const weight = index === 0 || index === steps ? 1 : index % 2 ? 4 : 2;
+      const heading = headingAt(index * step);
+      tangent += weight * Math.cos(heading);
+      normal += weight * Math.sin(heading);
+    }
+    return vec3((tangent * step) / 3, (normal * step) / 3, 0);
+  };
+  const stateAt = (distanceFraction: number) => {
+    const heading = headingAt(distanceFraction);
+    const tangent = vec3(Math.cos(heading), Math.sin(heading), 0);
+    const normal = vec3(-Math.sin(heading), Math.cos(heading), 0);
+    const curvature = curvatureAt(distanceFraction);
+    const curvatureGradient = curvatureGradientAt(distanceFraction);
+    const parameterScale = 1 / VERTICAL_LOOP_SPAN_COUNT;
+    return {
+      position: positionAt(distanceFraction),
+      d1: vec3Scale(tangent, parameterScale),
+      d2: vec3Scale(normal, curvature * parameterScale ** 2),
+      d3: vec3Add(
+        vec3Scale(tangent, -(curvature ** 2) * parameterScale ** 3),
+        vec3Scale(normal, curvatureGradient * parameterScale ** 3),
+      ),
+    };
+  };
+  const states = Array.from(
+    { length: VERTICAL_LOOP_SPAN_COUNT + 1 },
+    (_, index) => stateAt(index / VERTICAL_LOOP_SPAN_COUNT),
+  );
+  const unitSpans = Array.from(
+    { length: VERTICAL_LOOP_SPAN_COUNT },
+    (_, index) => {
+      const start = states[index]!;
+      const end = states[index + 1]!;
+      return canonicalPosition(
+        new SeventhOrderHermiteSpan({
+          p0: start.position,
+          d10: start.d1,
+          d20: start.d2,
+          d30: start.d3,
+          p1: end.position,
+          d11: end.d1,
+          d21: end.d2,
+          d31: end.d3,
+        }),
+      );
+    },
+  );
+  const unitHeights = unitSpans.flatMap((span) =>
+    Array.from({ length: 257 }, (_, index) => span.position(index / 256)[1]),
+  );
+  const geometryScale =
+    parameters.height / (Math.max(...unitHeights) - Math.min(...unitHeights));
+  const spans = unitSpans.map((span) => {
+    const localRows = span.coefficients;
+    const worldRows = [0, 1, 2].map((component) =>
+      Array.from(
+        { length: 8 },
+        (_, power) =>
+          (power === 0 ? pose.position[component]! : 0) +
+          geometryScale *
+            (basis.tangent[component]! * localRows[0]![power]! +
+              basis.normal[component]! * localRows[1]![power]! +
+              basis.binormal[component]! * localRows[2]![power]!),
+      ),
+    );
+    return SeventhOrderHermiteSpan.fromCoefficients<Vec3>(worldRows);
+  });
   const canonicalRoll = (from: number, to: number): QuinticScalarSpan =>
     QuinticScalarSpan.fromCoefficients(
       new QuinticScalarSpan({
