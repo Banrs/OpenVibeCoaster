@@ -86,6 +86,17 @@ export interface ClearanceConstraintDescriptor {
   readonly threshold: number;
 }
 
+interface ClearanceTrackSnapshot {
+  readonly positions: Float64Array;
+  readonly tangents: Float64Array;
+  readonly normals: Float64Array;
+  readonly binormals: Float64Array;
+  readonly distances: Float64Array;
+  readonly elementIndices: Uint32Array;
+  readonly elementBoundaries: Uint32Array;
+  readonly totalLength: number;
+}
+
 function finite(v: number, label: string): number {
   if (!Number.isFinite(v)) throw new RangeError(`${label} must be finite`);
   return v;
@@ -116,7 +127,10 @@ function trainGeometry(
 ): ClearanceTrainGeometry {
   return createClearanceTrainGeometry(envelope);
 }
-function poseFromTrack(track: CompiledTrackData, index: number): ClearancePose {
+function poseFromTrack(
+  track: ClearanceTrackSnapshot,
+  index: number,
+): ClearancePose {
   return {
     position: vec3(
       track.positions[index * 3]!,
@@ -141,7 +155,7 @@ function poseFromTrack(track: CompiledTrackData, index: number): ClearancePose {
   };
 }
 function elementIndexForInterval(
-  track: CompiledTrackData,
+  track: ClearanceTrackSnapshot,
   intervalIdx: number,
 ): number {
   const boundaries = track.elementBoundaries;
@@ -159,7 +173,7 @@ function elementIndexForInterval(
   return 0;
 }
 function fallbackSegmentId(
-  track: CompiledTrackData,
+  track: ClearanceTrackSnapshot,
   intervalIdx: number,
 ): string {
   const ei = elementIndexForInterval(track, intervalIdx);
@@ -177,7 +191,7 @@ export function conservativeCircumsphereRadius(
   return circumsphereRadius(trainGeometry(envelope));
 }
 function sweptSegment(
-  track: CompiledTrackData,
+  track: ClearanceTrackSnapshot,
   startIdx: number,
   endIdx: number,
   geometry: ClearanceTrainGeometry,
@@ -314,6 +328,16 @@ export function computeClearanceField(
   track: CompiledTrackData,
   options: ClearanceFieldOptions = {},
 ): ClearanceField {
+  const snapshot: ClearanceTrackSnapshot = {
+    positions: track.positions,
+    tangents: track.tangents,
+    normals: track.normals,
+    binormals: track.binormals,
+    distances: track.distances,
+    elementIndices: track.elementIndices,
+    elementBoundaries: track.elementBoundaries,
+    totalLength: track.totalLength,
+  };
   const geometry = trainGeometry(options.envelope ?? DEFAULT_ENVELOPE);
   const hard = finite(
     options.hardClearanceM ?? DEFAULT_HARD_CLEARANCE_M,
@@ -346,7 +370,7 @@ export function computeClearanceField(
   const closed = options.closed ?? false;
   const env = options.environment;
   const radius = circumsphereRadius(geometry);
-  const count = track.distances.length;
+  const count = snapshot.distances.length;
   if (count < 2) throw new RangeError("Track must have at least two stations");
   const diagnostics: Diagnostic[] = [];
   let totalWork = 0;
@@ -391,7 +415,7 @@ export function computeClearanceField(
 
   const segmentIds = options.segmentIds;
   const idForSegment = (idx: number): string => {
-    const ei = elementIndexForInterval(track, idx);
+    const ei = elementIndexForInterval(snapshot, idx);
     if (
       segmentIds &&
       ei < segmentIds.length &&
@@ -399,13 +423,13 @@ export function computeClearanceField(
       segmentIds[ei]!.trim().length > 0
     )
       return segmentIds[ei]!;
-    return fallbackSegmentId(track, idx);
+    return fallbackSegmentId(snapshot, idx);
   };
 
   const sweptSegments: SweptClearanceSegment[] = [];
   const sweptAabbs: Array<{ min: Vec3; max: Vec3 }> = [];
   for (let i = 0; i < count - 1; i++) {
-    const seg = sweptSegment(track, i, i + 1, geometry);
+    const seg = sweptSegment(snapshot, i, i + 1, geometry);
     sweptSegments.push(seg);
     sweptAabbs.push(sweptAabb(seg));
   }
@@ -489,11 +513,11 @@ export function computeClearanceField(
       const seg = sweptSegments[segIdx]!;
       const segId = idForSegment(segIdx);
       const fallbackPos = vec3(
-        track.positions[segIdx * 3]!,
-        track.positions[segIdx * 3 + 1]!,
-        track.positions[segIdx * 3 + 2]!,
+        snapshot.positions[segIdx * 3]!,
+        snapshot.positions[segIdx * 3 + 1]!,
+        snapshot.positions[segIdx * 3 + 2]!,
       );
-      const fallbackS = track.distances[segIdx]!;
+      const fallbackS = snapshot.distances[segIdx]!;
       if (envMaxY !== undefined) {
         const sweptMinY = sweptAabbs[segIdx]!.min[1]!;
         if (nextDown(sweptMinY - nextUp(envMaxY)) >= effectiveCap) {
@@ -782,17 +806,17 @@ export function computeClearanceField(
     for (let i = 0; i < count - 1; i++) {
       perSegmentLower[i] = effectiveCap;
       perSegmentUpper[i] = effectiveCap;
-      perSegmentWitnessS[i] = track.distances[i]!;
+      perSegmentWitnessS[i] = snapshot.distances[i]!;
       perSegmentWitnessPos[i] = vec3(
-        track.positions[i * 3]!,
-        track.positions[i * 3 + 1]!,
-        track.positions[i * 3 + 2]!,
+        snapshot.positions[i * 3]!,
+        snapshot.positions[i * 3 + 1]!,
+        snapshot.positions[i * 3 + 2]!,
       );
-      perSegmentLowerWitnessS[i] = track.distances[i]!;
+      perSegmentLowerWitnessS[i] = snapshot.distances[i]!;
       perSegmentLowerWitnessPos[i] = vec3(
-        track.positions[i * 3]!,
-        track.positions[i * 3 + 1]!,
-        track.positions[i * 3 + 2]!,
+        snapshot.positions[i * 3]!,
+        snapshot.positions[i * 3 + 1]!,
+        snapshot.positions[i * 3 + 2]!,
       );
       perSegmentWork[i] = 0;
       perSegmentRelatedIds[i] = [idForSegment(i)];
@@ -972,7 +996,7 @@ export function computeClearanceField(
                 segB,
                 localityM,
                 closed,
-                track.totalLength,
+                snapshot.totalLength,
               )
             )
               continue;
@@ -1041,7 +1065,7 @@ export function computeClearanceField(
                 segB,
                 localityM,
                 closed,
-                track.totalLength,
+                snapshot.totalLength,
               )
             )
               continue;
@@ -1118,11 +1142,11 @@ export function computeClearanceField(
       perSegmentLower[i] = CONSERVATIVE_LOWER_M;
       perSegmentLowerRelatedIds[i] = [idForSegment(i)];
       perSegmentLowerSource[i] = "terrain";
-      perSegmentLowerWitnessS[i] = track.distances[i]!;
+      perSegmentLowerWitnessS[i] = snapshot.distances[i]!;
       perSegmentLowerWitnessPos[i] = vec3(
-        track.positions[i * 3]!,
-        track.positions[i * 3 + 1]!,
-        track.positions[i * 3 + 2]!,
+        snapshot.positions[i * 3]!,
+        snapshot.positions[i * 3 + 1]!,
+        snapshot.positions[i * 3 + 2]!,
       );
     }
   }
@@ -1132,7 +1156,7 @@ export function computeClearanceField(
       const segA = sweptSegments[aIdx]!;
       const segB = sweptSegments[bIdx]!;
       const closedForPair = closed;
-      const trackLen = track.totalLength;
+      const trackLen = snapshot.totalLength;
       if (
         areSweptIntervalsWithinLocality(
           segA,
@@ -1184,7 +1208,9 @@ export function computeClearanceField(
           maxWork: remaining,
           resolutionM: CERTIFICATE_RESOLUTION_M,
           localityM,
-          ...(closed ? { closed: true, trackLengthM: track.totalLength } : {}),
+          ...(closed
+            ? { closed: true, trackLengthM: snapshot.totalLength }
+            : {}),
           separationThresholds: allThresholdsForSeparation,
         });
       } catch (e) {
@@ -1301,21 +1327,21 @@ export function computeClearanceField(
   const segments: ClearanceFieldSegment[] = [];
   let globalLowerM = Infinity;
   let globalUpperM = Infinity;
-  let globalWitnessS = track.distances[0]!;
+  let globalWitnessS = snapshot.distances[0]!;
   let globalWitnessPosition: Vec3 = vec3(
-    track.positions[0]!,
-    track.positions[1]!,
-    track.positions[2]!,
+    snapshot.positions[0]!,
+    snapshot.positions[1]!,
+    snapshot.positions[2]!,
   );
   let globalRelatedIds: readonly string[] = [idForSegment(0)];
   let globalSource: "terrain" | "self" | "cap" = "terrain";
   let globalLowerRelatedIds: readonly string[] = [idForSegment(0)];
   let globalLowerSource: "terrain" | "self" | "cap" = "terrain";
-  let globalLowerWitnessS = track.distances[0]!;
+  let globalLowerWitnessS = snapshot.distances[0]!;
   let globalLowerWitnessPosition: Vec3 = vec3(
-    track.positions[0]!,
-    track.positions[1]!,
-    track.positions[2]!,
+    snapshot.positions[0]!,
+    snapshot.positions[1]!,
+    snapshot.positions[2]!,
   );
 
   for (let i = 0; i < count - 1; i++) {
@@ -1335,8 +1361,8 @@ export function computeClearanceField(
     const certified = separated || lower >= effectiveCap;
     segments.push({
       index: i,
-      startS: track.distances[i]!,
-      endS: track.distances[i + 1]!,
+      startS: snapshot.distances[i]!,
+      endS: snapshot.distances[i + 1]!,
       lowerM: lower,
       upperM: upper,
       witnessS,
@@ -1368,7 +1394,7 @@ export function computeClearanceField(
   if (!Number.isFinite(globalLowerM)) globalLowerM = CONSERVATIVE_LOWER_M;
   if (!Number.isFinite(globalUpperM)) globalUpperM = effectiveCap;
   if (!Number.isFinite(globalLowerWitnessS))
-    globalLowerWitnessS = track.distances[0]!;
+    globalLowerWitnessS = snapshot.distances[0]!;
   return {
     track,
     segments: Object.freeze(segments),
