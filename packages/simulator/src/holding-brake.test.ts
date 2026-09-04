@@ -18,7 +18,7 @@ test("a holding brake captures, dwells, and releases under powered drive", () =>
   );
   const base = createDefaultSimulatorConfig();
   const result = simulateRide(track, {
-    durationSeconds: 4,
+    durationSeconds: 6,
     config: {
       ...base,
       zones: [
