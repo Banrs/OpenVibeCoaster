@@ -68,7 +68,7 @@ function parallelThresholdTrack() {
       },
       {
         id: "parallel-2",
-        span: SeventhOrderHermiteSpan.line(vec3(5, 0, 10), vec3(5, 0, 0)),
+        span: SeventhOrderHermiteSpan.line(vec3(5, 0, 0), vec3(5, 0, 10)),
       },
     ],
     { samples: 2 },
