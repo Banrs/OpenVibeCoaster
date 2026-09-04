@@ -9,6 +9,7 @@ import priorSnapshot from "../../../data/records/records-2026-08-29.json" with {
 type SourceFact = {
   readonly metric: string;
   readonly value: unknown;
+  readonly provenance: string;
   readonly sourceUrls: readonly string[];
   readonly retrievedAt: string;
 };
@@ -40,16 +41,26 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
   for (const record of snapshot.records as readonly RecordEntry[]) {
     for (const fact of record.facts) {
       expect(fact.sourceUrls.length).toBeGreaterThan(0);
+      expect(fact.provenance).toBe("SOURCE_VERIFIED");
       expect(fact.retrievedAt).toBe("2026-09-01");
     }
   }
 });
 
 test("every project comparison is an authored design target", () => {
-  for (const comparison of Object.values(
+  const comparisons = Object.values(
     snapshot.projectComparison as Record<string, ProjectComparison>,
-  )) {
+  );
+
+  expect(comparisons).toHaveLength(6);
+  for (const comparison of comparisons) {
     expect(comparison.provenance).toBe("DESIGN_TARGET");
     expect(comparison.provenance).not.toBe("SOURCE_VERIFIED");
   }
+});
+
+test("the dated snapshot contains no standards or compliance claim", () => {
+  expect(JSON.stringify(snapshot)).not.toMatch(
+    /ASTM|F2291|licensed|compliance|certification/i,
+  );
 });
