@@ -42,7 +42,7 @@ jobs:
       - name: Format check
         run: npm run format:check
       - name: Task 08 focused tests
-        run: npx vitest run packages/simulator/src/record-validation.unit.test.ts packages/simulator/src/holding-brake.test.ts packages/generator/src/topHat-canonical.test.ts packages/generator/src/immelmann.geometry.test.ts packages/generator/src/verticalLoop.geometry.test.ts packages/generator/src/record-validation.integration.test.ts packages/generator/src/energy-launch-brake.test.ts
+        run: npx vitest run packages/simulator/src/record-validation.unit.test.ts packages/simulator/src/holding-brake.test.ts packages/simulator/src/jerk-frame.test.ts packages/generator/src/topHat-canonical.test.ts packages/generator/src/immelmann.geometry.test.ts packages/generator/src/verticalLoop.geometry.test.ts packages/generator/src/zeroGRoll.geometry.test.ts packages/generator/src/record-validation.integration.test.ts packages/generator/src/energy-launch-brake.test.ts
 
   portable:
     if: false
