@@ -9,12 +9,12 @@ import {
   areSweptIntervalsWithinLocality,
   certifiedSweptDistance,
   createClearanceTrainGeometry,
-  createOrientedBox,
   interpolatePose,
+  prepareTerrainSegmentEvaluator,
   sweptAabb,
-  sweptMotionBound,
   type ClearancePose,
   type ClearanceTrainGeometry,
+  type PreparedTerrainSegmentEvaluator,
   type SweptClearanceSegment,
 } from "./clearance-geometry";
 import { nextDown, nextUp } from "./polynomial-bounds";
@@ -217,17 +217,17 @@ function evaluateTerrainSubinterval(
   seg: SweptClearanceSegment,
   u0: number,
   u1: number,
-  geometry: ClearanceTrainGeometry,
+  terrain: PreparedTerrainSegmentEvaluator,
   env: EnvironmentQuery,
   radius: number,
 ): { lowerM: number; upperM: number; witnessPos: Vec3; witnessS: number } {
   const umid = (u0 + u1) / 2;
   const midPose = interpolatePose(seg, umid);
-  const obb = createOrientedBox(midPose, geometry);
+  const obb = terrain.obbAtPose(midPose);
   const centreSd = env.signedDistance(obb.center);
   if (!Number.isFinite(centreSd))
     throw new RangeError("signedDistance must be finite");
-  const motion = sweptMotionBound(seg, u0, u1);
+  const motion = terrain.motionBound(u0, u1);
   const lower = nextDown(centreSd - nextUp(radius + motion));
   const points: Vec3[] = [];
   for (const sx of [-1, 1] as const)
@@ -565,6 +565,7 @@ export function computeClearanceField(
         perSegmentLowerSource[segIdx] = "terrain";
         continue;
       }
+      const terrain = prepareTerrainSegmentEvaluator(seg);
       let rootEval: {
         lowerM: number;
         upperM: number;
@@ -572,7 +573,7 @@ export function computeClearanceField(
         witnessS: number;
       };
       try {
-        rootEval = evaluateTerrainSubinterval(seg, 0, 1, geometry, env, radius);
+        rootEval = evaluateTerrainSubinterval(seg, 0, 1, terrain, env, radius);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         diagnostics.push({
@@ -696,7 +697,7 @@ export function computeClearanceField(
             witnessS: number;
           };
           try {
-            ev = evaluateTerrainSubinterval(seg, u0, u1, geometry, env, radius);
+            ev = evaluateTerrainSubinterval(seg, u0, u1, terrain, env, radius);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             diagnostics.push({
