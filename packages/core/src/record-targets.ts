@@ -28,8 +28,12 @@ export interface RecordTargetProfile {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const fail = (path: string, expected: string): never => {
-  throw new Error(`${path}: expected ${expected}`);
+const requireRecord = (
+  value: unknown,
+  path: string,
+): Record<string, unknown> => {
+  if (!isRecord(value)) throw new Error(`${path}: expected object`);
+  return value;
 };
 
 const exactKeys = (
@@ -41,12 +45,12 @@ const exactKeys = (
     Object.keys(value).length !== keys.length ||
     Object.keys(value).some((key) => !keys.includes(key))
   )
-    fail(path, `exactly ${keys.join(", ")}`);
+    throw new Error(`${path}: expected exactly ${keys.join(", ")}`);
 };
 
 const exactNumber = (value: unknown, path: string, expected: number): void => {
   if (typeof value !== "number" || !Number.isFinite(value) || value !== expected)
-    fail(path, String(expected));
+    throw new Error(`${path}: expected ${expected}`);
 };
 
 const exactRange = (
@@ -55,7 +59,7 @@ const exactRange = (
   expected: readonly [number, number],
 ): void => {
   if (!Array.isArray(value) || value.length !== 2)
-    fail(path, "two finite numbers");
+    throw new Error(`${path}: expected two finite numbers`);
   exactNumber(value[0], `${path}[0]`, expected[0]);
   exactNumber(value[1], `${path}[1]`, expected[1]);
 };
@@ -63,8 +67,8 @@ const exactRange = (
 export function validateRecordTargetsProfile(
   value: unknown,
 ): asserts value is RecordTargetProfile {
-  if (!isRecord(value)) fail("profile", "object");
-  exactKeys(value, "profile", [
+  const profile = requireRecord(value, "profile");
+  exactKeys(profile, "profile", [
     "schemaVersion",
     "profileId",
     "provenance",
@@ -78,33 +82,34 @@ export function validateRecordTargetsProfile(
     "force",
     "holdSeconds",
   ]);
-  if (value.schemaVersion !== 1) fail("profile.schemaVersion", "1");
-  if (value.profileId !== "record-targets-v1")
-    fail("profile.profileId", "record-targets-v1");
-  if (value.provenance !== "PROJECT_ENGINEERING_LIMIT")
-    fail("profile.provenance", "PROJECT_ENGINEERING_LIMIT");
+  if (profile.schemaVersion !== 1)
+    throw new Error("profile.schemaVersion: expected 1");
+  if (profile.profileId !== "record-targets-v1")
+    throw new Error("profile.profileId: expected record-targets-v1");
+  if (profile.provenance !== "PROJECT_ENGINEERING_LIMIT")
+    throw new Error("profile.provenance: expected PROJECT_ENGINEERING_LIMIT");
 
-  exactRange(value.totalLengthM, "profile.totalLengthM", [5200, 5400]);
-  exactRange(value.maxHeightM, "profile.maxHeightM", [225, 235]);
-  exactRange(value.maxSpeedKmh, "profile.maxSpeedKmh", [285, 295]);
-  exactRange(value.invertedTopHatM, "profile.invertedTopHatM", [90, 92]);
-  exactRange(value.immelmannM, "profile.immelmannM", [80, 82]);
-  exactRange(value.verticalLoopM, "profile.verticalLoopM", [66, 68]);
+  exactRange(profile.totalLengthM, "profile.totalLengthM", [5200, 5400]);
+  exactRange(profile.maxHeightM, "profile.maxHeightM", [225, 235]);
+  exactRange(profile.maxSpeedKmh, "profile.maxSpeedKmh", [285, 295]);
+  exactRange(profile.invertedTopHatM, "profile.invertedTopHatM", [90, 92]);
+  exactRange(profile.immelmannM, "profile.immelmannM", [80, 82]);
+  exactRange(profile.verticalLoopM, "profile.verticalLoopM", [66, 68]);
 
-  if (!isRecord(value.diveDrop)) fail("profile.diveDrop", "object");
-  exactKeys(value.diveDrop, "profile.diveDrop", [
+  const diveDrop = requireRecord(profile.diveDrop, "profile.diveDrop");
+  exactKeys(diveDrop, "profile.diveDrop", [
     "heightM",
     "toleranceM",
     "angleDeg",
     "toleranceDeg",
   ]);
-  exactNumber(value.diveDrop.heightM, "profile.diveDrop.heightM", 210);
-  exactNumber(value.diveDrop.toleranceM, "profile.diveDrop.toleranceM", 3);
-  exactNumber(value.diveDrop.angleDeg, "profile.diveDrop.angleDeg", 110);
-  exactNumber(value.diveDrop.toleranceDeg, "profile.diveDrop.toleranceDeg", 1.5);
+  exactNumber(diveDrop.heightM, "profile.diveDrop.heightM", 210);
+  exactNumber(diveDrop.toleranceM, "profile.diveDrop.toleranceM", 3);
+  exactNumber(diveDrop.angleDeg, "profile.diveDrop.angleDeg", 110);
+  exactNumber(diveDrop.toleranceDeg, "profile.diveDrop.toleranceDeg", 1.5);
 
-  if (!isRecord(value.force)) fail("profile.force", "object");
-  exactKeys(value.force, "profile.force", [
+  const force = requireRecord(profile.force, "profile.force");
+  exactKeys(force, "profile.force", [
     "verticalPeakG",
     "verticalMinG",
     "lateralMaxG",
@@ -112,15 +117,15 @@ export function validateRecordTargetsProfile(
     "jerkMps3",
     "rollRateRadPerSec",
   ]);
-  exactRange(value.force.verticalPeakG, "profile.force.verticalPeakG", [4.8, 5]);
-  exactNumber(value.force.verticalMinG, "profile.force.verticalMinG", -1.1);
-  exactNumber(value.force.lateralMaxG, "profile.force.lateralMaxG", 1.5);
+  exactRange(force.verticalPeakG, "profile.force.verticalPeakG", [4.8, 5]);
+  exactNumber(force.verticalMinG, "profile.force.verticalMinG", -1.1);
+  exactNumber(force.lateralMaxG, "profile.force.lateralMaxG", 1.5);
   exactNumber(
-    value.force.longitudinalMaxG,
+    force.longitudinalMaxG,
     "profile.force.longitudinalMaxG",
     1.5,
   );
-  exactNumber(value.force.jerkMps3, "profile.force.jerkMps3", 15);
-  exactNumber(value.force.rollRateRadPerSec, "profile.force.rollRateRadPerSec", 1.5);
-  exactNumber(value.holdSeconds, "profile.holdSeconds", 3);
+  exactNumber(force.jerkMps3, "profile.force.jerkMps3", 15);
+  exactNumber(force.rollRateRadPerSec, "profile.force.rollRateRadPerSec", 1.5);
+  exactNumber(profile.holdSeconds, "profile.holdSeconds", 3);
 }
