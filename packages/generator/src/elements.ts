@@ -365,6 +365,7 @@ const forceProfileSpan = (
   length: number,
   targetForceG: number,
   referenceSpeed: number,
+  forceShape = sustainedForceProfile,
 ): { span: ParametricSpan<Vec3>; endPose: Pose } => {
   const basis = basisFor(pose);
   const gravityTangent = vec3Dot(worldGravity, basis.tangent);
@@ -373,7 +374,7 @@ const forceProfileSpan = (
     const normalGravity =
       -gravityTangent * Math.sin(heading) + gravityNormal * Math.cos(heading);
     return (
-      sustainedForceProfile(u) *
+      forceShape(u, 0) *
       (length / referenceSpeed ** 2) *
       (targetForceG * gravity + normalGravity)
     );
@@ -442,8 +443,8 @@ const forceProfileSpan = (
     const thetaPrime = headingRate(u, heading);
     const thetaSecond =
       (length / referenceSpeed ** 2) *
-      (sustainedForceProfile(u, 1) * (targetForceG * gravity + normalGravity) +
-        sustainedForceProfile(u) *
+      (forceShape(u, 1) * (targetForceG * gravity + normalGravity) +
+        forceShape(u, 0) *
           (-gravityTangent * Math.cos(heading) -
             gravityNormal * Math.sin(heading)) *
           thetaPrime);
@@ -481,75 +482,111 @@ const containedZeroGProfileSpan = (
   referenceSpeed: number,
 ): { span: ParametricSpan<Vec3>; endPose: Pose } => {
   const basis = basisFor(pose);
-  const ballistic = forceProfileSpan(pose, length, 0, referenceSpeed).span;
-  const recoveryStart = 0.75;
-  const recoveryWidth = 1 - recoveryStart;
-  const startDerivative = ballistic.derivative(recoveryStart, 1);
-  const startTangent = vec3Normalize(startDerivative);
-  const startNormal = vec3Normalize(
+  const entryLength = length / 4;
+  const coreLength = length / 2;
+  const exitLength = length / 4;
+  const availableNormalGravity = Math.max(
+    0,
+    -vec3Dot(worldGravity, basis.normal),
+  );
+  const entryPitch = Math.min(
+    0.75,
+    (availableNormalGravity * coreLength) / (2 * referenceSpeed ** 2),
+  );
+  const coreTangent = vec3Normalize(
     vec3Add(
-      basis.normal,
-      vec3Scale(startTangent, -vec3Dot(basis.normal, startTangent)),
+      vec3Scale(basis.tangent, Math.cos(entryPitch)),
+      vec3Scale(basis.normal, Math.sin(entryPitch)),
     ),
   );
-  const startHeading = Math.atan2(
-    vec3Dot(startTangent, basis.normal),
-    vec3Dot(startTangent, basis.tangent),
+  const coreNormal = vec3Normalize(
+    vec3Add(
+      vec3Scale(basis.tangent, -Math.sin(entryPitch)),
+      vec3Scale(basis.normal, Math.cos(entryPitch)),
+    ),
   );
-  const startHeadingRate =
-    vec3Dot(ballistic.derivative(recoveryStart, 2), startNormal) / length;
-  const startHeadingGradient =
-    vec3Dot(ballistic.derivative(recoveryStart, 3), startNormal) / length;
-  const recoveryHeading = new QuinticScalarSpan({
-    v0: startHeading,
-    d10: startHeadingRate * recoveryWidth,
-    d20: startHeadingGradient * recoveryWidth ** 2,
-    v1: 0,
-    d11: 0,
-    d21: 0,
-  });
-  const recoveryOrigin = ballistic.position(recoveryStart);
-  const recoveryOffset = (upper: number): Vec3 => {
-    const steps = 96;
-    const step = upper / steps;
-    let tangent = 0;
-    let normal = 0;
-    for (let index = 0; index <= steps; index += 1) {
-      const weight = index === 0 || index === steps ? 1 : index % 2 ? 4 : 2;
-      const heading = recoveryHeading.position(index * step);
-      tangent += weight * Math.cos(heading);
-      normal += weight * Math.sin(heading);
-    }
-    const scale = (length * recoveryWidth * step) / 3;
-    return vec3(tangent * scale, normal * scale, 0);
+  const chordEnd = (
+    start: Vec3,
+    startTangent: Vec3,
+    endTangent: Vec3,
+    arcLengthM: number,
+  ): Vec3 => {
+    const angle = Math.acos(
+      Math.max(-1, Math.min(1, vec3Dot(startTangent, endTangent))),
+    );
+    const halfAngle = angle / 2;
+    const chordScale =
+      arcLengthM * (halfAngle > 1e-12 ? Math.sin(halfAngle) / halfAngle : 1);
+    return vec3Add(
+      start,
+      vec3Scale(vec3Normalize(vec3Add(startTangent, endTangent)), chordScale),
+    );
   };
+  const coreStart = chordEnd(
+    pose.position,
+    basis.tangent,
+    coreTangent,
+    entryLength,
+  );
+  const constantForceShape = (_u: number, order = 0): number =>
+    order === 0 ? 1 : 0;
+  const core = forceProfileSpan(
+    {
+      position: coreStart,
+      tangent: coreTangent,
+      normal: coreNormal,
+      bank: pose.bank,
+    },
+    coreLength,
+    0,
+    referenceSpeed,
+    constantForceShape,
+  ).span;
+  const entryToCoreScale = entryLength / coreLength;
+  const entry = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+    new SeventhOrderHermiteSpan({
+      p0: pose.position,
+      d10: vec3Scale(basis.tangent, entryLength),
+      d20: vec3(0, 0, 0),
+      d30: vec3(0, 0, 0),
+      p1: coreStart,
+      d11: vec3Scale(core.derivative(0, 1), entryToCoreScale),
+      d21: vec3Scale(core.derivative(0, 2), entryToCoreScale ** 2),
+      d31: vec3Scale(core.derivative(0, 3), entryToCoreScale ** 3),
+    }).coefficients,
+  );
+  const coreEndTangent = vec3Normalize(core.derivative(1, 1));
+  const exitEnd = chordEnd(
+    core.position(1),
+    coreEndTangent,
+    basis.tangent,
+    exitLength,
+  );
+  const exitToCoreScale = exitLength / coreLength;
+  const exit = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+    new SeventhOrderHermiteSpan({
+      p0: core.position(1),
+      d10: vec3Scale(core.derivative(1, 1), exitToCoreScale),
+      d20: vec3Scale(core.derivative(1, 2), exitToCoreScale ** 2),
+      d30: vec3Scale(core.derivative(1, 3), exitToCoreScale ** 3),
+      p1: exitEnd,
+      d11: vec3Scale(basis.tangent, exitLength),
+      d21: vec3(0, 0, 0),
+      d31: vec3(0, 0, 0),
+    }).coefficients,
+  );
   const span: ParametricSpan<Vec3> = {
     position: (u) => {
-      if (u <= recoveryStart) return ballistic.position(u);
-      const local = (u - recoveryStart) / recoveryWidth;
-      return vec3Add(recoveryOrigin, worldVector(basis, recoveryOffset(local)));
+      if (u <= 0.25) return entry.position(u * 4);
+      if (u <= 0.75) return core.position((u - 0.25) * 2);
+      return exit.position((u - 0.75) * 4);
     },
     derivative: (u, order = 1) => {
-      if (u <= recoveryStart) return ballistic.derivative(u, order);
-      const local = (u - recoveryStart) / recoveryWidth;
-      const heading = recoveryHeading.position(local);
-      const headingRate = recoveryHeading.derivative(local, 1) / recoveryWidth;
-      const headingGradient =
-        recoveryHeading.derivative(local, 2) / recoveryWidth ** 2;
-      const tangent = vec3(Math.cos(heading), Math.sin(heading), 0);
-      const normal = vec3(-Math.sin(heading), Math.cos(heading), 0);
-      if (order === 1) return worldVector(basis, vec3Scale(tangent, length));
-      if (order === 2)
-        return worldVector(basis, vec3Scale(normal, length * headingRate));
-      if (order === 3)
-        return worldVector(
-          basis,
-          vec3Add(
-            vec3Scale(normal, length * headingGradient),
-            vec3Scale(tangent, -length * headingRate ** 2),
-          ),
-        );
-      return vec3(0, 0, 0);
+      if (u <= 0.25)
+        return vec3Scale(entry.derivative(u * 4, order), 4 ** order);
+      if (u <= 0.75)
+        return vec3Scale(core.derivative((u - 0.25) * 2, order), 2 ** order);
+      return vec3Scale(exit.derivative((u - 0.75) * 4, order), 4 ** order);
     },
   };
   return {
