@@ -179,7 +179,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("launch", "launch-001", {
       length: 260,
-      targetSpeed: 44,
+      targetSpeed: 60,
     }),
   );
   append(
