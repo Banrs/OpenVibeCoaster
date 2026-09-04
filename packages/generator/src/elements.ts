@@ -906,20 +906,14 @@ const verticalLoopSpans = (
   const basis = basisFor(pose);
   const zero = vec3(0, 0, 0);
   const shapeRadius = parameters.referenceSpeed ** 2 / (2 * gravity);
-  const apexSecondDerivative = vec3Scale(
-    basis.normal,
-    -shapeRadius * 0.5,
-  );
+  const apexSecondDerivative = vec3Scale(basis.normal, -shapeRadius * 0.5);
   const entryDerivative = vec3Scale(basis.tangent, shapeRadius);
   const invertedDerivative = vec3Scale(basis.tangent, -shapeRadius);
   const firstEnd = vec3Add(
     vec3Add(pose.position, vec3Scale(basis.tangent, shapeRadius * 0.5)),
     vec3Scale(basis.normal, parameters.height),
   );
-  const secondEnd = vec3Add(
-    firstEnd,
-    vec3Scale(basis.tangent, -shapeRadius),
-  );
+  const secondEnd = vec3Add(firstEnd, vec3Scale(basis.tangent, -shapeRadius));
   const loopExit = vec3Add(
     pose.position,
     vec3Scale(basis.tangent, parameters.height * 0.2),
