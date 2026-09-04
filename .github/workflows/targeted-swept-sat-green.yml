@@ -1,0 +1,30 @@
+name: Targeted swept SAT GREEN
+
+on:
+  push:
+    branches:
+      - codex/swept-sat-green-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify SAT proof and clearance geometry
+        run: >-
+          npm run test --
+          packages/generator/src/clearance-field.self-fastproof.test.ts
+          packages/generator/src/clearance-geometry.swept-aabb.test.ts
+          packages/generator/src/clearance-geometry.test.ts
+          packages/generator/src/clearance-geometry.reference-differential.test.ts
+          packages/generator/src/clearance-field.test.ts
+          -t "certified SAT lower bound|swept AABB|rigid|translation|rotation|deterministic and subquadratic"
+      - name: Typecheck generator
+        run: npm run typecheck -w @openvibecoaster/generator
