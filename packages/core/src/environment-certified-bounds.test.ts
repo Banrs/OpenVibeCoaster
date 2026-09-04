@@ -12,8 +12,7 @@ describe("heightfield certified surface maximum", () => {
       heights: [-8, -7, -6, -5, -4, -3],
     });
     const certified = Reflect.get(environment, "certifiedSurfaceMaximumY") as
-      | (() => number)
-      | undefined;
+      (() => number) | undefined;
 
     expect(certified).toBeTypeOf("function");
     const first = certified!.call(environment);
