@@ -12,6 +12,7 @@ import {
   interpolatePose,
   prepareTerrainSegmentEvaluator,
   sweptAabb,
+  sweptObbSeparationLowerBound,
   type ClearancePose,
   type ClearanceTrainGeometry,
   type PreparedTerrainSegmentEvaluator,
@@ -1234,6 +1235,30 @@ export function computeClearanceField(
           perSegmentLowerWitnessPos[i] = sweptSegments[aIdx]!.start.position;
         }
         break;
+      }
+      const sweptSatLower = sweptObbSeparationLowerBound(segA, segB);
+      if (sweptSatLower >= maxSelfSeparationThreshold) {
+        if (sweptSatLower < perSegmentLower[aIdx]!) {
+          perSegmentLower[aIdx] = sweptSatLower;
+          perSegmentLowerRelatedIds[aIdx] = [
+            idForSegment(aIdx),
+            idForSegment(bIdx),
+          ];
+          perSegmentLowerSource[aIdx] = "self";
+          perSegmentLowerWitnessS[aIdx] = segA.startS;
+          perSegmentLowerWitnessPos[aIdx] = segA.start.position;
+        }
+        if (sweptSatLower < perSegmentLower[bIdx]!) {
+          perSegmentLower[bIdx] = sweptSatLower;
+          perSegmentLowerRelatedIds[bIdx] = [
+            idForSegment(aIdx),
+            idForSegment(bIdx),
+          ];
+          perSegmentLowerSource[bIdx] = "self";
+          perSegmentLowerWitnessS[bIdx] = segB.startS;
+          perSegmentLowerWitnessPos[bIdx] = segB.start.position;
+        }
+        continue;
       }
       let res: ReturnType<typeof certifiedSweptDistance>;
       try {
