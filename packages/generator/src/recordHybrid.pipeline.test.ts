@@ -57,6 +57,9 @@ describe("record-hybrid default pipeline", () => {
     expect(
       Math.abs((finale?.parameters as { readonly angle: number }).angle),
     ).toBeGreaterThan(Math.PI / 2);
+    expect(
+      Math.abs((finale?.parameters as { readonly bank: number }).bank),
+    ).toBeGreaterThan(Math.PI / 2);
   });
 
   it(

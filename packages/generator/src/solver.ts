@@ -589,7 +589,13 @@ const semanticVariables = (
         -1.2,
         5,
       );
-    if (typeof parameters.bank === "number")
+    if (
+      typeof parameters.bank === "number" &&
+      !(
+        element.type === "overbankedTurn" &&
+        Math.abs(parameters.bank) > Math.PI / 2
+      )
+    )
       add(elementIndex, "bank", parameters.bank, -Math.PI, Math.PI);
   }
   return variables;
