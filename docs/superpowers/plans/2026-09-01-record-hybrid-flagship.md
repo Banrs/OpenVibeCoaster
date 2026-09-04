@@ -64,10 +64,10 @@ Integration rule: each task pins exact consumed interfaces and produced facts; r
 **Test sketches:**
 
 ```ts
-// data/records/records-2026-09-01.test.ts
+// packages/core/src/record-snapshot.test.ts
 import { test, expect } from "vitest";
-import snapshot from "./records-2026-09-01.json" with { type: "json" };
-import prior from "./records-2026-08-29.json" with { type: "json" };
+import snapshot from "../../../data/records/records-2026-09-01.json" with { type: "json" };
+import prior from "../../../data/records/records-2026-08-29.json" with { type: "json" };
 test("snapshot carries dated source URLs and frozen vocabulary", () => {
   expect(snapshot.capturedAt).toBe("2026-09-01");
   expect(snapshot.provenanceVocabulary).toEqual(prior.provenanceVocabulary);
@@ -81,7 +81,7 @@ test("snapshot carries dated source URLs and frozen vocabulary", () => {
     }
 });
 test("comparisons are DESIGN_TARGET, never SOURCE_VERIFIED", async () => {
-  const profile = await import("../profiles/record-targets-v1.json", { with: { type: "json" } }).then((m) => m.default);
+  const profile = await import("../../../data/profiles/record-targets-v1.json", { with: { type: "json" } }).then((m) => m.default);
   expect(profile.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
   expect(profile.totalLengthM).toEqual([5200, 5400]);
   expect(profile.diveDrop).toMatchObject({ heightM: 210, toleranceM: 3, angleDeg: 110, toleranceDeg: 1.5 });
@@ -100,11 +100,11 @@ test("valid profile passes and wrong provenance fails", () => {
 });
 ```
 
-**RED CI:** `npm run test -- data/records/records-2026-09-01.test.ts` expect `FAIL` with `Cannot find module .../records-2026-09-01.json` before files exist.
+**RED CI:** `npm run test -- packages/core/src/record-snapshot.test.ts` expect `FAIL` with `Cannot find module .../records-2026-09-01.json` before files exist.
 
 **GREEN implementation:** Create the two JSON files exactly as above; create `packages/core/src/record-targets.ts` with the interface plus assertion validator; add `export * from "./record-targets";` to `packages/core/src/index.ts`. Do not mutate the 08-29 snapshot or `engineering-limits-v1.json`.
 
-**Focused CI:** `npm run test -- data/records/records-2026-09-01.test.ts packages/core/src/record-targets.test.ts` then `npm run typecheck -w @openvibecoaster/core`.
+**Focused CI:** `npm run test -- packages/core/src/record-snapshot.test.ts packages/core/src/record-targets.test.ts` then `npm run typecheck -w @openvibecoaster/core`.
 
 **Static review:** Read `packages/core/src/contracts.ts:82` (`Diagnostic.provenance` vocabulary unchanged); read `data/standards/f2291-26.json:12` (`UNKNOWN_UNCONFIGURED` intact); verify spec `docs/superpowers/specs/2026-09-01-record-hybrid-flagship-design.md:62` verbatim target numbers preserved in the new JSON.
 
@@ -603,7 +603,7 @@ test("serialized lengths equal integrated arcLength even when authored length is
 
 **Consumed interfaces:** `HeightfieldEnvironment` + `EnvironmentQuery` (`packages/core/src/environment.ts`, `packages/core/src/contracts.ts:119`); `resolveTerrainEnvironment(profileId)` (`apps/web/src/terrain/environment.ts:72-79`, throws on unknown IDs); `validateGenerationConstraints` (`packages/generator/src/pipeline.ts:940-946`, honors injected `options.environment`); `validateClearance` (`packages/generator/src/clearance.ts:741`) with `CertifiedWorkBudget`/`certifiedPolynomialBounds`; `computeClearanceField(track, options)` (`packages/generator/src/clearance-field.ts:327`); `RelaxationEvidence` (`packages/generator/src/types.ts:223`); `GenerationOptions.environment` (`packages/generator/src/types.ts:180-189`, injected `EnvironmentQuery`).
 
-**Produced interfaces:** `createCliffValleyEnvironment()` (pure core) yields a deterministic `HeightfieldEnvironment` with `width: 420, depth: 280, cellSize: 10` (4,190 × 2,790 m extent, 117,600 heights, `origin: [-2095, -1395]`): valley floor −15 m, cliff ridge `−15 + 240 = 225 m` at `worldZ = 980` (`height = -15 + 240 * exp(-((worldZ − 980)/120)²) + detail`, `detail = 0` at summit probe → exactly 225 m, `±0.6` elsewhere → 224.4–225.6 floor/ridge band (`980` is the initial ridge placement seed, never track authority: the `gates-pins.test.ts` alignment assert keeps the record route's `brake-007` zone center within ±120 m — one cliff wavelength σ=120 — of the seed, and summit terrain support is read at the compiled summit `(x,z)`); summit probe asserts `≥ 224.4`, and the track-summit band asserts 225–235 via terrain-following placement, not a flaky `heightAt(0,0) ∈ [225,235]`). `resolveTerrainEnvironment("cliff-valley-v1")` (web) delegates to the core factory; unknown IDs still throw. No file under `packages/generator` imports `apps/web/*` (enforced by test-time import scan of `pipeline.ts` source). Directed mode honors hard footprint polygons and up-to-3 gates via `isPointInsidePolygonStrict`/`signedDistanceStrictXZ`; an infeasible record footprint returns feasible `false` plus `relaxationEvidence` entries (`{ change, rerun: true, feasible, lmIterations, margins }`) instead of leaving the footprint. `validateClearance` (`clearance.ts:741`) never uses a sampled-only path; terrain separation uses inflated segment bounds with `sqrt(3)` locality and the existing bounded heap with default `maxWork: 1_000_000` (`clearance-field.ts:367-369`); Task 07 sizes the budget (see tests: full-work pass + `maxWork: 1` `CLEARANCE_UNCERTIFIED` negative control + `field.work < maxWork` assertion for the 117,600-height (≈467k-triangle) field). Worker-side terrain is resolved inside the worker from `intent.terrainProfileId` (`apps/web/src/engineering/worker.ts:296-310`); the worker transfers only track/timeline/`clearanceM` (`protocol.ts:68-79`, `transfer.ts:6`), never heightfield buffers — tests assert generation determinism, not terrain-buffer transfer.
+**Produced interfaces:** `createCliffValleyEnvironment()` (pure core) yields a deterministic `HeightfieldEnvironment` with `width: 420, depth: 280, cellSize: 10` (4,190 × 2,790 m extent, 117,600 heights, `origin: [-2095, -1395]`): valley floor −15 m, cliff ridge `−15 + 240 = 225 m` at `worldZ = 980` (`height = -15 + 240 * exp(-((worldZ − 980)/120)²) + detail`, `detail = 0` at summit probe → exactly 225 m, `±0.6` elsewhere → 224.4–225.6 floor/ridge band (`980` is the initial ridge placement seed, never track authority: the `gates-pins.test.ts` alignment assert keeps the record route's `brake-007` zone center within ±120 m — one cliff wavelength σ=120 — of the seed, and summit terrain support is read at the compiled summit `(x,z)`); summit probe asserts `≥ 224.4`, and the track-summit band asserts 225–235 via terrain-following placement, not a flaky `heightAt(0,0) ∈ [225,235]`). `resolveTerrainEnvironment("cliff-valley-v1")` (web) delegates to the core factory; unknown IDs still throw. No file under `packages/generator` imports `apps/web/*` (enforced by test-time import scan of `pipeline.ts` source). Directed mode honors hard footprint polygons and up-to-3 gates via `isPointInsidePolygonStrict`/`signedDistanceStrictXZ`; an infeasible record footprint returns feasible `false` plus `relaxationEvidence` entries (`{ change, rerun: true, feasible, lmIterations, margins }`) instead of leaving the footprint. `validateClearance` (`clearance.ts:741`) never uses a sampled-only path; terrain separation uses inflated segment bounds with `sqrt(3)` locality and the existing bounded heap with default `maxWork: 1_000_000` (`clearance-field.ts:367-369`); Task 07 sizes the budget (see tests: full-work pass + `maxWork: 1` `CLEARANCE_UNCERTIFIED` negative control + `field.work < maxWork` assertion for the 117,600-height (233802-triangle ((420-1)*(280-1)*2=419*279*2)) field). Worker-side terrain is resolved inside the worker from `intent.terrainProfileId` (`apps/web/src/engineering/worker.ts:296-310`); the worker transfers only track/timeline/`clearanceM` (`protocol.ts:68-79`, `transfer.ts:6`), never heightfield buffers — tests assert generation determinism, not terrain-buffer transfer.
 
 **Test sketches:**
 
@@ -682,8 +682,23 @@ test("record summit aligns with the ridge seed within one cliff wavelength (no e
   const zones = operationZonesFromCoasterFile(g.file);
   const summit = zones.find((z) => z.id === "brake-007")!;
   const centerS = (summit.startDistanceM + summit.endDistanceM) / 2;
-  // One cliff wavelength (sigma = 120): honest placement check, not s === 980.
-  expect(Math.abs(centerS - 980)).toBeLessThanOrEqual(120);
+  // centerS is arc-length s (m along track), never world Z: look up the compiled
+  // position at centerS via distances/positions lerp to (sx,sy,sz), then assert
+  // in world coordinates. summitHoldWindow stays the s-domain dwell authority
+  // only (Task 08 hold proof), never terrain alignment authority.
+  const positions = g.track.positions;
+  const distances = g.track.distances;
+  let k = 0;
+  while (k + 1 < distances.length && distances[k + 1]! < centerS) k += 1;
+  const j = Math.min(k + 1, distances.length - 1);
+  const s0 = distances[k]!;
+  const s1 = distances[j]!;
+  const t = s1 > s0 ? (centerS - s0) / (s1 - s0) : 0;
+  const sx = positions[k * 3]! * (1 - t) + positions[j * 3]! * t;
+  const sz = positions[k * 3 + 2]! * (1 - t) + positions[j * 3 + 2]! * t;
+  // One cliff wavelength (sigma = 120) in world Z, not s === 980.
+  expect(Math.abs(sz - 980)).toBeLessThanOrEqual(120);
+  expect(env.heightAt(sx, sz)).toBeGreaterThanOrEqual(224.4);
 });
 ```
 
