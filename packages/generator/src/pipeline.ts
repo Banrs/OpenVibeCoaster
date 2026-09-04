@@ -1649,10 +1649,16 @@ const evaluateCandidate = (
       failedHardRequirementIds,
     ),
   ];
-  const targetLocationS = spans.reduce(
-    (sum, span) => sum + arcLength(span.span),
-    0,
-  );
+  const targetLocationS = spans.reduce((sum, span) => {
+    try {
+      return sum + arcLength(span.span);
+    } catch (error) {
+      throw new RangeError(
+        `Failed to measure solved span ${span.id}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+  }, 0);
   for (const target of intent.targets)
     if (target.kind !== "total-length") {
       const actual = targetError(
