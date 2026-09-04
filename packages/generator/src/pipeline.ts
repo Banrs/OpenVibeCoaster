@@ -274,6 +274,8 @@ export const recordHybridDefaultElements = (
       Math.abs(alignedAngle + 2.2) <= Math.abs(oppositeAngle + 2.2)
         ? alignedAngle
         : oppositeAngle;
+    if (Math.abs(Math.abs(finaleTurnAngle) - Math.PI) < 1e-9)
+      finaleTurnAngle += finaleTurnAngle < 0 ? 0.02 : -0.02;
   }
   append(
     createElement("overbankedTurn", "overbankedTurn-014", {
