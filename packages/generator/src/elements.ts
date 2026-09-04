@@ -801,10 +801,9 @@ const immelmannSpans = (
   const basis = basisFor(pose);
   const zero = vec3(0, 0, 0);
   const radius = parameters.height / 2;
-  const halfTurn = Math.PI;
-  const firstDerivativeScale = radius * halfTurn;
-  const secondDerivativeScale = radius * halfTurn ** 2;
-  const thirdDerivativeScale = radius * halfTurn ** 3;
+  const firstDerivativeScale = parameters.height * 3;
+  const secondDerivativeScale = firstDerivativeScale ** 2 / radius;
+  const thirdDerivativeScale = firstDerivativeScale ** 3 / radius ** 2;
   const first = new SeventhOrderHermiteSpan({
     p0: pose.position,
     d10: vec3Scale(basis.tangent, firstDerivativeScale),
@@ -826,7 +825,7 @@ const immelmannSpans = (
       vec3Scale(basis.binormal, -Math.sin(headingRad)),
     ),
   );
-  const exitScale = parameters.height * 2;
+  const exitScale = parameters.height * 1.2;
   const secondEnd = vec3Add(
     apex,
     vec3Add(

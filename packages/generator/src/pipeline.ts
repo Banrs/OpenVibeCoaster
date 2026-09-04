@@ -234,11 +234,11 @@ export const recordHybridDefaultElements = (
   append(
     createElement("launch", "launch-009", {
       length: 380,
-      targetSpeed: 80,
+      targetSpeed: 81,
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 0.98, 44, 50);
+  appendForceHill("airtimeHill-010", 190, 0.98, 44, 60);
   append(
     createElement("topHat", "topHat-011", {
       height: 88.5,
