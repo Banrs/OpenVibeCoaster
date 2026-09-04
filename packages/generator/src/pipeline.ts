@@ -184,7 +184,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("transition", "transition-002", {
-      length: 520 + variation,
+      length: 420 + variation,
       rise: 60,
       pitch: 0,
       bank: 0,
@@ -284,7 +284,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("zeroGRoll", "zeroGRoll-015", {
-      length: 300,
+      length: 400,
       roll: Math.PI * 2,
     }),
   );
