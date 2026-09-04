@@ -1,0 +1,36 @@
+name: Targeted correctness fixture fixes
+
+on:
+  push:
+    branches:
+      - codex/correctness-fixes-ci
+
+permissions:
+  contents: read
+
+concurrency:
+  group: targeted-correctness-fixes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install npm 11.17.0
+        run: npm install -g npm@11.17.0
+      - name: Install dependencies (exact lockfile)
+        run: npm ci
+      - name: Verify operation-zone and clearance fixture repairs
+        run: >-
+          npm run test --
+          apps/web/src/engineering/worker.operation-zones.test.ts
+          apps/web/src/engineering/worker.clearance.test.ts
+          packages/generator/src/pipeline.clearance.test.ts
