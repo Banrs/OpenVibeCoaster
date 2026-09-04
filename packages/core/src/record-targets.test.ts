@@ -30,6 +30,12 @@ test("accepts the exact project engineering record targets", () => {
   expect(() => validateRecordTargetsProfile(profile)).not.toThrow();
 });
 
+test("the record profile contains no standards or compliance claim", () => {
+  expect(JSON.stringify(profile)).not.toMatch(
+    /ASTM|F2291|licensed|compliance|certification/i,
+  );
+});
+
 test("rejects non-project provenance and every target range outside its exact window", () => {
   expect(() =>
     validateRecordTargetsProfile({ ...profile, provenance: "SOURCE_VERIFIED" }),
@@ -59,15 +65,25 @@ test("rejects non-project provenance and every target range outside its exact wi
 test("rejects exact target values when they are changed", () => {
   const invalidTargets = [
     { diveDrop: { ...profile.diveDrop, heightM: 209 } },
+    { diveDrop: { ...profile.diveDrop, heightM: 211 } },
     { diveDrop: { ...profile.diveDrop, toleranceM: 2.9 } },
+    { diveDrop: { ...profile.diveDrop, toleranceM: 3.1 } },
     { diveDrop: { ...profile.diveDrop, angleDeg: 109 } },
+    { diveDrop: { ...profile.diveDrop, angleDeg: 111 } },
     { diveDrop: { ...profile.diveDrop, toleranceDeg: 1.4 } },
+    { diveDrop: { ...profile.diveDrop, toleranceDeg: 1.6 } },
     { force: { ...profile.force, verticalMinG: -1 } },
+    { force: { ...profile.force, verticalMinG: -1.2 } },
     { force: { ...profile.force, lateralMaxG: 1.4 } },
+    { force: { ...profile.force, lateralMaxG: 1.6 } },
     { force: { ...profile.force, longitudinalMaxG: 1.4 } },
+    { force: { ...profile.force, longitudinalMaxG: 1.6 } },
     { force: { ...profile.force, jerkMps3: 14 } },
+    { force: { ...profile.force, jerkMps3: 16 } },
     { force: { ...profile.force, rollRateRadPerSec: 1.4 } },
+    { force: { ...profile.force, rollRateRadPerSec: 1.6 } },
     { holdSeconds: 2 },
+    { holdSeconds: 4 },
   ];
 
   for (const change of invalidTargets)
