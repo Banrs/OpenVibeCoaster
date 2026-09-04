@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "profileId": "record-targets-v1",
+  "provenance": "PROJECT_ENGINEERING_LIMIT",
+  "totalLengthM": [5200, 5400],
+  "maxHeightM": [225, 235],
+  "maxSpeedKmh": [285, 295],
+  "invertedTopHatM": [90, 92],
+  "immelmannM": [80, 82],
+  "verticalLoopM": [66, 68],
+  "diveDrop": {
+    "heightM": 210,
+    "toleranceM": 3,
+    "angleDeg": 110,
+    "toleranceDeg": 1.5
+  },
+  "force": {
+    "verticalPeakG": [4.8, 5],
+    "verticalMinG": -1.1,
+    "lateralMaxG": 1.5,
+    "longitudinalMaxG": 1.5,
+    "jerkMps3": 15,
+    "rollRateRadPerSec": 1.5
+  },
+  "holdSeconds": 3
+}

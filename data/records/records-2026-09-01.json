@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-01",
+  "provenanceVocabulary": [
+    "SOURCE_VERIFIED",
+    "DERIVED",
+    "DESIGN_TARGET",
+    "PROJECT_ENGINEERING_LIMIT",
+    "DESIGN_ASSUMPTION",
+    "UNKNOWN_UNCONFIGURED"
+  ],
+  "records": [
+    {
+      "id": "falcons-flight-metric-facts",
+      "name": "Falcons Flight",
+      "facts": [
+        {
+          "metric": "rideHeight",
+          "value": 195,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://sixflagsqiddiyacity.com/en/explore/rides/falcons-flight",
+            "https://www.intamin.com/project/falcons-flight/"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "speed",
+          "value": 250,
+          "unit": "km/h",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://sixflagsqiddiyacity.com/en/explore/rides/falcons-flight",
+            "https://www.intamin.com/project/falcons-flight/"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "trackLength",
+          "value": 4325,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://sixflagsqiddiyacity.com/en/explore/rides/falcons-flight",
+            "https://www.intamin.com/project/falcons-flight/"
+          ],
+          "retrievedAt": "2026-09-01"
+        }
+      ]
+    },
+    {
+      "id": "tormenta-rampaging-run-metric-facts",
+      "name": "Tormenta Rampaging Run",
+      "facts": [
+        {
+          "metric": "rideHeight",
+          "value": 94,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+            "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "dropHeight",
+          "value": 87,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+            "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "dropAngle",
+          "value": 95,
+          "unit": "deg",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+            "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "speed",
+          "value": 140,
+          "unit": "km/h",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+            "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "immelmannHeight",
+          "value": 66,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+            "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "verticalLoopHeight",
+          "value": 55,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+            "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "trackLength",
+          "value": 1280,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+            "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run"
+          ],
+          "retrievedAt": "2026-09-01"
+        }
+      ]
+    },
+    {
+      "id": "spitfire-metric-facts",
+      "name": "Spitfire",
+      "facts": [
+        {
+          "metric": "inversionHeight",
+          "value": 73,
+          "unit": "m",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.intamin.com/project/spitfire-six-flags-qiddiya/"
+          ],
+          "retrievedAt": "2026-09-01"
+        },
+        {
+          "metric": "speed",
+          "value": 127,
+          "unit": "km/h",
+          "provenance": "SOURCE_VERIFIED",
+          "sourceUrls": [
+            "https://www.intamin.com/project/spitfire-six-flags-qiddiya/"
+          ],
+          "retrievedAt": "2026-09-01"
+        }
+      ]
+    }
+  ],
+  "projectComparison": {
+    "totalLengthM": {
+      "baseline": 4325,
+      "target": 5200,
+      "increasePercent": 20.2,
+      "provenance": "DESIGN_TARGET"
+    },
+    "maxHeightM": {
+      "baseline": 195,
+      "target": 225,
+      "increasePercent": 15.4,
+      "provenance": "DESIGN_TARGET"
+    },
+    "maxSpeedKmh": {
+      "baseline": 250,
+      "target": 285,
+      "increasePercent": 14.0,
+      "provenance": "DESIGN_TARGET"
+    },
+    "invertedTopHatM": {
+      "baseline": 73,
+      "target": 90,
+      "increasePercent": 23.3,
+      "provenance": "DESIGN_TARGET"
+    },
+    "immelmannM": {
+      "baseline": 66,
+      "target": 80,
+      "increasePercent": 21.2,
+      "provenance": "DESIGN_TARGET"
+    },
+    "verticalLoopM": {
+      "baseline": 55,
+      "target": 66,
+      "increasePercent": 20.0,
+      "provenance": "DESIGN_TARGET"
+    }
+  }
+}
