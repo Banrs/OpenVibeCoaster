@@ -81,7 +81,10 @@ describe("swept AABB tight rotation bound", () => {
     const normal = vec3(0, 1, 0);
     const binormal = vec3(-c, 0, c);
     const offset = scale(binormal, 4);
-    const makeSegment = (start: Vec3, startS: number): SweptClearanceSegment => ({
+    const makeSegment = (
+      start: Vec3,
+      startS: number,
+    ): SweptClearanceSegment => ({
       start: { position: start, tangent, normal, binormal },
       end: {
         position: add(start, scale(tangent, 0.2)),

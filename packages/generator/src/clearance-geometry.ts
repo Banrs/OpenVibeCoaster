@@ -505,17 +505,11 @@ function obbSeparationLowerBoundCore(a: OrientedBox, b: OrientedBox): number {
       const projectedB = intervalAbs(intervalDot(normalized, b.axes[index]!));
       radiusA = {
         lo: 0,
-        hi: nextUp(
-          radiusA.hi +
-            nextUp(a.halfExtents[index]! * projectedA.hi),
-        ),
+        hi: nextUp(radiusA.hi + nextUp(a.halfExtents[index]! * projectedA.hi)),
       };
       radiusB = {
         lo: 0,
-        hi: nextUp(
-          radiusB.hi +
-            nextUp(b.halfExtents[index]! * projectedB.hi),
-        ),
+        hi: nextUp(radiusB.hi + nextUp(b.halfExtents[index]! * projectedB.hi)),
       };
     }
     const extent = nextUp(radiusA.hi + radiusB.hi);
