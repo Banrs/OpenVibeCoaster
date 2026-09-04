@@ -501,10 +501,13 @@ export function computeClearanceField(
     length: count - 1,
   }) as Vec3[];
   const terrainHardThresholds: readonly number[] = [hard, ...thresholds];
-  const allThresholdsForSeparation = [
+  const selfSeparationThresholds: readonly number[] = [
     hard,
     ...thresholds,
     ...softThresholds,
+  ];
+  const allThresholdsForSeparation = [
+    ...selfSeparationThresholds,
     effectiveCap,
   ];
 
@@ -533,23 +536,6 @@ export function computeClearanceField(
           perSegmentSource[segIdx] = "cap";
           perSegmentLowerRelatedIds[segIdx] = [segId];
           perSegmentLowerSource[segIdx] = "cap";
-          continue;
-        }
-        if (
-          verticalLower < effectiveCap &&
-          terrainHardThresholds.every((threshold) => verticalLower >= threshold)
-        ) {
-          perSegmentLower[segIdx] = Math.min(verticalLower, effectiveCap);
-          perSegmentUpper[segIdx] = effectiveCap;
-          perSegmentWitnessS[segIdx] = fallbackS;
-          perSegmentWitnessPos[segIdx] = fallbackPos;
-          perSegmentLowerWitnessS[segIdx] = fallbackS;
-          perSegmentLowerWitnessPos[segIdx] = fallbackPos;
-          perSegmentWork[segIdx] = 0;
-          perSegmentRelatedIds[segIdx] = [segId];
-          perSegmentSource[segIdx] = "terrain";
-          perSegmentLowerRelatedIds[segIdx] = [segId];
-          perSegmentLowerSource[segIdx] = "terrain";
           continue;
         }
       }
@@ -840,9 +826,9 @@ export function computeClearanceField(
       );
       perSegmentWork[i] = 0;
       perSegmentRelatedIds[i] = [idForSegment(i)];
-      perSegmentSource[i] = terrainBroadPhaseProven ? "cap" : "terrain";
+      perSegmentSource[i] = "cap";
       perSegmentLowerRelatedIds[i] = [idForSegment(i)];
-      perSegmentLowerSource[i] = terrainBroadPhaseProven ? "cap" : "terrain";
+      perSegmentLowerSource[i] = "cap";
     }
   }
 
@@ -856,12 +842,7 @@ export function computeClearanceField(
   }
 
   const CHUNK_SIZE = 16;
-  const maxCertificationThreshold = Math.max(
-    effectiveCap,
-    hard,
-    ...thresholds,
-    ...softThresholds,
-  );
+  const maxSelfSeparationThreshold = Math.max(...selfSeparationThresholds);
   const chunkCount = Math.ceil(sweptAabbs.length / CHUNK_SIZE);
   const chunkAabbs: Array<{ min: Vec3; max: Vec3 }> = [];
   for (let c = 0; c < chunkCount; c++) {
@@ -1031,7 +1012,7 @@ export function computeClearanceField(
             };
             const distLower = nextDown(Math.hypot(gap(0), gap(1), gap(2)));
             if (distLower > effectiveCap) continue;
-            if (distLower >= maxCertificationThreshold) {
+            if (distLower >= maxSelfSeparationThreshold) {
               if (!charge(1))
                 throw new RangeError(
                   "work budget exhausted on threshold-pass lower update",
@@ -1100,7 +1081,7 @@ export function computeClearanceField(
             };
             const distLower = nextDown(Math.hypot(gap(0), gap(1), gap(2)));
             if (distLower > effectiveCap) continue;
-            if (distLower >= maxCertificationThreshold) {
+            if (distLower >= maxSelfSeparationThreshold) {
               if (!charge(1))
                 throw new RangeError(
                   "work budget exhausted on threshold-pass lower update",
@@ -1231,7 +1212,7 @@ export function computeClearanceField(
           ...(closed
             ? { closed: true, trackLengthM: snapshot.totalLength }
             : {}),
-          separationThresholds: allThresholdsForSeparation,
+          separationThresholds: selfSeparationThresholds,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
