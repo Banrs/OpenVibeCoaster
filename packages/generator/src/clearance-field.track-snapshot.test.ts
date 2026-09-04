@@ -28,9 +28,10 @@ const TRACK_SNAPSHOT_GETTERS = [
 type TrackSnapshotGetterName = (typeof TRACK_SNAPSHOT_GETTERS)[number];
 
 const trackGetterCounts: Record<TrackSnapshotGetterName, number> =
-  Object.fromEntries(
-    TRACK_SNAPSHOT_GETTERS.map((name) => [name, 0]),
-  ) as Record<TrackSnapshotGetterName, number>;
+  Object.fromEntries(TRACK_SNAPSHOT_GETTERS.map((name) => [name, 0])) as Record<
+    TrackSnapshotGetterName,
+    number
+  >;
 
 class CountingCompiledTrackData extends CompiledTrackData {
   public override get positions(): Float64Array {
@@ -134,9 +135,7 @@ function projectDiagnostic(d: Diagnostic) {
     location: d.location
       ? {
           s: d.location.s,
-          position: d.location.position
-            ? [...d.location.position]
-            : undefined,
+          position: d.location.position ? [...d.location.position] : undefined,
           time: d.location.time,
         }
       : undefined,
