@@ -177,7 +177,7 @@ describe("pipeline authoritative clearance", () => {
       constraints: [],
       pinnedElementIds: [],
     });
-    const r = generateCoaster(base, { samples: 2 });
+    const r = generateCoaster(base);
     expect(r.clearanceField).toBeDefined();
     expect(r.clearanceField!.track.checksum).toBe(r.track.checksum);
   });
