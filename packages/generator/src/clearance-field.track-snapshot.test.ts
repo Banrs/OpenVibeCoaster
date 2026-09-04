@@ -197,6 +197,7 @@ describe("clearance field – track snapshot (RED)", () => {
       segmentIds,
     });
 
+    expect(expected.track).toBe(baseTrack);
     expect(expected.segments.length).toBe(baseTrack.distances.length - 1);
     expect(expectedSdf.calls).toBeGreaterThan(0);
     expect(expected.work).toBeGreaterThan(0);
@@ -222,6 +223,7 @@ describe("clearance field – track snapshot (RED)", () => {
     });
 
     expect(countedSdf.calls).toBeGreaterThan(0);
+    expect(counted.track).toBe(countedTrack);
     expect(projectField(counted)).toEqual(projectField(expected));
 
     const countsSnapshot = { ...trackGetterCounts };
