@@ -488,6 +488,74 @@ function obbDistanceCore(
   if (!intersectingProven) throw new RangeError("SAT ambiguous");
   throw new RangeError("SAT intersect but no witness");
 }
+
+function obbSeparationLowerBoundCore(a: OrientedBox, b: OrientedBox): number {
+  const delta = sub(b.center, a.center);
+  let best = 0;
+  const testAxis = (axis: Vec3): void => {
+    const axisLength = len(axis);
+    if (axisLength === 0) return;
+    const normalized = scale(axis, 1 / axisLength);
+    const normalizedLengthUp = nextUp(len(normalized));
+    const projectedDelta = intervalAbs(intervalDot(delta, normalized));
+    let radiusA: Interval = { lo: 0, hi: 0 };
+    let radiusB: Interval = { lo: 0, hi: 0 };
+    for (let index = 0; index < 3; index += 1) {
+      const projectedA = intervalAbs(intervalDot(normalized, a.axes[index]!));
+      const projectedB = intervalAbs(intervalDot(normalized, b.axes[index]!));
+      radiusA = {
+        lo: 0,
+        hi: nextUp(
+          radiusA.hi +
+            nextUp(a.halfExtents[index]! * projectedA.hi),
+        ),
+      };
+      radiusB = {
+        lo: 0,
+        hi: nextUp(
+          radiusB.hi +
+            nextUp(b.halfExtents[index]! * projectedB.hi),
+        ),
+      };
+    }
+    const extent = nextUp(radiusA.hi + radiusB.hi);
+    const projectedGap = nextDown(projectedDelta.lo - extent);
+    if (projectedGap <= 0) return;
+    best = Math.max(best, nextDown(projectedGap / normalizedLengthUp));
+  };
+  for (let index = 0; index < 3; index += 1) testAxis(a.axes[index]!);
+  for (let index = 0; index < 3; index += 1) testAxis(b.axes[index]!);
+  for (let aIndex = 0; aIndex < 3; aIndex += 1)
+    for (let bIndex = 0; bIndex < 3; bIndex += 1)
+      testAxis(cross(a.axes[aIndex]!, b.axes[bIndex]!));
+  return best;
+}
+
+export function sweptObbSeparationLowerBound(
+  first: SweptClearanceSegment,
+  second: SweptClearanceSegment,
+): number {
+  const firstInvariants = getSegmentInvariants(first);
+  const secondInvariants = getSegmentInvariants(second);
+  const firstMidpoint = createOrientedBoxFastInternal(
+    interpolatePose(first, 0.5),
+    first.geometry,
+  );
+  const secondMidpoint = createOrientedBoxFastInternal(
+    interpolatePose(second, 0.5),
+    second.geometry,
+  );
+  const staticLower = obbSeparationLowerBoundCore(
+    firstMidpoint,
+    secondMidpoint,
+  );
+  const motion = nextUp(
+    motionBoundForDeltaFast(firstInvariants, 0.5) +
+      motionBoundForDeltaFast(secondInvariants, 0.5),
+  );
+  return Math.max(0, nextDown(staticLower - motion));
+}
+
 export function staticObbDistance(
   a: OrientedBox,
   b: OrientedBox,
