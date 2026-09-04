@@ -257,7 +257,7 @@ export const recordHybridDefaultElements = (
     createElement("verticalLoop", "verticalLoop-013", {
       height: 67,
       referenceSpeed: 38,
-      bank: 0,
+      bank: Math.PI,
     }),
     38,
   );

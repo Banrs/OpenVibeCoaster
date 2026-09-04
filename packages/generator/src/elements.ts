@@ -800,20 +800,27 @@ const immelmannSpans = (
 ): ElementBuildResult => {
   const basis = basisFor(pose);
   const zero = vec3(0, 0, 0);
-  const radius = parameters.height / 2;
-  const firstDerivativeScale = parameters.height * 3;
-  const secondDerivativeScale = firstDerivativeScale ** 2 / radius;
-  const thirdDerivativeScale = firstDerivativeScale ** 3 / radius ** 2;
-  const first = new SeventhOrderHermiteSpan({
+  const entryScale = (parameters.height * Math.PI) / 2;
+  const apexScale = (parameters.height * 5) / 3;
+  const apexSecondDerivative = (parameters.height ** 2 * 2) / 15;
+  const apexThirdDerivative = parameters.height ** 3 * 0.009;
+  const apexForwardOffset = parameters.height * 0.74;
+  const firstRaw = new SeventhOrderHermiteSpan({
     p0: pose.position,
-    d10: vec3Scale(basis.tangent, firstDerivativeScale),
+    d10: vec3Scale(basis.tangent, entryScale),
     d20: zero,
     d30: zero,
-    p1: vec3Add(pose.position, vec3Scale(basis.normal, parameters.height)),
-    d11: vec3Scale(basis.tangent, -firstDerivativeScale),
-    d21: vec3Scale(basis.normal, -secondDerivativeScale),
-    d31: vec3Scale(basis.tangent, thirdDerivativeScale),
+    p1: vec3Add(
+      vec3Add(pose.position, vec3Scale(basis.tangent, apexForwardOffset)),
+      vec3Scale(basis.normal, parameters.height),
+    ),
+    d11: vec3Scale(basis.tangent, -apexScale),
+    d21: vec3Scale(basis.normal, -apexSecondDerivative),
+    d31: vec3Scale(basis.tangent, apexThirdDerivative),
   });
+  const first = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+    firstRaw.coefficients,
+  );
   const apex = first.position(1);
   const apexD1 = first.derivative(1, 1);
   const apexD2 = first.derivative(1, 2);
@@ -846,7 +853,7 @@ const immelmannSpans = (
   const second = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
     secondRaw.coefficients,
   );
-  const apexBank = pose.bank + Math.PI;
+  const exitBank = parameters.bank + Math.PI;
   const canonicalRoll = (from: number, to: number): QuinticScalarSpan =>
     QuinticScalarSpan.fromCoefficients(
       new QuinticScalarSpan({
@@ -860,8 +867,8 @@ const immelmannSpans = (
     );
   const spans = [first, second] as const;
   const rolls = [
-    canonicalRoll(pose.bank, apexBank),
-    canonicalRoll(apexBank, parameters.bank),
+    canonicalRoll(pose.bank, pose.bank),
+    canonicalRoll(pose.bank, exitBank),
   ] as const;
   const solvedSpans = spans.map((span, index): SolvedSpan => {
     const bank = rolls[index]!;
@@ -886,7 +893,7 @@ const immelmannSpans = (
       position: last.span.position(1),
       tangent: vec3Normalize(last.span.derivative(1, 1)),
       normal: basis.normal,
-      bank: parameters.bank,
+      bank: exitBank,
     }),
   };
 };
@@ -900,64 +907,63 @@ const verticalLoopSpans = (
 ): ElementBuildResult => {
   const basis = basisFor(pose);
   const zero = vec3(0, 0, 0);
-  const radius = parameters.height / 2;
-  const sweep = (Math.PI * 2) / VERTICAL_LOOP_SPAN_COUNT;
+  const shapeRadius =
+    (parameters.height / 2.05) * (parameters.referenceSpeed / 38) ** 2;
+  const apexSecondDerivative = vec3Scale(basis.normal, -shapeRadius * 0.5);
+  const entryDerivative = vec3Scale(basis.tangent, shapeRadius);
+  const invertedDerivative = vec3Scale(basis.tangent, -shapeRadius);
+  const recoveryDerivative = vec3Scale(basis.tangent, -shapeRadius * 0.25);
+  const firstEnd = vec3Add(
+    vec3Add(pose.position, vec3Scale(basis.tangent, shapeRadius * 0.5)),
+    vec3Scale(basis.normal, parameters.height),
+  );
+  const secondEnd = vec3Add(firstEnd, vec3Scale(basis.tangent, -shapeRadius));
+  const loopExit = vec3Add(
+    pose.position,
+    vec3Scale(basis.tangent, -parameters.height * 1.2),
+  );
   const canonicalPosition = (
     span: SeventhOrderHermiteSpan<Vec3>,
   ): SeventhOrderHermiteSpan<Vec3> =>
     SeventhOrderHermiteSpan.fromCoefficients<Vec3>(span.coefficients);
-  const localPosition = (angle: number): Vec3 =>
-    vec3(radius * Math.sin(angle), radius * (1 - Math.cos(angle)), 0);
-  const localDerivative = (angle: number, order: 1 | 2 | 3): Vec3 => {
-    if (order === 1)
-      return vec3(
-        radius * Math.cos(angle) * sweep,
-        radius * Math.sin(angle) * sweep,
-        0,
-      );
-    if (order === 2)
-      return vec3(
-        -radius * Math.sin(angle) * sweep ** 2,
-        radius * Math.cos(angle) * sweep ** 2,
-        0,
-      );
-    return vec3(
-      -radius * Math.cos(angle) * sweep ** 3,
-      -radius * Math.sin(angle) * sweep ** 3,
-      0,
-    );
-  };
-  const spans = Array.from({ length: VERTICAL_LOOP_SPAN_COUNT }, (_, index) => {
-    const startAngle = index * sweep;
-    const endAngle = (index + 1) * sweep;
-    return canonicalPosition(
+  const spans = [
+    canonicalPosition(
       new SeventhOrderHermiteSpan({
-        p0: worldPoint(pose, basis, localPosition(startAngle)),
-        d10: worldVector(basis, localDerivative(startAngle, 1)),
-        d20:
-          index === 0
-            ? zero
-            : worldVector(basis, localDerivative(startAngle, 2)),
-        d30:
-          index === 0
-            ? zero
-            : worldVector(basis, localDerivative(startAngle, 3)),
-        p1:
-          index === VERTICAL_LOOP_SPAN_COUNT - 1
-            ? pose.position
-            : worldPoint(pose, basis, localPosition(endAngle)),
-        d11: worldVector(basis, localDerivative(endAngle, 1)),
-        d21:
-          index === VERTICAL_LOOP_SPAN_COUNT - 1
-            ? zero
-            : worldVector(basis, localDerivative(endAngle, 2)),
-        d31:
-          index === VERTICAL_LOOP_SPAN_COUNT - 1
-            ? zero
-            : worldVector(basis, localDerivative(endAngle, 3)),
+        p0: pose.position,
+        d10: entryDerivative,
+        d20: zero,
+        d30: zero,
+        p1: firstEnd,
+        d11: invertedDerivative,
+        d21: apexSecondDerivative,
+        d31: zero,
       }),
-    );
-  });
+    ),
+    canonicalPosition(
+      new SeventhOrderHermiteSpan({
+        p0: firstEnd,
+        d10: invertedDerivative,
+        d20: apexSecondDerivative,
+        d30: zero,
+        p1: secondEnd,
+        d11: recoveryDerivative,
+        d21: apexSecondDerivative,
+        d31: zero,
+      }),
+    ),
+    canonicalPosition(
+      new SeventhOrderHermiteSpan({
+        p0: secondEnd,
+        d10: recoveryDerivative,
+        d20: apexSecondDerivative,
+        d30: zero,
+        p1: loopExit,
+        d11: entryDerivative,
+        d21: zero,
+        d31: zero,
+      }),
+    ),
+  ] as const;
   const canonicalRoll = (from: number, to: number): QuinticScalarSpan =>
     QuinticScalarSpan.fromCoefficients(
       new QuinticScalarSpan({
