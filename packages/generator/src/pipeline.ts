@@ -184,7 +184,7 @@ export const recordHybridDefaultElements = (
     createElement("transition", "transition-002", {
       length: 420 + variation,
       rise: 60,
-      pitch: 0.15,
+      pitch: 0,
       bank: 0,
     }),
   );
@@ -231,7 +231,7 @@ export const recordHybridDefaultElements = (
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 0, 55);
+  appendForceHill("airtimeHill-010", 190, 1.15, 44);
   append(
     createElement("topHat", "topHat-011", {
       height: 91,
@@ -257,7 +257,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("overbankedTurn", "overbankedTurn-014", {
       radius: 130,
-      angle: 2.2,
+      angle: -2.2,
       bank: 1.8,
     }),
   );
