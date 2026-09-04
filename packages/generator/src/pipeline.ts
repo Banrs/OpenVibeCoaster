@@ -227,7 +227,7 @@ export const recordHybridDefaultElements = (
       dropHeight: 214,
       angleDeg: 109,
       approachRadius: 55,
-      exitRadius: 200,
+      exitRadius: 205,
       bank: 0,
     }),
   );
@@ -296,8 +296,8 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("stall", "stall-016", {
-      length: 400,
-      height: 45,
+      length: 300,
+      height: 30,
       bank: Math.PI,
     }),
   );
@@ -305,8 +305,8 @@ export const recordHybridDefaultElements = (
     createElement("brake", "brake-017", {
       length: 140,
       targetSpeed: 25,
-      angle: Math.PI / 2,
-      bank: 0.6,
+      angle: 0.25,
+      bank: Math.PI,
     }),
   );
   append(
