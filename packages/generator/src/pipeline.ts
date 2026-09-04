@@ -1533,10 +1533,13 @@ const flagshipBankProfile = (
   const overbanks = new Map(
     elements
       .filter((element) => element.type === "overbankedTurn")
-      .map((element) => [
-        element.id,
-        (element.parameters as { readonly bank: number }).bank,
-      ] as const),
+      .map(
+        (element) =>
+          [
+            element.id,
+            (element.parameters as { readonly bank: number }).bank,
+          ] as const,
+      ),
   );
   return spans.flatMap((span) => {
     const amplitude = overbanks.get(span.id);

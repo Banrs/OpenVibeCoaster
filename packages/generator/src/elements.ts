@@ -437,8 +437,7 @@ const forceProfileSpan = (
     const thetaPrime = headingRate(u, heading);
     const thetaSecond =
       (length / referenceSpeed ** 2) *
-      (sustainedForceProfile(u, 1) *
-        (targetForceG * gravity + normalGravity) +
+      (sustainedForceProfile(u, 1) * (targetForceG * gravity + normalGravity) +
         sustainedForceProfile(u) *
           (-gravityTangent * Math.cos(heading) -
             gravityNormal * Math.sin(heading)) *

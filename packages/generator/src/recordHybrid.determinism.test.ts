@@ -1,9 +1,6 @@
 import { expect, it } from "vitest";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
-import {
-  generateCoaster,
-  recordHybridDefaultElements,
-} from "./pipeline.js";
+import { generateCoaster, recordHybridDefaultElements } from "./pipeline.js";
 
 const RECORD_HYBRID_IDS = [
   "station-000",

@@ -110,12 +110,12 @@ describe("record-hybrid default pipeline", () => {
       const serialized = serializeCoasterFileV1(generated.file);
       const loadedFile = deserializeCoasterFileV1(serialized);
       const loaded = compileCoasterFile(loadedFile);
-      expect(loadedFile.intent.elements).toEqual(generated.file.intent.elements);
+      expect(loadedFile.intent.elements).toEqual(
+        generated.file.intent.elements,
+      );
       expect(serializeCoasterFileV1(loadedFile)).toBe(serialized);
       expect(loadedFile.profileVersion).toBe("record-targets-v1");
-      expect(loadedFile.researchSnapshotIds).toEqual([
-        "records-2026-09-01",
-      ]);
+      expect(loadedFile.researchSnapshotIds).toEqual(["records-2026-09-01"]);
       expect(loaded.track.checksum).toBe(generated.track.checksum);
       expect(loaded.track.totalLength).toBe(generated.track.totalLength);
     },
