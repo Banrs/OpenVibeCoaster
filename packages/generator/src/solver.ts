@@ -563,7 +563,7 @@ const semanticVariables = (
       const [lower, upper] = variableBounds(
         parameters.width as number,
         10,
-        300,
+        500,
       );
       add(elementIndex, "width", parameters.width as number, lower, upper);
     }
