@@ -947,6 +947,10 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
     return result;
   }
 
+  public certifiedSurfaceBounds(): Aabb {
+    return this.bounds();
+  }
+
   private triangleAt(x: number, z: number): HeightfieldTriangle {
     requireFinite(x, "Heightfield normal x coordinate");
     requireFinite(z, "Heightfield normal z coordinate");

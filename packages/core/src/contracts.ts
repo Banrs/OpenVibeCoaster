@@ -120,6 +120,12 @@ export interface EnvironmentQuery {
   signedDistance(point: Vec3): number;
   sampleSolid?: (point: Vec3) => number;
   bounds?: () => Aabb;
+  /**
+   * Optional proof capability. The finite AABB must enclose every point on the
+   * signed-distance zero surface relevant to this environment query.
+   * Implementations that cannot guarantee this must omit the method.
+   */
+  certifiedSurfaceBounds?: () => Aabb;
   raycast(
     origin: Vec3,
     direction: Vec3,

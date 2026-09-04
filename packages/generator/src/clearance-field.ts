@@ -101,6 +101,28 @@ function finite(v: number, label: string): number {
   if (!Number.isFinite(v)) throw new RangeError(`${label} must be finite`);
   return v;
 }
+function boundsMaxY(value: unknown, label: string): number {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !Array.isArray((value as { min: unknown }).min) ||
+    !Array.isArray((value as { max: unknown }).max) ||
+    (value as { min: readonly unknown[] }).min.length !== 3 ||
+    (value as { max: readonly unknown[] }).max.length !== 3
+  )
+    throw new RangeError(`${label} must be Aabb`);
+  const minimum = (value as { min: Vec3 }).min;
+  const maximum = (value as { max: Vec3 }).max;
+  if (![...minimum, ...maximum].every(Number.isFinite))
+    throw new RangeError(`${label} components must be finite`);
+  if (
+    minimum[0]! > maximum[0]! ||
+    minimum[1]! > maximum[1]! ||
+    minimum[2]! > maximum[2]!
+  )
+    throw new RangeError(`${label} min greater than max`);
+  return maximum[1]!;
+}
 function effectiveCapFor(
   displayCap: number,
   hard: number,
@@ -438,42 +460,27 @@ export function computeClearanceField(
   let envMaxY: number | undefined = undefined;
   if (env?.bounds) {
     try {
-      const b = env.bounds();
-      if (
-        !b ||
-        typeof b !== "object" ||
-        !Array.isArray((b as { min: unknown }).min) ||
-        !Array.isArray((b as { max: unknown }).max) ||
-        (b as { min: readonly unknown[] }).min.length !== 3 ||
-        (b as { max: readonly unknown[] }).max.length !== 3
-      ) {
-        throw new RangeError("bounds must be Aabb");
-      }
-      const bMin = (b as { min: Vec3 }).min;
-      const bMax = (b as { max: Vec3 }).max;
-      if (
-        !Number.isFinite(bMin[0]!) ||
-        !Number.isFinite(bMin[1]!) ||
-        !Number.isFinite(bMin[2]!) ||
-        !Number.isFinite(bMax[0]!) ||
-        !Number.isFinite(bMax[1]!) ||
-        !Number.isFinite(bMax[2]!)
-      ) {
-        throw new RangeError("bounds components must be finite");
-      }
-      if (bMin[0]! > bMax[0]! || bMin[1]! > bMax[1]! || bMin[2]! > bMax[2]!) {
-        throw new RangeError("bounds min greater than max");
-      }
-      envMaxY = bMax[1]!;
+      envMaxY = boundsMaxY(env.bounds(), "bounds");
       let minSweptY = Infinity;
       for (let i = 0; i < count - 1; i++) {
         minSweptY = Math.min(minSweptY, sweptAabbs[i]!.min[1]!);
       }
-      const proven = nextDown(minSweptY - nextUp(bMax[1]!));
+      const proven = nextDown(minSweptY - nextUp(envMaxY));
       if (proven >= effectiveCap) terrainBroadPhaseProven = true;
     } catch {
       terrainBroadPhaseProven = false;
       envMaxY = undefined;
+    }
+  }
+  let certifiedSurfaceMaxY: number | undefined = undefined;
+  if (env?.certifiedSurfaceBounds) {
+    try {
+      certifiedSurfaceMaxY = boundsMaxY(
+        env.certifiedSurfaceBounds(),
+        "certifiedSurfaceBounds",
+      );
+    } catch {
+      certifiedSurfaceMaxY = undefined;
     }
   }
 
@@ -536,6 +543,31 @@ export function computeClearanceField(
           perSegmentSource[segIdx] = "cap";
           perSegmentLowerRelatedIds[segIdx] = [segId];
           perSegmentLowerSource[segIdx] = "cap";
+          continue;
+        }
+      }
+      if (certifiedSurfaceMaxY !== undefined) {
+        const sweptMinY = sweptAabbs[segIdx]!.min[1]!;
+        const verticalLower = nextDown(
+          sweptMinY - nextUp(certifiedSurfaceMaxY),
+        );
+        if (
+          verticalLower < effectiveCap &&
+          selfSeparationThresholds.every(
+            (threshold) => verticalLower >= threshold,
+          )
+        ) {
+          perSegmentLower[segIdx] = verticalLower;
+          perSegmentUpper[segIdx] = effectiveCap;
+          perSegmentWitnessS[segIdx] = fallbackS;
+          perSegmentWitnessPos[segIdx] = fallbackPos;
+          perSegmentLowerWitnessS[segIdx] = fallbackS;
+          perSegmentLowerWitnessPos[segIdx] = fallbackPos;
+          perSegmentWork[segIdx] = 0;
+          perSegmentRelatedIds[segIdx] = [segId];
+          perSegmentSource[segIdx] = "terrain";
+          perSegmentLowerRelatedIds[segIdx] = [segId];
+          perSegmentLowerSource[segIdx] = "terrain";
           continue;
         }
       }
