@@ -41,9 +41,7 @@ describe("diveDrop seams and global frames", () => {
     expect(seams).toHaveLength(2);
     for (const seam of seams) {
       expect(seam.positionM).toBeLessThanOrEqual(defaultTolerances.positionM);
-      expect(seam.tangentRad).toBeLessThanOrEqual(
-        defaultTolerances.tangentRad,
-      );
+      expect(seam.tangentRad).toBeLessThanOrEqual(defaultTolerances.tangentRad);
       expect(seam.curvaturePerM).toBeLessThanOrEqual(
         defaultTolerances.curvaturePerM,
       );

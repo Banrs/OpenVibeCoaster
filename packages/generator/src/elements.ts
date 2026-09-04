@@ -681,10 +681,7 @@ const diveDropSpans = (
     ),
   );
   const recoveryEnd = vec3Add(
-    vec3Add(
-      bottom,
-      vec3Scale(basis.tangent, parameters.exitRadius * 1.4),
-    ),
+    vec3Add(bottom, vec3Scale(basis.tangent, parameters.exitRadius * 1.4)),
     vec3Scale(basis.normal, 4),
   );
   const approachDerivative = vec3Scale(
@@ -695,10 +692,7 @@ const diveDropSpans = (
     dropDirection,
     parameters.approachRadius,
   );
-  const dropExitDerivative = vec3Scale(
-    dropDirection,
-    parameters.exitRadius,
-  );
+  const dropExitDerivative = vec3Scale(dropDirection, parameters.exitRadius);
   const levelDerivative = vec3Scale(basis.tangent, parameters.exitRadius);
   const canonicalPosition = (
     span: SeventhOrderHermiteSpan<Vec3>,
@@ -767,9 +761,7 @@ const diveDropSpans = (
       bank,
       zones: ["diveDrop"],
       bounds: aabbFromPoints(
-        Array.from({ length: 33 }, (_, sample) =>
-          span.position(sample / 32),
-        ),
+        Array.from({ length: 33 }, (_, sample) => span.position(sample / 32)),
       ),
       length: arcLength(span),
       positionCoefficients: span.coefficients,
@@ -885,9 +877,7 @@ const immelmannSpans = (
       bank,
       zones: ["immelmann"],
       bounds: aabbFromPoints(
-        Array.from({ length: 33 }, (_, sample) =>
-          span.position(sample / 32),
-        ),
+        Array.from({ length: 33 }, (_, sample) => span.position(sample / 32)),
       ),
       length: arcLength(span),
       positionCoefficients: span.coefficients,
