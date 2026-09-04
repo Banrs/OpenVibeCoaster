@@ -55,6 +55,7 @@ export interface ClearanceField {
   readonly segments: readonly ClearanceFieldSegment[];
   readonly globalLowerM: number;
   readonly globalUpperM: number;
+  readonly minClearanceM: number;
   readonly globalWitnessS: number;
   readonly globalWitnessPosition: Vec3;
   readonly globalRelatedIds: readonly string[];
@@ -1458,6 +1459,7 @@ export function computeClearanceField(
     segments: Object.freeze(segments),
     globalLowerM,
     globalUpperM,
+    minClearanceM: globalUpperM,
     globalWitnessS,
     globalWitnessPosition,
     globalRelatedIds: Object.freeze([...globalRelatedIds]),

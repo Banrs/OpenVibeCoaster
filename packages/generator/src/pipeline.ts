@@ -1,5 +1,7 @@
 import {
   CANONICAL_TRACK_COMPILE_OPTIONS,
+  CLIFF_VALLEY_RIDGE_SEED_Z_M,
+  CLIFF_VALLEY_SUMMIT_RAIL_Y_M,
   CoasterFileError,
   SeventhOrderHermiteSpan,
   QuinticScalarSpan,
@@ -179,18 +181,18 @@ export const recordHybridDefaultElements = (
   append(
     createElement("launch", "launch-001", {
       length: 260,
-      targetSpeed: 44,
+      targetSpeed: 60,
     }),
   );
   append(
     createElement("transition", "transition-002", {
       length: 420 + variation,
       rise: 60,
-      pitch: 0,
+      pitch: 0.1,
       bank: 0,
     }),
   );
-  appendForceHill("airtimeHill-003", 300 + variation, 1.1, 44);
+  appendForceHill("airtimeHill-003", 300 + variation, 0.9, 44);
   append(
     createElement("overbankedTurn", "overbankedTurn-004", {
       radius: 120 + variation,
@@ -213,7 +215,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("brake", "brake-007", {
-      length: 35,
+      length: 170,
       targetSpeed: 0,
     }),
   );
@@ -229,11 +231,11 @@ export const recordHybridDefaultElements = (
   append(
     createElement("launch", "launch-009", {
       length: 380,
-      targetSpeed: 80,
+      targetSpeed: 70,
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 1.15, 44);
+  appendForceHill("airtimeHill-010", 190, 0.98, 44);
   append(
     createElement("topHat", "topHat-011", {
       height: 91,
@@ -243,7 +245,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("immelmann", "immelmann-012", {
-      height: 82,
+      height: 81.9,
       exitHeadingDeg: 90,
       bank: 0,
     }),
@@ -1624,9 +1626,35 @@ const evaluateCandidate = (
   const gateStartPose = isRequirementStyleDirectedIntent(intent)
     ? deriveGateStartPose(intent)
     : undefined;
+  const flagshipStartPose = (() => {
+    if (
+      intent.mode === "directed" ||
+      !elements.some(({ id }) => id === "brake-007")
+    )
+      return undefined;
+    let pose = defaultPose();
+    for (const element of elements) {
+      const built = buildElement(element, pose, 44);
+      if (element.id === "brake-007") {
+        const center = built.solvedSpans[0]!.span.position(0.5);
+        const start = defaultPose();
+        return {
+          ...start,
+          position: vec3(
+            start.position[0],
+            start.position[1] + CLIFF_VALLEY_SUMMIT_RAIL_Y_M - center[1],
+            start.position[2] + CLIFF_VALLEY_RIDGE_SEED_Z_M - center[2],
+          ),
+        };
+      }
+      pose = built.endPose;
+    }
+    return undefined;
+  })();
+  const startPose = gateStartPose ?? flagshipStartPose;
   const rawSolved = solver.solveSemanticChain(solveElements, {
     ...(targets && targets.length > 0 ? { targets } : {}),
-    ...(gateStartPose ? { startPose: gateStartPose } : {}),
+    ...(startPose ? { startPose } : {}),
     referenceSpeed: 44,
     maxIterations:
       intent.mode === "directed"
@@ -1658,6 +1686,16 @@ const evaluateCandidate = (
       failedHardRequirementIds,
     ),
   ];
+  for (const constraint of intent.constraints)
+    if (
+      constraint.hard !== false &&
+      diagnostics.some(
+        (diagnostic) =>
+          diagnostic.relatedIds?.includes(constraint.id) &&
+          (diagnostic.severity === "error" || diagnostic.severity === "fatal"),
+      )
+    )
+      failedHardRequirementIds.add(constraint.id);
   const targetLocationS = spans.reduce((sum, span) => {
     try {
       return sum + arcLength(span.span);
@@ -1781,7 +1819,11 @@ const evaluateCandidate = (
     if (validationDiagnostics.length > 0) {
       diagnostics.push(...validationDiagnostics);
     }
-    if (track && validationDiagnostics.length === 0) {
+    const hasPriorHardFailure = diagnostics.some(
+      (diagnostic) =>
+        diagnostic.severity === "error" || diagnostic.severity === "fatal",
+    );
+    if (track && validationDiagnostics.length === 0 && !hasPriorHardFailure) {
       const displayCap = Math.max(10, 0.5, ...explicitValues);
       const closed = isClosedChain(elements);
       const segmentIds = canonicalSpansForCandidate.map((s) => s.id);

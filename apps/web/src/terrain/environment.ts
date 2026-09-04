@@ -1,4 +1,10 @@
-import { HeightfieldEnvironment } from "@openvibecoaster/core";
+import {
+  CLIFF_VALLEY_TERRAIN_PROFILE_ID,
+  createCliffValleyEnvironment,
+  HeightfieldEnvironment,
+} from "@openvibecoaster/core";
+
+export { CLIFF_VALLEY_TERRAIN_PROFILE_ID };
 
 /**
  * Explicit v1 terrain profiles – only these IDs are valid.
@@ -12,6 +18,7 @@ export const BLOCKING_TERRAIN_PROFILE_ID = "blocking-canyon-v1";
 export const VALID_TERRAIN_PROFILE_IDS = [
   ROLLING_TERRAIN_PROFILE_ID,
   BLOCKING_TERRAIN_PROFILE_ID,
+  CLIFF_VALLEY_TERRAIN_PROFILE_ID,
 ] as const;
 
 export type TerrainProfileId = (typeof VALID_TERRAIN_PROFILE_IDS)[number];
@@ -75,6 +82,8 @@ export function resolveTerrainEnvironment(
   if (profileId === undefined) return undefined;
   if (profileId === ROLLING_TERRAIN_PROFILE_ID) return createRolling();
   if (profileId === BLOCKING_TERRAIN_PROFILE_ID) return createBlocking();
+  if (profileId === CLIFF_VALLEY_TERRAIN_PROFILE_ID)
+    return createCliffValleyEnvironment();
   throw new Error(`Unknown terrain profile: ${profileId}`);
 }
 

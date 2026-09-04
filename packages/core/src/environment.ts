@@ -892,36 +892,46 @@ export class HeightfieldEnvironment implements EnvironmentQuery {
 
   private closestSurfaceDistance(point: Vec3): number {
     let closest = this.closestTriangleDistance(point);
-    for (let column = 0; column < this.width - 1; column += 1) {
-      closest = minimumDistance(
-        closest,
-        this.curtainDistance(
-          point,
-          this.surfacePoint(column, 0),
-          this.surfacePoint(column + 1, 0),
-        ),
-        this.curtainDistance(
-          point,
-          this.surfacePoint(column, this.depth - 1),
-          this.surfacePoint(column + 1, this.depth - 1),
-        ),
-      );
-    }
-    for (let row = 0; row < this.depth - 1; row += 1) {
-      closest = minimumDistance(
-        closest,
-        this.curtainDistance(
-          point,
-          this.surfacePoint(0, row),
-          this.surfacePoint(0, row + 1),
-        ),
-        this.curtainDistance(
-          point,
-          this.surfacePoint(this.width - 1, row),
-          this.surfacePoint(this.width - 1, row + 1),
-        ),
-      );
-    }
+    if (Math.abs(point[2] - this.origin[1]) < closest)
+      for (let column = 0; column < this.width - 1; column += 1)
+        closest = minimumDistance(
+          closest,
+          this.curtainDistance(
+            point,
+            this.surfacePoint(column, 0),
+            this.surfacePoint(column + 1, 0),
+          ),
+        );
+    if (Math.abs(point[2] - this.maximumZ) < closest)
+      for (let column = 0; column < this.width - 1; column += 1)
+        closest = minimumDistance(
+          closest,
+          this.curtainDistance(
+            point,
+            this.surfacePoint(column, this.depth - 1),
+            this.surfacePoint(column + 1, this.depth - 1),
+          ),
+        );
+    if (Math.abs(point[0] - this.origin[0]) < closest)
+      for (let row = 0; row < this.depth - 1; row += 1)
+        closest = minimumDistance(
+          closest,
+          this.curtainDistance(
+            point,
+            this.surfacePoint(0, row),
+            this.surfacePoint(0, row + 1),
+          ),
+        );
+    if (Math.abs(point[0] - this.maximumX) < closest)
+      for (let row = 0; row < this.depth - 1; row += 1)
+        closest = minimumDistance(
+          closest,
+          this.curtainDistance(
+            point,
+            this.surfacePoint(this.width - 1, row),
+            this.surfacePoint(this.width - 1, row + 1),
+          ),
+        );
     return requireFinite(closest, "Signed distance");
   }
 
