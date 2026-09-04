@@ -237,7 +237,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("topHat", "topHat-011", {
       height: 91,
-      width: 200,
+      width: 180,
       bank: 0,
     }),
   );
