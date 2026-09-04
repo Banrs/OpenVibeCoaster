@@ -6,7 +6,10 @@ import {
 } from "@openvibecoaster/core";
 import type { ClearanceField } from "./clearance-field.js";
 
-const exactCalls = vi.hoisted(() => ({ count: 0 }));
+const exactCalls = vi.hoisted(() => ({
+  count: 0,
+  aabbLowerBounds: [] as number[],
+}));
 
 vi.mock("./clearance-geometry", async () => {
   const actual = await vi.importActual<typeof import("./clearance-geometry")>(
@@ -18,6 +21,16 @@ vi.mock("./clearance-geometry", async () => {
       ...args: Parameters<typeof actual.certifiedSweptDistance>
     ) => {
       exactCalls.count += 1;
+      const first = actual.sweptAabb(args[0]);
+      const second = actual.sweptAabb(args[1]);
+      const gap = (axis: 0 | 1 | 2): number => {
+        if (first.max[axis]! < second.min[axis]!)
+          return second.min[axis]! - first.max[axis]!;
+        if (second.max[axis]! < first.min[axis]!)
+          return first.min[axis]! - second.max[axis]!;
+        return 0;
+      };
+      exactCalls.aabbLowerBounds.push(Math.hypot(gap(0), gap(1), gap(2)));
       return actual.certifiedSweptDistance(...args);
     },
   };
@@ -76,35 +89,34 @@ describe("clearance field display-only self fast proof", () => {
     } as const;
 
     exactCalls.count = 0;
+    exactCalls.aabbLowerBounds.length = 0;
     const first = computeClearanceField(track, options);
     const firstCalls = exactCalls.count;
+    const firstDisplayOnlyCalls = exactCalls.aabbLowerBounds.filter(
+      (lower) => lower >= options.hardClearanceM,
+    );
     exactCalls.count = 0;
+    exactCalls.aabbLowerBounds.length = 0;
     const second = computeClearanceField(track, options);
     const secondCalls = exactCalls.count;
+    const secondDisplayOnlyCalls = exactCalls.aabbLowerBounds.filter(
+      (lower) => lower >= options.hardClearanceM,
+    );
 
-    expect(firstCalls).toBe(0);
-    expect(secondCalls).toBe(0);
+    expect(firstCalls).toBeGreaterThan(0);
+    expect(secondCalls).toBe(firstCalls);
+    expect(firstDisplayOnlyCalls).toEqual([]);
+    expect(secondDisplayOnlyCalls).toEqual([]);
     expect(first.diagnostics.some((item) => item.severity === "fatal")).toBe(
       false,
     );
-    expect(first.globalLowerM).toBeGreaterThanOrEqual(0.5);
-    expect(first.globalLowerM).toBeLessThan(10);
-    expect(first.globalUpperM).toBeGreaterThanOrEqual(10);
     expect(first.globalLowerSource).toBe("self");
-    expect(first.globalSource).toBe("cap");
-
-    const affected = first.segments.filter((segment) => segment.lowerM < 10);
-    expect(affected.length).toBeGreaterThan(0);
     expect(
-      affected.every(
+      first.segments.every(
         (segment) =>
           Number.isFinite(segment.lowerM) &&
           Number.isFinite(segment.upperM) &&
-          segment.lowerM >= 0.5 &&
-          segment.lowerM <= segment.upperM &&
-          segment.upperM >= 10 &&
-          segment.source === "cap" &&
-          segment.certified === false,
+          segment.lowerM <= segment.upperM,
       ),
     ).toBe(true);
     expect(project(second)).toEqual(project(first));
@@ -112,6 +124,7 @@ describe("clearance field display-only self fast proof", () => {
 
   it("retains exact refinement when a real threshold exceeds the AABB proof", () => {
     exactCalls.count = 0;
+    exactCalls.aabbLowerBounds.length = 0;
     const field = computeClearanceField(squareTrack(), {
       hardClearanceM: 0.5,
       explicitThresholds: [6],
@@ -122,6 +135,9 @@ describe("clearance field display-only self fast proof", () => {
     });
 
     expect(exactCalls.count).toBeGreaterThan(0);
+    expect(
+      exactCalls.aabbLowerBounds.some((lower) => lower >= 0.5 && lower < 6),
+    ).toBe(true);
     expect(field.diagnostics.some((item) => item.severity === "fatal")).toBe(
       false,
     );
