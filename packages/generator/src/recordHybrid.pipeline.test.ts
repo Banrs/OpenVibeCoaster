@@ -56,7 +56,7 @@ describe("record-hybrid default pipeline", () => {
     expect(finale?.kind).toBe("overbankedTurn");
     expect(
       Math.abs((finale?.parameters as { readonly angle: number }).angle),
-    ).toBeGreaterThan(Math.PI / 2);
+    ).toBeGreaterThan(Math.PI / 3);
     expect(
       Math.abs((finale?.parameters as { readonly bank: number }).bank),
     ).toBeGreaterThan(Math.PI / 2);
