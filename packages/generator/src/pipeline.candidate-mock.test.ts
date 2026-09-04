@@ -84,6 +84,7 @@ function alignedField(
     segments: Object.freeze(segments),
     globalLowerM,
     globalUpperM,
+    minClearanceM: globalUpperM,
     globalWitnessS: track.distances[0]!,
     globalWitnessPosition: wPos,
     globalRelatedIds: Object.freeze([...firstRelated]),
