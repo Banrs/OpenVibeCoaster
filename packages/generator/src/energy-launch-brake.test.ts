@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   createDesignIntentV1,
+  sampleTrackAtDistance,
   validateRecordTargetsProfile,
   type RecordTargetProfile,
 } from "@openvibecoaster/core";
@@ -99,6 +100,31 @@ test(
       return generated.file.solvedSpans.at(-1)?.id;
     };
     const maxSpeedIndex = speed.indexOf(maxSpeed);
+    const elementWindows = new Map<
+      string,
+      { startDistanceM: number; endDistanceM: number }
+    >();
+    let spanStart = 0;
+    for (const span of generated.file.solvedSpans) {
+      const owner = span.id.replace(/#\d+$/, "");
+      const current = elementWindows.get(owner) ?? {
+        startDistanceM: spanStart,
+        endDistanceM: spanStart,
+      };
+      current.endDistanceM = spanStart + span.length;
+      elementWindows.set(owner, current);
+      spanStart += span.length;
+    }
+    const nearestTimelineIndex = (distanceM: number): number => {
+      let nearest = 0;
+      for (let index = 1; index < head.length; index += 1)
+        if (
+          Math.abs(head[index]! - distanceM) <
+          Math.abs(head[nearest]! - distanceM)
+        )
+          nearest = index;
+      return nearest;
+    };
     const evidence = JSON.stringify({
       driveWork,
       maxSpeed,
@@ -128,6 +154,31 @@ test(
           /^(diveDrop-008|topHat-011|immelmann-012|verticalLoop-013)#/.test(id),
         )
         .map(({ id, length }) => ({ id, length })),
+      finaleWindows: [
+        "overbankedTurn-014",
+        "zeroGRoll-015",
+        "stall-016",
+        "brake-017",
+        "brake-018",
+      ].map((id) => {
+        const window = elementWindows.get(id)!;
+        const startIndex = nearestTimelineIndex(window.startDistanceM);
+        const endIndex = nearestTimelineIndex(window.endDistanceM);
+        return {
+          id,
+          ...window,
+          startSpeed: speed[startIndex],
+          endSpeed: speed[endIndex],
+          startTangent: sampleTrackAtDistance(
+            generated.track,
+            window.startDistanceM,
+          ).tangent,
+          endTangent: sampleTrackAtDistance(
+            generated.track,
+            window.endDistanceM,
+          ).tangent,
+        };
+      }),
       diagnostics,
       extrema: (
         [
