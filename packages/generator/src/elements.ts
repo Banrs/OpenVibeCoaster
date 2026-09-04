@@ -643,7 +643,16 @@ interface SingleSpanBuild {
 }
 
 const bankLaw = (from: number, to: number): ParametricSpan<number> =>
-  new QuinticScalarSpan({ v0: from, d10: 0, d20: 0, v1: to, d11: 0, d21: 0 });
+  QuinticScalarSpan.fromCoefficients(
+    new QuinticScalarSpan({
+      v0: from,
+      d10: 0,
+      d20: 0,
+      v1: to,
+      d11: 0,
+      d21: 0,
+    }).coefficients,
+  );
 const lineSpan = (
   pose: Pose,
   length: number,
