@@ -3,7 +3,7 @@ name: Format artifact
 on:
   push:
     branches:
-      - codex/format-artifact
+      - codex/sim-cache-format-artifact
 
 permissions:
   contents: read
