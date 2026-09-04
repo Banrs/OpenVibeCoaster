@@ -19,6 +19,9 @@ export const ELEMENT_KINDS = [
   "overbankedTurn",
   "zeroGRoll",
   "stall",
+  "diveDrop",
+  "immelmann",
+  "verticalLoop",
 ] as const;
 
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
@@ -72,6 +75,23 @@ export interface StallParameters {
   readonly height: number;
   readonly bank: number;
 }
+export interface DiveDropParameters {
+  readonly dropHeight: number;
+  readonly angleDeg: number;
+  readonly approachRadius: number;
+  readonly exitRadius: number;
+  readonly bank: number;
+}
+export interface ImmelmannParameters {
+  readonly height: number;
+  readonly exitHeadingDeg: number;
+  readonly bank: number;
+}
+export interface VerticalLoopParameters {
+  readonly height: number;
+  readonly referenceSpeed: number;
+  readonly bank: number;
+}
 
 export interface ElementParameterMap {
   readonly station: StationParameters;
@@ -84,6 +104,9 @@ export interface ElementParameterMap {
   readonly overbankedTurn: OverbankedTurnParameters;
   readonly zeroGRoll: ZeroGRollParameters;
   readonly stall: StallParameters;
+  readonly diveDrop: DiveDropParameters;
+  readonly immelmann: ImmelmannParameters;
+  readonly verticalLoop: VerticalLoopParameters;
 }
 
 export type ElementParameters<K extends ElementKind = ElementKind> =
