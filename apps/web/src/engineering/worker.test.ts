@@ -513,7 +513,7 @@ describe("engineering worker authoritative flow", () => {
       // Must be strictly less than total generation+simulation (if generation took time) or at least not equal to total when generation non-zero,
       // but at minimum proves it's not recomputed/derived on page and not total latency clone: simulationMs should be >0 for real ride
       // For tiny rides simulation may be near zero but still finite; we check it's not NaN and worker epoch near now
-      const epochNow = performance.timeOrigin + performance.now();
+      const epochNow = Date.now();
       expect(
         Math.abs(result.timings.workerSendEpochMs - epochNow),
       ).toBeLessThan(2000);
@@ -606,10 +606,6 @@ describe("engineering worker authoritative flow", () => {
       const g = globalThis as any;
       const savedPost = g.postMessage;
       const savedAdd = g.addEventListener;
-      const savedTimeOriginDesc = Object.getOwnPropertyDescriptor(
-        performance,
-        "timeOrigin",
-      );
       const postSpy = vi.fn();
       let handler: ((ev: any) => void) | null = null;
       g.postMessage = postSpy;
@@ -618,15 +614,9 @@ describe("engineering worker authoritative flow", () => {
       });
       // Isolate modules so worker re-registers with our spies
       vi.resetModules();
-      // Ensure deterministic timeOrigin for assertion
-      Object.defineProperty(performance, "timeOrigin", {
-        value: 10000,
-        configurable: true,
-        writable: true,
-      });
       const transferMod = await import("./transfer");
       const transferSpy = vi.spyOn(transferMod, "collectTransferables");
-      const nowSpy = vi.spyOn(performance, "now");
+      const nowSpy = vi.spyOn(Date, "now");
       // Import worker fresh — it will see mocked postMessage/addEventListener
       await import("./worker");
       expect(handler).not.toBeNull();
@@ -647,13 +637,10 @@ describe("engineering worker authoritative flow", () => {
         ]!;
       expect(transferOrder).toBeLessThan(lastNowOrder);
       const payload = postSpy.mock.calls[0]![0] as any;
-      expect(payload.timings.workerSendEpochMs).toBeGreaterThanOrEqual(10000);
+      expect(payload.timings.workerSendEpochMs).toBeGreaterThan(0);
       // Restore global state and module cache for remaining tests (none after this)
       g.postMessage = savedPost;
       g.addEventListener = savedAdd;
-      if (savedTimeOriginDesc)
-        Object.defineProperty(performance, "timeOrigin", savedTimeOriginDesc);
-      else delete (performance as any).timeOrigin;
       vi.restoreAllMocks();
       vi.resetModules();
       // Re-import worker to restore original module for any subsequent import

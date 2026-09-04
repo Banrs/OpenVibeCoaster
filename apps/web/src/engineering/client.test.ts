@@ -115,31 +115,18 @@ function makeSuccess(
   opts?: { simulationMs?: number; workerSendEpochMs?: number },
 ): EngineeringWorkerSuccess {
   const template = getSuccessTemplate();
-  const now =
-    typeof performance !== "undefined" && typeof performance.now === "function"
-      ? performance.now()
-      : Date.now();
-  const origin =
-    typeof performance !== "undefined" &&
-    typeof performance.timeOrigin === "number" &&
-    Number.isFinite(performance.timeOrigin)
-      ? performance.timeOrigin
-      : Date.now() - now;
-  const defaultEpoch = origin + now;
   return {
     ...template,
     requestId,
     timings: {
       simulationMs: opts?.simulationMs ?? template.timings.simulationMs,
-      workerSendEpochMs: opts?.workerSendEpochMs ?? defaultEpoch,
+      workerSendEpochMs: opts?.workerSendEpochMs ?? Date.now(),
     },
   } as EngineeringWorkerSuccess;
 }
 
 function epochMs(): number {
-  const now = performance.now();
-  const origin = performance.timeOrigin;
-  return origin + now;
+  return Date.now();
 }
 
 beforeAll(() => {
@@ -447,16 +434,10 @@ describe("EngineeringWorkerClient User Timing", () => {
     const measureSpy = vi
       .spyOn(performance, "measure")
       .mockImplementation(() => ({}) as PerformanceMeasure);
-    const nowSpy = vi.spyOn(performance, "now");
     // lock time: worker sent 8ms ago by epoch
-    const fixedNow = 1000;
-    const fixedOrigin = 5000;
-    Object.defineProperty(performance, "timeOrigin", {
-      value: fixedOrigin,
-      configurable: true,
-    });
-    nowSpy.mockReturnValue(fixedNow);
-    const workerEpoch = fixedOrigin + fixedNow - 8; // 8ms transfer
+    const fixedNow = 6000;
+    vi.spyOn(Date, "now").mockReturnValue(fixedNow);
+    const workerEpoch = fixedNow - 8;
     const simMs = 22.5;
     const promise = client.generate("timing-1", validIntent);
     workers[0]!.emitMessage(
@@ -512,24 +493,22 @@ describe("EngineeringWorkerClient User Timing", () => {
     expect((transferCall![1] as { duration: number }).duration).toBe(8);
   });
 
-  it("uses cross-context epoch normalization, not naive now delta", async () => {
+  it("uses the shared epoch rather than a realm-local monotonic clock", async () => {
     const client = new EngineeringWorkerClient(factory);
     const measureSpy = vi
       .spyOn(performance, "measure")
       .mockImplementation(() => ({}) as PerformanceMeasure);
-    // Simulate different origins to prove mapping: worker origin far from client
+    // Realm-local performance clocks are deliberately unrelated to the shared epoch.
     const clientNow = 50;
-    const clientOrigin = 20000;
     Object.defineProperty(performance, "timeOrigin", {
-      value: clientOrigin,
+      value: 900,
       configurable: true,
     });
     vi.spyOn(performance, "now").mockReturnValue(clientNow);
-    const workerOrigin = 1000;
-    const workerNow = 100;
-    const workerEpoch = workerOrigin + workerNow; // 1100
-    const clientEpoch = clientOrigin + clientNow; // 20050
-    const expectedTransfer = clientEpoch - workerEpoch; // 18950
+    const clientEpoch = 20050;
+    vi.spyOn(Date, "now").mockReturnValue(clientEpoch);
+    const workerEpoch = 1100;
+    const expectedTransfer = clientEpoch - workerEpoch;
     const promise = client.generate("epoch-norm", validIntent);
     workers[0]!.emitMessage(
       makeSuccess("epoch-norm", {
@@ -544,9 +523,9 @@ describe("EngineeringWorkerClient User Timing", () => {
     expect(transferCall).toBeDefined();
     const dur = (transferCall![1] as { duration: number }).duration;
     expect(dur).toBe(expectedTransfer);
-    // naive delta would be clientNow - workerNow = -50 -> clamped 0, not 18950, so we prove epoch mapping
+    // A realm-local performance timestamp would produce 950, not 18,950.
     expect(dur).not.toBe(0);
-    expect(dur).not.toBe(Math.max(0, clientNow - workerNow));
+    expect(dur).not.toBe(900 + clientNow - workerEpoch);
   });
 
   it("clamps tiny clock skew to zero", async () => {
@@ -554,15 +533,10 @@ describe("EngineeringWorkerClient User Timing", () => {
     const measureSpy = vi
       .spyOn(performance, "measure")
       .mockImplementation(() => ({}) as PerformanceMeasure);
-    const clientNow = 100;
-    const clientOrigin = 1000;
-    Object.defineProperty(performance, "timeOrigin", {
-      value: clientOrigin,
-      configurable: true,
-    });
-    vi.spyOn(performance, "now").mockReturnValue(clientNow);
+    const clientNow = 1100;
+    vi.spyOn(Date, "now").mockReturnValue(clientNow);
     // worker slightly ahead by 2ms (skew)
-    const workerEpoch = clientOrigin + clientNow + 2;
+    const workerEpoch = clientNow + 2;
     const promise = client.generate("skew", validIntent);
     workers[0]!.emitMessage(
       makeSuccess("skew", {
@@ -577,8 +551,7 @@ describe("EngineeringWorkerClient User Timing", () => {
     expect((transferCall![1] as { duration: number }).duration).toBe(0);
     // boundary: exactly tolerance still clamps to 0 and succeeds
     measureSpy.mockClear();
-    vi.spyOn(performance, "now").mockReturnValue(clientNow);
-    const atToleranceEpoch = clientOrigin + clientNow + 5;
+    const atToleranceEpoch = clientNow + 5;
     const pAt = client.generate("skew-at-tol", validIntent);
     workers[0]!.emitMessage(
       makeSuccess("skew-at-tol", {
@@ -599,14 +572,9 @@ describe("EngineeringWorkerClient User Timing", () => {
     const measureSpy = vi
       .spyOn(performance, "measure")
       .mockImplementation(() => ({}) as PerformanceMeasure);
-    const clientNow = 200;
-    const clientOrigin = 1000;
-    Object.defineProperty(performance, "timeOrigin", {
-      value: clientOrigin,
-      configurable: true,
-    });
-    vi.spyOn(performance, "now").mockReturnValue(clientNow);
-    const futureEpoch = clientOrigin + clientNow + 100; // 100ms in future beyond 5ms tolerance
+    const clientNow = 1200;
+    vi.spyOn(Date, "now").mockReturnValue(clientNow);
+    const futureEpoch = clientNow + 100;
     const p = client.generate("future", validIntent);
     expect(client.getPendingCount()).toBe(1);
     workers[0]!.emitMessage(
@@ -750,14 +718,8 @@ describe("EngineeringWorkerClient User Timing", () => {
     const measureSpy = vi
       .spyOn(performance, "measure")
       .mockImplementation(() => ({}) as PerformanceMeasure);
-    const clientNow = 1000;
-    const clientOrigin = 5000;
-    Object.defineProperty(performance, "timeOrigin", {
-      value: clientOrigin,
-      configurable: true,
-    });
-    vi.spyOn(performance, "now").mockReturnValue(clientNow);
-    const clientEpoch = clientOrigin + clientNow;
+    const clientEpoch = 6000;
+    vi.spyOn(Date, "now").mockReturnValue(clientEpoch);
     const earlyEpoch = clientEpoch - 100;
     const lateEpoch = clientEpoch - 10;
     const p1 = client.generate("mono-early", validIntent);
@@ -837,22 +799,17 @@ describe("EngineeringWorkerClient User Timing", () => {
     const measureSpy = vi
       .spyOn(performance, "measure")
       .mockImplementation(() => ({}) as PerformanceMeasure);
-    const clientOrigin = 10000;
-    Object.defineProperty(performance, "timeOrigin", {
-      value: clientOrigin,
-      configurable: true,
-    });
-    const workerEpoch = clientOrigin + 900; // receipt raw 100, late raw would be 4100
+    const workerEpoch = 10900;
     const success = makeSuccess("receipt-boundary", {
       simulationMs: 7,
       workerSendEpochMs: workerEpoch,
     });
-    const nowMock = vi.spyOn(performance, "now");
+    const nowMock = vi.spyOn(Date, "now");
     let call = 0;
     nowMock.mockImplementation(() => {
       call++;
-      if (call === 1) return 1000; // receipt entry
-      return 5000; // any later sampling would be much later
+      if (call === 1) return 11000; // receipt entry
+      return 15000; // any later sampling would be much later
     });
     const p = client.generate("receipt-boundary", validIntent);
     workers[0]!.emitMessage(success);
@@ -907,15 +864,10 @@ describe("EngineeringWorkerClient User Timing", () => {
         },
       );
     // lock current-epoch clock: receipt at fixedOrigin+fixedNow, worker 8ms earlier
-    const fixedNow = 1000;
-    const fixedOrigin = 5000;
-    Object.defineProperty(performance, "timeOrigin", {
-      value: fixedOrigin,
-      configurable: true,
-    });
-    vi.spyOn(performance, "now").mockReturnValue(fixedNow);
+    const fixedNow = 6000;
+    vi.spyOn(Date, "now").mockReturnValue(fixedNow);
     const authoritativeSimMs = 22.5;
-    const workerEpoch = fixedOrigin + fixedNow - 8; // 8ms transfer
+    const workerEpoch = fixedNow - 8;
     const expectedTransferMs = 8;
     const promise = client.generate("chromium-timing", validIntent);
     workers[0]!.emitMessage(
