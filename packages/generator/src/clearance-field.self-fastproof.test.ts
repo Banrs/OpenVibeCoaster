@@ -75,6 +75,37 @@ function parallelThresholdTrack() {
   );
 }
 
+function diagonalParallelTrack() {
+  const c = Math.SQRT1_2;
+  const direction = vec3(c, 0, c);
+  const offset = vec3(-4 * c, 0, 4 * c);
+  const end = (start: ReturnType<typeof vec3>, length: number) =>
+    vec3(
+      start[0] + direction[0] * length,
+      start[1],
+      start[2] + direction[2] * length,
+    );
+  const first = vec3(0, 0, 0);
+  const spacer = vec3(100, 0, 100);
+  return compileTrack(
+    [
+      {
+        id: "diagonal-0",
+        span: SeventhOrderHermiteSpan.line(first, end(first, 0.2)),
+      },
+      {
+        id: "spacer-1",
+        span: SeventhOrderHermiteSpan.line(spacer, end(spacer, 30)),
+      },
+      {
+        id: "diagonal-2",
+        span: SeventhOrderHermiteSpan.line(offset, end(offset, 0.2)),
+      },
+    ],
+    { samples: 2 },
+  );
+}
+
 function project(field: ClearanceField) {
   return {
     globalLowerM: field.globalLowerM,
@@ -157,6 +188,24 @@ describe("clearance field display-only self fast proof", () => {
     expect(
       exactCalls.aabbLowerBounds.some((lower) => lower >= 0.5 && lower < 3),
     ).toBe(true);
+    expect(field.diagnostics.some((item) => item.severity === "fatal")).toBe(
+      false,
+    );
+  });
+
+  it("uses a certified SAT lower bound before exact rotated-box refinement", () => {
+    exactCalls.count = 0;
+    exactCalls.aabbLowerBounds.length = 0;
+    const field = computeClearanceField(diagonalParallelTrack(), {
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 100_000,
+      segmentIds: ["diagonal-0", "spacer-1", "diagonal-2"],
+    });
+
+    expect(exactCalls.count).toBe(0);
+    expect(field.globalLowerM).toBeGreaterThanOrEqual(0.5);
+    expect(field.globalUpperM).toBeGreaterThanOrEqual(field.globalLowerM);
     expect(field.diagnostics.some((item) => item.severity === "fatal")).toBe(
       false,
     );
