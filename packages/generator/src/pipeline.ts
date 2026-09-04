@@ -263,7 +263,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("zeroGRoll", "zeroGRoll-015", {
-      length: 260,
+      length: 300,
       roll: Math.PI * 2,
     }),
   );
