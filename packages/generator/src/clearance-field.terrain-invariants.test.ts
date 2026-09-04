@@ -18,10 +18,9 @@ const geometryCalls = vi.hoisted(() => ({
 }));
 
 vi.mock("./clearance-geometry", async () => {
-  const actual =
-    await vi.importActual<typeof import("./clearance-geometry")>(
-      "./clearance-geometry",
-    );
+  const actual = await vi.importActual<typeof import("./clearance-geometry")>(
+    "./clearance-geometry",
+  );
   return {
     ...actual,
     createOrientedBox: (
@@ -30,9 +29,7 @@ vi.mock("./clearance-geometry", async () => {
       geometryCalls.createOrientedBox += 1;
       return actual.createOrientedBox(...args);
     },
-    sweptMotionBound: (
-      ...args: Parameters<typeof actual.sweptMotionBound>
-    ) => {
+    sweptMotionBound: (...args: Parameters<typeof actual.sweptMotionBound>) => {
       geometryCalls.sweptMotionBound += 1;
       return actual.sweptMotionBound(...args);
     },
@@ -55,7 +52,10 @@ function tinyTrack() {
   );
 }
 
-function planeEnv(offset: number, counter: { calls: number }): EnvironmentQuery {
+function planeEnv(
+  offset: number,
+  counter: { calls: number },
+): EnvironmentQuery {
   return {
     signedDistance: (p) => {
       counter.calls += 1;
