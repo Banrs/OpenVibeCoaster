@@ -99,6 +99,9 @@ const allKinds: readonly ElementKind[] = [
   "overbankedTurn",
   "zeroGRoll",
   "stall",
+  "diveDrop",
+  "immelmann",
+  "verticalLoop",
 ];
 
 describe("semantic element library", () => {
@@ -112,7 +115,7 @@ describe("semantic element library", () => {
       allKinds.map((kind, index) =>
         createElement(kind, stableElementId(kind, index)),
       ),
-    ).toHaveLength(10);
+    ).toHaveLength(13);
   });
 
   it("treats boost as a first-class launch element", () => {
@@ -127,7 +130,13 @@ describe("semantic element library", () => {
 
   it("rejects missing, non-finite, and out-of-range parameters", () => {
     expect(() => createElement("topHat", "hat", { height: 79 })).toThrow(
-      "height must be exactly 80 m",
+      "height must be between 80 and 92 m",
+    );
+    expect(
+      createElement("topHat", "hat", { height: 92 }).parameters.height,
+    ).toBe(92);
+    expect(() => createElement("topHat", "hat", { height: 93 })).toThrow(
+      "height must be between 80 and 92 m",
     );
     expect(() =>
       createElement("overbankedTurn", "turn", { radius: 0 }),
@@ -164,9 +173,10 @@ describe("semantic chain geometry", () => {
       expect(first.span.derivative(1, order)).toEqual(
         second.span.derivative(0, order),
       );
-    expect(() =>
-      createElement("topHat", "wrong-height", { height: 81 }),
-    ).toThrow("height must be exactly 80 m");
+    expect(
+      createElement("topHat", "variable-height", { height: 81 }).parameters
+        .height,
+    ).toBe(81);
     expect(first.span.position(1)[1]).toBeCloseTo(80, 6);
     expect(first.span.position(0.7)[1]).toBeLessThan(80);
     expect(first.bank?.position(1)).toBeCloseTo(Math.PI, 6);

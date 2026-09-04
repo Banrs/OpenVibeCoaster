@@ -97,7 +97,7 @@ describe("terrain profiles deterministic", () => {
       expect(diag.location!.s).toBeDefined();
       expect(diag.location!.position).toBeDefined();
       expect(diag.actual).toBeDefined();
-      expect(diag.limit).toBe(0);
+      expect(diag.limit).toBe(0.5);
       expect(diag.margin).toBeLessThan(0);
       expect(diag.actual).toBeLessThan(0);
     }
