@@ -15,26 +15,7 @@ import {
   type ClearanceField,
 } from "./clearance-field.js";
 
-type TrackSnapshotGetterName =
-  | "positions"
-  | "tangents"
-  | "normals"
-  | "binormals"
-  | "distances"
-  | "elementIndices"
-  | "elementBoundaries";
-
-const trackGetterCounts: Record<TrackSnapshotGetterName, number> = {
-  positions: 0,
-  tangents: 0,
-  normals: 0,
-  binormals: 0,
-  distances: 0,
-  elementIndices: 0,
-  elementBoundaries: 0,
-};
-
-const TRACK_SNAPSHOT_GETTERS: readonly TrackSnapshotGetterName[] = [
+const TRACK_SNAPSHOT_GETTERS = [
   "positions",
   "tangents",
   "normals",
@@ -42,7 +23,14 @@ const TRACK_SNAPSHOT_GETTERS: readonly TrackSnapshotGetterName[] = [
   "distances",
   "elementIndices",
   "elementBoundaries",
-];
+] as const;
+
+type TrackSnapshotGetterName = (typeof TRACK_SNAPSHOT_GETTERS)[number];
+
+const trackGetterCounts: Record<TrackSnapshotGetterName, number> =
+  Object.fromEntries(
+    TRACK_SNAPSHOT_GETTERS.map((name) => [name, 0]),
+  ) as Record<TrackSnapshotGetterName, number>;
 
 class CountingCompiledTrackData extends CompiledTrackData {
   public override get positions(): Float64Array {
@@ -234,57 +222,11 @@ describe("clearance field – track snapshot (RED)", () => {
     });
 
     expect(countedSdf.calls).toBeGreaterThan(0);
-    expect(counted.globalLowerM).toBe(expected.globalLowerM);
-    expect(counted.globalUpperM).toBe(expected.globalUpperM);
-    expect(counted.globalSource).toBe(expected.globalSource);
-    expect(counted.globalLowerSource).toBe(expected.globalLowerSource);
-    expect(counted.globalWitnessS).toBe(expected.globalWitnessS);
-    expect(counted.globalLowerWitnessS).toBe(expected.globalLowerWitnessS);
-    expect(counted.work).toBe(expected.work);
-    expect(counted.effectiveCap).toBe(expected.effectiveCap);
-    expect(counted.closed).toBe(expected.closed);
-    expect([...counted.globalWitnessPosition]).toEqual([
-      ...expected.globalWitnessPosition,
-    ]);
-    expect([...counted.globalLowerWitnessPosition]).toEqual([
-      ...expected.globalLowerWitnessPosition,
-    ]);
-    expect([...counted.globalRelatedIds]).toEqual([
-      ...expected.globalRelatedIds,
-    ]);
-    expect([...counted.globalLowerRelatedIds]).toEqual([
-      ...expected.globalLowerRelatedIds,
-    ]);
-    expect(counted.diagnostics.map(projectDiagnostic)).toEqual(
-      expected.diagnostics.map(projectDiagnostic),
-    );
-    expect(counted.segments.length).toBe(expected.segments.length);
-    for (let index = 0; index < expected.segments.length; index += 1) {
-      const expectedSegment = expected.segments[index]!;
-      const countedSegment = counted.segments[index]!;
-      expect(countedSegment.lowerM).toBe(expectedSegment.lowerM);
-      expect(countedSegment.upperM).toBe(expectedSegment.upperM);
-      expect(countedSegment.source).toBe(expectedSegment.source);
-      expect(countedSegment.witnessS).toBe(expectedSegment.witnessS);
-      expect([...countedSegment.witnessPosition]).toEqual([
-        ...expectedSegment.witnessPosition,
-      ]);
-      expect([...countedSegment.relatedIds]).toEqual([
-        ...expectedSegment.relatedIds,
-      ]);
-    }
     expect(projectField(counted)).toEqual(projectField(expected));
 
     const countsSnapshot = { ...trackGetterCounts };
     for (const name of TRACK_SNAPSHOT_GETTERS) {
       expect(countsSnapshot[name]).toBeLessThanOrEqual(1);
     }
-    const totalGetterCalls = TRACK_SNAPSHOT_GETTERS.reduce(
-      (total, name) => total + (countsSnapshot[name] ?? 0),
-      0,
-    );
-    expect(totalGetterCalls).toBeLessThanOrEqual(
-      TRACK_SNAPSHOT_GETTERS.length,
-    );
   });
 });
