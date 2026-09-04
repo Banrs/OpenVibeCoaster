@@ -133,67 +133,168 @@ const toCompileFatalDiagnostic = (
   };
 };
 
-const defaultElements = (seed: number, candidate = 0): AnySemanticElement[] => {
+export const recordHybridDefaultElements = (
+  seed: number,
+  candidate = 0,
+): AnySemanticElement[] => {
   const rng = new Xoshiro128ss(seed);
   for (let index = 0; index < candidate; index += 1) rng.nextUint32();
-  const variation = rng.nextRange(-2, 2);
-  const prefix = [
-    createElement("station", "station-000", { length: 120 }),
-    createElement("launch", "launch-001", { length: 260, targetSpeed: 44 }),
-    createElement("topHat", "topHat-002", { width: 220 }),
-    createElement("overbankedTurn", "overbankedTurn-003", {
-      radius: 75,
-      angle: Math.PI * 0.75,
-      bank: Math.PI * 0.6,
+  const variation = rng.nextRange(-4, 4);
+  const elements: AnySemanticElement[] = [];
+  let pose = defaultPose();
+  const append = (element: AnySemanticElement, referenceSpeed = 44): void => {
+    elements.push(element);
+    pose = buildElement(element, pose, referenceSpeed).endPose;
+  };
+  const appendForceHill = (
+    id: string,
+    length: number,
+    targetForceG: number,
+    referenceSpeed: number,
+  ): void => {
+    const provisional = createElement("airtimeHill", id, {
+      length,
+      height: 0,
+      targetForceG,
+      referenceSpeed,
+      bank: 0,
+    });
+    const end = buildElement(provisional, pose, referenceSpeed).endPose;
+    const height = vec3Dot(vec3Sub(end.position, pose.position), pose.normal);
+    append(
+      createElement("airtimeHill", id, {
+        length,
+        height,
+        targetForceG,
+        referenceSpeed,
+        bank: 0,
+      }),
+      referenceSpeed,
+    );
+  };
+
+  append(createElement("station", "station-000", { length: 180 }));
+  append(
+    createElement("launch", "launch-001", {
+      length: 260,
+      targetSpeed: 44,
     }),
-  ];
-  const provisionalHill = createElement("airtimeHill", "airtimeHill-004", {
-    length: 130 + variation,
-    height: 0,
-    targetForceG: 1.15,
-    referenceSpeed: 44,
-  });
-  let hillStartPose = defaultPose();
-  for (const element of prefix)
-    hillStartPose = buildElement(element, hillStartPose, 44).endPose;
-  const provisionalHillEnd = buildElement(
-    provisionalHill,
-    hillStartPose,
-    44,
-  ).endPose;
-  const forceDrivenHeight = vec3Dot(
-    vec3Sub(provisionalHillEnd.position, hillStartPose.position),
-    hillStartPose.normal,
   );
-  const elements = [
-    ...prefix,
-    createElement("airtimeHill", "airtimeHill-004", {
-      length: 130 + variation,
-      height: forceDrivenHeight,
-      targetForceG: 1.15,
-      referenceSpeed: 44,
+  append(
+    createElement("transition", "transition-002", {
+      length: 420 + variation,
+      rise: 60,
+      pitch: 0.15,
+      bank: 0,
     }),
-    createElement("boost", "boost-005", { length: 220, targetSpeed: 44 }),
-    createElement("zeroGRoll", "zeroGRoll-006", {
-      length: 28,
-      roll: Math.PI * 2,
+  );
+  appendForceHill("airtimeHill-003", 300 + variation, 1.1, 44);
+  append(
+    createElement("overbankedTurn", "overbankedTurn-004", {
+      radius: 120 + variation,
+      angle: 1.7,
+      bank: 1.8,
     }),
-    createElement("stall", "stall-007", { length: 100, height: 18 }),
-    createElement("brake", "brake-008", {
-      length: 220,
-      targetSpeed: 8,
-      angle: Math.PI,
+  );
+  append(
+    createElement("overbankedTurn", "overbankedTurn-005", {
+      radius: 120 - variation,
+      angle: -1.7,
+      bank: 1.8,
     }),
-    createElement("brake", "magnetic-brakes-009", {
-      length: 110,
-      targetSpeed: 5,
+  );
+  append(
+    createElement("launch", "launch-006", {
+      length: 420,
+      targetSpeed: 60,
     }),
-    createElement("station", "station-010", {
-      length: 160,
-      closed: false,
+  );
+  append(
+    createElement("brake", "brake-007", {
+      length: 35,
       targetSpeed: 0,
     }),
-  ];
+  );
+  append(
+    createElement("diveDrop", "diveDrop-008", {
+      dropHeight: 210,
+      angleDeg: 110,
+      approachRadius: 90,
+      exitRadius: 70,
+      bank: 0,
+    }),
+  );
+  append(
+    createElement("launch", "launch-009", {
+      length: 380,
+      targetSpeed: 80,
+    }),
+    80,
+  );
+  appendForceHill("airtimeHill-010", 190, 0, 55);
+  append(
+    createElement("topHat", "topHat-011", {
+      height: 91,
+      width: 220,
+      bank: 0,
+    }),
+  );
+  append(
+    createElement("immelmann", "immelmann-012", {
+      height: 81,
+      exitHeadingDeg: 180,
+      bank: 0,
+    }),
+  );
+  append(
+    createElement("verticalLoop", "verticalLoop-013", {
+      height: 67,
+      referenceSpeed: 38,
+      bank: 0,
+    }),
+    38,
+  );
+  append(
+    createElement("overbankedTurn", "overbankedTurn-014", {
+      radius: 130,
+      angle: 2.2,
+      bank: 1.8,
+    }),
+  );
+  append(
+    createElement("zeroGRoll", "zeroGRoll-015", {
+      length: 260,
+      roll: Math.PI * 2,
+    }),
+  );
+  append(
+    createElement("stall", "stall-016", {
+      length: 220,
+      height: 45,
+      bank: 0,
+    }),
+  );
+  append(
+    createElement("brake", "brake-017", {
+      length: 140,
+      targetSpeed: 25,
+      angle: Math.PI / 2,
+      bank: 0.6,
+    }),
+  );
+  append(
+    createElement("brake", "brake-018", {
+      length: 320,
+      targetSpeed: 0,
+      bank: 0,
+    }),
+  );
+  append(
+    createElement("station", "station-019", {
+      length: 180,
+      closed: false,
+    }),
+  );
   return elements;
 };
 interface GenerationOperationCache {
@@ -336,7 +437,7 @@ const asElements = (
   candidate: number,
 ): AnySemanticElement[] => {
   if (intent.mode !== "directed")
-    return defaultElements(intent.seed, candidate);
+    return recordHybridDefaultElements(intent.seed, candidate);
   return buildEffectiveDirectedElements(intent);
 };
 
