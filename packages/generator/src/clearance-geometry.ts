@@ -639,6 +639,37 @@ export function sweptMotionBound(
   const delta = (b - a) / 2;
   return motionBoundForDelta(seg, delta);
 }
+export interface PreparedTerrainSegmentEvaluator {
+  obbAtPose(pose: ClearancePose): OrientedBox;
+  motionBound(a: number, b: number): number;
+}
+export function prepareTerrainSegmentEvaluator(
+  seg: SweptClearanceSegment,
+): PreparedTerrainSegmentEvaluator {
+  const start = createClearancePose(seg.start);
+  const end = createClearancePose(seg.end);
+  const geometry = createClearanceTrainGeometry(seg.geometry);
+  const validated: SweptClearanceSegment = {
+    startS: seg.startS,
+    endS: seg.endS,
+    start,
+    end,
+    geometry,
+  };
+  const inv = getSegmentInvariants(validated);
+  return {
+    obbAtPose(pose: ClearancePose): OrientedBox {
+      return createOrientedBoxFastInternal(pose, geometry);
+    },
+    motionBound(a: number, b: number): number {
+      finiteScalar(a, "a");
+      finiteScalar(b, "b");
+      if (a > b) throw new RangeError("a must be <= b");
+      const delta = (b - a) / 2;
+      return motionBoundForDeltaFast(inv, delta);
+    },
+  };
+}
 export function openArcIntervalDistance(
   a0: number,
   a1: number,
