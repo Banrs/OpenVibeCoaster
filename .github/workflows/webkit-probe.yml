@@ -1,0 +1,39 @@
+name: WebKit portable stall probe
+
+on:
+  push:
+    branches:
+      - codex/webkit-probe-auth
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install npm 11.17.0
+        run: npm install -g npm@11.17.0
+      - name: Install dependencies (exact lockfile)
+        run: npm ci
+      - name: Build portable artifact
+        run: npm run build
+      - name: Install Playwright WebKit
+        run: npx playwright install --with-deps webkit
+      - name: Run diagnostic probe
+        run: npx playwright test --config=playwright.webkit-probe.config.ts --project=webkit
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-portable-probe
+          path: test-results
+          if-no-files-found: ignore
