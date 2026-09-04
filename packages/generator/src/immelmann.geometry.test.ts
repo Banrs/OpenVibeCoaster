@@ -77,6 +77,8 @@ describe("immelmann analytic geometry", () => {
     const built = buildHeading(180);
     expect(localHeight(built.solvedSpans)).toBeGreaterThanOrEqual(80);
     expect(localHeight(built.solvedSpans)).toBeLessThanOrEqual(82);
+    expect(built.endPose.position[1]).toBeGreaterThan(0);
+    expect(built.endPose.position[1]).toBeLessThan(81);
     expect(Math.abs(yawDeg(built.endPose.tangent))).toBeCloseTo(180, 0);
   });
 
