@@ -269,7 +269,7 @@ export const recordHybridDefaultElements = (
       vec3Dot(pose.tangent, desiredTangent),
     );
     const oppositeAngle =
-      alignedAngle > 0 ? alignedAngle - Math.PI : alignedAngle + Math.PI;
+      alignedAngle >= 0 ? alignedAngle - Math.PI : alignedAngle + Math.PI;
     finaleTurnAngle =
       Math.abs(alignedAngle + 2.2) <= Math.abs(oppositeAngle + 2.2)
         ? alignedAngle
