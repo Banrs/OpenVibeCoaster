@@ -111,9 +111,9 @@ describe("verticalLoop analytic geometry", () => {
     const built = buildSpeed(38);
     expect(localHeight(built.solvedSpans)).toBeGreaterThanOrEqual(66);
     expect(localHeight(built.solvedSpans)).toBeLessThanOrEqual(68);
-    expect(vec3Dot(built.endPose.tangent, defaultPose().tangent)).toBeGreaterThan(
-      Math.cos(Math.PI / 180),
-    );
+    expect(
+      vec3Dot(built.endPose.tangent, defaultPose().tangent),
+    ).toBeGreaterThan(Math.cos(Math.PI / 180));
     expect(Math.abs(built.endPose.tangent[1])).toBeLessThan(
       Math.sin(Math.PI / 180),
     );

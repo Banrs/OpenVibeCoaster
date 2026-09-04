@@ -6,11 +6,7 @@ import {
   vec3Length,
   type Vec3,
 } from "@openvibecoaster/core";
-import {
-  buildElement,
-  createElement,
-  defaultPose,
-} from "./elements.js";
+import { buildElement, createElement, defaultPose } from "./elements.js";
 import {
   compileSemanticChain,
   defaultTolerances,
