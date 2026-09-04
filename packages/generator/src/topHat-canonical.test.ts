@@ -132,7 +132,8 @@ describe("canonical top-hat coefficients", () => {
     expect(storedStartBank).toBeCloseTo(startPose.bank + correction, 12);
     expect(second.bank!.position(0)).toBeCloseTo(storedApexBank, 12);
     expect(storedApexBank - storedStartBank).toBeCloseTo(Math.PI, 12);
-    expect(second.bank!.position(1)).toBeCloseTo(0.73, 12);
+    expect(second.bank!.position(1)).toBeCloseTo(0.73 + Math.PI * 2, 12);
+    expect(first.bank!.derivative(1, 1)).toBeGreaterThan(0);
     for (const child of children) {
       expect(child.bank).toBeInstanceOf(QuinticScalarSpan);
       expect((child.bank as QuinticScalarSpan).coefficients).toEqual(
