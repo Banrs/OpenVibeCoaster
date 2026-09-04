@@ -217,6 +217,13 @@ describe("canonical top-hat coefficients", () => {
     expect(Math.max(...offApexHeights)).toBeLessThan(apexHeight);
   });
 
+  it("keeps an equivalent downstream bank unwrapped after a full roll", () => {
+    const result = compileSemanticChain(elements, { startPose, samples: 32 });
+    const station = result.solvedSpans.find(({ id }) => id === "station-002")!;
+    for (const u of [0, 0.25, 0.5, 0.75, 1])
+      expect(station.bank!.derivative(u, 1)).toBeCloseTo(0, 12);
+  });
+
   it("reports analytic curvature-vector gradient jumps from stored d1/d2/d3", () => {
     const incoming = SeventhOrderHermiteSpan.fromCoefficients<Vec3>([
       [-40, 40, 0, 0, 0, 0, 0, 0],
