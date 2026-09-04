@@ -913,6 +913,7 @@ const verticalLoopSpans = (
   const apexSecondDerivative = vec3Scale(basis.normal, -shapeRadius * 0.5);
   const entryDerivative = vec3Scale(basis.tangent, shapeRadius);
   const invertedDerivative = vec3Scale(basis.tangent, -shapeRadius);
+  const recoveryDerivative = vec3Scale(basis.tangent, -shapeRadius * 0.25);
   const firstEnd = vec3Add(
     vec3Add(pose.position, vec3Scale(basis.tangent, shapeRadius * 0.5)),
     vec3Scale(basis.normal, parameters.height),
@@ -946,7 +947,7 @@ const verticalLoopSpans = (
         d20: apexSecondDerivative,
         d30: zero,
         p1: secondEnd,
-        d11: invertedDerivative,
+        d11: recoveryDerivative,
         d21: apexSecondDerivative,
         d31: zero,
       }),
@@ -954,7 +955,7 @@ const verticalLoopSpans = (
     canonicalPosition(
       new SeventhOrderHermiteSpan({
         p0: secondEnd,
-        d10: invertedDerivative,
+        d10: recoveryDerivative,
         d20: apexSecondDerivative,
         d30: zero,
         p1: loopExit,
