@@ -3,9 +3,10 @@ import {
   compileTrack,
   SeventhOrderHermiteSpan,
   vec3,
+  type Diagnostic,
   type EnvironmentQuery,
 } from "@openvibecoaster/core";
-import type { ClearanceField, Diagnostic } from "./clearance-field.js";
+import type { ClearanceField } from "./clearance-field.js";
 
 // Selected optimization (pre-production): hoist per-swept-segment terrain
 // invariants (validated OBB, motion bound) to once per segment instead of once
