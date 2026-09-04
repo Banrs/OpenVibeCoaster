@@ -127,7 +127,7 @@ describe("clearance field display-only self fast proof", () => {
     exactCalls.aabbLowerBounds.length = 0;
     const field = computeClearanceField(squareTrack(), {
       hardClearanceM: 0.5,
-      explicitThresholds: [6],
+      explicitThresholds: [9],
       displayCapM: 10,
       maxWork: 100_000,
       closed: true,
@@ -136,7 +136,7 @@ describe("clearance field display-only self fast proof", () => {
 
     expect(exactCalls.count).toBeGreaterThan(0);
     expect(
-      exactCalls.aabbLowerBounds.some((lower) => lower >= 0.5 && lower < 6),
+      exactCalls.aabbLowerBounds.some((lower) => lower >= 0.5 && lower < 9),
     ).toBe(true);
     expect(field.diagnostics.some((item) => item.severity === "fatal")).toBe(
       false,
