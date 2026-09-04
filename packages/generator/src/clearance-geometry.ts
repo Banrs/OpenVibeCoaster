@@ -777,36 +777,26 @@ export function sweptAabb(seg: SweptClearanceSegment): {
   min: Vec3;
   max: Vec3;
 } {
-  if (isConstantOrientation(seg)) {
-    const box0 = createOrientedBoxFastInternal(seg.start, seg.geometry);
-    const box1 = createOrientedBoxFastInternal(seg.end, seg.geometry);
-    const aabb0 = orientedBoxAabbOutward(box0);
-    const aabb1 = orientedBoxAabbOutward(box1);
-    return {
-      min: vec3(
-        nextDown(Math.min(aabb0.min[0]!, aabb1.min[0]!)),
-        nextDown(Math.min(aabb0.min[1]!, aabb1.min[1]!)),
-        nextDown(Math.min(aabb0.min[2]!, aabb1.min[2]!)),
-      ),
-      max: vec3(
-        nextUp(Math.max(aabb0.max[0]!, aabb1.max[0]!)),
-        nextUp(Math.max(aabb0.max[1]!, aabb1.max[1]!)),
-        nextUp(Math.max(aabb0.max[2]!, aabb1.max[2]!)),
-      ),
-    };
-  }
-  const r = conservativeRadius(seg.geometry);
-  const rUp = nextUp(r);
+  const box0 = createOrientedBoxFastInternal(seg.start, seg.geometry);
+  const box1 = createOrientedBoxFastInternal(seg.end, seg.geometry);
+  const aabb0 = orientedBoxAabbOutward(box0);
+  const aabb1 = orientedBoxAabbOutward(box1);
+  // Every interpolated pose is at most half a segment from its nearer endpoint.
+  // Expanding both endpoint boxes by that certified translation+rotation motion
+  // bound encloses the complete sweep without circumsphere-wide world axes.
+  const expansion = isConstantOrientation(seg)
+    ? 0
+    : motionBoundForDeltaFast(getSegmentInvariants(seg), 0.5);
   return {
     min: vec3(
-      nextDown(Math.min(seg.start.position[0], seg.end.position[0]) - rUp),
-      nextDown(Math.min(seg.start.position[1], seg.end.position[1]) - rUp),
-      nextDown(Math.min(seg.start.position[2], seg.end.position[2]) - rUp),
+      nextDown(Math.min(aabb0.min[0]!, aabb1.min[0]!) - nextUp(expansion)),
+      nextDown(Math.min(aabb0.min[1]!, aabb1.min[1]!) - nextUp(expansion)),
+      nextDown(Math.min(aabb0.min[2]!, aabb1.min[2]!) - nextUp(expansion)),
     ),
     max: vec3(
-      nextUp(Math.max(seg.start.position[0], seg.end.position[0]) + rUp),
-      nextUp(Math.max(seg.start.position[1], seg.end.position[1]) + rUp),
-      nextUp(Math.max(seg.start.position[2], seg.end.position[2]) + rUp),
+      nextUp(Math.max(aabb0.max[0]!, aabb1.max[0]!) + nextUp(expansion)),
+      nextUp(Math.max(aabb0.max[1]!, aabb1.max[1]!) + nextUp(expansion)),
+      nextUp(Math.max(aabb0.max[2]!, aabb1.max[2]!) + nextUp(expansion)),
     ),
   };
 }
