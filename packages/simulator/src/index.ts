@@ -637,10 +637,7 @@ const dynamicsAt = (
     const forceField = `train.cars[${index}].force`;
     const sample = sampleAt
       ? sampleAt(trackDistance(track, config, distanceM))
-      : sampleTrackAtDistance(
-          track,
-          trackDistance(track, config, distanceM),
-        );
+      : sampleTrackAtDistance(track, trackDistance(track, config, distanceM));
     const zones = activeZones(track, config, distanceM);
     const gravity = checkedFinite(
       car.massKg * dot(gVec, sample.tangent),
@@ -949,10 +946,7 @@ const makeCars = (
     const distanceM = headDistanceM - index * config.train.spacingM;
     const sample = sampleAt
       ? sampleAt(trackDistance(track, config, distanceM))
-      : sampleTrackAtDistance(
-          track,
-          trackDistance(track, config, distanceM),
-        );
+      : sampleTrackAtDistance(track, trackDistance(track, config, distanceM));
     const offsets = seatPositions(car);
     const telemetry = carTelemetry(
       sample,
@@ -1641,10 +1635,7 @@ const makeTimeline = (
       const distanceM = blend(car.distanceM, other.distanceM);
       const frame = timelineCache
         ? timelineCache.sample(trackDistance(track, config, distanceM))
-        : sampleTrackAtDistance(
-            track,
-            trackDistance(track, config, distanceM),
-          );
+        : sampleTrackAtDistance(track, trackDistance(track, config, distanceM));
       const telemetry = interpolateTelemetry(
         car.telemetry,
         other.telemetry,
