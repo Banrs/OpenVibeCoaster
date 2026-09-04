@@ -11,3 +11,4 @@ export * from "./track";
 export * from "./coaster-file";
 export * from "./engineering-limits";
 export type * from "./engineering-limits";
+export * from "./record-targets";
