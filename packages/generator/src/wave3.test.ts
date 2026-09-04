@@ -471,6 +471,13 @@ describe("wave 3 deterministic generator", () => {
 
   it("regenerates only the selected neighborhood and keeps pinned spans bitwise stable", () => {
     const generated = generateCoaster(directedIntent);
+    console.error(
+      "LOCAL_REGEN_BASE",
+      JSON.stringify({
+        feasible: generated.feasible,
+        diagnostics: generated.diagnostics,
+      }),
+    );
     const result = regenerateLocal(generated, "stall-001", {
       seams: testSeams,
       referenceSpeed: 44,

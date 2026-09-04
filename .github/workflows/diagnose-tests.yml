@@ -21,9 +21,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: simulation
-            file: apps/web/src/engineering/simulation.test.ts
-            test: flagship 1.6-2.2km
+          - id: local-regeneration
+            file: packages/generator/src/wave3.test.ts
+            test: regenerates only the selected neighborhood
     steps:
       - name: Checkout
         uses: actions/checkout@v4
