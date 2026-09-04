@@ -9,6 +9,8 @@ import type { ClearanceField } from "./clearance-field.js";
 const exactCalls = vi.hoisted(() => ({
   count: 0,
   aabbLowerBounds: [] as number[],
+  satLowerBounds: [] as number[],
+  arcPairs: [] as string[],
 }));
 
 vi.mock("./clearance-geometry", async () => {
@@ -31,6 +33,12 @@ vi.mock("./clearance-geometry", async () => {
         return 0;
       };
       exactCalls.aabbLowerBounds.push(Math.hypot(gap(0), gap(1), gap(2)));
+      exactCalls.satLowerBounds.push(
+        actual.sweptObbSeparationLowerBound(args[0], args[1]),
+      );
+      exactCalls.arcPairs.push(
+        `${args[0].startS}-${args[0].endS}:${args[1].startS}-${args[1].endS}`,
+      );
       return actual.certifiedSweptDistance(...args);
     },
   };
@@ -141,6 +149,8 @@ describe("clearance field display-only self fast proof", () => {
 
     exactCalls.count = 0;
     exactCalls.aabbLowerBounds.length = 0;
+    exactCalls.satLowerBounds.length = 0;
+    exactCalls.arcPairs.length = 0;
     const first = computeClearanceField(track, options);
     const firstCalls = exactCalls.count;
     const firstDisplayOnlyCalls = exactCalls.aabbLowerBounds.filter(
@@ -196,6 +206,8 @@ describe("clearance field display-only self fast proof", () => {
   it("uses a certified SAT lower bound before exact rotated-box refinement", () => {
     exactCalls.count = 0;
     exactCalls.aabbLowerBounds.length = 0;
+    exactCalls.satLowerBounds.length = 0;
+    exactCalls.arcPairs.length = 0;
     const field = computeClearanceField(diagonalParallelTrack(), {
       hardClearanceM: 0.5,
       displayCapM: 10,
@@ -203,7 +215,14 @@ describe("clearance field display-only self fast proof", () => {
       segmentIds: ["diagonal-0", "spacer-1", "diagonal-2"],
     });
 
-    expect(exactCalls.count).toBe(0);
+    expect(
+      exactCalls.count,
+      JSON.stringify({
+        aabb: exactCalls.aabbLowerBounds,
+        sat: exactCalls.satLowerBounds,
+        arcs: exactCalls.arcPairs,
+      }),
+    ).toBe(0);
     expect(field.globalLowerM).toBeGreaterThanOrEqual(0.5);
     expect(field.globalUpperM).toBeGreaterThanOrEqual(field.globalLowerM);
     expect(field.diagnostics.some((item) => item.severity === "fatal")).toBe(
