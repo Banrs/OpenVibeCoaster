@@ -5,7 +5,7 @@ import {
   deserializeCoasterFileV1,
   serializeCoasterFileV1,
 } from "@openvibecoaster/core";
-import { generateCoaster } from "./pipeline.js";
+import { generateCoaster, recordHybridDefaultElements } from "./pipeline.js";
 
 export const RECORD_HYBRID_IDS = [
   "station-000",
@@ -49,6 +49,16 @@ const options = {
 } as const;
 
 describe("record-hybrid default pipeline", () => {
+  it("authors a meaningful nondegenerate finale overbank", () => {
+    const finale = recordHybridDefaultElements(42).find(
+      (element) => element.id === "overbankedTurn-014",
+    );
+    expect(finale?.kind).toBe("overbankedTurn");
+    expect(
+      Math.abs((finale?.parameters as { readonly angle: number }).angle),
+    ).toBeGreaterThan(Math.PI / 2);
+  });
+
   it(
     "generates exactly 20 stable elements inside the physical length window",
     { timeout: 120_000 },
