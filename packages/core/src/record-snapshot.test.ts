@@ -55,6 +55,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
   const falconsFlight = records.find(
     (record) => record.id === "falcons-flight-metric-facts",
   );
+  expect(records).toHaveLength(3);
+  expect(falconsFlight?.facts).toHaveLength(3);
   expectFacts(falconsFlight, [
     {
       label: "Falcons Flight height",
@@ -62,9 +64,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 195,
       unit: "m",
       sourceUrls: [
-        "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
-        "https://www.intamin.com/category/innovation/",
-        "https://www.intamin.com/company/about-us/",
+        "https://sixflagsqiddiyacity.com/en/explore/rides/falcons-flight",
+        "https://www.intamin.com/project/falcons-flight/",
       ],
     },
     {
@@ -73,9 +74,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 250,
       unit: "km/h",
       sourceUrls: [
-        "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
-        "https://www.intamin.com/category/innovation/",
-        "https://www.intamin.com/company/about-us/",
+        "https://sixflagsqiddiyacity.com/en/explore/rides/falcons-flight",
+        "https://www.intamin.com/project/falcons-flight/",
       ],
     },
     {
@@ -84,14 +84,14 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 4325,
       unit: "m",
       sourceUrls: [
-        "https://www.sixflagsqiddiyacity.com/en/rides/falcons-flight",
-        "https://www.intamin.com/category/innovation/",
-        "https://www.intamin.com/company/about-us/",
+        "https://sixflagsqiddiyacity.com/en/explore/rides/falcons-flight",
+        "https://www.intamin.com/project/falcons-flight/",
       ],
     },
   ]);
 
   const tormenta = records.find((record) => /tormenta/i.test(record.name));
+  expect(tormenta?.facts).toHaveLength(7);
   expectFacts(tormenta, [
     {
       label: "Tormenta height",
@@ -99,7 +99,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 94,
       unit: "m",
       sourceUrls: [
-        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+        "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+        "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run",
       ],
     },
     {
@@ -108,7 +109,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 87,
       unit: "m",
       sourceUrls: [
-        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+        "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+        "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run",
       ],
     },
     {
@@ -117,7 +119,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 95,
       unit: "deg",
       sourceUrls: [
-        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+        "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+        "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run",
       ],
     },
     {
@@ -126,7 +129,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 140,
       unit: "km/h",
       sourceUrls: [
-        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+        "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+        "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run",
       ],
     },
     {
@@ -135,7 +139,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 66,
       unit: "m",
       sourceUrls: [
-        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+        "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+        "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run",
       ],
     },
     {
@@ -144,7 +149,8 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 55,
       unit: "m",
       sourceUrls: [
-        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+        "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+        "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run",
       ],
     },
     {
@@ -153,12 +159,14 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       value: 1280,
       unit: "m",
       sourceUrls: [
-        "https://www.bolliger-mabillard.com/blog/coming-soon-tormenta-rampaging-run",
+        "https://www.sixflags.com/overtexas/attractions/tormenta-rampaging-run",
+        "https://www.bolliger-mabillard.com/blog/now-operating-tormenta-rampaging-run",
       ],
     },
   ]);
 
   const spitfire = records.find((record) => /spitfire/i.test(record.name));
+  expect(spitfire?.facts).toHaveLength(2);
   expectFacts(spitfire, [
     {
       label: "Spitfire inversion",
@@ -167,7 +175,6 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       unit: "m",
       sourceUrls: [
         "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
-        "https://www.intamin.com/category/innovation/",
       ],
     },
     {
@@ -177,10 +184,13 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
       unit: "km/h",
       sourceUrls: [
         "https://www.intamin.com/project/spitfire-six-flags-qiddiya/",
-        "https://www.intamin.com/category/innovation/",
       ],
     },
   ]);
+
+  expect(records.reduce((total, record) => total + record.facts.length, 0)).toBe(
+    12,
+  );
 
   for (const record of records) {
     for (const fact of record.facts) {
