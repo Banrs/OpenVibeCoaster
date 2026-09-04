@@ -2389,7 +2389,7 @@ export const simulateRide = (
     });
   }
   return {
-    frames: request.compactTimeline ? [] : completedFrames,
+    frames: completedFrames,
     timeline,
     events: uniqueEvents,
     operationState: operationStateFor(finalZones),
