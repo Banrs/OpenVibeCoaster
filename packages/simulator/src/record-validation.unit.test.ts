@@ -1,7 +1,8 @@
 import { expect, test } from "vitest";
-import type {
-  CoasterFileV1,
-  CompiledTrackData,
+import {
+  validateRecordTargetsProfile,
+  type CoasterFileV1,
+  type CompiledTrackData,
 } from "@openvibecoaster/core";
 import profile from "../../../data/profiles/record-targets-v1.json" with {
   type: "json",
@@ -11,6 +12,8 @@ import {
   summitHoldWindow,
   validateRecordTargets,
 } from "./record-validation.js";
+
+validateRecordTargetsProfile(profile);
 
 const syntheticTrack = {
   totalLength: 5_300,
