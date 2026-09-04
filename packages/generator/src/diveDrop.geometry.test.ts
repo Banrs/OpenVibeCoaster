@@ -134,11 +134,9 @@ describe("diveDrop analytic geometry", () => {
       Math.PI;
     expect(verticalPitchDeg).toBeCloseTo(-90, 6);
 
-    const y = built.solvedSpans.flatMap((span) =>
-      Array.from({ length: 257 }, (_, index) =>
-        span.span.position(index / 256),
-      ).map((point) => point[1]),
-    );
+    const y = Array.from({ length: 257 }, (_, index) =>
+      drop.span.position(index / 256),
+    ).map((point) => point[1]);
     expect(Math.max(...y) - Math.min(...y)).toBeGreaterThanOrEqual(207);
     expect(Math.max(...y) - Math.min(...y)).toBeLessThanOrEqual(213);
   });
