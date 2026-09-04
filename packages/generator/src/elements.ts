@@ -2,6 +2,7 @@ import {
   SeventhOrderHermiteSpan,
   QuinticScalarSpan,
   aabbFromPoints,
+  arcLength,
   quatRotateVector,
   vec3,
   vec3Add,
@@ -654,6 +655,129 @@ const lineSpan = (
   return { span, bank, endPose };
 };
 
+export const DIVE_DROP_SPAN_COUNT = 3;
+
+const diveDropSpans = (
+  pose: Pose,
+  parameters: ElementParameterMap["diveDrop"],
+  elementId: string,
+): ElementBuildResult => {
+  const basis = basisFor(pose);
+  const zero = vec3(0, 0, 0);
+  const pitchRad = ((parameters.angleDeg - 180) * Math.PI) / 180;
+  const dropDirection = vec3Add(
+    vec3Scale(basis.tangent, Math.cos(pitchRad)),
+    vec3Scale(basis.normal, Math.sin(pitchRad)),
+  );
+  const lip = vec3Add(
+    pose.position,
+    vec3Scale(basis.tangent, parameters.approachRadius * 0.6),
+  );
+  const bottom = vec3Add(
+    lip,
+    vec3Scale(
+      dropDirection,
+      parameters.dropHeight / Math.abs(Math.sin(pitchRad)),
+    ),
+  );
+  const recoveryEnd = vec3Add(
+    vec3Add(
+      bottom,
+      vec3Scale(basis.tangent, parameters.exitRadius * 1.4),
+    ),
+    vec3Scale(basis.normal, 4),
+  );
+  const approachDerivative = vec3Scale(
+    basis.tangent,
+    parameters.approachRadius,
+  );
+  const dropApproachDerivative = vec3Scale(
+    dropDirection,
+    parameters.approachRadius,
+  );
+  const dropExitDerivative = vec3Scale(
+    dropDirection,
+    parameters.exitRadius,
+  );
+  const levelDerivative = vec3Scale(basis.tangent, parameters.exitRadius);
+  const spans = [
+    new SeventhOrderHermiteSpan({
+      p0: pose.position,
+      d10: approachDerivative,
+      d20: zero,
+      d30: zero,
+      p1: lip,
+      d11: dropApproachDerivative,
+      d21: zero,
+      d31: zero,
+    }),
+    new SeventhOrderHermiteSpan({
+      p0: lip,
+      d10: dropApproachDerivative,
+      d20: zero,
+      d30: zero,
+      p1: bottom,
+      d11: dropExitDerivative,
+      d21: zero,
+      d31: zero,
+    }),
+    new SeventhOrderHermiteSpan({
+      p0: bottom,
+      d10: dropExitDerivative,
+      d20: zero,
+      d30: zero,
+      p1: recoveryEnd,
+      d11: levelDerivative,
+      d21: zero,
+      d31: zero,
+    }),
+  ] as const;
+  const canonicalRoll = (from: number, to: number): QuinticScalarSpan =>
+    QuinticScalarSpan.fromCoefficients(
+      new QuinticScalarSpan({
+        v0: from,
+        d10: 0,
+        d20: 0,
+        v1: to,
+        d11: 0,
+        d21: 0,
+      }).coefficients,
+    );
+  const rolls = [
+    canonicalRoll(pose.bank, parameters.bank),
+    canonicalRoll(parameters.bank, parameters.bank),
+    canonicalRoll(parameters.bank, parameters.bank),
+  ] as const;
+  const solvedSpans = spans.map((span, index): SolvedSpan => {
+    const bank = rolls[index]!;
+    return {
+      id: `${elementId}#${index}`,
+      kind: "diveDrop",
+      span,
+      bank,
+      zones: ["diveDrop"],
+      bounds: aabbFromPoints(
+        Array.from({ length: 33 }, (_, sample) =>
+          span.position(sample / 32),
+        ),
+      ),
+      length: arcLength(span),
+      positionCoefficients: span.coefficients,
+      rollCoefficients: bank.coefficients,
+    };
+  });
+  const last = solvedSpans[DIVE_DROP_SPAN_COUNT - 1]!;
+  return {
+    solvedSpans,
+    endPose: orthonormalizePose({
+      position: last.span.position(1),
+      tangent: vec3Normalize(last.span.derivative(1, 1)),
+      normal: basis.normal,
+      bank: parameters.bank,
+    }),
+  };
+};
+
 export const buildElement = (
   element: AnySemanticElement,
   pose: Pose,
@@ -663,6 +787,10 @@ export const buildElement = (
   if (element.type === "topHat") {
     const p = element.parameters as ElementParameterMap["topHat"];
     return topHatSpans(normalizedPose, p.height, p.width, p.bank, element.id);
+  }
+  if (element.type === "diveDrop") {
+    const p = element.parameters as ElementParameterMap["diveDrop"];
+    return diveDropSpans(normalizedPose, p, element.id);
   }
   let span: ParametricSpan<Vec3>;
   let endPose: Pose;
@@ -796,7 +924,6 @@ export const buildElement = (
       endBank = normalizedPose.bank + p.roll;
       break;
     }
-    case "diveDrop":
     case "immelmann":
     case "verticalLoop":
       throw new RangeError(`${element.type} geometry is not available`);
