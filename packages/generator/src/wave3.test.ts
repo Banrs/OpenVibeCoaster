@@ -45,7 +45,7 @@ const directedIntent = {
       id: "stall-001",
       kind: "stall",
       type: "stall",
-      parameters: { length: 32, height: 18, bank: 0 },
+      parameters: { length: 100, height: 18, bank: 0 },
     },
   ],
   gates: [],
@@ -471,6 +471,7 @@ describe("wave 3 deterministic generator", () => {
 
   it("regenerates only the selected neighborhood and keeps pinned spans bitwise stable", () => {
     const generated = generateCoaster(directedIntent);
+    expect(generated.feasible).toBe(true);
     const result = regenerateLocal(generated, "stall-001", {
       seams: testSeams,
       referenceSpeed: 44,
@@ -484,10 +485,11 @@ describe("wave 3 deterministic generator", () => {
 
   it("widens a changed local solve without changing an upstream pin", () => {
     const generated = generateCoaster(directedIntent);
+    expect(generated.feasible).toBe(true);
     const result = regenerateLocal(generated, "stall-001", {
       seams: testSeams,
       referenceSpeed: 44,
-      changes: { "stall-001": { length: 40 } },
+      changes: { "stall-001": { length: 110 } },
       pinnedElementIds: ["station-000"],
     });
     expect(result.feasible).toBe(true);
