@@ -4,7 +4,29 @@ import {
   generateCoaster,
   recordHybridDefaultElements,
 } from "./pipeline.js";
-import { RECORD_HYBRID_IDS } from "./recordHybrid.pipeline.test.js";
+
+const RECORD_HYBRID_IDS = [
+  "station-000",
+  "launch-001",
+  "transition-002",
+  "airtimeHill-003",
+  "overbankedTurn-004",
+  "overbankedTurn-005",
+  "launch-006",
+  "brake-007",
+  "diveDrop-008",
+  "launch-009",
+  "airtimeHill-010",
+  "topHat-011",
+  "immelmann-012",
+  "verticalLoop-013",
+  "overbankedTurn-014",
+  "zeroGRoll-015",
+  "stall-016",
+  "brake-017",
+  "brake-018",
+  "station-019",
+] as const;
 
 const intent = () =>
   createDesignIntentV1({

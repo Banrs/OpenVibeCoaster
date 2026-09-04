@@ -54,12 +54,18 @@ describe("record-hybrid default pipeline", () => {
     { timeout: 120_000 },
     () => {
       const generated = generateCoaster(intent(), options);
-      expect(generated.feasible).toBe(true);
       expect(generated.elements.map((element) => element.id)).toEqual(
         RECORD_HYBRID_IDS,
       );
       expect(generated.track.totalLength).toBeGreaterThanOrEqual(5200);
       expect(generated.track.totalLength).toBeLessThanOrEqual(5400);
+      expect(
+        generated.feasible,
+        JSON.stringify({
+          length: generated.track.totalLength,
+          diagnostics: generated.diagnostics,
+        }),
+      ).toBe(true);
       expect(generated.file.profileVersion).toBe("record-targets-v1");
       expect(generated.file.researchSnapshotIds).toEqual([
         "records-2026-09-01",
@@ -77,12 +83,11 @@ describe("record-hybrid default pipeline", () => {
     { timeout: 120_000 },
     () => {
       const generated = generateCoaster(intent(), options);
-      const loadedFile = deserializeCoasterFileV1(
-        serializeCoasterFileV1(generated.file),
-      );
+      const serialized = serializeCoasterFileV1(generated.file);
+      const loadedFile = deserializeCoasterFileV1(serialized);
       const loaded = compileCoasterFile(loadedFile);
       expect(loadedFile.intent.elements).toEqual(generated.file.intent.elements);
-      expect(loadedFile.solvedSpans).toEqual(generated.file.solvedSpans);
+      expect(serializeCoasterFileV1(loadedFile)).toBe(serialized);
       expect(loadedFile.profileVersion).toBe("record-targets-v1");
       expect(loadedFile.researchSnapshotIds).toEqual([
         "records-2026-09-01",
