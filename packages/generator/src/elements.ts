@@ -675,53 +675,35 @@ const diveDropSpans = (
     vec3Scale(basis.tangent, Math.cos(pitchRad)),
     vec3Scale(basis.normal, Math.sin(pitchRad)),
   );
+  const approachDerivativeScale = parameters.approachRadius;
   const lip = vec3Add(
     pose.position,
-    vec3Scale(basis.tangent, parameters.approachRadius * 0.6),
-  );
-  const bottom = vec3Add(
-    lip,
     vec3Scale(
-      dropDirection,
-      parameters.dropHeight / Math.abs(Math.sin(pitchRad)),
+      vec3Add(basis.tangent, dropDirection),
+      approachDerivativeScale / 2,
     ),
   );
   const recoveryAngle = Math.abs(pitchRad);
-  const recoveryEnd = vec3Add(
+  const recoveryDrop = parameters.exitRadius * (1 - Math.cos(recoveryAngle));
+  const straightDrop = Math.max(0, parameters.dropHeight - recoveryDrop);
+  const straightDistance = straightDrop / Math.sin(recoveryAngle);
+  const bottom = vec3Add(
     vec3Add(
-      bottom,
+      vec3Add(lip, vec3Scale(dropDirection, straightDistance)),
       vec3Scale(basis.tangent, parameters.exitRadius * Math.sin(recoveryAngle)),
     ),
-    vec3Scale(
-      basis.normal,
-      parameters.exitRadius * (1 - Math.cos(recoveryAngle)),
-    ),
+    vec3Scale(basis.normal, -recoveryDrop),
   );
-  const approachDerivative = vec3Scale(
-    basis.tangent,
-    parameters.approachRadius,
-  );
+  const recoveryEnd = vec3Add(bottom, vec3Scale(basis.tangent, 80));
+  const approachDerivative = vec3Scale(basis.tangent, approachDerivativeScale);
   const dropApproachDerivative = vec3Scale(
     dropDirection,
-    parameters.approachRadius,
+    approachDerivativeScale,
   );
-  const recoveryDerivativeScale = parameters.exitRadius * recoveryAngle;
-  const dropExitDerivative = vec3Scale(dropDirection, recoveryDerivativeScale);
-  const recoveryStartNormal = vec3Normalize(
-    vec3Add(
-      vec3Scale(basis.tangent, Math.sin(recoveryAngle)),
-      vec3Scale(basis.normal, Math.cos(recoveryAngle)),
-    ),
-  );
-  const recoveryStartSecond = vec3Scale(
-    recoveryStartNormal,
-    parameters.exitRadius * recoveryAngle ** 2,
-  );
-  const recoveryStartThird = vec3Scale(
-    dropDirection,
-    -parameters.exitRadius * recoveryAngle ** 3,
-  );
-  const levelDerivative = vec3Scale(basis.tangent, recoveryDerivativeScale);
+  const mainDerivativeScale =
+    straightDistance + parameters.exitRadius * recoveryAngle;
+  const dropExitDerivative = vec3Scale(basis.tangent, mainDerivativeScale);
+  const levelDerivative = vec3Scale(basis.tangent, 80);
   const canonicalPosition = (
     span: SeventhOrderHermiteSpan<Vec3>,
   ): SeventhOrderHermiteSpan<Vec3> =>
@@ -747,16 +729,16 @@ const diveDropSpans = (
         d30: zero,
         p1: bottom,
         d11: dropExitDerivative,
-        d21: recoveryStartSecond,
-        d31: recoveryStartThird,
+        d21: zero,
+        d31: zero,
       }),
     ),
     canonicalPosition(
       new SeventhOrderHermiteSpan({
         p0: bottom,
-        d10: dropExitDerivative,
-        d20: recoveryStartSecond,
-        d30: recoveryStartThird,
+        d10: levelDerivative,
+        d20: zero,
+        d30: zero,
         p1: recoveryEnd,
         d11: levelDerivative,
         d21: zero,

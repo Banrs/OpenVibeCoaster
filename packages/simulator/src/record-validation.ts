@@ -173,7 +173,6 @@ function measuredDiveAngle(
   | { angleDeg: number; s: number; position: Vec3; relatedIds: string[] }
   | undefined {
   const boundaries = track.elementBoundaries;
-  const parameters = track.parameters;
   const tangents = track.tangents;
   const distances = track.distances;
   const matching: number[] = [];
@@ -190,11 +189,14 @@ function measuredDiveAngle(
   const end = boundaries[middleSpan * 2 + 1];
   if (start === undefined || end === undefined) return undefined;
   let sampleIndex = start;
-  let parameterError = Number.POSITIVE_INFINITY;
+  let minimumPitch = Number.POSITIVE_INFINITY;
   for (let index = start; index <= end; index += 1) {
-    const error = Math.abs((parameters[index] ?? 0) - 0.5);
-    if (error < parameterError) {
-      parameterError = error;
+    const x = tangents[index * 3] ?? 0;
+    const y = tangents[index * 3 + 1] ?? 0;
+    const z = tangents[index * 3 + 2] ?? 0;
+    const pitch = Math.atan2(y, Math.hypot(x, z));
+    if (pitch < minimumPitch) {
+      minimumPitch = pitch;
       sampleIndex = index;
     }
   }

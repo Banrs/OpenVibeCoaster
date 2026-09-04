@@ -222,9 +222,9 @@ export const recordHybridDefaultElements = (
   append(
     createElement("diveDrop", "diveDrop-008", {
       dropHeight: 210,
-      angleDeg: 106,
-      approachRadius: 90,
-      exitRadius: 160,
+      angleDeg: 110,
+      approachRadius: 55,
+      exitRadius: 125,
       bank: 0,
     }),
   );
