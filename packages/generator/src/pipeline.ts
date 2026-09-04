@@ -244,7 +244,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("immelmann", "immelmann-012", {
       height: 81,
-      exitHeadingDeg: 170,
+      exitHeadingDeg: 180,
       bank: 0,
     }),
   );
@@ -273,6 +273,8 @@ export const recordHybridDefaultElements = (
       Math.abs(alignedAngle + 2.2) <= Math.abs(oppositeAngle + 2.2)
         ? alignedAngle
         : oppositeAngle;
+    if (Math.abs(Math.abs(finaleTurnAngle) - Math.PI) < 1e-9)
+      finaleTurnAngle = -finaleTurnAngle;
   }
   append(
     createElement("overbankedTurn", "overbankedTurn-014", {
