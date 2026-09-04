@@ -33,6 +33,7 @@ import type {
 export * from "./contracts";
 export * from "./timeline";
 export * from "./engineering-limits";
+export * from "./record-validation";
 export * from "./operation-zones";
 
 const DEFAULT_GRAVITY = 9.80665;
