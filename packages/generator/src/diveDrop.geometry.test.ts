@@ -14,8 +14,8 @@ import {
   buildElement,
   createElement,
   DIVE_DROP_SPAN_COUNT,
-  type Pose,
-} from "./index.js";
+} from "./elements.js";
+import type { Pose } from "./types.js";
 import { defaultTolerances } from "./solver.js";
 
 const startPose: Pose = {

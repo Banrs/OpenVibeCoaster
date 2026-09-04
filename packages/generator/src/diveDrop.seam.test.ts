@@ -10,10 +10,10 @@ import {
   buildElement,
   compileSemanticChain,
   createElement,
-  defaultTolerances,
   diagnoseSeams,
   type Pose,
 } from "./index.js";
+import { defaultTolerances } from "./solver.js";
 
 const startPose: Pose = {
   position: vec3(0, 240, 0),
