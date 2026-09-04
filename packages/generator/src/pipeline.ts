@@ -216,7 +216,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("brake", "brake-007", {
-      length: 300,
+      length: 215,
       targetSpeed: 0,
       holdSeconds: 3,
       releaseSpeed: 60,
@@ -296,7 +296,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("stall", "stall-016", {
-      length: 255,
+      length: 300,
       height: 13.5,
       bank: Math.PI,
     }),
