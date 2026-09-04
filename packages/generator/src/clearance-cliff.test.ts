@@ -31,10 +31,9 @@ test(
       profileVersion: "record-targets-v1",
       researchSnapshotIds: ["records-2026-09-01"],
     });
-    const field = computeClearanceField(generated.track, {
-      environment,
-      maxWork: 1_000_000,
-    });
+    const field = generated.clearanceField;
+    expect(field).toBeDefined();
+    if (!field) throw new Error("Generator omitted its clearance field");
     expect(
       field.diagnostics.some(
         (diagnostic) => diagnostic.code === "CLEARANCE_UNCERTIFIED",
