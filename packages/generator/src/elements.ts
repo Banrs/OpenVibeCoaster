@@ -917,7 +917,7 @@ const verticalLoopSpans = (
   const secondEnd = vec3Add(firstEnd, vec3Scale(basis.tangent, -shapeRadius));
   const loopExit = vec3Add(
     pose.position,
-    vec3Scale(basis.tangent, parameters.height * 0.2),
+    vec3Scale(basis.tangent, parameters.height * 0.6),
   );
   const canonicalPosition = (
     span: SeventhOrderHermiteSpan<Vec3>,
