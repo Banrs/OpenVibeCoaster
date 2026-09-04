@@ -636,7 +636,29 @@ const buildChain = (
         ...element,
         parameters: { ...element.parameters, bank: 0 },
       } as AnySemanticElement;
-      const geometry = buildElement(geometryElement, pose, referenceSpeed);
+      const antipodal =
+        Math.abs(Math.abs(element.parameters.angle) - Math.PI) < 1e-6;
+      const geometry = antipodal
+        ? (() => {
+            const halfElement = {
+              ...geometryElement,
+              parameters: {
+                ...geometryElement.parameters,
+                angle: element.parameters.angle / 2,
+              },
+            } as AnySemanticElement;
+            const left = buildElement(halfElement, pose, referenceSpeed);
+            const right = buildElement(
+              halfElement,
+              left.endPose,
+              referenceSpeed,
+            );
+            return {
+              solvedSpans: [left.solvedSpans[0]!, right.solvedSpans[0]!],
+              endPose: right.endPose,
+            };
+          })()
+        : buildElement(geometryElement, pose, referenceSpeed);
       const startBank = pose.bank;
       const peakBank = element.parameters.bank;
       const sourceSpan = geometry.solvedSpans[0]!;
@@ -656,8 +678,12 @@ const buildChain = (
         d11: 0,
         d21: 0,
       });
-      const leftGeometry = subspan(sourceSpan.span, 0, 0.5);
-      const rightGeometry = subspan(sourceSpan.span, 0.5, 1);
+      const leftGeometry = antipodal
+        ? sourceSpan.span
+        : subspan(sourceSpan.span, 0, 0.5);
+      const rightGeometry = antipodal
+        ? geometry.solvedSpans[1]!.span
+        : subspan(sourceSpan.span, 0.5, 1);
       const leftPoints = Array.from({ length: 33 }, (_, i) =>
         leftGeometry.position(i / 32),
       );
