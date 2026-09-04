@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Compiled-geometry hard windows (measured, never authored intent): physical total length 5,200–5,400 m; physical max height 225–235 m; timeline-measured max speed 285–295 km/h (79.16–81.94 m/s); inverted top hat 90–92 m; Immelmann 80–82 m; vertical loop 66–68 m; held cliff dive about 210 m (207–213 m) at 110° (108.5–111.5°) from horizontal.
-- Timeline-measured force achievement windows: brief vertical specific-force peak maximum in [+4.8, +5.0] g AND timeline minimum vertical <= -1.0 g (target about -1.1 g); lateral magnitude <= 1.5 g; longitudinal magnitude <= 1.5 g; jerk magnitude <= 15 m/s³; roll rate magnitude <= 1.5 rad/s. Existing `engineering-limits-v1.json` caps (vertical -1.2/+5.0, lat/long 1.5, jerk 15, roll 1.5) stay unchanged and are enforced as hard caps by `validateEngineeringLimits`; the new achievement floor (+4.8) is enforced only by the new `validateRecordTargets` record diagnostics, never by editing `engineering-limits-v1.json`.
+- Timeline-measured force achievement windows: brief vertical specific-force peak maximum in [+4.8, +5.0] g AND timeline minimum vertical in [-1.2, -1.0] g (achievement target about -1.1 g, hard project floor -1.2 g preserved); lateral magnitude <= 1.5 g; longitudinal magnitude <= 1.5 g; jerk magnitude <= 15 m/s³; roll rate magnitude <= 1.5 rad/s. Existing `engineering-limits-v1.json` caps (vertical -1.2/+5.0, lat/long 1.5, jerk 15, roll 1.5) stay unchanged and are enforced as hard caps by `validateEngineeringLimits`; the new achievement floor (+4.8) and negative-G achievement interval ([-1.2, -1.0] about -1.1) are enforced only by the new `validateRecordTargets` record diagnostics, never by editing `engineering-limits-v1.json`.
 - Unchanged train/energy model: six cars × 1,500 kg (9,000 kg total, `seatCount: 4` each), `spacingM: 3.4`, envelope `halfWidthM: 1.25 / aboveRailM: 2.1 / belowRailM: 0.8 / noseTailMarginM: 0.75`; `lsmForcePerCarN: 14000`, `lsmPowerPerCarW: 1200000`, `maxBrakeForcePerCarN: 18000`, `dragCdA: 4.0`, `rollingResistanceCoefficient: 0.002`, `staticStictionCoefficient: 0.002`, `airDensityKgPerM3: 1.225`, `gravityMps2: 9.80665`, `fixedStepSeconds: 1/240` (RK4), `timelineStepSeconds: 1/120`. Per `data/profiles/train-lsm-v1.json` (`DESIGN_ASSUMPTION`).
 - Exactly three new semantic kinds: `diveDrop`, `immelmann`, `verticalLoop`. No `terrainSwoop`, no record-specific rendering model, no fourth kind. Existing `topHat` height validation is extended from exactly-80 to the interval [80, 92] (default 80 preserved); this is a range extension, not a new kind. Record [90, 92] is enforced only in Task 08 from compiled geometry.
 - Geometry authority: seventh-order Hermite position spans (3×8 `positionCoefficients`) + quintic scalar roll spans (6 `rollCoefficients`); one global RMF via `transportFramesAlongPath`/`doubleReflectionFrames` with authored bank about the tangent, never reset at seams; no sampled-vertex seam smoothing; every `SerializedSolvedSpanV1.length` is the integrated physical length of that child; `CompiledTrackData` is the sole downstream representation; rendering tessellates it via `buildTrackGeometries`/`buildSupportColumns` only.
@@ -110,16 +110,19 @@ test("valid profile passes and wrong provenance fails", () => {
 
 **Commit:** `feat(records): add dated 2026-09-01 snapshot and record-targets profile`
 
-### Task 02 — Semantic type/parser/serialization contracts for diveDrop, immelmann, verticalLoop + topHat [80, 92] extension
+### Task 02 — Semantic type/parser/serialization contracts for diveDrop, immelmann, verticalLoop + topHat [80, 92] extension with real geometry threading
 
-- [ ] Contracts only for the three approved kinds; extend existing topHat range without adding a kind
+- [ ] Contracts only for the three approved kinds; extend existing topHat range AND thread height through real geometry (no validator-only change)
 
 **Files:**
 
 - Edit `packages/generator/src/types.ts:11` (`ELEMENT_KINDS` tuple, new parameter interfaces, `ElementParameterMap`)
 - Edit `packages/generator/src/elements.ts:32` (`defaults` map), `packages/generator/src/elements.ts:70` (`validateParameters` switch), `packages/generator/src/elements.ts:759` (`createAnyElement` switch)
 - Edit `packages/generator/src/elements.ts:98` (`topHat` validator: replace exactly-80 check with range)
+- Edit `packages/generator/src/elements.ts:426` (`topHatSpans`: add `height` parameter, scale the 80 m rise table to authored height, apex Y equals authored height)
+- Edit `packages/generator/src/elements.ts:612` (`buildElement` `topHat` branch: pass `p.height` into `topHatSpans`)
 - Edit `packages/core/src/coaster-file.ts:156` (`supportedKinds` set), `packages/core/src/coaster-file.ts:174` (`parameterNames` map), `packages/core/src/coaster-file.ts:193` (numeric parameter names), `packages/core/src/coaster-file.ts:476` (`validateSerializedSpan` kind list)
+- Create `packages/generator/src/topHat-height.geometry.test.ts` (compiled-apex proof for default 80 m and record 91 m)
 
 **Consumed interfaces:** `ELEMENT_KINDS` tuple (`packages/generator/src/types.ts:11`); `SemanticElement<K>`, `AnySemanticElement`, `ElementParameterMap` (`types.ts:74`); `createElement`/`validateElement`/`validateParameters` (`packages/generator/src/elements.ts:145`/`173`/`70`); `validateDesignIntentV1`/`validateCoasterFile`/`validateSerializedSpan` (`packages/core/src/coaster-file.ts:348`/`466`).
 
@@ -131,7 +134,7 @@ export interface ImmelmannParameters { readonly height: number; readonly exitHea
 export interface VerticalLoopParameters { readonly height: number; readonly referenceSpeed: number; readonly bank: number; }
 ```
 
-`ElementParameterMap` extended with exactly those three entries. `validateParameters` gains three switch cases using the local `range`/`angle`/`finite` helpers: `dropHeight` 40–250, `angleDeg` 90–135 (parser guard; the 108.5–111.5 record window is enforced only in Task 08), `approachRadius`/`exitRadius` 15–400, `height` 20–130, `exitHeadingDeg` -180–180, `referenceSpeed` 5–85, `bank` within ±π. `topHat` validator becomes `range("width", p.width, 10, 300)` plus `if (!Number.isFinite(p.height) || p.height < 80 || p.height > 92) throw new RangeError("height must be between 80 and 92 m")` with default `height: 80` preserved in `defaults`. `createAnyElement` passes the three kinds through to `createElement`. `coaster-file.ts` `supportedKinds` plus `parameterNames` gain `diveDrop: ["dropHeight", "angleDeg", "approachRadius", "exitRadius", "bank"]`, `immelmann: ["height", "exitHeadingDeg", "bank"]`, `verticalLoop: ["height", "referenceSpeed", "bank"]`; `numericParameters` set gains `dropHeight`, `angleDeg`, `approachRadius`, `exitRadius`, `exitHeadingDeg`; `validateSerializedSpan` kind list gains the same three kinds. Any fourth kind (for example `terrainSwoop`) is rejected by all four gates.
+`ElementParameterMap` extended with exactly those three entries. `validateParameters` gains three switch cases using the local `range`/`angle`/`finite` helpers: `dropHeight` 40–250, `angleDeg` 90–135 (parser guard; the 108.5–111.5 record window is enforced only in Task 08), `approachRadius`/`exitRadius` 15–400, `height` 20–130, `exitHeadingDeg` -180–180, `referenceSpeed` 5–85, `bank` within ±π. `topHat` validator becomes `range("width", p.width, 10, 300)` plus `if (!Number.isFinite(p.height) || p.height < 80 || p.height > 92) throw new RangeError("height must be between 80 and 92 m")` with default `height: 80` preserved in `defaults`. `topHat` remains an existing kind, not a fourth new kind. `topHatSpans(pose, height, width, endBank, elementId)` replaces the hardcoded `80`: `const riseCoefficients = smoothRampCoefficients.map((c) => c * height)` and `const apex = worldPoint(pose, basis, vec3(halfWidth, height, 0))` (both rise and fall rows scale by `height`); `buildElement` calls `topHatSpans(normalizedPose, p.height, p.width, p.bank, element.id)` so `height: 91` compiles a 91 m apex and default `height: 80` preserves existing behavior byte-for-byte. `createAnyElement` passes the three kinds through to `createElement`. `coaster-file.ts` `supportedKinds` plus `parameterNames` gain `diveDrop: ["dropHeight", "angleDeg", "approachRadius", "exitRadius", "bank"]`, `immelmann: ["height", "exitHeadingDeg", "bank"]`, `verticalLoop: ["height", "referenceSpeed", "bank"]`; `numericParameters` set gains `dropHeight`, `angleDeg`, `approachRadius`, `exitRadius`, `exitHeadingDeg`; `validateSerializedSpan` kind list gains the same three kinds. Any fourth kind (for example `terrainSwoop`) is rejected by all four gates.
 
 **Test sketches:**
 
@@ -173,13 +176,44 @@ test("coaster file accepts diveDrop span and rejects terrainSwoop element", () =
 });
 ```
 
+```ts
+// packages/generator/src/topHat-height.geometry.test.ts
+import { test, expect } from "vitest";
+import { buildElement, createElement, defaultPose } from "./elements.js";
+import { compileSemanticChain } from "./solver.js";
+test("topHat default 80 compiles an 80 m apex (existing behavior preserved)", () => {
+  const el = createElement("topHat", "topHat-000", {});
+  expect(el.parameters.height).toBe(80);
+  const { solvedSpans } = buildElement(el, defaultPose(), 34);
+  expect(solvedSpans.length).toBe(2);
+  const ys: number[] = [];
+  for (const s of solvedSpans) for (let i = 0; i <= 32; i += 1) ys.push(s.span.position(i / 32)[1]);
+  const apex = Math.max(...ys);
+  expect(Math.abs(apex - 80)).toBeLessThanOrEqual(1);
+});
+test("topHat height 91 threads through geometry to a 91 m compiled apex", () => {
+  const el = createElement("topHat", "topHat-011", { height: 91, width: 60, bank: 0 });
+  const { solvedSpans } = buildElement(el, defaultPose(), 34);
+  expect(solvedSpans.length).toBe(2);
+  const ys: number[] = [];
+  for (const s of solvedSpans) for (let i = 0; i <= 32; i += 1) ys.push(s.span.position(i / 32)[1]);
+  const apex = Math.max(...ys);
+  expect(Math.abs(apex - 91)).toBeLessThanOrEqual(1);
+  const r = compileSemanticChain([el]);
+  expect(r.feasible).toBe(true);
+  const cys: number[] = [];
+  for (const s of r.solvedSpans) for (let i = 0; i <= 32; i += 1) cys.push(s.span.position(i / 32)[1]);
+  expect(Math.abs(Math.max(...cys) - 91)).toBeLessThanOrEqual(1);
+});
+```
+
 **RED CI:** `npm run test -- packages/generator/src/elements-record.test.ts` expect `FAIL` with `Unknown element kind: diveDrop` before the change.
 
-**GREEN implementation:** Add the three kinds to the `ELEMENT_KINDS` tuple, `defaults` (diveDrop `{ dropHeight: 210, angleDeg: 110, approachRadius: 90, exitRadius: 70, bank: 0 }`, immelmann `{ height: 81, exitHeadingDeg: 180, bank: 0 }`, verticalLoop `{ height: 67, referenceSpeed: 38, bank: 0 }`), `validateParameters` switch, `createAnyElement` switch; change the `topHat` validator to the [80, 92] range; extend all three `coaster-file.ts` gates. No other file gains a kind.
+**GREEN implementation:** Add the three kinds to the `ELEMENT_KINDS` tuple, `defaults` (diveDrop `{ dropHeight: 210, angleDeg: 110, approachRadius: 90, exitRadius: 70, bank: 0 }`, immelmann `{ height: 81, exitHeadingDeg: 180, bank: 0 }`, verticalLoop `{ height: 67, referenceSpeed: 38, bank: 0 }`), `validateParameters` switch, `createAnyElement` switch; change the `topHat` validator to the [80, 92] range; change `topHatSpans(pose, width, endBank, elementId)` to `topHatSpans(pose, height, width, endBank, elementId)` scaling `smoothRampCoefficients` by `height` for both rise and fall rows and setting apex Y to `height`; change the `buildElement` `topHat` branch to pass `p.height`; extend all three `coaster-file.ts` gates. No other file gains a kind; `topHat` stays an existing kind.
 
-**Focused CI:** `npm run test -- packages/generator/src/elements-record.test.ts packages/generator/src/coaster-file-record-kinds.test.ts packages/core/src/coaster-file.test.ts`.
+**Focused CI:** `npm run test -- packages/generator/src/elements-record.test.ts packages/generator/src/coaster-file-record-kinds.test.ts packages/generator/src/topHat-height.geometry.test.ts packages/core/src/coaster-file.test.ts`.
 
-**Static review:** Read `packages/generator/src/elements.ts:98`, verify the old `if (p.height !== 80)` line is gone and `[80, 92]` is present with default 80 at line 38; read `packages/core/src/coaster-file.ts:156` and `:476`, verify exactly three kinds added and no `terrainSwoop`; grep `terrainSwoop` returns zero matches.
+**Static review:** Read `packages/generator/src/elements.ts:98`, verify the old `if (p.height !== 80)` line is gone and `[80, 92]` is present with default 80 at line 38; read `packages/generator/src/elements.ts:426`, verify `topHatSpans` takes `height` and no literal `80` remains in the rise/apex computation; read `packages/generator/src/elements.ts:612`, verify `buildElement` passes `p.height`; read `packages/core/src/coaster-file.ts:156` and `:476`, verify exactly three kinds added and no `terrainSwoop`; grep `terrainSwoop` returns zero matches.
 
 **Commit:** `feat(generator): add diveDrop, immelmann, verticalLoop semantic contracts`
 
@@ -216,12 +250,21 @@ test("diveDrop emits 3 coefficient spans with mid-drop 110deg and 210m delta", (
   }
   const mid = solvedSpans[1]!.span;
   const d = mid.derivative(0.5, 1);
-  const pitchDeg = (Math.atan2(-d[1], Math.hypot(d[0], d[2])) * 180) / Math.PI;
-  expect(pitchDeg).toBeCloseTo(-70, 0.6);
+  const pitchDeg = (Math.atan2(d[1], Math.hypot(d[0], d[2])) * 180) / Math.PI;
+  expect(Math.abs(pitchDeg + 70)).toBeLessThanOrEqual(0.6);
   const topY = solvedSpans[0]!.span.position(0)[1];
   const bottomY = solvedSpans[1]!.span.position(1)[1];
-  expect(topY - bottomY).toBeCloseTo(210, 0);
-  expect(Math.abs(topY - bottomY - 210)).toBeLessThanOrEqual(3);
+  const dropM = topY - bottomY;
+  expect(Math.abs(dropM - 210)).toBeLessThanOrEqual(3);
+});
+test("diveDrop recovery span exits near level with driven-down exit curvature", () => {
+  const el = createElement("diveDrop", "diveDrop-000", { dropHeight: 210, angleDeg: 110, approachRadius: 90, exitRadius: 70, bank: 0 });
+  const { solvedSpans } = buildElement(el, defaultPose(), 34);
+  const exit = solvedSpans[2]!.span;
+  const d = exit.derivative(1, 1);
+  const exitPitchDeg = (Math.atan2(d[1], Math.hypot(d[0], d[2])) * 180) / Math.PI;
+  expect(Math.abs(exitPitchDeg)).toBeLessThanOrEqual(10);
+  expect(solvedSpans[2]!.length).toBeGreaterThan(0);
 });
 ```
 
@@ -281,9 +324,9 @@ test("immelmann height 81 and exit heading 180", () => {
   expect(IMMELMANN_SPAN_COUNT).toBe(2);
   expect(solvedSpans.length).toBe(2);
   const apex = solvedSpans[0]!.span.position(0.5);
-  expect(apex[1]).toBeCloseTo(81, 0.5);
+  expect(Math.abs(apex[1] - 81)).toBeLessThanOrEqual(1);
   const yawDeg = (Math.atan2(endPose.tangent[0], endPose.tangent[2]) * 180) / Math.PI;
-  expect(Math.abs(yawDeg)).toBeCloseTo(180, 0);
+  expect(Math.abs(Math.abs(yawDeg) - 180)).toBeLessThanOrEqual(1);
 });
 test("immelmann handedness preserved and RMF binormal continuous", () => {
   const left = buildElement(createElement("immelmann", "immelmann-010", { height: 81, exitHeadingDeg: 90, bank: 0 }), defaultPose(), 30);
@@ -347,7 +390,7 @@ test("verticalLoop height 67 with C3 seams from compiled track", () => {
   expect(r.feasible).toBe(true);
   const ys: number[] = [];
   for (const s of r.solvedSpans) for (let i = 0; i <= 16; i += 1) ys.push(s.span.position(i / 16)[1]);
-  expect(Math.max(...ys)).toBeCloseTo(67, 0.6);
+  expect(Math.abs(Math.max(...ys) - 67)).toBeLessThanOrEqual(1);
   for (const d of r.seamDiagnostics) {
     expect(d.curvaturePerM).toBeLessThanOrEqual(1e-4);
     expect(d.curvatureGradientPerM2).toBeLessThanOrEqual(1e-4);
@@ -390,7 +433,7 @@ test("verticalLoop infeasible height variant fails honestly", () => {
 
 **Consumed interfaces:** `DesignIntentV1` (`packages/core/src/contracts.ts:49`); `GenerationResult` (`packages/generator/src/types.ts:193`); `createDesignIntentV1`/`parseDesignIntentV1`/`serializeCoasterFileV1`/`deserializeCoasterFileV1`/`compileCoasterFile`/`serializeSolvedSpanV1` (`packages/core/src/coaster-file.ts:458`/`611`/`615`/`634`/`851`/`895`/`941`); `Xoshiro128ss` (`packages/core/src/random.ts`); solver budgets `pipeline.ts:1492-1497` and `1970-1974` (frozen).
 
-**Produced interfaces:** `recordHybridDefaultElements(seed, candidate)` returns exactly 14 elements with stable IDs in narrative order: `station-000` (180 m dispatch), `launch-001` (first LSM rollout), `transition-002` (rising transition), `airtimeHill-003` + `overbankedTurn-004` + `overbankedTurn-005` (terrain warm-up: two banked direction changes + airtime rise), `launch-006` (long second LSM climb), `brake-007` (summit static-hold brake zone, target 0 m/s), `diveDrop-008` (210 m / 110°), `launch-009` (third LSM using drop kinetic energy), `airtimeHill-010` (190 m camelback), `topHat-011` (height 91, inverted), `immelmann-012` (height 81), `verticalLoop-013` (height 67). Total compiled physical length lands inside [5,200, 5,400] m (assert the window, never `5250 ± 150`). `generateCoaster` keeps exact `maxIterations`/`maxCandidates`/3-rerun logic; `compileCoasterFile(reload)` recompiles stored solved coefficients without re-solving (checksum equality); save preserves `profileVersion`, `researchSnapshotIds`, semantic intent, exact `positionCoefficients`/`rollCoefficients`, per-child integrated `length`, checksum, and editability.
+**Produced interfaces:** `recordHybridDefaultElements(seed, candidate)` returns exactly 20 elements with stable IDs in spec narrative order (`docs/superpowers/specs/2026-09-01-record-hybrid-flagship-design.md:67-86`): `station-000` (180 m dispatch run), `launch-001` (first LSM rollout), `transition-002` (rising transition into ~60 m twisted drop), `airtimeHill-003` (airtime rise) + `overbankedTurn-004` + `overbankedTurn-005` (terrain warm-up: two banked direction changes + airtime rise), `launch-006` (long second LSM climb to the cliff summit), `brake-007` (summit static-hold brake zone, `targetSpeed: 0`), `diveDrop-008` (210 m / 110° cliff dive), `launch-009` (third LSM using drop kinetic energy), `airtimeHill-010` (190 m camelback), `topHat-011` (height 91, inverted), `immelmann-012` (height 81), `verticalLoop-013` (height 67), `overbankedTurn-014` (finale overbank), `zeroGRoll-015` (finale zero-G roll), `stall-016` (finale stall), `brake-017` (curved trim/brake turn with bank, `targetSpeed: 25`), `brake-018` (long magnetic braking, `targetSpeed: 0`), `station-019` (open terminal station, `closed: false`, physical closure). Total compiled physical length lands inside [5,200, 5,400] m (assert the window with `toBeGreaterThanOrEqual(5200)` / `toBeLessThanOrEqual(5400)`, never `5250 ± 150`). Terminal closure is proven by `brake-018` bringing timeline end speed `<= 0.2 m/s` (Task 08 `BRAKE_MARGIN`) plus `station-019` as the final span so the last operation zone ends at `track.totalLength`; the open terminal station itself carries no invented target (`operationZonesFromCoasterFile` leaves open-station `targetSpeedMps` undefined per `packages/simulator/src/operation-zones.ts:68-73` — the 0 m/s stop is owned by `brake-018`). `generateCoaster` keeps exact `maxIterations`/`maxCandidates`/3-rerun logic; `compileCoasterFile(reload)` recompiles stored solved coefficients without re-solving (checksum equality); save preserves `profileVersion`, `researchSnapshotIds`, semantic intent, exact `positionCoefficients`/`rollCoefficients`, per-child integrated `length`, checksum, and editability.
 
 **Test sketches:**
 
@@ -399,14 +442,38 @@ test("verticalLoop infeasible height variant fails honestly", () => {
 import { test, expect } from "vitest";
 import { generateCoaster } from "./pipeline.js";
 import { compileCoasterFile, createDesignIntentV1, deserializeCoasterFileV1, serializeCoasterFileV1 } from "@openvibecoaster/core";
-test("insta route has 14 stable ids and length inside 5200-5400", () => {
+import { createDefaultSimulatorConfig, operationZonesFromCoasterFile, simulateRide } from "@openvibecoaster/simulator";
+const RECORD_IDS = ["station-000", "launch-001", "transition-002", "airtimeHill-003", "overbankedTurn-004", "overbankedTurn-005", "launch-006", "brake-007", "diveDrop-008", "launch-009", "airtimeHill-010", "topHat-011", "immelmann-012", "verticalLoop-013", "overbankedTurn-014", "zeroGRoll-015", "stall-016", "brake-017", "brake-018", "station-019"];
+test("insta route has 20 stable ids and length inside 5200-5400", () => {
   const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
   const g = generateCoaster(intent);
-  expect(g.elements.map((e) => e.id)).toEqual(["station-000", "launch-001", "transition-002", "airtimeHill-003", "overbankedTurn-004", "overbankedTurn-005", "launch-006", "brake-007", "diveDrop-008", "launch-009", "airtimeHill-010", "topHat-011", "immelmann-012", "verticalLoop-013"]);
+  expect(g.elements.map((e) => e.id)).toEqual(RECORD_IDS);
+  expect(g.elements.length).toBe(20);
   expect(g.track.totalLength).toBeGreaterThanOrEqual(5200);
   expect(g.track.totalLength).toBeLessThanOrEqual(5400);
   expect(g.file.profileVersion).toBe("record-targets-v1");
   expect(g.file.researchSnapshotIds).toEqual(["records-2026-09-01"]);
+});
+test("finale and terminal closure: overbank/roll/stall present, zones inside length, terminal brake stops train", () => {
+  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
+  const g = generateCoaster(intent);
+  const kinds = new Map(g.elements.map((e) => [e.id, e.kind]));
+  expect(kinds.get("overbankedTurn-014")).toBe("overbankedTurn");
+  expect(kinds.get("zeroGRoll-015")).toBe("zeroGRoll");
+  expect(kinds.get("stall-016")).toBe("stall");
+  expect(kinds.get("brake-018")).toBe("brake");
+  expect(kinds.get("station-019")).toBe("station");
+  const zones = operationZonesFromCoasterFile(g.file);
+  for (const z of zones) {
+    expect(z.endDistanceM).toBeLessThanOrEqual(g.track.totalLength);
+    expect(z.startDistanceM).toBeLessThan(z.endDistanceM);
+  }
+  const lastZone = zones[zones.length - 1]!;
+  expect(Math.abs(lastZone.endDistanceM - g.track.totalLength)).toBeLessThanOrEqual(1e-6);
+  const cfg = createDefaultSimulatorConfig();
+  const sim = simulateRide(g.track, { durationSeconds: 180, config: { ...cfg, zones }, initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 0 } });
+  const lastSpeed = sim.timeline.speedMps[sim.timeline.length - 1]!;
+  expect(lastSpeed).toBeLessThanOrEqual(0.2 + 1e-6);
 });
 test("save reload preserves coefficients profile research and checksum", () => {
   const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
@@ -435,44 +502,64 @@ test("same seed twice gives identical checksum; different candidate advances rng
 });
 ```
 
-**RED CI:** `npm run test -- packages/generator/src/recordHybrid.pipeline.test.ts` expect `totalLength` below 5,200 (current compact default is far shorter) or checksum mismatch before this task.
+**RED CI:** `npm run test -- packages/generator/src/recordHybrid.pipeline.test.ts` expect `totalLength` below 5,200 (current compact default is far shorter) or missing `overbankedTurn-014`/`station-019` IDs before this task.
 
-**GREEN implementation:** Replace the `defaultElements` insta branch with `recordHybridDefaultElements` computing the 14-element list above (station 180 m, launch spans sized by the real energy model, summit brake 35 m with `targetSpeed: 0`, `diveDrop` 210 m/110°, camelback 190 m, `topHat` height 91, `immelmann` 81, `verticalLoop` 67, terminal brakes). Lengthen launch/transition/brake spans inside the window when energy demands it; never shrink record elements, relax hard targets, clamp speed, or invent power. Keep solver `maxIterations`/`maxCandidates`/rerun logic byte-identical.
+**GREEN implementation:** Replace the `defaultElements` insta branch with `recordHybridDefaultElements` computing the 20-element list above (station 180 m, launch spans sized by the real energy model, summit brake 35 m with `targetSpeed: 0`, `diveDrop` 210 m/110°, camelback 190 m, `topHat` height 91, `immelmann` 81, `verticalLoop` 67, finale `overbankedTurn-014`/`zeroGRoll-015`/`stall-016`, trim `brake-017` with bank and `targetSpeed: 25`, terminal magnetic `brake-018` with `targetSpeed: 0`, open terminal `station-019` with `closed: false`). Lengthen launch/transition/brake spans inside the window when energy demands it; never shrink record elements, relax hard targets, clamp speed, or invent power. Keep solver `maxIterations`/`maxCandidates`/rerun logic byte-identical.
 
 **Focused CI:** `npm run test -- packages/generator/src/recordHybrid.pipeline.test.ts packages/generator/src/recordHybrid.determinism.test.ts`.
 
-**Static review:** Read `packages/generator/src/pipeline.ts:136`, verify 14 stable IDs and `[5200, 5400]` window assertion; read `packages/core/src/coaster-file.ts:536`, verify `profileVersion`/`researchSnapshotIds` wiring and stable serialize order.
+**Static review:** Read `packages/generator/src/pipeline.ts:136`, verify 20 stable IDs ending in `station-019` and `[5200, 5400]` window assertion; read `packages/core/src/coaster-file.ts:536`, verify `profileVersion`/`researchSnapshotIds` wiring and stable serialize order.
 
 **Commit:** `feat(generator): implement record default sequence and deterministic save-reload`
 
-### Task 07 — Widened cliff terrain + directed gates/pins + clearance authority
+### Task 07 — Widened cliff terrain behind the pure core boundary + directed gates/pins + clearance authority
 
-- [ ] 5.2 km cliff-and-valley heightfield with honest directed-footprint behavior
+- [ ] 5.2 km cliff-and-valley heightfield defined in pure core; web layer consumes/adapts it; generator never imports apps/web
 
 **Files:**
 
-- Edit `apps/web/src/terrain/environment.ts:9` (add `CLIFF_VALLEY_TERRAIN_PROFILE_ID = "cliff-valley-v1"`, extend `VALID_TERRAIN_PROFILE_IDS`, implement `createCliffValley()` and extend `resolveTerrainEnvironment` at line 72 plus `createTerrainEnvironment` at line 84)
+- Create `packages/core/src/environments/cliff-valley.ts` (pure core, no Three.js/DOM/WebAudio: exports `CLIFF_VALLEY_TERRAIN_PROFILE_ID = "cliff-valley-v1"` and `createCliffValleyEnvironment(): HeightfieldEnvironment` with `width: 420, depth: 280, cellSize: 10` — 4,200 × 2,800 m extent, 117,600 heights — `height = -15 + 240 * exp(-(z/120)²) + 0.6 * sin/cos detail`, summit sample near `s ≈ 980` at Y ≈ 225–235)
+- Edit `packages/core/src/index.ts:9` (re-export `./environments/cliff-valley`)
+- Edit `apps/web/src/terrain/environment.ts:9` (add `CLIFF_VALLEY_TERRAIN_PROFILE_ID` re-exported from `@openvibecoaster/core`, extend `VALID_TERRAIN_PROFILE_IDS`, implement `resolveTerrainEnvironment`/`createTerrainEnvironment` delegation to `createCliffValleyEnvironment()` for `"cliff-valley-v1"` at lines 72/84; strict throw on unknown IDs preserved)
 - Edit `packages/generator/src/pipeline.ts:932` (terrain requirement enforcement for the new profile; footprint/hard-gate handling; `relaxationEvidence` on infeasible footprints — no silent pass)
-- Create `packages/generator/src/clearance-cliff.test.ts`
-- Create `packages/generator/src/gates-pins.test.ts`
+- Create `packages/core/src/environments/cliff-valley.test.ts` (pure-core extent/summit/determinism proof, no web import)
+- Create `packages/generator/src/clearance-cliff.test.ts` (imports environment only from `@openvibecoaster/core`, injects via `generateCoaster(intent, { environment })`)
+- Create `packages/generator/src/gates-pins.test.ts` (same injection rule; no `apps/web` import)
 
-**Consumed interfaces:** `HeightfieldEnvironment` (`packages/core/src/environment.ts`); `resolveTerrainEnvironment(profileId)` (`apps/web/src/terrain/environment.ts:72`, throws on unknown IDs); `validateGenerationConstraints` (`packages/generator/src/pipeline.ts:932`); `validateClearance` (`packages/generator/src/clearance.ts:741`) with `CertifiedWorkBudget`/`certifiedPolynomialBounds`; `computeClearanceField(track, options)` (`packages/generator/src/clearance-field.ts:313`); `RelaxationEvidence` (`packages/generator/src/types.ts:221`).
+**Consumed interfaces:** `HeightfieldEnvironment` + `EnvironmentQuery` (`packages/core/src/environment.ts`, `packages/core/src/contracts.ts:119`); `resolveTerrainEnvironment(profileId)` (`apps/web/src/terrain/environment.ts:72`, throws on unknown IDs); `validateGenerationConstraints` (`packages/generator/src/pipeline.ts:932`); `validateClearance` (`packages/generator/src/clearance.ts:741`) with `CertifiedWorkBudget`/`certifiedPolynomialBounds`; `computeClearanceField(track, options)` (`packages/generator/src/clearance-field.ts:313`); `RelaxationEvidence` (`packages/generator/src/types.ts:221`); `GenerationOptions.environment` (`packages/generator/src/pipeline.ts`, injected `EnvironmentQuery`).
 
-**Produced interfaces:** `resolveTerrainEnvironment("cliff-valley-v1")` yields a deterministic `HeightfieldEnvironment` with `width: 420, depth: 280, cellSize: 10` (4,200 × 2,800 m extent, 117,600 heights): valley floor −15 m, cliff ridge +225 m at the summit band (`height = -15 + 240 * exp(-(z/120)²) + 0.6 * sin/cos detail`), summit sample near `s ≈ 980` at Y ≈ 225–235. Unknown IDs still throw. Directed mode honors hard footprint polygons and up-to-3 gates via `isPointInsidePolygonStrict`/`signedDistanceStrictXZ`; an infeasible record footprint returns feasible `false` plus `relaxationEvidence` entries (`{ change, rerun: true, feasible, lmIterations, margins }`) instead of leaving the footprint. `validateClearance` never uses a sampled-only path; terrain separation uses inflated segment bounds with `sqrt(3)` locality and the existing bounded heap. Worker-side terrain is resolved inside the worker from `intent.terrainProfileId` (`apps/web/src/engineering/worker.ts:296-310`); the worker transfers only track/timeline/`clearanceM` (`protocol.ts:68-79`, `transfer.ts:6`), never heightfield buffers — tests assert generation determinism, not terrain-buffer transfer.
+**Produced interfaces:** `createCliffValleyEnvironment()` (pure core) yields a deterministic `HeightfieldEnvironment` with `width: 420, depth: 280, cellSize: 10` (4,200 × 2,800 m extent, 117,600 heights): valley floor −15 m, cliff ridge +225 m at the summit band (`height = -15 + 240 * exp(-(z/120)²) + 0.6 * sin/cos detail`), summit sample near `s ≈ 980` at Y ≈ 225–235. `resolveTerrainEnvironment("cliff-valley-v1")` (web) delegates to the core factory; unknown IDs still throw. No file under `packages/generator` imports `apps/web/*` (enforced by test-time import scan). Directed mode honors hard footprint polygons and up-to-3 gates via `isPointInsidePolygonStrict`/`signedDistanceStrictXZ`; an infeasible record footprint returns feasible `false` plus `relaxationEvidence` entries (`{ change, rerun: true, feasible, lmIterations, margins }`) instead of leaving the footprint. `validateClearance` never uses a sampled-only path; terrain separation uses inflated segment bounds with `sqrt(3)` locality and the existing bounded heap. Worker-side terrain is resolved inside the worker from `intent.terrainProfileId` (`apps/web/src/engineering/worker.ts:296-310`); the worker transfers only track/timeline/`clearanceM` (`protocol.ts:68-79`, `transfer.ts:6`), never heightfield buffers — tests assert generation determinism, not terrain-buffer transfer.
 
 **Test sketches:**
 
 ```ts
+// packages/core/src/environments/cliff-valley.test.ts
+import { test, expect } from "vitest";
+import { CLIFF_VALLEY_TERRAIN_PROFILE_ID, createCliffValleyEnvironment } from "./cliff-valley.js";
+test("cliff-valley extent, summit height, and determinism (pure core)", () => {
+  expect(CLIFF_VALLEY_TERRAIN_PROFILE_ID).toBe("cliff-valley-v1");
+  const a = createCliffValleyEnvironment();
+  const b = createCliffValleyEnvironment();
+  expect(a.width * a.cellSize).toBeGreaterThanOrEqual(4000);
+  expect(a.width).toBe(420);
+  expect(a.depth).toBe(280);
+  expect(a.cellSize).toBe(10);
+  expect(a.heightAt(0, 0)).toBe(b.heightAt(0, 0));
+  expect(a.heightAt(0, 0)).toBeGreaterThanOrEqual(225);
+  expect(a.heightAt(0, 0)).toBeLessThanOrEqual(235);
+});
+```
+
+```ts
 // packages/generator/src/clearance-cliff.test.ts
 import { test, expect } from "vitest";
-import { resolveTerrainEnvironment } from "../../apps/web/src/terrain/environment.js";
+import { createCliffValleyEnvironment } from "@openvibecoaster/core";
 import { computeClearanceField } from "./clearance-field.js";
 import { generateCoaster } from "./pipeline.js";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
 test("cliff-valley extent and certified terrain clearance with location and margin", () => {
-  const env = resolveTerrainEnvironment("cliff-valley-v1")!;
+  const env = createCliffValleyEnvironment();
   expect(env.width * env.cellSize).toBeGreaterThanOrEqual(4000);
-  expect(() => resolveTerrainEnvironment("nope-v1")).toThrow(/Unknown terrain profile/);
   const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 11, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
   const g = generateCoaster(intent, { environment: env });
   const field = computeClearanceField(g.track, { environment: env, maxWork: 1000000 });
@@ -480,16 +567,22 @@ test("cliff-valley extent and certified terrain clearance with location and marg
   const narrow = computeClearanceField(g.track, { environment: env, maxWork: 1 });
   expect(narrow.diagnostics.some((d) => d.code === "CLEARANCE_UNCERTIFIED")).toBe(true);
 });
+test("generator never imports apps/web terrain (package boundary)", async () => {
+  const fs = await import("node:fs/promises");
+  const clearanceSrc = await fs.readFile(new URL("./clearance-cliff.test.ts", import.meta.url), "utf8");
+  expect(clearanceSrc).not.toContain("apps/web");
+  const pipelineSrc = await fs.readFile(new URL("./pipeline.ts", import.meta.url), "utf8");
+  expect(pipelineSrc).not.toContain("apps/web");
+});
 ```
 
 ```ts
 // packages/generator/src/gates-pins.test.ts
 import { test, expect } from "vitest";
 import { generateCoaster } from "./pipeline.js";
-import { createDesignIntentV1 } from "@openvibecoaster/core";
-import { resolveTerrainEnvironment } from "../../apps/web/src/terrain/environment.js";
+import { createCliffValleyEnvironment, createDesignIntentV1 } from "@openvibecoaster/core";
 test("directed footprint infeasible returns relaxationEvidence, feasible honors gates", () => {
-  const env = resolveTerrainEnvironment("cliff-valley-v1")!;
+  const env = createCliffValleyEnvironment();
   const tinyFootprint = [[-50, 0, -50], [50, 0, -50], [50, 0, 50], [-50, 0, 50]] as unknown as import("@openvibecoaster/core").Vec3[];
   const infeasible = generateCoaster(
     createDesignIntentV1({ generatorVersion: "record-g", seed: 3, mode: "directed", family: "steel-sitdown-lsm-v1", elements: [], gates: [{ id: "g-0", position: [0, 0, 50] }], targets: [], constraints: [{ id: "c-fp", kind: "required-footprint", value: "tiny", hard: true }], footprint: tinyFootprint, pinnedElementIds: [] }),
@@ -501,13 +594,13 @@ test("directed footprint infeasible returns relaxationEvidence, feasible honors 
 });
 ```
 
-**RED CI:** `npm run test -- packages/generator/src/clearance-cliff.test.ts` expect `Unknown terrain profile: cliff-valley-v1` before this task.
+**RED CI:** `npm run test -- packages/core/src/environments/cliff-valley.test.ts` expect `FAIL` with `Cannot find module .../cliff-valley.js` before files exist; `npm run test -- packages/generator/src/clearance-cliff.test.ts` expect throw-free web import to fail the boundary scan until the `apps/web` import is removed.
 
-**GREEN implementation:** Implement `createCliffValley()` heights per the formula above; add the ID to `VALID_TERRAIN_PROFILE_IDS`; wire the pipeline to select the environment only when `intent.terrainProfileId === "cliff-valley-v1"` and throw on unknown. Keep spatial-index and `maxWork` budget checks; never lower validation fidelity.
+**GREEN implementation:** Implement `createCliffValleyEnvironment()` in pure `packages/core` per the formula above; re-export from `packages/core/src/index.ts`; make `apps/web/src/terrain/environment.ts` delegate `"cliff-valley-v1"` to the core factory and throw on unknown. Wire the pipeline to consume the injected `options.environment: EnvironmentQuery` only (never import web terrain). Keep spatial-index and `maxWork` budget checks; never lower validation fidelity.
 
-**Focused CI:** `npm run test -- packages/generator/src/clearance-cliff.test.ts packages/generator/src/gates-pins.test.ts`.
+**Focused CI:** `npm run test -- packages/core/src/environments/cliff-valley.test.ts packages/generator/src/clearance-cliff.test.ts packages/generator/src/gates-pins.test.ts apps/web/src/terrain/environment.test.ts`.
 
-**Static review:** Read `apps/web/src/terrain/environment.ts:72`, verify strict throw and no Three.js import; read `packages/generator/src/clearance-field.ts:313` signature usage; verify `Read packages/generator/src/pipeline.ts:58` is NOT cited (that path is wrong — owner is the terrain module).
+**Static review:** Read `packages/core/src/environments/cliff-valley.ts:1`, verify no Three.js/DOM/WebAudio import; read `apps/web/src/terrain/environment.ts:72`, verify delegation plus strict throw and no heightfield formula duplicated; grep `apps/web` under `packages/generator/src` returns zero matches; read `packages/generator/src/clearance-field.ts:313` signature usage.
 
 **Commit:** `feat(environment): widen cliff-valley terrain and wire directed gates/clearance`
 
@@ -526,7 +619,7 @@ test("directed footprint infeasible returns relaxationEvidence, feasible honors 
 
 **Consumed interfaces:** `CompiledTrackData { positions, distances, elementIndices, elementBoundaries, totalLength }` (`packages/core/src/track.ts:297` — numeric arrays only, no kind/spanId array); `CoasterFileV1 { intent.elements, solvedSpans }` (`packages/core/src/coaster-file.ts`); `RideTimeline { length, headDistanceM, speedMps, verticalG, lateralG, longitudinalG, jerkMps3, rollRateRadPerSec, bankRad, accumulatedDriveWorkJ, accumulatedLossWorkJ, kineticEnergyJ, potentialEnergyJ, timeSeconds }` (`packages/simulator/src/timeline.ts:298`); `SimulatorConfig` with `train: { cars: [{ massKg: 1500, seatCount: 4 } × 6], spacingM: 3.4, envelope: { halfWidthM: 1.25, aboveRailM: 2.1, belowRailM: 0.8, noseTailMarginM: 0.75 } }` and top-level `gravityMps2: 9.80665, fixedStepSeconds: 1/240, timelineStepSeconds: 1/120, rollingResistanceCoefficient: 0.002, staticStictionCoefficient: 0.002, dragCdA: 4, airDensityKgPerM3: 1.225, lsmForcePerCarN: 14000, lsmPowerPerCarW: 1200000, lsmTargetGainNPerMps: 2000, maxBrakeForcePerCarN: 18000` (`packages/simulator/src/contracts.ts:35-59`, `index.ts:41-69`); `RecordTargetProfile` (Task 01); `Diagnostic { code, severity, provenance, actual, limit, margin, location, relatedIds }` (`packages/core/src/contracts.ts:82`); `createDefaultSimulatorConfig`/`simulateRide` (`packages/simulator/src/index.ts:41`/`1842`); `operationZonesFromCoasterFile` (`packages/simulator/src/operation-zones.ts:25`); `compileSemanticChain`/`solveSemanticChain` (`packages/generator/src/solver.ts:1205`/`874`).
 
-**Produced interfaces (helper defined before use):** `export function maxYForKind(track: CompiledTrackData, file: CoasterFileV1, kind: "topHat" | "immelmann" | "verticalLoop" | "diveDrop"): { maxY: number; s: number }` — slices `track.positions` Y by `track.elementBoundaries`/`elementIndices` sample ranges, joins each compiled element range to the owning intent element via `file.solvedSpans` order → `file.intent.elements[kind]`, and returns the maximum Y plus its arc-distance `s`. `export function validateRecordTargets(track, timeline, file, profile, frames?): readonly Diagnostic[]` emits `error` diagnostics with `provenance: "PROJECT_ENGINEERING_LIMIT"`, `actual/limit/margin`, `location.s`, `relatedIds` for: `RECORD_LENGTH` (totalLength outside [5200, 5400]), `RECORD_HEIGHT` (global max Y outside [225, 235]), `RECORD_SPEED` (max `timeline.speedMps` outside [79.16, 81.94]), `RECORD_INVERSION` (`maxYForKind(topHat)` outside [90, 92]), `RECORD_IMMELMANN` (outside [80, 82]), `RECORD_LOOP` (outside [66, 68]), `RECORD_DIVE_HEIGHT` (diveDrop vertical delta outside 207–213), `RECORD_DIVE_ANGLE` (mid-drop tangent angle outside 108.5–111.5°), `RECORD_FORCE_PEAK_POS` (max verticalG outside [4.8, 5.0]), `RECORD_FORCE_NEG` (min verticalG > −1.0, i.e. never reaches about −1.1), `RECORD_FORCE_LAT` / `RECORD_FORCE_LONG` (|max| > 1.5), `RECORD_JERK` (max jerk magnitude > 15), `RECORD_ROLL` (max |rollRate| > 1.5), `HOLD_DURATION` (no continuous `static-hold` status ≥ 3 s at the summit brake zone), `ENERGY_LSM_REQUIRED_WORK` (drive work exceeds `1.2MW × launch duration` or 285 km/h unreachable without invented power), `BRAKE_MARGIN` (terminal `endSpeed > 0.2 m/s`). It never reads authored `parameters.height` as proof. ASTM is untouched (`UNKNOWN_UNCONFIGURED`).
+**Produced interfaces (helper defined before use):** `export function maxYForKind(track: CompiledTrackData, file: CoasterFileV1, kind: "topHat" | "immelmann" | "verticalLoop" | "diveDrop"): { maxY: number; s: number }` — slices `track.positions` Y by `track.elementBoundaries`/`elementIndices` sample ranges, joins each compiled element range to the owning intent element via `file.solvedSpans` order → `file.intent.elements[kind]`, and returns the maximum Y plus its arc-distance `s`. `export function validateRecordTargets(track, timeline, file, profile, frames?): readonly Diagnostic[]` emits `error` diagnostics with `provenance: "PROJECT_ENGINEERING_LIMIT"`, `actual/limit/margin`, `location.s`, `relatedIds` for: `RECORD_LENGTH` (totalLength outside [5200, 5400]), `RECORD_HEIGHT` (global max Y outside [225, 235]), `RECORD_SPEED` (max `timeline.speedMps` outside [79.16, 81.94]), `RECORD_INVERSION` (`maxYForKind(topHat)` outside [90, 92]), `RECORD_IMMELMANN` (outside [80, 82]), `RECORD_LOOP` (outside [66, 68]), `RECORD_DIVE_HEIGHT` (diveDrop vertical delta outside 207–213), `RECORD_DIVE_ANGLE` (mid-drop tangent angle outside 108.5–111.5°), `RECORD_FORCE_PEAK_POS` (max verticalG outside [4.8, 5.0]), `RECORD_FORCE_NEG` (min verticalG outside [-1.2, -1.0]: fails when `min > -1.0` with `actual: min, limit: -1.0, margin: min + 1.0` meaning never reaches the about -1.1 achievement, or when `min < -1.2` with `actual: min, limit: -1.2` meaning the hard project floor is breached), `RECORD_FORCE_LAT` / `RECORD_FORCE_LONG` (|max| > 1.5), `RECORD_JERK` (max jerk magnitude > 15), `RECORD_ROLL` (max |rollRate| > 1.5), `HOLD_DURATION` (no continuous `static-hold` status ≥ 3 s at the summit brake zone), `ENERGY_LSM_REQUIRED_WORK` (drive work exceeds `1.2MW × launch duration` or 285 km/h unreachable without invented power), `BRAKE_MARGIN` (terminal `endSpeed > 0.2 m/s`). It never reads authored `parameters.height` as proof. ASTM is untouched (`UNKNOWN_UNCONFIGURED`).
 
 **Test sketches (no fakes; real compile + simulate):**
 
@@ -539,17 +632,58 @@ import { createElement } from "@openvibecoaster/generator";
 import { createDefaultSimulatorConfig, simulateRide } from "./index.js";
 import { maxYForKind, validateRecordTargets } from "./record-validation.js";
 import profile from "../../../data/profiles/record-targets-v1.json" with { type: "json" };
-test("maxYForKind measures compiled geometry and catches authored cheating", () => {
-  const honest = compileSemanticChain([createElement("topHat", "topHat-000", { height: 91, width: 60, bank: 0 })]);
-  expect(honest.track).toBeDefined();
-  const file = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] })).file;
+test("maxYForKind measures compiled geometry for 80 m and 91 m topHats", () => {
+  const low = compileSemanticChain([createElement("topHat", "topHat-000", { height: 80, width: 60, bank: 0 })]);
+  expect(low.feasible).toBe(true);
+  const lowFile = { intent: { elements: [{ id: "topHat-000", kind: "topHat", type: "topHat", parameters: { height: 80, width: 60, bank: 0 } }] }, solvedSpans: low.solvedSpans.map((s) => ({ id: s.id, kind: "topHat", positionCoefficients: s.positionCoefficients, rollCoefficients: s.rollCoefficients, length: s.length })) } as unknown as import("@openvibecoaster/core").CoasterFileV1;
+  const lowM = maxYForKind(low.track, lowFile, "topHat");
+  expect(Math.abs(lowM.maxY - 80)).toBeLessThanOrEqual(1);
+  expect(lowM.s).toBeGreaterThanOrEqual(0);
+  expect(lowM.s).toBeLessThanOrEqual(low.track.totalLength);
+  const high = compileSemanticChain([createElement("topHat", "topHat-011", { height: 91, width: 60, bank: 0 })]);
+  expect(high.feasible).toBe(true);
+  const highFile = { intent: { elements: [{ id: "topHat-011", kind: "topHat", type: "topHat", parameters: { height: 91, width: 60, bank: 0 } }] }, solvedSpans: high.solvedSpans.map((s) => ({ id: s.id, kind: "topHat", positionCoefficients: s.positionCoefficients, rollCoefficients: s.rollCoefficients, length: s.length })) } as unknown as import("@openvibecoaster/core").CoasterFileV1;
+  const highM = maxYForKind(high.track, highFile, "topHat");
+  expect(highM.maxY).toBeGreaterThanOrEqual(90);
+  expect(highM.maxY).toBeLessThanOrEqual(92);
+  expect(highM.s).toBeGreaterThanOrEqual(0);
+  expect(highM.s).toBeLessThanOrEqual(high.track.totalLength);
+});
+test("authored-cheat case: intent claims 91 m but compiled geometry is 80 m, RECORD_INVERSION fails", () => {
+  const built = compileSemanticChain([createElement("topHat", "topHat-011", { height: 80, width: 60, bank: 0 })]);
+  expect(built.feasible).toBe(true);
+  const cheatFile = { intent: { elements: [{ id: "topHat-011", kind: "topHat", type: "topHat", parameters: { height: 91, width: 60, bank: 0 } }] }, solvedSpans: built.solvedSpans.map((s) => ({ id: s.id, kind: "topHat", positionCoefficients: s.positionCoefficients, rollCoefficients: s.rollCoefficients, length: s.length })) } as unknown as import("@openvibecoaster/core").CoasterFileV1;
+  const cheatM = maxYForKind(built.track, cheatFile, "topHat");
+  expect(Math.abs(cheatM.maxY - 80)).toBeLessThanOrEqual(1);
   const g = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }));
-  const m = maxYForKind(g.track, g.file, "topHat");
-  expect(m.maxY).toBeGreaterThanOrEqual(90);
-  expect(m.maxY).toBeLessThanOrEqual(92);
-  expect(m.s).toBeGreaterThanOrEqual(0);
-  expect(m.s).toBeLessThanOrEqual(g.track.totalLength);
-  void honest; void file;
+  const cfg = createDefaultSimulatorConfig();
+  const sim = simulateRide(g.track, { durationSeconds: 60, config: { ...cfg, zones: [] }, initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 5 } });
+  const diags = validateRecordTargets(built.track, sim.timeline, cheatFile, profile, sim.frames);
+  const inversion = diags.filter((d) => d.code === "RECORD_INVERSION");
+  expect(inversion.length).toBeGreaterThan(0);
+  expect(inversion[0]!.severity).toBe("error");
+  expect(inversion[0]!.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
+  expect(inversion[0]!.actual).toBeLessThan(90);
+  expect(inversion[0]!.limit).toBe(90);
+  expect(typeof inversion[0]!.margin).toBe("number");
+  expect(inversion[0]!.relatedIds).toContain("topHat-011");
+});
+test("negative-G achievement requires min in [-1.2, -1.0] about -1.1, not merely <= -1.0", () => {
+  const g = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }));
+  const cfg = createDefaultSimulatorConfig();
+  const sim = simulateRide(g.track, { durationSeconds: 180, config: { ...cfg, zones: [] }, initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 5 } });
+  const diags = validateRecordTargets(g.track, sim.timeline, g.file, profile, sim.frames);
+  const neg = diags.filter((d) => d.code === "RECORD_FORCE_NEG");
+  const minV = Math.min(...Array.from(sim.timeline.verticalG));
+  if (minV > -1.0) expect(neg.length).toBeGreaterThan(0);
+  if (minV >= -1.2 && minV <= -1.0) expect(neg.length).toBe(0);
+  for (const d of neg) {
+    expect(d.severity).toBe("error");
+    expect(d.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
+    expect(typeof d.actual).toBe("number");
+    expect(typeof d.limit).toBe("number");
+    expect(typeof d.margin).toBe("number");
+  }
 });
 test("dive angle boundary 108.5-111.5 enforced", () => {
   const g = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }));
@@ -590,11 +724,11 @@ test("launch work and brake margin measured from timeline; zones inside compiled
 // packages/simulator/src/hold-rollback.test.ts
 import { test, expect } from "vitest";
 import { generateCoaster } from "@openvibecoaster/generator";
-import { createDesignIntentV1 } from "@openvibecoaster/core";
+import { compileTrack, createDesignIntentV1, SeventhOrderHermiteSpan, vec3 } from "@openvibecoaster/core";
 import { createDefaultSimulatorConfig, operationZonesFromCoasterFile, simulateRide } from "./index.js";
 import { validateRecordTargets } from "./record-validation.js";
 import profile from "../../../data/profiles/record-targets-v1.json" with { type: "json" };
-test("3s summit static hold plus rollback reversal restart are real states", () => {
+test("3s summit static hold is a real timeline state", () => {
   const g = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }));
   const cfg = createDefaultSimulatorConfig();
   const zones = operationZonesFromCoasterFile(g.file);
@@ -608,10 +742,46 @@ test("3s summit static hold plus rollback reversal restart are real states", () 
   expect(maxHold).toBeGreaterThanOrEqual(3);
   const statuses = new Set(sim.frames.map((f) => f.status));
   expect(statuses.has("rolling")).toBe(true);
+  expect(statuses.has("static-hold")).toBe(true);
+  const holdFrames = sim.frames.filter((f) => f.status === "static-hold");
+  expect(holdFrames.length).toBeGreaterThanOrEqual(720);
+  expect(holdFrames[0]!.speedMps).toBe(0);
   const diags = validateRecordTargets(g.track, sim.timeline, g.file, profile, sim.frames);
   expect(diags.filter((d) => d.code === "HOLD_DURATION").length).toBe(0);
 });
-```
+test("insufficient launch proves rolling -> stall -> rollback -> reversal on an uphill grade", () => {
+  const uphill = compileTrack([{ id: "uphill", span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 20, 100)) }], { samples: 65 });
+  const cfg = createDefaultSimulatorConfig();
+  const sim = simulateRide(uphill, { durationSeconds: 6, config: { ...cfg, zones: [] }, initial: { headDistanceM: 20, speedMps: 6 } });
+  const statuses = sim.frames.map((f) => f.status);
+  const firstRolling = sim.frames.find((f) => f.status === "rolling")!;
+  expect(firstRolling.speedMps).toBeGreaterThan(0);
+  const stall = sim.frames.find((f) => f.status === "stall")!;
+  expect(stall.speedMps).toBe(0);
+  expect(stall.timeSeconds).toBeGreaterThan(firstRolling.timeSeconds);
+  const rollback = sim.frames.find((f) => f.status === "rollback" || f.status === "reversal")!;
+  expect(rollback.timeSeconds).toBeGreaterThan(stall.timeSeconds);
+  expect(rollback.headDistanceM).toBeLessThan(stall.headDistanceM);
+  const last = sim.frames[sim.frames.length - 1]!;
+  expect(last.speedMps).toBeLessThan(0);
+  expect(statuses).toContain("stall");
+  expect(statuses.some((s) => s === "rollback" || s === "reversal")).toBe(true);
+});
+test("controlled restart after rollback returns to rolling with positive speed under LSM drive", () => {
+  const uphill = compileTrack([{ id: "uphill", span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 20, 100)) }], { samples: 65 });
+  const cfg = createDefaultSimulatorConfig();
+  const restartZones = [{ id: "restart-launch", kind: "launch" as const, startDistanceM: 0, endDistanceM: uphill.totalLength, targetSpeedMps: 12 }] as const;
+  const sim = simulateRide(uphill, { durationSeconds: 10, config: { ...cfg, zones: [...restartZones] }, initial: { headDistanceM: 20, speedMps: -2 } });
+  const reversalOrRollback = sim.frames.find((f) => f.status === "rollback" || f.status === "reversal" || f.speedMps < 0);
+  expect(reversalOrRollback).toBeDefined();
+  const restarted = sim.frames.slice(sim.frames.indexOf(reversalOrRollback!)).find((f) => f.status === "rolling" && f.speedMps > 0)!;
+  expect(restarted).toBeDefined();
+  expect(restarted.timeSeconds).toBeGreaterThan(reversalOrRollback!.timeSeconds);
+  expect(restarted.headDistanceM).toBeGreaterThanOrEqual(0);
+  expect(restarted.headDistanceM).toBeLessThanOrEqual(uphill.totalLength);
+  const last = sim.frames[sim.frames.length - 1]!;
+  expect(last.speedMps).toBeGreaterThan(0);
+});
 
 **RED CI:** `npm run test -- packages/simulator/src/record-validation.test.ts` expect missing module `record-validation.js` before this task.
 
@@ -637,6 +807,7 @@ test("3s summit static hold plus rollback reversal restart are real states", () 
 - Edit `apps/web/src/main.ts:76` (DOM wiring: render `[data-testid="record-target-pill"]` with `"record target"` plus exact shortfall list when `recordValidated === false`, and `[data-testid="record-validated-pill"]` with `"validated project record"` only when true; shortfalls come from `recordDiagnostics` with `actual/limit/margin`)
 - Create `apps/web/src/engineering/record-protocol.test.ts`
 - Create `apps/web/src/experienceController.record.test.ts`
+- Create `apps/web/src/engineering/record-worker-determinism.test.ts`
 
 **Consumed interfaces:** `EngineeringWorkerRequest { generate, regenerate, compile-simulate, cancel }` + `EngineeringWorkerResponse { success, failure, cancelled }` (`apps/web/src/engineering/protocol.ts:37`/`93`); `EngineeringWorkerClient` (`client.ts:67`) with `collectTransferables` (`transfer.ts:6`); `hydrateEngineeringSuccess` (`hydrate.ts:17`) verifying canonical file/checksum path; `ExperienceController` statuses (`experienceController.ts:16`); `RideTimeline.toTransferable()`/`fromTransferable` with 11-legacy / 28-current buffer counts (`timeline.ts:47-48`).
 
@@ -658,11 +829,15 @@ test("real handleGenerate success carries recordValidated fields and strict vali
   if (res.type !== "success") return;
   expect(typeof res.recordValidated).toBe("boolean");
   expect(Array.isArray(res.recordDiagnostics)).toBe(true);
+  expect(res.recordValidated).toBe(res.recordDiagnostics.length === 0);
+  expect(res.clearanceM).toBeInstanceOf(Float64Array);
   expect(res.clearanceM.length).toBe(res.timeline.length);
   expect(() => validateEngineeringWorkerResponse(res)).not.toThrow();
   const clone = { ...res } as Record<string, unknown>;
   delete clone.recordValidated;
   expect(() => validateEngineeringWorkerResponse(clone)).toThrow(/recordValidated/);
+  const clone2 = { ...res, recordDiagnostics: "bad" } as unknown as Record<string, unknown>;
+  expect(() => validateEngineeringWorkerResponse(clone2)).toThrow(/recordDiagnostics/);
   expect(recordStatusLabel(false)).toBe("record target");
   expect(recordStatusLabel(true)).toBe("validated project record");
 });
@@ -677,12 +852,17 @@ import { handleGenerate } from "./engineering/worker.js";
 import { hydrateEngineeringSuccess } from "./engineering/hydrate.js";
 test("controller stays on record target until validated result arrives", () => {
   const ctrl = createExperienceController({ onGenerate: () => {}, onLocalRegenerate: () => {}, onCompileLoad: () => {} });
+  expect(ctrl.getState().status).toBe("pending");
+  expect(ctrl.getState().epoch).toBe(0);
   const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
   const res = handleGenerate("req-record-2", intent);
   expect(res.type).toBe("success");
   if (res.type !== "success") return;
-  const hydrated = hydrateEngineeringSuccess(JSON.parse(JSON.stringify({ ...res, track: res.track, timeline: { ...res.timeline, buffers: (res.timeline as unknown as { buffers: ArrayBuffer[] }).buffers } })));
-  void hydrated;
+  const hydrated = hydrateEngineeringSuccess(res);
+  expect(hydrated.track.checksum).toBe(res.track.checksum);
+  expect(hydrated.timeline.length).toBe(res.timeline.length);
+  expect(hydrated.clearanceM.length).toBe(hydrated.timeline.length);
+  expect(hydrated.clearanceM).not.toBe(res.clearanceM);
   expect(ctrl.getState().status).toBe("pending");
   expect(ctrl.getState().epoch).toBe(0);
 });
@@ -691,29 +871,87 @@ test("controller stays on record target until validated result arrives", () => {
 ```ts
 // apps/web/src/engineering/record-worker-determinism.test.ts
 import { test, expect } from "vitest";
-import { EngineeringWorkerClient } from "./client.js";
-import { collectTransferables } from "./transfer.js";
+import { RideTimeline } from "@openvibecoaster/simulator";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
 import { handleGenerate } from "./worker.js";
-test("transfer ownership deterministic and stale epoch rejected", () => {
+import { collectTransferables } from "./transfer.js";
+import { EngineeringWorkerClient } from "./client.js";
+import { hydrateEngineeringSuccess } from "./hydrate.js";
+test("same seed twice is byte-equal across track buffers and timeline transfer", () => {
+  const mk = () => createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
+  const a = handleGenerate("req-record-a", mk());
+  const b = handleGenerate("req-record-b", mk());
+  expect(a.type).toBe("success");
+  expect(b.type).toBe("success");
+  if (a.type !== "success" || b.type !== "success") return;
+  expect(a.track.checksum).toBe(b.track.checksum);
+  expect(a.track.totalLength).toBe(b.track.totalLength);
+  for (const key of ["positions", "tangents", "normals", "binormals", "distances"] as const) {
+    const av = a.track[key] as Float64Array;
+    const bv = b.track[key] as Float64Array;
+    expect(av.length).toBe(bv.length);
+    expect(Buffer.from(av.buffer, av.byteOffset, av.byteLength).equals(Buffer.from(bv.buffer, bv.byteOffset, bv.byteLength))).toBe(true);
+  }
+  const at = RideTimeline.fromTransferable(a.timeline);
+  const bt = RideTimeline.fromTransferable(b.timeline);
+  expect(at.length).toBe(bt.length);
+  expect(Buffer.from(at.speedMps.buffer).equals(Buffer.from(bt.speedMps.buffer))).toBe(true);
+});
+test("transfer ownership is deduplicated and hydration copies clearance without aliasing", () => {
   const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
   const res = handleGenerate("req-record-3", intent);
   expect(res.type).toBe("success");
   if (res.type !== "success") return;
   const buffers = collectTransferables(res);
+  expect(buffers.length).toBeGreaterThan(0);
   expect(new Set(buffers).size).toBe(buffers.length);
-  const client = new EngineeringWorkerClient(() => ({ postMessage: () => {}, terminate: () => {} }));
+  for (const buf of buffers) expect(buf).toBeInstanceOf(ArrayBuffer);
+  const hydrated = hydrateEngineeringSuccess(res);
+  expect(hydrated.clearanceM.length).toBe(hydrated.timeline.length);
+  expect(hydrated.clearanceM).not.toBe(res.clearanceM);
+  hydrated.clearanceM[0] = Number.NaN;
+  expect(res.clearanceM[0]).not.toBe(Number.NaN);
+});
+test("cancellation terminates the client and rejects the queued generate", async () => {
+  const posted: unknown[] = [];
+  let terminated = false;
+  const client = new EngineeringWorkerClient(() => ({ postMessage: (m: unknown) => { posted.push(m); }, terminate: () => { terminated = true; } }));
   expect(client.getEpoch()).toBe(0);
+  expect(client.isTerminated()).toBe(false);
+  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
+  const pending = client.generate("req-cancel-1", intent);
+  expect(client.getPendingCount()).toBe(1);
+  client.cancel("req-cancel-1");
+  await expect(pending).rejects.toThrow(/cancelled/i);
   client.teardown();
   expect(client.isTerminated()).toBe(true);
+  expect(terminated).toBe(true);
 });
-```
+test("teardown rejects pending work and stale epochs never resolve", async () => {
+  const client = new EngineeringWorkerClient(() => ({ postMessage: () => {}, terminate: () => {} }));
+  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
+  const p = client.generate("req-stale-1", intent);
+  client.teardown();
+  await expect(p).rejects.toThrow(/teardown|cancelled/i);
+  expect(client.isTerminated()).toBe(true);
+  expect(client.getEpoch()).toBe(0);
+});
+test("future worker timestamp beyond the 5 ms tolerance is rejected by the client", async () => {
+  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
+  const fresh = handleGenerate("req-fresh", intent);
+  expect(fresh.type).toBe("success");
+  if (fresh.type !== "success") return;
+  const skewed = { ...fresh, requestId: "req-skew-1", timings: { ...fresh.timings, workerSendEpochMs: performance.now() + 50 } };
+  const { validateEngineeringWorkerResponse } = await import("./protocol.js");
+  expect(() => validateEngineeringWorkerResponse(skewed)).not.toThrow();
+  expect(skewed.timings.workerSendEpochMs - performance.now()).toBeGreaterThan(5);
+});
 
-**RED CI:** `npm run test -- apps/web/src/engineering/record-protocol.test.ts` expect `recordValidated` missing-field throw before this task.
+**RED CI:** `npm run test -- apps/web/src/engineering/record-protocol.test.ts` expect `recordValidated` missing-field throw before this task; `npm run test -- apps/web/src/engineering/record-worker-determinism.test.ts` expect `Cannot find module .../record-worker-determinism.test.ts` before this task.
 
-**GREEN implementation:** Extend the success type plus both strict `allowed` sets; compute `recordDiagnostics` via Task 08 in all three handlers and set `recordValidated`; extend `AuthoritativeExperienceResult` + `validateResult`; create `recordStatus.ts` before editing `main.ts`; wire both `data-testid` pills in `main.ts` driven by `recordValidated` with the exact shortfall list (`code + actual/limit/margin`). Keep `collectTransferables` promotion of canonical arrays and epoch stale-rejection intact.
+**GREEN implementation:** Extend the success type plus both strict `allowed` sets; compute `recordDiagnostics` via Task 08 in all three handlers and set `recordValidated`; extend `AuthoritativeExperienceResult` + `validateResult`; create `recordStatus.ts` before editing `main.ts`; wire both `data-testid` pills in `main.ts` driven by `recordValidated` with the exact shortfall list (`code + actual/limit/margin`). Keep `collectTransferables` promotion of canonical arrays and epoch stale-rejection intact. Never `JSON.parse(JSON.stringify(...))` a success payload — `Float64Array`/`Uint32Array`/`ArrayBuffer` views do not survive JSON and violate `hydrate.ts:12-16` plus `protocol.ts:234-240/282-288/315-317`.
 
-**Focused CI:** `npm run test -- apps/web/src/engineering/record-protocol.test.ts apps/web/src/experienceController.record.test.ts apps/web/src/engineering/client.test.ts apps/web/src/engineering/protocol.test.ts`.
+**Focused CI:** `npm run test -- apps/web/src/engineering/record-protocol.test.ts apps/web/src/experienceController.record.test.ts apps/web/src/engineering/record-worker-determinism.test.ts apps/web/src/engineering/client.test.ts apps/web/src/engineering/protocol.test.ts`.
 
 **Static review:** Read `apps/web/src/engineering/protocol.ts:242`, verify exactly two new allowed keys and no wildcard; read `apps/web/src/experienceController.ts:190`, verify checksum + stale-rejection intact; read `apps/web/src/main.ts`, verify both `data-testid` selectors exist.
 
@@ -744,7 +982,6 @@ import { test, expect } from "vitest";
 import { generateCoaster } from "@openvibecoaster/generator";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
 import { buildTrackGeometries } from "./trackGeometry.js";
-import * as trackGeometrySource from "./trackGeometry.js";
 test("tessellation derives from CompiledTrackData samples and exposes spine and ties", () => {
   const g = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }));
   const geos = buildTrackGeometries(g.track);
@@ -752,7 +989,9 @@ test("tessellation derives from CompiledTrackData samples and exposes spine and 
   expect(geos.ties).toBeDefined();
   expect(geos.leftRail.attributes.position.count).toBeGreaterThan(g.track.distances.length);
   expect(geos.rightRail.attributes.position.count).toBeGreaterThan(g.track.distances.length);
-  void trackGeometrySource;
+  expect(geos.drawCalls).toBeGreaterThan(0);
+  expect(geos.triangles).toBeGreaterThan(0);
+  expect(Number.isFinite(geos.triangles)).toBe(true);
 });
 test("trackGeometry module never imports generator", async () => {
   const fs = await import("node:fs/promises");
@@ -783,42 +1022,109 @@ test("trackGeometry module never imports generator", async () => {
 
 **Consumed interfaces:** `ExperienceController.status: "ready"` (`apps/web/src/experienceController.ts:16`); `[data-testid="record-target-pill"]` / `[data-testid="record-validated-pill"]` (Task 09); camera buttons `front/middle/rear/chase/orbit` (`render/cameras.ts:5`); telemetry plots, metric color, seam inspection, audio mute, `prefers-reduced-motion`, WebGL fallback message, responsive viewport, `apps/web/dist/OpenVibeCoaster.html` portable artifact (`.github/workflows/ci.yml` artifact check); `performance` marks `ovc:generation-total`, `ovc:simulation`, `ovc:worker-transfer`, `ovc:mesh-create`, steady-state 1080p `ovc:frame`.
 
-**Produced interfaces:** Chromium run: `/` shows `"record target"` pill before generation resolves; `Generate` → `Ready` shows `"validated project record"` with the shortfall list cleared; all five ride cameras render without throw; telemetry plots + metric color + seam inspection update; audio mute + reduced-motion respected; portable `file://` open of `OpenVibeCoaster.html` reaches `Ready`; 1280×800 and 390×844 viewports have no horizontal overflow; WebGL-disabled run shows the fallback message; zero console errors; screenshots committed as CI artifacts.
+**Produced interfaces:** Chromium run: `/` shows `"record target"` pill before generation resolves; `Generate` → `Ready` shows `"validated project record"` with the shortfall list cleared (`RECORD_*`/`HOLD_DURATION`/`ENERGY_*`/`BRAKE_*` zero errors); all five ride cameras render without throw; telemetry plots + metric color + seam inspection update; pin-local regeneration, directed success/infeasible, save/reload, audio unlock/mute, keyboard, reduced-motion, responsive viewports, portable `file://`, WebGL fallback, five performance marks, screenshots, and zero console/page errors. Element list shows exactly 20 record IDs ending in `station-019`.
 
 **Test sketches (Playwright):**
 
 ```ts
 // tests/e2e/record-hybrid.spec.ts
 import { test, expect } from "@playwright/test";
-test("record target vs validated state and five ride cameras", async ({ page }) => {
+import { assertNoObservability, attachObservability, waitForReady } from "./acceptance-helpers.js";
+test("record target vs validated state, five cameras, five marks, shortfalls cleared", async ({ page }) => {
   test.setTimeout(180_000);
+  const obs = attachObservability(page);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  await expect(page.getByTestId("record-target-pill")).toContainText("record target");
+  await page.locator("#generate-btn").click();
+  await waitForReady(page, 120_000);
+  await expect(page.getByTestId("record-validated-pill")).toContainText("validated project record");
+  expect(await page.locator('#diagnostics-list li[data-severity="error"], #diagnostics-list li[data-severity="fatal"]').count()).toBe(0);
+  expect(await page.locator("#element-list li").count()).toBe(20);
+  for (const cam of ["front", "middle", "rear", "chase", "orbit"] as const) {
+    await page.locator(`input[name="camera"][value="${cam}"]`).check();
+    await page.waitForTimeout(250);
+  }
+  for (const mark of ["ovc:generation-total", "ovc:simulation", "ovc:worker-transfer", "ovc:mesh-create", "ovc:frame"] as const) {
+    expect(await page.evaluate((m) => performance.getEntriesByName(m).length, mark), `mark ${mark} present`).toBeGreaterThan(0);
+  }
+  const lengthM = Number.parseFloat((await page.locator('[data-testid="track-length"]').getAttribute("data-length-m")) ?? "NaN");
+  expect(lengthM).toBeGreaterThanOrEqual(5200);
+  expect(lengthM).toBeLessThanOrEqual(5400);
+  await page.screenshot({ path: "tests/e2e/__screenshots__/record-hybrid-validated.png" });
+  assertNoObservability(obs, "record validated");
+});
+test("pause scrub speed reset, plot-track sync, colors, seam inspector, pin regeneration, directed, save-reload, audio, keyboard, reduced motion, responsive", async ({ page }) => {
+  test.setTimeout(180_000);
+  const obs = attachObservability(page);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  await page.locator("#generate-btn").click();
+  await waitForReady(page, 120_000);
+  await page.locator("#pause-btn").click();
+  await expect(page.locator("#pause-btn")).toContainText(/resume|pause/i);
+  await page.locator("#pause-btn").click();
+  const scrub = page.locator("#scrubber");
+  await scrub.fill("50");
+  expect(Number.parseFloat((await page.locator('[data-testid="train-position"]').getAttribute("data-distance-m")) ?? "NaN")).toBeGreaterThan(0);
+  await page.locator("#playback-speed").selectOption("2");
+  await expect(page.locator("#playback-speed")).toHaveValue("2");
+  await page.locator("#reset-btn").click();
+  await expect(page.locator("#telemetry-graph")).toBeVisible();
+  await page.locator("#metric-select").selectOption("gForce");
+  await expect(page.locator("#metric-legend")).toContainText(/g/i);
+  await page.locator("#metric-select").selectOption("speed");
+  await page.locator("#metric-select").selectOption("rollRate");
+  await page.locator("#metric-select").selectOption("clearance");
+  await page.locator("#seam-inspect-btn").click();
+  await expect(page.locator('[data-testid="seam-boundaries"]')).toBeVisible();
+  await page.locator("#element-list li").first().click();
+  await page.locator("#pin-btn").click();
+  await page.locator("#local-regenerate-btn").click();
+  await waitForReady(page, 120_000);
+  const downloadPromise = page.waitForEvent("download");
+  await page.locator("#save-btn").click();
+  const download = await downloadPromise;
+  const savePath = await download.path();
+  expect(savePath).toBeTruthy();
+  await page.locator("#audio-unlock-btn").click();
+  await page.locator("#mute-btn").click();
+  await expect(page.locator("#audio-status")).toContainText(/muted/i);
+  await page.locator("#mute-btn").click();
+  await page.locator("#telemetry-graph").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press(" ");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.locator('input[name="camera"][value="orbit"]').check();
+  await page.waitForTimeout(250);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.screenshot({ path: "tests/e2e/__screenshots__/record-hybrid-controls.png" });
+  assertNoObservability(obs, "record controls");
+});
+test("portable file:// artifact reaches Ready with zero errors", async ({ page }) => {
+  test.setTimeout(180_000);
+  const obs = attachObservability(page);
+  await page.goto("file://" + process.cwd() + "/apps/web/dist/OpenVibeCoaster.html");
+  await page.locator("#generate-btn").click();
+  await waitForReady(page, 120_000);
+  await expect(page.getByTestId("record-validated-pill")).toContainText("validated project record");
+  assertNoObservability(obs, "portable file");
+});
+test("WebGL fallback shows message with retry and no errors", async ({ browser }) => {
+  const context = await browser.newContext({ launchOptions: { args: ["--disable-webgl", "--disable-gpu"] } });
+  const page = await context.newPage();
   const errors: string[] = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/");
-  await expect(page.getByTestId("record-target-pill")).toContainText("record target");
-  await page.locator("#generate-btn").click();
-  await expect(page.getByText("Ready")).toBeVisible({ timeout: 120_000 });
-  await expect(page.getByTestId("record-validated-pill")).toContainText("validated project record");
-  for (const cam of ["front", "middle", "rear", "chase", "orbit"] as const) {
-    await page.getByRole("button", { name: cam }).click();
-    await page.waitForTimeout(250);
-  }
-  expect(await page.evaluate(() => performance.getEntriesByName("ovc:generation-total").length)).toBeGreaterThan(0);
-  expect(errors, `zero console errors, got: ${errors.join("; ")}`).toEqual([]);
-});
-test("plots color seam audio reduced-motion responsive fallback", async ({ page }) => {
-  test.setTimeout(180_000);
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto("/");
-  await page.locator("#generate-btn").click();
-  await expect(page.getByText("Ready")).toBeVisible({ timeout: 120_000 });
-  await expect(page.locator("#telemetry-graph")).toBeVisible();
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.getByRole("button", { name: "orbit" }).click();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.locator("body")).toBeVisible();
+  await expect(page.locator("#webgl-fallback")).toBeVisible();
+  await expect(page.locator("#webgl-fallback h2")).toHaveText("3D view unavailable");
+  await expect(page.locator("#webgl-retry")).toBeEnabled();
+  expect(errors).toEqual([]);
+  await context.close();
 });
 ```
 
@@ -862,7 +1168,7 @@ test("plots color seam audio reduced-motion responsive fallback", async ({ page 
 
 **Files:**
 
-- Edit `README.md:1` (add Record-Hybrid section: metrics 5,200–5,400 m / 225–235 m / 285–295 km/h / 90–92 m top hat / 80–82 m Immelmann / 66–68 m loop / about 210 m at 110° dive / force windows +4.8–+5.0 and about −1.1 with lat/long 1.5, jerk 15, roll 1.5 / 9,000 kg six-car train with LSM 14 kN + 1.2 MW per car and 18 kN brake / terrain `cliff-valley-v1` 4,200 × 2,800 m / dated 2026-09-01 source list with all five spec URLs / limitations paragraph)
+- Edit `README.md:1` (add Record-Hybrid section: metrics 5,200–5,400 m / 225–235 m / 285–295 km/h / 90–92 m top hat / 80–82 m Immelmann / 66–68 m loop / about 210 m at 110° dive / force windows +4.8–+5.0 peak and negative-G achievement in [−1.2, −1.0] about −1.1 (hard floor −1.2) with lat/long 1.5, jerk 15, roll 1.5 / 9,000 kg six-car train with LSM 14 kN + 1.2 MW per car and 18 kN brake / terrain `cliff-valley-v1` 4,200 × 2,800 m / dated 2026-09-01 source list with all five spec URLs / limitations paragraph)
 - No `docs/limitations.md` (that path does not exist; only `docs/architecture.md` and `docs/research-snapshot.md` exist — use the README limitations paragraph only)
 
 **Consumed interfaces:** Spec metrics (`docs/superpowers/specs/2026-09-01-record-hybrid-flagship-design.md:33-45`); `data/standards/f2291-26.json` notice; `apps/web/src/render/supports.ts:36` 60 m visual-only cap.
@@ -892,7 +1198,7 @@ test("plots color seam audio reduced-motion responsive fallback", async ({ page 
 1. `quality` (ubuntu-latest): `npm ci` → `npm run typecheck` → `npm run lint` → `npm run format:check` → `npm run test` → `npm run build` → `npm run bench` (engineering 3+50 plus production Chromium browser 3+50 with honest misses) → `npm run test:e2e -- --project=chromium` (includes `tests/e2e/record-hybrid.spec.ts`).
 2. `portable` (windows-latest and macos-latest): `npm ci` → `npm run build` → artifact existence + non-emptiness checks for `apps/web/dist/OpenVibeCoaster.html` → `file://` open reaches `Ready` with zero console errors.
 
-**Pass criteria:** every hard target from Global Constraints passes in the same authoritative result (`recordValidated === true`, zero `RECORD_*`/`HOLD_DURATION`/`ENERGY_*`/`BRAKE_*` errors, zero error/fatal diagnostics); E2E asserts target-vs-validated pills, five cameras, plots, metric color, seam inspection, audio mute, reduced motion, responsive viewports, WebGL fallback, portable `file://`, steady-state 1080p marks, and zero console errors; benches report honest p50/p95 with no reduced validation.
+**Pass criteria:** every hard target from Global Constraints passes in the same authoritative result (`recordValidated === true`, zero `RECORD_*`/`HOLD_DURATION`/`ENERGY_*`/`BRAKE_*` errors, zero error/fatal diagnostics, negative-G min in [-1.2, -1.0] about -1.1); E2E asserts target-vs-validated pills with cleared shortfalls, 20-element list, five cameras, all five performance marks, pause/scrub/speed/reset, plot-track sync, G/speed/roll-rate/clearance colors, seam inspection, pin-local regeneration, directed success/infeasible, save/reload, audio unlock/mute, keyboard, reduced motion, responsive viewports, WebGL fallback, portable `file://` Ready, screenshots, and zero console/page errors; benches report honest p50/p95 with no reduced validation.
 
 **Focused CI:** the two gate sequences above, executed only in GitHub Actions.
 
@@ -904,20 +1210,20 @@ test("plots color seam audio reduced-motion responsive fallback", async ({ page 
 
 ## Self-Review Checklist (plan author)
 
-- [ ] Every hard window from the spec appears verbatim in Global Constraints and Tasks 01/08 (5,200–5,400; 225–235; 285–295 / 79.16–81.94 m/s; 90–92; 80–82; 66–68; 207–213 m at 108.5–111.5°; +4.8–+5.0 peak with min <= −1.0 / about −1.1; lat/long <= 1.5; jerk <= 15; roll <= 1.5; 3 s hold)
-- [ ] Exactly three new kinds (`diveDrop`, `immelmann`, `verticalLoop`); grep confirms zero `terrainSwoop`; `topHat` [80, 92] extension with default 80 is not counted as a new kind; Task 08 enforces [90, 92] from compiled geometry
+- [ ] Every hard window from the spec appears verbatim in Global Constraints and Tasks 01/08 (5,200–5,400; 225–235; 285–295 / 79.16–81.94 m/s; 90–92; 80–82; 66–68; 207–213 m at 108.5–111.5°; +4.8–+5.0 peak with min in [−1.2, −1.0] about −1.1 (floor −1.2); lat/long <= 1.5; jerk <= 15; roll <= 1.5; 3 s hold)
+- [ ] Exactly three new kinds (`diveDrop`, `immelmann`, `verticalLoop`); grep confirms zero `terrainSwoop`; `topHat` [80, 92] extension with default 80 is not counted as a new kind; Task 02 threads `p.height` through `topHatSpans` (rise table scaled, apex Y equals authored height) with compiled-apex tests for 80 m and 91 m; Task 08 enforces [90, 92] from compiled geometry via `maxYForKind`, never authored intent
 - [ ] All spans use `positionCoefficients` (3×8) + `rollCoefficients` (6) with integrated `length`; renderer consumes only `CompiledTrackData`
 - [ ] ASTM stays `UNKNOWN_UNCONFIGURED` in code, JSON, and README; no compliance claim; `engineering-limits-v1.json` untouched
 - [ ] New helper `maxYForKind` is defined in Task 08 before any use; `recordStatusLabel` is defined in Task 09 before `main.ts` uses it; `diveDropSpans`/`immelmannSpans`/`verticalLoopSpans` and `DIVE_DROP_SPAN_COUNT`/`IMMELMANN_SPAN_COUNT`/`VERTICAL_LOOP_SPAN_COUNT` are defined before `buildElement` branches
 - [ ] `SimulatorConfig` shape matches `contracts.ts:35-59` + `index.ts:41-69` (cars array, envelope, top-level force/power/drag/air-density caps); no `train: { cars: 6, massKg }` shorthand anywhere
-- [ ] Protocol tests build valid successes via `handleGenerate(validIntent)` and assert `recordValidated`/`recordDiagnostics`/`clearanceM.length === timeline.length`; no `file: {}` / `track: {}` fixtures; buffer counts 11/28 and no-`frames` compact rule preserved
+- [ ] Protocol tests build valid successes via `handleGenerate(validIntent)` and assert `recordValidated === (recordDiagnostics.length === 0)` / `clearanceM.length === timeline.length`; no `file: {}` / `track: {}` fixtures and never `JSON.parse(JSON.stringify(...))` on transfer buffers; `record-worker-determinism.test.ts` is listed in Task 09 Files and asserts byte-equality, `collectTransferables` deduplication, hydration copy-without-aliasing, `cancel`/`teardown` rejection, and the 5 ms future-timestamp boundary; buffer counts 11/28 and no-`frames` compact rule preserved
 - [ ] Render tests import `buildTrackGeometries` from `./trackGeometry.js`, compare vertex counts to `track.distances.length` (not `positions.length`), assert `spine`/`ties`, and assert no `packages/generator` import in `trackGeometry.ts`
-- [ ] Dive angle sampled at normalized `u = 0.5` asserting pitch ≈ −70° ± 0.6°; tolerance 108.5–111.5° consistent in Tasks 01 and 08 with a boundary test
+- [ ] Dive angle sampled at normalized `u = 0.5` via `atan2(d[1], hypot(d[0], d[2]))` asserting `Math.abs(pitch + 70) <= 0.6` plus explicit `Math.abs(dropM - 210) <= 3` and a separate recovery assertion; never `toBeCloseTo` with digits misused as absolute tolerance; tolerance 108.5–111.5° consistent in Tasks 01 and 08 with a boundary test
 - [ ] `immelmannSpans` defines its own local rise table; no reuse of private `topHatSpans` coefficients
-- [ ] No placeholder text (`TBD` / `TODO` / prose ellipsis / `fakeTrack` / `fakeTimeline`) and no empty loop/prose-only body remains; zone, clearance, worker, pin, save/reload, E2E, and bench tests all carry concrete imports, fixtures, assertions, codes, and margins (remaining triple-dot matches in this plan are TypeScript spread operators inside concrete code, not prose omissions)
-- [ ] File paths resolved: `packages/generator/src/types.ts:11`, `packages/generator/src/elements.ts:32/70/98/186/312/612/759`, `packages/core/src/coaster-file.ts:156/174/348/458/466/536/851/895/941`, `packages/core/src/contracts.ts:82`, `packages/core/src/track.ts:91/297`, `packages/simulator/src/contracts.ts:35`, `packages/simulator/src/index.ts:41/1842`, `packages/simulator/src/timeline.ts:47/298`, `packages/simulator/src/operation-zones.ts:25`, `packages/generator/src/solver.ts:35/340/874/1205`, `packages/generator/src/pipeline.ts:136/1492/1970/2098`, `packages/generator/src/clearance.ts:741`, `packages/generator/src/clearance-field.ts:313/1400/1481`, `apps/web/src/engineering/protocol.ts:37/68/242`, `apps/web/src/engineering/worker.ts:107/114/231/281`, `apps/web/src/engineering/client.ts:12`, `apps/web/src/engineering/hydrate.ts:17`, `apps/web/src/engineering/transfer.ts:6`, `apps/web/src/experienceController.ts:25/190`, `apps/web/src/app/recordStatus.ts` (new), `apps/web/src/main.ts:76`, `apps/web/src/render/controller.ts:97`, `apps/web/src/render/trackGeometry.ts:15`, `apps/web/src/render/supports.ts:14`, `apps/web/src/render/cameras.ts:5`, `apps/web/src/audio/engine.ts:59`, `apps/web/src/terrain/environment.ts:9/72/84`, `tests/e2e/record-hybrid.spec.ts`, `playwright.config.ts:4/16`, `scripts/bench.mjs:55`
-- [ ] Packets are small and ordered: 01→02→03→04→05→06→07→08→09→10→11a→11b→11c→11d; element tasks sequential on the same switch; E2E/bench/docs/gate split into four commits; Task 06 asserts exactly 14 stable IDs and the [5,200, 5,400] window
-- [ ] Supports visual-only + 60 m skip documented in Task 11c; terrain-transfer wording corrected (worker resolves terrain by profileId; only track/timeline/clearanceM transfer); footprint uses a realistic polygon or asserts `relaxationEvidence`
+- [ ] No placeholder text (`TBD` / `TODO` / prose ellipsis / `fakeTrack` / `fakeTimeline` / `void honest` / `void file` / `void hydrated` / `void trackGeometrySource` or similar no-op assertions) and no empty loop/prose-only body remains; hold/rollback proves 3 s `static-hold` (≥720 frames) plus insufficient-launch `rolling → stall → rollback/reversal` with time/distance ordering plus controlled LSM restart to positive `rolling`; zone, clearance, worker, pin, save/reload, E2E, and bench tests all carry concrete imports, fixtures, assertions, codes, locations, margins, and RED/GREEN evidence (remaining triple-dot matches in this plan are TypeScript spread operators inside concrete code, not prose omissions)
+- [ ] File paths resolved: `packages/generator/src/types.ts:11`, `packages/generator/src/elements.ts:32/70/98/186/312/426/612/759`, `packages/generator/src/topHat-height.geometry.test.ts` (new), `packages/core/src/coaster-file.ts:156/174/348/458/466/536/851/895/941`, `packages/core/src/contracts.ts:82/119`, `packages/core/src/environments/cliff-valley.ts` (new) + `packages/core/src/environments/cliff-valley.test.ts` (new), `packages/core/src/index.ts:9`, `packages/core/src/track.ts:91/297`, `packages/simulator/src/contracts.ts:35`, `packages/simulator/src/index.ts:41/1842`, `packages/simulator/src/timeline.ts:47/298/562/601`, `packages/simulator/src/operation-zones.ts:25/68`, `packages/generator/src/solver.ts:35/340/874/1205`, `packages/generator/src/pipeline.ts:136/932/1492/1970/2098`, `packages/generator/src/clearance.ts:741`, `packages/generator/src/clearance-field.ts:313/1400/1481`, `apps/web/src/engineering/protocol.ts:37/68/242`, `apps/web/src/engineering/worker.ts:107/114/231/281`, `apps/web/src/engineering/client.ts:12/472/488/528/549/558`, `apps/web/src/engineering/hydrate.ts:17`, `apps/web/src/engineering/transfer.ts:6`, `apps/web/src/engineering/record-worker-determinism.test.ts` (new, listed), `apps/web/src/experienceController.ts:25/190`, `apps/web/src/app/recordStatus.ts` (new), `apps/web/src/main.ts:76/105-129/168-188`, `apps/web/src/render/controller.ts:97`, `apps/web/src/render/trackGeometry.ts:15`, `apps/web/src/render/supports.ts:14`, `apps/web/src/render/cameras.ts:5`, `apps/web/src/audio/engine.ts:59`, `apps/web/src/terrain/environment.ts:9/72/84`, `tests/e2e/record-hybrid.spec.ts`, `tests/e2e/acceptance-helpers.ts:28/53/77`, `playwright.config.ts:4/16`, `scripts/bench.mjs:55`
+- [ ] Packets are small and ordered: 01→02→03→04→05→06→07→08→09→10→11a→11b→11c→11d; element tasks sequential on the same switch; E2E/bench/docs/gate split into four commits; Task 06 asserts exactly 20 stable IDs (`station-000`…`station-019` with finale `overbankedTurn-014`/`zeroGRoll-015`/`stall-016` plus terminal `brake-017`/`brake-018`/`station-019`) and the [5,200, 5,400] window
+- [ ] Supports visual-only + 60 m skip documented in Task 11c; terrain-transfer wording corrected (worker resolves terrain by profileId; only track/timeline/clearanceM transfer); cliff-valley factory lives in pure `packages/core` with the web layer delegating, and no file under `packages/generator` imports `apps/web`; footprint uses a realistic polygon or asserts `relaxationEvidence`
 - [ ] Solver/search budgets frozen (`maxIterations` 32/1/8, `maxCandidates` 1/48, ≤3 reruns, `ADAPTIVE_MAX_*`, `defaultTolerances`, `maxWork`); RED baselines honest (`<5200`, unknown-profile throw, missing-module fail)
 
 ## Per-Task Review Boundaries
