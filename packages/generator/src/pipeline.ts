@@ -178,7 +178,7 @@ export const recordHybridDefaultElements = (
     );
   };
 
-  append(createElement("station", "station-000", { length: 140 }));
+  append(createElement("station", "station-000", { length: 50 }));
   append(
     createElement("launch", "launch-001", {
       length: 260,
@@ -225,7 +225,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("diveDrop", "diveDrop-008", {
       dropHeight: 214,
-      angleDeg: 110.5,
+      angleDeg: 109,
       approachRadius: 55,
       exitRadius: 200,
       bank: 0,
@@ -296,9 +296,9 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("stall", "stall-016", {
-      length: 220,
+      length: 400,
       height: 45,
-      bank: 0,
+      bank: Math.PI,
     }),
   );
   append(
@@ -318,7 +318,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("station", "station-019", {
-      length: 130,
+      length: 40,
       closed: false,
     }),
   );

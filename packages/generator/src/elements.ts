@@ -642,13 +642,15 @@ interface SingleSpanBuild {
   readonly endPose: Pose;
 }
 
+const unwrapBankNear = (reference: number, target: number): number =>
+  target + Math.round((reference - target) / (Math.PI * 2)) * Math.PI * 2;
 const bankLaw = (from: number, to: number): ParametricSpan<number> =>
   QuinticScalarSpan.fromCoefficients(
     new QuinticScalarSpan({
       v0: from,
       d10: 0,
       d20: 0,
-      v1: to,
+      v1: unwrapBankNear(from, to),
       d11: 0,
       d21: 0,
     }).coefficients,
@@ -1237,6 +1239,7 @@ export const buildElement = (
     }
   }
   bank ??= bankLaw(normalizedPose.bank, endBank);
+  endPose = { ...endPose, bank: bank.position(1) };
   const points = Array.from({ length: 33 }, (_, i) => span.position(i / 32));
   return {
     endPose,
