@@ -293,6 +293,12 @@ export function handleGenerate(
     ]);
   }
   const typedIntent = intent as DesignIntentV1;
+  const probeStart = getNowMs();
+  const probe = (stage: string): void =>
+    console.log(
+      `[OVC_WORKER_PROBE] ${stage} ${(getNowMs() - probeStart).toFixed(3)}ms`,
+    );
+  probe("start");
   let env: ReturnType<typeof resolveTerrainEnvironment>;
   try {
     env = resolveEnvForProfile(typedIntent.terrainProfileId);
@@ -305,6 +311,7 @@ export function handleGenerate(
       ),
     ]);
   }
+  probe("environment");
   let generation: ReturnType<typeof generateCoaster>;
   try {
     generation = generateCoaster(typedIntent, env ? { environment: env } : {});
@@ -317,6 +324,7 @@ export function handleGenerate(
       ),
     ]);
   }
+  probe("generation");
   const hasError = generation.diagnostics.some(
     (d) => d.severity === "error" || d.severity === "fatal",
   );
@@ -327,6 +335,7 @@ export function handleGenerate(
   }
   const track = generation.track;
   const sim = simulateForTrack(track, generation.file);
+  probe("simulation");
   if (!sim.ok) return failure(requestId, [sim.diagnostic]);
   if (
     sim.diagnostics.some(
@@ -351,6 +360,7 @@ export function handleGenerate(
     engineeringLimitsProfile,
     spanIds,
   );
+  probe("engineering-limits");
   const hasFatal = limitDiags.some((d) => d.severity === "fatal");
   if (hasFatal) {
     return failure(
@@ -391,6 +401,7 @@ export function handleGenerate(
     for (let i = 0; i < clearanceM.length; i++)
       if (!Number.isFinite(clearanceM[i]!))
         throw new RangeError(`clearanceM[${i}] must be finite`);
+    probe("clearance-map");
   } catch (err) {
     return failure(requestId, [
       toDiagnostic(
