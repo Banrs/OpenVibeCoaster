@@ -1,0 +1,21 @@
+name: Targeted swept AABB RED
+
+on:
+  push:
+    branches:
+      - codex/swept-aabb-red-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Prove tight swept AABB is RED
+        run: npm run test -- packages/generator/src/clearance-geometry.swept-aabb.test.ts
