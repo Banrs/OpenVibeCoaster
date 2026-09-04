@@ -54,11 +54,7 @@ const operationForceScale = (
 ): number => {
   const entryProgress =
     (distanceM - zone.startDistanceM) / OPERATION_FORCE_RAMP_DISTANCE_M;
-  if (zone.kind !== "launch" && zone.kind !== "boost")
-    return smoothStep01(entryProgress);
-  const exitProgress =
-    (zone.endDistanceM - distanceM) / OPERATION_FORCE_RAMP_DISTANCE_M;
-  return smoothStep01(Math.min(entryProgress, exitProgress));
+  return smoothStep01(entryProgress);
 };
 
 export const createDefaultSimulatorConfig = (): SimulatorConfig => ({
