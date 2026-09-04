@@ -56,7 +56,7 @@ function straightTrack(): CompiledTrackData {
 }
 
 describe("compact vs full simulation parity", () => {
-  it("emits only the required 120 Hz compact timeline without retaining integration frames", () => {
+  it("retains only required 120 Hz output frames in compact mode", () => {
     const track = straightTrack();
     const base = createDefaultSimulatorConfig();
     const config = {
@@ -96,8 +96,8 @@ describe("compact vs full simulation parity", () => {
     expect(full.timeline.frames.length).toBe(full.timeline.length);
     expect(compact.timeline.frames.length).toBe(0);
     expect(full.frames.length).toBeGreaterThan(0);
-    expect(compact.frames).toEqual([]);
     expect(compact.timeline.length).toBe(241);
+    expect(compact.frames.length).toBe(compact.timeline.length);
     // State and force series sampled on the shared 120 Hz output grid remain exact.
     // Jerk is intentionally derived from that authoritative output cadence.
     const cases: Array<[string, Float64Array, Float64Array]> = [
