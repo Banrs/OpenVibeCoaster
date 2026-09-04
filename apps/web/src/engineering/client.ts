@@ -326,16 +326,7 @@ export class EngineeringWorkerClient {
   }
 
   private clientEpochMs(): number {
-    const now =
-      typeof performance !== "undefined" && performance.now
-        ? performance.now()
-        : Date.now();
-    const origin =
-      typeof performance !== "undefined" &&
-      Number.isFinite(performance.timeOrigin)
-        ? performance.timeOrigin
-        : Date.now() - now;
-    return origin + now;
+    return Date.now();
   }
 
   private recordTimings(simulationMs: number, transferMs: number): void {

@@ -43,14 +43,7 @@ function getNowMs(): number {
 }
 
 function getWorkerEpochMs(): number {
-  const now = getNowMs();
-  const origin =
-    typeof performance !== "undefined" &&
-    typeof performance.timeOrigin === "number" &&
-    Number.isFinite(performance.timeOrigin)
-      ? performance.timeOrigin
-      : Date.now() - now;
-  return origin + now;
+  return Date.now();
 }
 
 function createTimings(simulationMs: number): EngineeringWorkerTimings {
