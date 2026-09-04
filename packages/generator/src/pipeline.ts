@@ -224,7 +224,7 @@ export const recordHybridDefaultElements = (
       dropHeight: 210,
       angleDeg: 110,
       approachRadius: 90,
-      exitRadius: 70,
+      exitRadius: 160,
       bank: 0,
     }),
   );

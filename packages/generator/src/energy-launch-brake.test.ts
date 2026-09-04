@@ -81,10 +81,26 @@ test(
     const maxSpeed = Math.max(...speed);
     const maxHeadDistance = Math.max(...head);
     const terminalSpeed = speed[speed.length - 1]!;
+    const ownerAt = (distanceM: number | undefined): string | undefined => {
+      if (distanceM === undefined) return undefined;
+      let end = 0;
+      for (const span of generated.file.solvedSpans) {
+        end += span.length;
+        if (distanceM <= end) return span.id.replace(/#\d+$/, "");
+      }
+      return generated.file.solvedSpans.at(-1)?.id.replace(/#\d+$/, "");
+    };
+    const maxSpeedIndex = speed.indexOf(maxSpeed);
     const evidence = JSON.stringify({
       driveWork,
       maxSpeed,
+      maxSpeedAt: {
+        time: simulation.timeline.timeSeconds[maxSpeedIndex],
+        s: head[maxSpeedIndex],
+        owner: ownerAt(head[maxSpeedIndex]),
+      },
       maxHeadDistance,
+      totalLength: generated.track.totalLength,
       terminalSpeed,
       holdSeconds,
       diagnostics,
@@ -108,11 +124,16 @@ test(
           )
             index = candidate;
         }
+        const timelineIndex =
+          samples.length === simulation.timeline.length * 3
+            ? Math.floor(index / 3)
+            : index;
         return {
           name,
           value: samples[index],
-          time: simulation.timeline.timeSeconds[index],
-          s: head[index],
+          time: simulation.timeline.timeSeconds[timelineIndex],
+          s: head[timelineIndex],
+          owner: ownerAt(head[timelineIndex]),
         };
       }),
     });
