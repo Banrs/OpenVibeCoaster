@@ -37,6 +37,15 @@ jobs:
         run: npm ci
       - name: Immelmann geometry RED
         run: npx vitest run packages/generator/src/immelmann.geometry.test.ts packages/generator/src/immelmann.seam.test.ts
+      - name: Generate canonical formatting patch
+        run: |
+          npx prettier --write packages/generator/src/elements.ts packages/generator/src/diveDrop.geometry.test.ts packages/generator/src/diveDrop.seam.test.ts packages/generator/src/immelmann.geometry.test.ts packages/generator/src/immelmann.seam.test.ts
+          git diff --binary > canonical-format.patch
+      - name: Upload canonical formatting patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-format-patch
+          path: canonical-format.patch
 
   portable:
     if: false
