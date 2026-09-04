@@ -3,6 +3,7 @@ import {
   validateRecordTargetsProfile,
   type CoasterFileV1,
   type CompiledTrackData,
+  type RecordTargetProfile,
 } from "@openvibecoaster/core";
 import profile from "../../../data/profiles/record-targets-v1.json" with {
   type: "json",
@@ -14,6 +15,7 @@ import {
 } from "./record-validation.js";
 
 validateRecordTargetsProfile(profile);
+const targetProfile = profile as RecordTargetProfile;
 
 const syntheticTrack = {
   totalLength: 5_300,
@@ -57,7 +59,7 @@ test("negative-G record target requires achievement without breaching its floor"
       syntheticTrack,
       timeline([verticalG]),
       syntheticFile,
-      profile,
+      targetProfile,
       { holdSeconds: 3, holdLocationS: 0 },
     ).filter((diagnostic) => diagnostic.code === "RECORD_FORCE_NEG");
 
@@ -82,7 +84,7 @@ test("hold validation consumes numeric timeline-dwell proof", () => {
       syntheticTrack,
       timeline([0]),
       syntheticFile,
-      profile,
+      targetProfile,
       { holdSeconds, holdLocationS: 0 },
     );
 
