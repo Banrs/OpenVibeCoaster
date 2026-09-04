@@ -640,6 +640,17 @@ const buildChain = (
         Math.abs(Math.abs(element.parameters.angle) - Math.PI) < 1e-6;
       const geometry = antipodal
         ? (() => {
+            const leadElement = {
+              ...geometryElement,
+              kind: "transition",
+              type: "transition",
+              parameters: {
+                length: element.parameters.radius,
+                rise: 0,
+                pitch: 0,
+                bank: 0,
+              },
+            } as AnySemanticElement;
             const halfElement = {
               ...geometryElement,
               parameters: {
@@ -647,21 +658,31 @@ const buildChain = (
                 angle: element.parameters.angle / 2,
               },
             } as AnySemanticElement;
-            const left = buildElement(halfElement, pose, referenceSpeed);
+            const lead = buildElement(leadElement, pose, referenceSpeed);
+            const left = buildElement(
+              halfElement,
+              lead.endPose,
+              referenceSpeed,
+            );
             const right = buildElement(
               halfElement,
               left.endPose,
               referenceSpeed,
             );
             return {
-              solvedSpans: [left.solvedSpans[0]!, right.solvedSpans[0]!],
+              solvedSpans: [
+                lead.solvedSpans[0]!,
+                left.solvedSpans[0]!,
+                right.solvedSpans[0]!,
+              ],
               endPose: right.endPose,
             };
           })()
         : buildElement(geometryElement, pose, referenceSpeed);
       const startBank = pose.bank;
       const peakBank = element.parameters.bank;
-      const sourceSpan = geometry.solvedSpans[0]!;
+      const leftSourceSpan = geometry.solvedSpans[antipodal ? 1 : 0]!;
+      const rightSourceSpan = geometry.solvedSpans[antipodal ? 2 : 0]!;
       const leftBank = new QuinticScalarSpan({
         v0: startBank,
         d10: 0,
@@ -679,11 +700,11 @@ const buildChain = (
         d21: 0,
       });
       const leftGeometry = antipodal
-        ? sourceSpan.span
-        : subspan(sourceSpan.span, 0, 0.5);
+        ? leftSourceSpan.span
+        : subspan(leftSourceSpan.span, 0, 0.5);
       const rightGeometry = antipodal
-        ? geometry.solvedSpans[1]!.span
-        : subspan(sourceSpan.span, 0.5, 1);
+        ? rightSourceSpan.span
+        : subspan(rightSourceSpan.span, 0.5, 1);
       const leftPoints = Array.from({ length: 33 }, (_, i) =>
         leftGeometry.position(i / 32),
       );
@@ -691,23 +712,45 @@ const buildChain = (
         rightGeometry.position(i / 32),
       );
       const leftSpan: SolvedSpan = {
-        ...sourceSpan,
-        id: `${sourceSpan.id}#0`,
+        ...leftSourceSpan,
+        id: `${element.id}#${antipodal ? 1 : 0}`,
         span: leftGeometry,
         bank: leftBank,
         rollCoefficients: leftBank.coefficients,
         bounds: aabbFromPoints(leftPoints),
       };
       const rightSpan: SolvedSpan = {
-        ...sourceSpan,
-        id: `${sourceSpan.id}#1`,
+        ...rightSourceSpan,
+        id: `${element.id}#${antipodal ? 2 : 1}`,
         span: rightGeometry,
         bank: rightBank,
         rollCoefficients: rightBank.coefficients,
         bounds: aabbFromPoints(rightPoints),
       };
+      const leadSpan = antipodal
+        ? (() => {
+            const leadBank = QuinticScalarSpan.fromCoefficients([
+              startBank,
+              0,
+              0,
+              0,
+              0,
+              0,
+            ]);
+            return {
+              ...geometry.solvedSpans[0]!,
+              id: `${element.id}#0`,
+              kind: "overbankedTurn",
+              zones: ["overbankedTurn"],
+              bank: leadBank,
+              rollCoefficients: leadBank.coefficients,
+            } as SolvedSpan;
+          })()
+        : undefined;
       built = {
-        solvedSpans: [leftSpan, rightSpan],
+        solvedSpans: leadSpan
+          ? [leadSpan, leftSpan, rightSpan]
+          : [leftSpan, rightSpan],
         endPose: { ...geometry.endPose, bank: startBank },
       };
     }
