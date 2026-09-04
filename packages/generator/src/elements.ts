@@ -983,7 +983,7 @@ const immelmannSpans = (
       vec3Scale(basis.binormal, -Math.sin(headingRad)),
     ),
   );
-  const exitScale = parameters.height * 2;
+  const exitScale = parameters.height * 1.5;
   const secondEnd = vec3Add(
     vec3Add(
       apex,
@@ -1020,9 +1020,10 @@ const immelmannSpans = (
       }).coefficients,
     );
   const spans = [first, second] as const;
+  const apexBank = pose.bank + Math.PI / 2;
   const rolls = [
-    canonicalRoll(pose.bank, pose.bank),
-    canonicalRoll(pose.bank, exitBank),
+    canonicalRoll(pose.bank, apexBank),
+    canonicalRoll(apexBank, exitBank),
   ] as const;
   const solvedSpans = spans.map((span, index): SolvedSpan => {
     const bank = rolls[index]!;
