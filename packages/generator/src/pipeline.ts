@@ -244,7 +244,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("immelmann", "immelmann-012", {
       height: 81,
-      exitHeadingDeg: 180,
+      exitHeadingDeg: 170,
       bank: 0,
     }),
   );
