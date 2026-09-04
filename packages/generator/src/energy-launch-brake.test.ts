@@ -50,7 +50,7 @@ test(
     const simulation = simulateRide(generated.track, {
       durationSeconds: 180,
       config: { ...config, zones },
-      initial: { headDistanceM: config.train.spacingM * 5, speedMps: 0 },
+      initial: { headDistanceM: config.train.spacingM * 5, speedMps: 5 },
       compactTimeline: true,
     });
     const speed = simulation.timeline.speedMps;
