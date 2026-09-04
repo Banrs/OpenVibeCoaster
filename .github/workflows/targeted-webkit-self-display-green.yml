@@ -1,0 +1,32 @@
+name: Targeted WebKit self-display GREEN
+
+on:
+  push:
+    branches:
+      - codex/webkit-self-display-green-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify terrain correction and self-display proof
+        run: >-
+          npm run test --
+          packages/generator/src/clearance-field.fastproof.test.ts
+          packages/generator/src/clearance-field.self-fastproof.test.ts
+          packages/generator/src/clearance-threshold-display-soft.test.ts
+      - name: Preserve the arbitrary-environment penetration regression
+        run: >-
+          npm run test --
+          packages/generator/src/clearance-field.test.ts
+          -t "penetration has real witness"
+      - name: Verify generator types
+        run: npm run typecheck -w @openvibecoaster/generator
