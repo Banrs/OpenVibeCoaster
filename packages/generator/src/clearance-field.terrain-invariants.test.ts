@@ -128,7 +128,7 @@ describe("clearance field – terrain invariants (RED)", () => {
     const baseOptions = {
       hardClearanceM: 0.5,
       displayCapM: 10,
-      explicitThresholds: [8],
+      explicitThresholds: [9],
       maxWork: 100_000,
       segmentIds: ["seg-0"],
     } as const;
@@ -154,8 +154,8 @@ describe("clearance field – terrain invariants (RED)", () => {
     expect(countedSdf.calls).toBeGreaterThan(0);
     expect(countedPose).toBeGreaterThan(0);
     expect(seg.source).toBe("terrain");
-    expect(seg.lowerM).toBeLessThan(8);
-    expect(seg.upperM).toBeGreaterThanOrEqual(8);
+    expect(seg.lowerM).toBeLessThan(9);
+    expect(seg.upperM).toBeGreaterThanOrEqual(9);
     expect(seg.certified).toBe(false);
 
     geometryCalls.createOrientedBox = 0;
