@@ -182,6 +182,7 @@ describe("clearance field per-interval fast proof", () => {
       expect(first.globalLowerM).toBeLessThan(10);
       expect(Number.isFinite(first.globalLowerM)).toBe(true);
       expect(Number.isFinite(first.globalUpperM)).toBe(true);
+      expect(first.globalUpperM).toBeGreaterThanOrEqual(10);
       expect(first.globalLowerM).toBeLessThanOrEqual(first.globalUpperM);
       expect(
         first.segments.every(
@@ -204,6 +205,7 @@ describe("clearance field per-interval fast proof", () => {
       expect(second.work).toBe(first.work);
       expect(second.globalLowerM).toBe(first.globalLowerM);
       expect(second.globalUpperM).toBe(first.globalUpperM);
+      expect(second.globalUpperM).toBeGreaterThanOrEqual(10);
       expect(first.globalLowerSource).toBe("terrain");
       expect(second.globalLowerSource).toBe("terrain");
       expect(second.segments).toEqual(first.segments);
