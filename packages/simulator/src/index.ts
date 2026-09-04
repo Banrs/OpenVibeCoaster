@@ -42,6 +42,7 @@ const SAFE_TIMELINE_SAMPLE_RATE_HZ = 120;
 const HOLD_CAPTURE_SPEED_MPS = 0.03;
 const HOLD_RELEASE_RAMP_SECONDS = 2;
 const OPERATION_FORCE_RAMP_DISTANCE_M = 110;
+const OPERATION_FORCE_EXIT_RAMP_DISTANCE_M = 40;
 
 const smoothStep01 = (value: number): number => {
   const clamped = Math.max(0, Math.min(1, value));
@@ -54,7 +55,11 @@ const operationForceScale = (
 ): number => {
   const entryProgress =
     (distanceM - zone.startDistanceM) / OPERATION_FORCE_RAMP_DISTANCE_M;
-  return smoothStep01(entryProgress);
+  if (zone.kind !== "launch" && zone.kind !== "boost")
+    return smoothStep01(entryProgress);
+  const exitProgress =
+    (zone.endDistanceM - distanceM) / OPERATION_FORCE_EXIT_RAMP_DISTANCE_M;
+  return smoothStep01(Math.min(entryProgress, exitProgress));
 };
 
 export const createDefaultSimulatorConfig = (): SimulatorConfig => ({
