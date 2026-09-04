@@ -896,6 +896,120 @@ const immelmannSpans = (
   };
 };
 
+export const VERTICAL_LOOP_SPAN_COUNT = 3;
+
+const verticalLoopSpans = (
+  pose: Pose,
+  parameters: ElementParameterMap["verticalLoop"],
+  elementId: string,
+): ElementBuildResult => {
+  const basis = basisFor(pose);
+  const zero = vec3(0, 0, 0);
+  const shapeRadius = parameters.referenceSpeed ** 2 / (2 * gravity);
+  const apexSecondDerivative = vec3Scale(
+    basis.normal,
+    -shapeRadius * 0.5,
+  );
+  const entryDerivative = vec3Scale(basis.tangent, shapeRadius);
+  const invertedDerivative = vec3Scale(basis.tangent, -shapeRadius);
+  const firstEnd = vec3Add(
+    vec3Add(pose.position, vec3Scale(basis.tangent, shapeRadius * 0.5)),
+    vec3Scale(basis.normal, parameters.height),
+  );
+  const secondEnd = vec3Add(
+    firstEnd,
+    vec3Scale(basis.tangent, -shapeRadius),
+  );
+  const loopExit = vec3Add(
+    pose.position,
+    vec3Scale(basis.tangent, parameters.height * 0.2),
+  );
+  const canonicalPosition = (
+    span: SeventhOrderHermiteSpan<Vec3>,
+  ): SeventhOrderHermiteSpan<Vec3> =>
+    SeventhOrderHermiteSpan.fromCoefficients<Vec3>(span.coefficients);
+  const spans = [
+    canonicalPosition(
+      new SeventhOrderHermiteSpan({
+        p0: pose.position,
+        d10: entryDerivative,
+        d20: zero,
+        d30: zero,
+        p1: firstEnd,
+        d11: invertedDerivative,
+        d21: apexSecondDerivative,
+        d31: zero,
+      }),
+    ),
+    canonicalPosition(
+      new SeventhOrderHermiteSpan({
+        p0: firstEnd,
+        d10: invertedDerivative,
+        d20: apexSecondDerivative,
+        d30: zero,
+        p1: secondEnd,
+        d11: invertedDerivative,
+        d21: apexSecondDerivative,
+        d31: zero,
+      }),
+    ),
+    canonicalPosition(
+      new SeventhOrderHermiteSpan({
+        p0: secondEnd,
+        d10: invertedDerivative,
+        d20: apexSecondDerivative,
+        d30: zero,
+        p1: loopExit,
+        d11: entryDerivative,
+        d21: zero,
+        d31: zero,
+      }),
+    ),
+  ] as const;
+  const canonicalRoll = (from: number, to: number): QuinticScalarSpan =>
+    QuinticScalarSpan.fromCoefficients(
+      new QuinticScalarSpan({
+        v0: from,
+        d10: 0,
+        d20: 0,
+        v1: to,
+        d11: 0,
+        d21: 0,
+      }).coefficients,
+    );
+  const rolls = [
+    canonicalRoll(pose.bank, parameters.bank),
+    canonicalRoll(parameters.bank, parameters.bank),
+    canonicalRoll(parameters.bank, parameters.bank),
+  ] as const;
+  const solvedSpans = spans.map((span, index): SolvedSpan => {
+    const bank = rolls[index]!;
+    return {
+      id: `${elementId}#${index}`,
+      kind: "verticalLoop",
+      span,
+      bank,
+      zones: ["verticalLoop"],
+      bounds: aabbFromPoints(
+        Array.from({ length: 33 }, (_, sample) => span.position(sample / 32)),
+      ),
+      length: arcLength(span),
+      positionCoefficients: span.coefficients,
+      rollCoefficients: bank.coefficients,
+    };
+  });
+  const last = solvedSpans[VERTICAL_LOOP_SPAN_COUNT - 1]!;
+  return {
+    solvedSpans,
+    endPose: orthonormalizePose({
+      position: last.span.position(1),
+      tangent: vec3Normalize(last.span.derivative(1, 1)),
+      normal: basis.normal,
+      bank: parameters.bank,
+    }),
+  };
+};
+
 export const buildElement = (
   element: AnySemanticElement,
   pose: Pose,
@@ -913,6 +1027,10 @@ export const buildElement = (
   if (element.type === "immelmann") {
     const p = element.parameters as ElementParameterMap["immelmann"];
     return immelmannSpans(normalizedPose, p, element.id);
+  }
+  if (element.type === "verticalLoop") {
+    const p = element.parameters as ElementParameterMap["verticalLoop"];
+    return verticalLoopSpans(normalizedPose, p, element.id);
   }
   let span: ParametricSpan<Vec3>;
   let endPose: Pose;
@@ -1046,8 +1164,6 @@ export const buildElement = (
       endBank = normalizedPose.bank + p.roll;
       break;
     }
-    case "verticalLoop":
-      throw new RangeError(`${element.type} geometry is not available`);
     case "stall": {
       const p = element.parameters as ElementParameterMap["stall"];
       const profile = profileSpan(normalizedPose, p.length, p.height);
