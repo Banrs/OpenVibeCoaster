@@ -1,6 +1,7 @@
 import {
   CANONICAL_TRACK_COMPILE_OPTIONS,
   CLIFF_VALLEY_RIDGE_SEED_Z_M,
+  CLIFF_VALLEY_SUMMIT_RAIL_Y_M,
   CoasterFileError,
   SeventhOrderHermiteSpan,
   QuinticScalarSpan,
@@ -234,7 +235,7 @@ export const recordHybridDefaultElements = (
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 0.945, 44);
+  appendForceHill("airtimeHill-010", 190, 0.98, 44);
   append(
     createElement("topHat", "topHat-011", {
       height: 91,
@@ -244,7 +245,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("immelmann", "immelmann-012", {
-      height: 82,
+      height: 81.9,
       exitHeadingDeg: 90,
       bank: 0,
     }),
@@ -1641,7 +1642,7 @@ const evaluateCandidate = (
           ...start,
           position: vec3(
             start.position[0],
-            start.position[1],
+            start.position[1] + CLIFF_VALLEY_SUMMIT_RAIL_Y_M - center[1],
             start.position[2] + CLIFF_VALLEY_RIDGE_SEED_Z_M - center[2],
           ),
         };

@@ -77,23 +77,24 @@ test(
     const distances = generated.track.distances;
     const positions = generated.track.positions;
     let lower = 0;
-    while (
-      lower + 1 < distances.length &&
-      distances[lower + 1]! < centerS
-    )
+    while (lower + 1 < distances.length && distances[lower + 1]! < centerS)
       lower += 1;
     const upper = Math.min(lower + 1, distances.length - 1);
     const s0 = distances[lower]!;
     const s1 = distances[upper]!;
     const fraction = s1 > s0 ? (centerS - s0) / (s1 - s0) : 0;
     const worldX =
-      positions[lower * 3]! * (1 - fraction) +
-      positions[upper * 3]! * fraction;
+      positions[lower * 3]! * (1 - fraction) + positions[upper * 3]! * fraction;
+    const worldY =
+      positions[lower * 3 + 1]! * (1 - fraction) +
+      positions[upper * 3 + 1]! * fraction;
     const worldZ =
       positions[lower * 3 + 2]! * (1 - fraction) +
       positions[upper * 3 + 2]! * fraction;
 
     expect(Math.abs(worldZ - 980)).toBeLessThanOrEqual(120);
+    expect(worldY).toBeGreaterThanOrEqual(225);
+    expect(worldY).toBeLessThanOrEqual(235);
     expect(environment.heightAt(worldX, worldZ)).toBeGreaterThanOrEqual(224.4);
   },
 );
