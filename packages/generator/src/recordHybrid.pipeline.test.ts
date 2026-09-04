@@ -53,12 +53,13 @@ describe("record-hybrid default pipeline", () => {
     const finale = recordHybridDefaultElements(42).find(
       (element) => element.id === "overbankedTurn-014",
     );
-    expect(finale?.kind).toBe("overbankedTurn");
+    if (!finale) throw new Error("Missing record finale overbank");
+    expect(finale.kind).toBe("overbankedTurn");
     expect(
-      Math.abs((finale?.parameters as { readonly angle: number }).angle),
+      Math.abs((finale.parameters as { readonly angle: number }).angle),
     ).toBeGreaterThan(Math.PI / 3);
     expect(
-      Math.abs((finale?.parameters as { readonly bank: number }).bank),
+      Math.abs((finale.parameters as { readonly bank: number }).bank),
     ).toBeGreaterThan(Math.PI / 2);
   });
 
