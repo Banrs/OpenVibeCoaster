@@ -1,0 +1,24 @@
+name: Targeted swept SAT RED
+
+on:
+  push:
+    branches:
+      - codex/swept-sat-red-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Prove SAT fast proof is RED
+        run: >-
+          npm run test --
+          packages/generator/src/clearance-field.self-fastproof.test.ts
+          -t "certified SAT lower bound"
