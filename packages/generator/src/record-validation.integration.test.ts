@@ -114,31 +114,29 @@ test(
       },
     );
 
-    const inversionDiagnostics = diagnostics.filter(
-      ({ code }) => code === "RECORD_INVERSION",
+    const shapeCodes = new Set([
+      "RECORD_INVERSION",
+      "RECORD_IMMELMANN",
+      "RECORD_LOOP",
+      "RECORD_DIVE_HEIGHT",
+      "RECORD_DIVE_ANGLE",
+    ]);
+    const shapeDiagnostics = diagnostics.filter(({ code }) =>
+      shapeCodes.has(code),
     );
     expect(
-      inversionDiagnostics,
+      shapeDiagnostics,
       JSON.stringify({
-        inversionDiagnostics,
-        measurement: localHeightForKind(
-          generated.track,
-          generated.file,
-          "topHat",
+        shapeDiagnostics,
+        measurements: Object.fromEntries(
+          (["topHat", "immelmann", "verticalLoop", "diveDrop"] as const).map(
+            (kind) => [
+              kind,
+              localHeightForKind(generated.track, generated.file, kind),
+            ],
+          ),
         ),
       }),
-    ).toHaveLength(0);
-    expect(
-      diagnostics.filter(({ code }) => code === "RECORD_IMMELMANN"),
-    ).toHaveLength(0);
-    expect(
-      diagnostics.filter(({ code }) => code === "RECORD_LOOP"),
-    ).toHaveLength(0);
-    expect(
-      diagnostics.filter(({ code }) => code === "RECORD_DIVE_HEIGHT"),
-    ).toHaveLength(0);
-    expect(
-      diagnostics.filter(({ code }) => code === "RECORD_DIVE_ANGLE"),
     ).toHaveLength(0);
   },
 );
