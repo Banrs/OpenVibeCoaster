@@ -1,0 +1,28 @@
+name: Targeted simulator dynamics reuse GREEN
+
+on:
+  push:
+    branches:
+      - codex/sim-dynamics-reuse-green-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify simulator physics and compact timeline
+        run: >-
+          npm run test --
+          packages/simulator/src/simulator.test.ts
+          packages/simulator/src/compact.timeline.test.ts
+          packages/simulator/src/w17-friction.test.ts
+          packages/simulator/src/simulator.telemetry-frame.test.ts
+      - name: Typecheck simulator
+        run: npm run typecheck -w @openvibecoaster/simulator
