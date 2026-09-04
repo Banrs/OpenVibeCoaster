@@ -23,7 +23,9 @@ import {
   aabbFromPoints,
   quatRotateVector,
   vec3Distance,
+  vec3Cross,
   vec3Dot,
+  vec3Length,
   vec3Sub,
   vec3Normalize,
   vec3Scale,
@@ -182,7 +184,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("transition", "transition-002", {
-      length: 420 + variation,
+      length: 520 + variation,
       rise: 60,
       pitch: 0,
       bank: 0,
@@ -254,10 +256,29 @@ export const recordHybridDefaultElements = (
     }),
     38,
   );
+  const gravityDirection = vec3(0, -1, 0);
+  const gravityInTangentPlane = vec3Sub(
+    gravityDirection,
+    vec3Scale(pose.normal, vec3Dot(gravityDirection, pose.normal)),
+  );
+  let finaleTurnAngle = -2.2;
+  if (vec3Length(gravityInTangentPlane) > 1e-9) {
+    const desiredTangent = vec3Normalize(gravityInTangentPlane);
+    const alignedAngle = -Math.atan2(
+      vec3Dot(pose.normal, vec3Cross(pose.tangent, desiredTangent)),
+      vec3Dot(pose.tangent, desiredTangent),
+    );
+    const oppositeAngle =
+      alignedAngle > 0 ? alignedAngle - Math.PI : alignedAngle + Math.PI;
+    finaleTurnAngle =
+      Math.abs(alignedAngle + 2.2) <= Math.abs(oppositeAngle + 2.2)
+        ? alignedAngle
+        : oppositeAngle;
+  }
   append(
     createElement("overbankedTurn", "overbankedTurn-014", {
-      radius: 130,
-      angle: -2.2,
+      radius: 60,
+      angle: finaleTurnAngle,
       bank: 1.8,
     }),
   );
