@@ -225,7 +225,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("diveDrop", "diveDrop-008", {
       dropHeight: 214,
-      angleDeg: 114,
+      angleDeg: 111,
       approachRadius: 55,
       exitRadius: 180,
       bank: 0,
@@ -238,7 +238,7 @@ export const recordHybridDefaultElements = (
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 0.98, 44, 65);
+  appendForceHill("airtimeHill-010", 190, 0.98, 44, 60);
   append(
     createElement("topHat", "topHat-011", {
       height: 86,
@@ -318,7 +318,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("station", "station-019", {
-      length: 160,
+      length: 150,
       closed: false,
     }),
   );

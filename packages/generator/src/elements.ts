@@ -845,11 +845,14 @@ const immelmannSpans = (
   );
   const exitScale = parameters.height * 1.2;
   const secondEnd = vec3Add(
-    apex,
     vec3Add(
-      vec3Scale(vec3Normalize(apexD1), exitScale),
-      vec3Scale(exitTangent, exitScale),
+      apex,
+      vec3Add(
+        vec3Scale(vec3Normalize(apexD1), exitScale),
+        vec3Scale(exitTangent, exitScale),
+      ),
     ),
+    vec3Scale(basis.normal, -parameters.height * 0.25),
   );
   const secondRaw = new SeventhOrderHermiteSpan({
     p0: apex,

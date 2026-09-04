@@ -53,7 +53,7 @@ test(
     expect(summitBrake?.releaseTargetSpeedMps).toBe(60);
     const trimBrake = zones.find(({ id }) => id === "airtimeHill-010");
     expect(trimBrake?.kind).toBe("brake");
-    expect(trimBrake?.targetSpeedMps).toBe(65);
+    expect(trimBrake?.targetSpeedMps).toBe(60);
     const terminalBrake = zones.find(({ id }) => id === "brake-018");
     expect(terminalBrake).toBeDefined();
 
