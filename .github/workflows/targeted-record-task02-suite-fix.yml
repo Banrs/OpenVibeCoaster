@@ -1,0 +1,31 @@
+name: Targeted record Task02 suite corrections
+
+on:
+  push:
+    branches:
+      - codex/record-task02-suite-fix-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify corrected whole-suite assertions
+        run: >-
+          npm run test --
+          packages/generator/src/generator.test.ts
+          apps/web/src/terrain/environment.test.ts
+          packages/generator/src/wave3.test.ts
+          -t "exposes every approved element|rejects missing, non-finite|builds an 80 m inverted top hat|blocking terrain causes hard failure|regenerates only the selected neighborhood|widens a changed local solve"
+      - name: Verify affected workspace types
+        run: >-
+          npm run typecheck -w @openvibecoaster/core &&
+          npm run typecheck -w @openvibecoaster/generator &&
+          npm run typecheck -w @openvibecoaster/web
