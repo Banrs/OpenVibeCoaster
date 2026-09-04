@@ -16,7 +16,7 @@ export function createCliffValleyEnvironment(): HeightfieldEnvironment {
     for (let column = 0; column < width; column += 1) {
       const worldX = origin[0] + column * cellSize;
       const worldZ = origin[1] + row * cellSize;
-      const ridge = 240 * Math.exp(-((worldZ - 980) / 120) ** 2);
+      const ridge = 240 * Math.exp(-(((worldZ - 980) / 120) ** 2));
       const detail =
         0.6 * Math.sin(worldX * 0.02) * Math.cos(worldZ * 0.02);
       heights[row * width + column] = -15 + ridge + detail;
