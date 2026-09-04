@@ -2320,7 +2320,7 @@ export const simulateRide = (
     ) {
       const atRest = dynamicsAt(
         track,
-        config,
+        operatingConfig,
         distanceM,
         0,
         integrationSampleAt,
