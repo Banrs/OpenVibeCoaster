@@ -39,6 +39,13 @@ export * from "./operation-zones";
 const DEFAULT_GRAVITY = 9.80665;
 const SPEED_EPSILON = 1e-8;
 const SAFE_TIMELINE_SAMPLE_RATE_HZ = 120;
+const HOLD_CAPTURE_SPEED_MPS = 0.03;
+const HOLD_RELEASE_RAMP_SECONDS = 1.25;
+
+const smoothStep01 = (value: number): number => {
+  const clamped = Math.max(0, Math.min(1, value));
+  return clamped * clamped * (3 - 2 * clamped);
+};
 
 export const createDefaultSimulatorConfig = (): SimulatorConfig => ({
   gravityMps2: DEFAULT_GRAVITY,
@@ -2083,6 +2090,12 @@ export const simulateRide = (
         readonly releaseTimeSeconds: number;
       }
     | undefined;
+  let releasedBrake:
+    | {
+        readonly id: string;
+        readonly startTimeSeconds: number;
+      }
+    | undefined;
   const initialDirection = speedMps < 0 ? "reverse" : "forward";
   const zoneOccupancy = new Map(
     config.zones.map((zone) => [
@@ -2193,7 +2206,18 @@ export const simulateRide = (
   let currentDynamics = initialDynamics;
   while (timeSeconds < request.durationSeconds - 1e-12) {
     if (heldBrake && timeSeconds >= heldBrake.releaseTimeSeconds - 1e-12) {
-      const releasedId = heldBrake.id;
+      releasedBrake = {
+        id: heldBrake.id,
+        startTimeSeconds: timeSeconds,
+      };
+      heldBrake = undefined;
+    }
+    if (releasedBrake) {
+      const releasedId = releasedBrake.id;
+      const forceScale = smoothStep01(
+        (timeSeconds - releasedBrake.startTimeSeconds) /
+          HOLD_RELEASE_RAMP_SECONDS,
+      );
       operatingConfig = {
         ...config,
         zones: config.zones.map((zone) =>
@@ -2202,11 +2226,14 @@ export const simulateRide = (
                 ...zone,
                 kind: "launch" as const,
                 targetSpeedMps: zone.releaseTargetSpeedMps ?? 0,
+                lsmForcePerCarN:
+                  (zone.lsmForcePerCarN ?? config.lsmForcePerCarN) * forceScale,
+                lsmPowerPerCarW:
+                  (zone.lsmPowerPerCarW ?? config.lsmPowerPerCarW) * forceScale,
               }
             : zone,
         ),
       };
-      heldBrake = undefined;
       currentDynamics = dynamicsAt(
         track,
         operatingConfig,
@@ -2303,7 +2330,7 @@ export const simulateRide = (
         currentDynamics = atRest;
       } else currentDynamics = nextDynamics;
     } else currentDynamics = nextDynamics;
-    if (!heldBrake && Math.abs(speedMps) <= 0.5) {
+    if (!heldBrake && Math.abs(speedMps) <= HOLD_CAPTURE_SPEED_MPS) {
       const holdingZone = activeZones(track, operatingConfig, distanceM).find(
         (zone) =>
           zone.kind === "brake" &&
