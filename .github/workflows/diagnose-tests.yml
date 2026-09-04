@@ -13,15 +13,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  shard:
-    name: vitest-${{ matrix.shard }}-of-16
+  case:
+    name: diagnose-${{ matrix.id }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     strategy:
       fail-fast: false
-      max-parallel: 16
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        include:
+          - id: directed
+            file: packages/generator/src/directed-requirement.test.ts
+            test: exact fixture passes with default options
+          - id: local-regeneration
+            file: packages/generator/src/wave3.test.ts
+            test: regenerates only the selected neighborhood
+          - id: simulation
+            file: apps/web/src/engineering/simulation.test.ts
+            test: flagship 1.6-2.2km
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,10 +42,11 @@ jobs:
         run: npm install -g npm@11.17.0
       - name: Install exact dependencies
         run: npm ci
-      - name: Run shard with bounded tests
+      - name: Run diagnostic case
         run: >-
           npm run test --
-          --shard=${{ matrix.shard }}/16
+          ${{ matrix.file }}
+          -t "${{ matrix.test }}"
           --reporter=verbose
           --testTimeout=120000
           --hookTimeout=120000

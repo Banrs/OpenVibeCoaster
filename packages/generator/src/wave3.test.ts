@@ -476,6 +476,9 @@ describe("wave 3 deterministic generator", () => {
       referenceSpeed: 44,
       pinnedElementIds: ["station-000"],
     });
+    if (!result.feasible) {
+      console.error("LOCAL_REGEN_DIAGNOSTICS", JSON.stringify(result.diagnostics));
+    }
     expect(result.feasible).toBe(true);
     expect(result.untouchedSpanHashes["station-000"]).toBe(
       generated.spanHashes["station-000"],

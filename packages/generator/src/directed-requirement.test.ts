@@ -133,6 +133,9 @@ describe("directed requirement-style generation", { timeout: 60000 }, () => {
     const intent = makeSuccessIntent({ seed: 42 });
     const env = rollingEnvironment();
     const result = generateCoaster(intent, { environment: env });
+    if (!result.feasible) {
+      console.error("DIRECTED_DIAGNOSTICS", JSON.stringify(result.diagnostics));
+    }
     expect(result.feasible).toBe(true);
     expect(
       result.diagnostics.filter(

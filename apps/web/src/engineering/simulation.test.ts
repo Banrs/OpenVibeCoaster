@@ -169,6 +169,16 @@ describe("full-ride simulation", () => {
       expect(timeline.length).toBeGreaterThan(0);
       const head = timeline.headDistanceM;
       const lastHead = head[head.length - 1]!;
+      console.error(
+        "FLAGSHIP_TERMINAL_STATE",
+        JSON.stringify({
+          totalLength: hydrated.track.totalLength,
+          lastHead,
+          lastSpeed: timeline.signedSpeedMps[timeline.signedSpeedMps.length - 1],
+          duration: timeline.timeSeconds[timeline.timeSeconds.length - 1],
+          finalStartSample: hydrated.track.elementBoundaries.at(-2),
+        }),
+      );
       expect(lastHead).toBeGreaterThan(hydrated.track.totalLength * 0.85);
       expect(lastHead).toBeLessThanOrEqual(hydrated.track.totalLength);
       // Derive final element start via authoritative elementBoundaries -> distances, assert lastHead enters final station
