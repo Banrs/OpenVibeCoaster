@@ -216,7 +216,7 @@ export const recordHybridDefaultElements = (
       length: 170,
       targetSpeed: 0,
       holdSeconds: 3,
-      releaseSpeed: 5,
+      releaseSpeed: 20,
     }),
   );
   append(

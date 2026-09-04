@@ -47,7 +47,7 @@ test(
     }
     const summitBrake = zones.find(({ id }) => id === "brake-007");
     expect(summitBrake?.holdSeconds).toBe(3);
-    expect(summitBrake?.releaseTargetSpeedMps).toBe(5);
+    expect(summitBrake?.releaseTargetSpeedMps).toBe(20);
 
     const config = createDefaultSimulatorConfig();
     const simulation = simulateRide(generated.track, {
