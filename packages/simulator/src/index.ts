@@ -41,10 +41,24 @@ const SPEED_EPSILON = 1e-8;
 const SAFE_TIMELINE_SAMPLE_RATE_HZ = 120;
 const HOLD_CAPTURE_SPEED_MPS = 0.03;
 const HOLD_RELEASE_RAMP_SECONDS = 1.25;
+const OPERATION_FORCE_RAMP_DISTANCE_M = 110;
 
 const smoothStep01 = (value: number): number => {
   const clamped = Math.max(0, Math.min(1, value));
   return clamped * clamped * (3 - 2 * clamped);
+};
+
+const operationForceScale = (
+  zone: OperationZone,
+  distanceM: number,
+): number => {
+  const entryProgress =
+    (distanceM - zone.startDistanceM) / OPERATION_FORCE_RAMP_DISTANCE_M;
+  if (zone.kind !== "launch" && zone.kind !== "boost")
+    return smoothStep01(entryProgress);
+  const exitProgress =
+    (zone.endDistanceM - distanceM) / OPERATION_FORCE_RAMP_DISTANCE_M;
+  return smoothStep01(Math.min(entryProgress, exitProgress));
 };
 
 export const createDefaultSimulatorConfig = (): SimulatorConfig => ({
@@ -644,10 +658,11 @@ const dynamicsAt = (
   let staticStictionCapacityN = 0;
   const forces = config.train.cars.map((car, index) => {
     const distanceM = headDistanceM - index * config.train.spacingM;
+    const sampledDistanceM = trackDistance(track, config, distanceM);
     const forceField = `train.cars[${index}].force`;
     const sample = sampleAt
-      ? sampleAt(trackDistance(track, config, distanceM))
-      : sampleTrackAtDistance(track, trackDistance(track, config, distanceM));
+      ? sampleAt(sampledDistanceM)
+      : sampleTrackAtDistance(track, sampledDistanceM);
     const zones = activeZones(track, config, distanceM);
     const gravity = checkedFinite(
       car.massKg * dot(gVec, sample.tangent),
@@ -699,6 +714,7 @@ const dynamicsAt = (
       );
     };
     for (const zone of zones) {
+      const forceScale = operationForceScale(zone, sampledDistanceM);
       if (zone.kind === "launch" || zone.kind === "boost") {
         launchActive = true;
         const target = zone.targetSpeedMps ?? 0;
@@ -713,11 +729,11 @@ const dynamicsAt = (
         );
         const forceLimit = Math.max(
           0,
-          zone.lsmForcePerCarN ?? config.lsmForcePerCarN,
+          (zone.lsmForcePerCarN ?? config.lsmForcePerCarN) * forceScale,
         );
         const powerLimit = Math.max(
           0,
-          zone.lsmPowerPerCarW ?? config.lsmPowerPerCarW,
+          (zone.lsmPowerPerCarW ?? config.lsmPowerPerCarW) * forceScale,
         );
         const capped = Math.max(
           -forceLimit,
@@ -738,7 +754,7 @@ const dynamicsAt = (
         const target = Math.max(0, zone.targetSpeedMps ?? 0);
         const limit = Math.max(
           0,
-          zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
+          (zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN) * forceScale,
         );
         addTargetBrake(target, limit);
       } else if (zone.kind === "station") {
@@ -747,7 +763,7 @@ const dynamicsAt = (
         const target = Math.max(0, zone.targetSpeedMps);
         const limit = Math.max(
           0,
-          zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN,
+          (zone.brakeForcePerCarN ?? config.maxBrakeForcePerCarN) * forceScale,
         );
         addTargetBrake(target, limit);
       }
