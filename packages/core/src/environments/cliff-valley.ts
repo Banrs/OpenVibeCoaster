@@ -2,7 +2,7 @@ import { HeightfieldEnvironment } from "../environment.js";
 
 export const CLIFF_VALLEY_TERRAIN_PROFILE_ID = "cliff-valley-v1";
 export const CLIFF_VALLEY_RIDGE_SEED_Z_M = 980;
-export const CLIFF_VALLEY_SUMMIT_RAIL_Y_M = 230;
+export const CLIFF_VALLEY_SUMMIT_RAIL_Y_M = 232;
 
 let cachedEnvironment: HeightfieldEnvironment | undefined;
 
