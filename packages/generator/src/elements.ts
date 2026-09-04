@@ -983,7 +983,7 @@ const immelmannSpans = (
       vec3Scale(basis.binormal, -Math.sin(headingRad)),
     ),
   );
-  const exitScale = parameters.height * 1.5;
+  const exitScale = parameters.height * 2;
   const secondEnd = vec3Add(
     vec3Add(
       apex,
