@@ -473,11 +473,11 @@ export function computeClearanceField(
     }
   }
   let certifiedSurfaceMaxY: number | undefined = undefined;
-  if (env?.certifiedSurfaceBounds) {
+  if (env?.certifiedSurfaceMaximumY) {
     try {
-      certifiedSurfaceMaxY = boundsMaxY(
-        env.certifiedSurfaceBounds(),
-        "certifiedSurfaceBounds",
+      certifiedSurfaceMaxY = finite(
+        env.certifiedSurfaceMaximumY(),
+        "certifiedSurfaceMaximumY",
       );
     } catch {
       certifiedSurfaceMaxY = undefined;
