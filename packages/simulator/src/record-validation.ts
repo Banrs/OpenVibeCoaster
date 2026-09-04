@@ -40,11 +40,18 @@ export function localHeightForKind(
   let minY = Number.POSITIVE_INFINITY;
   let summitIndex = 0;
   const relatedIds: string[] = [];
+  const matchingSpanIndices = file.solvedSpans.flatMap((span, spanIndex) => {
+    const owner = semanticOwner(span.id);
+    return elementKind(file, owner) === kind ? [spanIndex] : [];
+  });
+  const measuredSpanIndices =
+    kind === "diveDrop" && matchingSpanIndices.length > 0
+      ? [matchingSpanIndices[Math.floor(matchingSpanIndices.length / 2)]!]
+      : matchingSpanIndices;
 
-  for (let spanIndex = 0; spanIndex < file.solvedSpans.length; spanIndex += 1) {
+  for (const spanIndex of measuredSpanIndices) {
     const span = file.solvedSpans[spanIndex]!;
     const owner = semanticOwner(span.id);
-    if (elementKind(file, owner) !== kind) continue;
     if (!relatedIds.includes(owner)) relatedIds.push(owner);
     const start = boundaries[spanIndex * 2];
     const end = boundaries[spanIndex * 2 + 1];

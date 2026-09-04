@@ -233,7 +233,7 @@ export const recordHybridDefaultElements = (
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 0.945, 44);
+  appendForceHill("airtimeHill-010", 190, 0.98, 44);
   append(
     createElement("topHat", "topHat-011", {
       height: 91,
