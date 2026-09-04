@@ -1375,6 +1375,8 @@ const timelineSampleRate = (timelineStepSeconds: number): number =>
     ? 1 / timelineStepSeconds
     : SAFE_TIMELINE_SAMPLE_RATE_HZ;
 
+const TIMELINE_TIME_SNAP_EPSILON_SECONDS = 1e-9;
+
 /**
  * Monotonic bracket locator shared by compact and full makeTimeline paths.
  * Advances at most once per monotonic output time, guaranteeing O(frames+outputs).
@@ -1476,9 +1478,19 @@ const makeTimeline = (
     for (let outIndex = 0; outIndex < length; outIndex += 1) {
       const time = outputTimes[outIndex]!;
       const upper = locateCompact(time);
-      const lower = Math.max(0, upper - 1);
+      const candidateLower = Math.max(0, upper - 1);
+      const exactIndex =
+        Math.abs(frames[upper]!.timeSeconds - time) <=
+        TIMELINE_TIME_SNAP_EPSILON_SECONDS
+          ? upper
+          : Math.abs(frames[candidateLower]!.timeSeconds - time) <=
+              TIMELINE_TIME_SNAP_EPSILON_SECONDS
+            ? candidateLower
+            : undefined;
+      const lower = exactIndex ?? candidateLower;
+      const rightIndex = exactIndex ?? upper;
       const left = frames[lower]!;
-      const right = frames[upper]!;
+      const right = frames[rightIndex]!;
       const span = right.timeSeconds - left.timeSeconds;
       const alpha = span > 0 ? (time - left.timeSeconds) / span : 0;
       const blend = (a: number, b: number): number =>
@@ -1555,12 +1567,15 @@ const makeTimeline = (
         const leftCar = left.cars[carIndex]!;
         const rightCar = right.cars[carIndex] ?? leftCar;
         const distanceM = blend(leftCar.distanceM, rightCar.distanceM);
-        const sampled = timelineCache
-          ? timelineCache.sample(trackDistance(track, config, distanceM))
-          : sampleTrackAtDistance(
-              track,
-              trackDistance(track, config, distanceM),
-            );
+        const sampled =
+          exactIndex === undefined
+            ? timelineCache
+              ? timelineCache.sample(trackDistance(track, config, distanceM))
+              : sampleTrackAtDistance(
+                  track,
+                  trackDistance(track, config, distanceM),
+                )
+            : leftCar.frame;
         const baseOffset = (outIndex * carCount + carIndex) * 3;
         carPositionsXYZ[baseOffset] = sampled.position[0]!;
         carPositionsXYZ[baseOffset + 1] = sampled.position[1]!;
@@ -1574,11 +1589,10 @@ const makeTimeline = (
         carBinormalsXYZ[baseOffset] = sampled.binormal[0]!;
         carBinormalsXYZ[baseOffset + 1] = sampled.binormal[1]!;
         carBinormalsXYZ[baseOffset + 2] = sampled.binormal[2]!;
-        const carTele = interpolateTelemetry(
-          leftCar.telemetry,
-          rightCar.telemetry,
-          alpha,
-        );
+        const carTele =
+          exactIndex === undefined
+            ? interpolateTelemetry(leftCar.telemetry, rightCar.telemetry, alpha)
+            : leftCar.telemetry;
         const flatIdx = outIndex * carCount + carIndex;
         perCarLongitudinalG[flatIdx] = carTele.longitudinalG;
         perCarLateralG[flatIdx] = carTele.lateralG;
@@ -1633,7 +1647,18 @@ const makeTimeline = (
   const locateFull = createMonotonicBracketLocator(frames);
   const interpolateFrame = (time: number): SimulationFrame => {
     const upper = locateFull(time);
-    const lower = Math.max(0, upper - 1);
+    const candidateLower = Math.max(0, upper - 1);
+    const exactIndex =
+      Math.abs(frames[upper]!.timeSeconds - time) <=
+      TIMELINE_TIME_SNAP_EPSILON_SECONDS
+        ? upper
+        : Math.abs(frames[candidateLower]!.timeSeconds - time) <=
+            TIMELINE_TIME_SNAP_EPSILON_SECONDS
+          ? candidateLower
+          : undefined;
+    if (exactIndex !== undefined)
+      return { ...frames[exactIndex]!, timeSeconds: time };
+    const lower = candidateLower;
     const left = frames[lower]!;
     const right = frames[upper]!;
     const span = right.timeSeconds - left.timeSeconds;
