@@ -1,0 +1,25 @@
+name: Targeted record Task01 RED
+
+on:
+  push:
+    branches:
+      - codex/record-task01-red-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Prove the record snapshot and profile contracts are RED
+        run: >-
+          npm run test --
+          packages/core/src/record-snapshot.test.ts
+          packages/core/src/record-targets.test.ts
+
