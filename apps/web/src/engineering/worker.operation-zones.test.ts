@@ -99,7 +99,10 @@ function expectPhysicalOperationZones(
   for (const zone of zones) {
     const expectedStart = startByOwner.get(zone.id);
     const expectedEnd = endByOwner.get(zone.id);
-    expect(expectedStart, `missing physical start for ${zone.id}`).toBeDefined();
+    expect(
+      expectedStart,
+      `missing physical start for ${zone.id}`,
+    ).toBeDefined();
     expect(expectedEnd, `missing physical end for ${zone.id}`).toBeDefined();
     if (expectedStart === undefined || expectedEnd === undefined) {
       throw new Error(`missing physical range for ${zone.id}`);
@@ -128,7 +131,11 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
       const actual = getZones();
       // Worker-wiring assertion only (not independent physical authority).
       expect(actual).toEqual(operationZonesFromCoasterFile(result.file));
-      expectPhysicalOperationZones(result.file, actual, result.track.totalLength);
+      expectPhysicalOperationZones(
+        result.file,
+        actual,
+        result.track.totalLength,
+      );
 
       // semantic IDs, not heuristic kind-index
       const ids = actual.map((z) => z.id);
@@ -187,7 +194,11 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
       const actual = getZones();
       // Worker-wiring assertion only (not independent physical authority).
       expect(actual).toEqual(operationZonesFromCoasterFile(result.file));
-      expectPhysicalOperationZones(result.file, actual, result.track.totalLength);
+      expectPhysicalOperationZones(
+        result.file,
+        actual,
+        result.track.totalLength,
+      );
       const launch = actual.find((z) => z.id === "launch-1");
       if (launch === undefined) throw new Error("expected launch-1 zone");
       expect(launch.targetSpeedMps).toBe(27);

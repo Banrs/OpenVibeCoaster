@@ -49,7 +49,11 @@ const exactKeys = (
 };
 
 const exactNumber = (value: unknown, path: string, expected: number): void => {
-  if (typeof value !== "number" || !Number.isFinite(value) || value !== expected)
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value !== expected
+  )
     throw new Error(`${path}: expected ${expected}`);
 };
 
@@ -120,11 +124,7 @@ export function validateRecordTargetsProfile(
   exactRange(force.verticalPeakG, "profile.force.verticalPeakG", [4.8, 5]);
   exactNumber(force.verticalMinG, "profile.force.verticalMinG", -1.1);
   exactNumber(force.lateralMaxG, "profile.force.lateralMaxG", 1.5);
-  exactNumber(
-    force.longitudinalMaxG,
-    "profile.force.longitudinalMaxG",
-    1.5,
-  );
+  exactNumber(force.longitudinalMaxG, "profile.force.longitudinalMaxG", 1.5);
   exactNumber(force.jerkMps3, "profile.force.jerkMps3", 15);
   exactNumber(force.rollRateRadPerSec, "profile.force.rollRateRadPerSec", 1.5);
   exactNumber(profile.holdSeconds, "profile.holdSeconds", 3);

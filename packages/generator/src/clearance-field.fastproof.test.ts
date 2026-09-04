@@ -129,90 +129,85 @@ describe("clearance field per-interval fast proof", () => {
     expect(field.segments[0]!.source).not.toBe("cap");
   });
 
-  it(
-    "proves terrain clearance against hard thresholds without querying a display-cap-only gap",
-    () => {
-      const track = compileTrack(
-        [
-          {
-            id: "seg-0",
-            span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 0, 2)),
-          },
-          {
-            id: "seg-1",
-            span: SeventhOrderHermiteSpan.line(vec3(0, 0, 2), vec3(0, 0, 4)),
-          },
-        ],
-        { samples: 2 },
-      );
-      let firstCalls = 0;
-      let secondCalls = 0;
-      const options = {
-        hardClearanceM: 0.5,
-        displayCapM: 10,
-        maxWork: 100000,
-        segmentIds: ["seg-0", "seg-1"],
-      };
-      const first = computeClearanceField(track, {
-        ...options,
-        environment: {
-          signedDistance: () => {
-            firstCalls += 1;
-            throw new Error("display-cap-only terrain query");
-          },
-          bounds: () => ({ min: vec3(-1, -9, -1), max: vec3(1, -8, 1) }),
-          raycast: () => undefined,
+  it("proves terrain clearance against hard thresholds without querying a display-cap-only gap", () => {
+    const track = compileTrack(
+      [
+        {
+          id: "seg-0",
+          span: SeventhOrderHermiteSpan.line(vec3(0, 0, 0), vec3(0, 0, 2)),
         },
-      });
-      const second = computeClearanceField(track, {
-        ...options,
-        environment: {
-          signedDistance: () => {
-            secondCalls += 1;
-            throw new Error("display-cap-only terrain query");
-          },
-          bounds: () => ({ min: vec3(-1, -9, -1), max: vec3(1, -8, 1) }),
-          raycast: () => undefined,
+        {
+          id: "seg-1",
+          span: SeventhOrderHermiteSpan.line(vec3(0, 0, 2), vec3(0, 0, 4)),
         },
-      });
+      ],
+      { samples: 2 },
+    );
+    let firstCalls = 0;
+    let secondCalls = 0;
+    const options = {
+      hardClearanceM: 0.5,
+      displayCapM: 10,
+      maxWork: 100000,
+      segmentIds: ["seg-0", "seg-1"],
+    };
+    const first = computeClearanceField(track, {
+      ...options,
+      environment: {
+        signedDistance: () => {
+          firstCalls += 1;
+          throw new Error("display-cap-only terrain query");
+        },
+        bounds: () => ({ min: vec3(-1, -9, -1), max: vec3(1, -8, 1) }),
+        raycast: () => undefined,
+      },
+    });
+    const second = computeClearanceField(track, {
+      ...options,
+      environment: {
+        signedDistance: () => {
+          secondCalls += 1;
+          throw new Error("display-cap-only terrain query");
+        },
+        bounds: () => ({ min: vec3(-1, -9, -1), max: vec3(1, -8, 1) }),
+        raycast: () => undefined,
+      },
+    });
 
-      expect(firstCalls).toBe(0);
-      expect(secondCalls).toBe(0);
-      expect(first.globalLowerM).toBeGreaterThanOrEqual(0.5);
-      expect(first.globalLowerM).toBeLessThan(10);
-      expect(Number.isFinite(first.globalLowerM)).toBe(true);
-      expect(Number.isFinite(first.globalUpperM)).toBe(true);
-      expect(first.globalUpperM).toBeGreaterThanOrEqual(10);
-      expect(first.globalLowerM).toBeLessThanOrEqual(first.globalUpperM);
-      expect(
-        first.segments.every(
-          (segment) =>
-            Number.isFinite(segment.lowerM) &&
-            Number.isFinite(segment.upperM) &&
-            segment.lowerM <= segment.upperM &&
-            segment.source === "terrain" &&
-            segment.certified === false,
-        ),
-      ).toBe(true);
-      expect(
-        first.diagnostics.some((diagnostic) => diagnostic.severity === "fatal"),
-      ).toBe(false);
-      expect(
-        second.diagnostics.some(
-          (diagnostic) => diagnostic.severity === "fatal",
-        ),
-      ).toBe(false);
-      expect(second.work).toBe(first.work);
-      expect(second.globalLowerM).toBe(first.globalLowerM);
-      expect(second.globalUpperM).toBe(first.globalUpperM);
-      expect(second.globalUpperM).toBeGreaterThanOrEqual(10);
-      expect(first.globalSource).toBe("terrain");
-      expect(second.globalSource).toBe("terrain");
-      expect(first.globalLowerSource).toBe("terrain");
-      expect(second.globalLowerSource).toBe("terrain");
-      expect(second.segments).toEqual(first.segments);
-    },
-  );
+    expect(firstCalls).toBe(0);
+    expect(secondCalls).toBe(0);
+    expect(first.globalLowerM).toBeGreaterThanOrEqual(0.5);
+    expect(first.globalLowerM).toBeLessThan(10);
+    expect(Number.isFinite(first.globalLowerM)).toBe(true);
+    expect(Number.isFinite(first.globalUpperM)).toBe(true);
+    expect(first.globalUpperM).toBeGreaterThanOrEqual(10);
+    expect(first.globalLowerM).toBeLessThanOrEqual(first.globalUpperM);
+    expect(
+      first.segments.every(
+        (segment) =>
+          Number.isFinite(segment.lowerM) &&
+          Number.isFinite(segment.upperM) &&
+          segment.lowerM <= segment.upperM &&
+          segment.source === "terrain" &&
+          segment.certified === false,
+      ),
+    ).toBe(true);
+    expect(
+      first.diagnostics.some((diagnostic) => diagnostic.severity === "fatal"),
+    ).toBe(false);
+    expect(
+      second.diagnostics.some((diagnostic) => diagnostic.severity === "fatal"),
+    ).toBe(false);
+    expect(second.work).toBe(first.work);
+    expect(second.globalLowerM).toBe(first.globalLowerM);
+    expect(second.globalUpperM).toBe(first.globalUpperM);
+    expect(second.globalUpperM).toBeGreaterThanOrEqual(10);
+    expect(first.globalSource).toBe("terrain");
+    expect(second.globalSource).toBe("terrain");
+    expect(first.globalLowerSource).toBe("terrain");
+    expect(second.globalLowerSource).toBe("terrain");
+    expect(second.segments).toEqual(first.segments);
+  });
 });
 
 describe("clearance field bounds validation", () => {

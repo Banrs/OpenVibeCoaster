@@ -175,8 +175,6 @@ test("a fourth terrainSwoop kind remains invalid at generator and intent boundar
     }),
   ).toThrow(/Unknown element kind: terrainSwoop/);
   expect(() =>
-    parseDesignIntentV1(
-      intentWith("terrainSwoop", { length: 20, height: 10 }),
-    ),
+    parseDesignIntentV1(intentWith("terrainSwoop", { length: 20, height: 10 })),
   ).toThrow(/supported element kind/);
 });

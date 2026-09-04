@@ -49,35 +49,32 @@ const validFile = () => ({
   compiledDataChecksum: "00000000",
 });
 
-test(
-  "coaster files accept a diveDrop span but reject terrainSwoop in either authority",
-  () => {
-    expect(() =>
-      deserializeCoasterFileV1(JSON.stringify(validFile())),
-    ).not.toThrow();
+test("coaster files accept a diveDrop span but reject terrainSwoop in either authority", () => {
+  expect(() =>
+    deserializeCoasterFileV1(JSON.stringify(validFile())),
+  ).not.toThrow();
 
-    const invalidIntent = validFile() as unknown as {
-      intent: { elements: unknown[] };
-    };
-    invalidIntent.intent.elements = [
-      ...invalidIntent.intent.elements,
-      {
-        id: "terrainSwoop-000",
-        kind: "terrainSwoop",
-        type: "terrainSwoop",
-        parameters: {},
-      },
-    ];
-    expect(() =>
-      deserializeCoasterFileV1(JSON.stringify(invalidIntent)),
-    ).toThrow(/supported element kind/);
+  const invalidIntent = validFile() as unknown as {
+    intent: { elements: unknown[] };
+  };
+  invalidIntent.intent.elements = [
+    ...invalidIntent.intent.elements,
+    {
+      id: "terrainSwoop-000",
+      kind: "terrainSwoop",
+      type: "terrainSwoop",
+      parameters: {},
+    },
+  ];
+  expect(() => deserializeCoasterFileV1(JSON.stringify(invalidIntent))).toThrow(
+    /supported element kind/,
+  );
 
-    const invalidSpan = validFile() as unknown as {
-      solvedSpans: Array<{ kind: string }>;
-    };
-    invalidSpan.solvedSpans[0]!.kind = "terrainSwoop";
-    expect(() =>
-      deserializeCoasterFileV1(JSON.stringify(invalidSpan)),
-    ).toThrow(/known element kind/);
-  },
-);
+  const invalidSpan = validFile() as unknown as {
+    solvedSpans: Array<{ kind: string }>;
+  };
+  invalidSpan.solvedSpans[0]!.kind = "terrainSwoop";
+  expect(() => deserializeCoasterFileV1(JSON.stringify(invalidSpan))).toThrow(
+    /known element kind/,
+  );
+});

@@ -30,14 +30,14 @@ Tormenta are factual baselines and ride-experience references only.
 Baselines are captured as source facts; targets are project engineering
 requirements until generated geometry and simulation prove them.
 
-| Metric | Verified baseline | Hard project target | Margin |
-| --- | ---: | ---: | ---: |
-| Track length | Falcon's Flight 4,325 m | 5,200–5,400 m | at least +20.2% |
-| Ride height | Falcon's Flight 195 m | 225–235 m | at least +15.4% |
-| Maximum speed | Falcon's Flight 250 km/h | 285–295 km/h | at least +14.0% |
-| Inversion height | Spitfire 73 m | 90–92 m inverted top hat | at least +23.3% |
-| Immelmann height | Tormenta 66 m | 80–82 m | at least +21.2% |
-| Vertical-loop height | Tormenta 55 m | 66–68 m | at least +20.0% |
+| Metric               |        Verified baseline |      Hard project target |          Margin |
+| -------------------- | -----------------------: | -----------------------: | --------------: |
+| Track length         |  Falcon's Flight 4,325 m |            5,200–5,400 m | at least +20.2% |
+| Ride height          |    Falcon's Flight 195 m |                225–235 m | at least +15.4% |
+| Maximum speed        | Falcon's Flight 250 km/h |             285–295 km/h | at least +14.0% |
+| Inversion height     |            Spitfire 73 m | 90–92 m inverted top hat | at least +23.3% |
+| Immelmann height     |            Tormenta 66 m |                  80–82 m | at least +21.2% |
+| Vertical-loop height |            Tormenta 55 m |                  66–68 m | at least +20.0% |
 
 The held cliff drop targets approximately 210 m at 110 degrees from horizontal.
 It is Tormenta-inspired but is not presented as a steepness record. Natural

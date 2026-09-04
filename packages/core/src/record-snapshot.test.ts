@@ -1,10 +1,6 @@
 import { expect, test } from "vitest";
-import snapshot from "../../../data/records/records-2026-09-01.json" with {
-  type: "json",
-};
-import priorSnapshot from "../../../data/records/records-2026-08-29.json" with {
-  type: "json",
-};
+import snapshot from "../../../data/records/records-2026-09-01.json" with { type: "json" };
+import priorSnapshot from "../../../data/records/records-2026-08-29.json" with { type: "json" };
 
 type SourceFact = {
   readonly metric: string;
@@ -188,9 +184,9 @@ test("the dated snapshot preserves its provenance vocabulary and source facts", 
     },
   ]);
 
-  expect(records.reduce((total, record) => total + record.facts.length, 0)).toBe(
-    12,
-  );
+  expect(
+    records.reduce((total, record) => total + record.facts.length, 0),
+  ).toBe(12);
 
   for (const record of records) {
     for (const fact of record.facts) {

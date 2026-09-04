@@ -71,20 +71,38 @@ import prior from "../../../data/records/records-2026-08-29.json" with { type: "
 test("snapshot carries dated source URLs and frozen vocabulary", () => {
   expect(snapshot.capturedAt).toBe("2026-09-01");
   expect(snapshot.provenanceVocabulary).toEqual(prior.provenanceVocabulary);
-  const ff = snapshot.records.find((r: { id: string }) => r.id === "falcons-flight-metric-facts")!;
-  expect(ff.facts.find((f: { metric: string }) => f.metric === "rideHeight")!.value).toBe(195);
-  expect(ff.facts.find((f: { metric: string }) => f.metric === "trackLength")!.value).toBe(4325);
+  const ff = snapshot.records.find(
+    (r: { id: string }) => r.id === "falcons-flight-metric-facts",
+  )!;
+  expect(
+    ff.facts.find((f: { metric: string }) => f.metric === "rideHeight")!.value,
+  ).toBe(195);
+  expect(
+    ff.facts.find((f: { metric: string }) => f.metric === "trackLength")!.value,
+  ).toBe(4325);
   for (const rec of snapshot.records)
-    for (const f of rec.facts as Array<{ provenance: string; sourceUrls: string[]; retrievedAt: string }>) {
+    for (const f of rec.facts as Array<{
+      provenance: string;
+      sourceUrls: string[];
+      retrievedAt: string;
+    }>) {
       expect(f.sourceUrls.length).toBeGreaterThan(0);
       expect(f.retrievedAt).toBe("2026-09-01");
     }
 });
 test("comparisons are DESIGN_TARGET, never SOURCE_VERIFIED", async () => {
-  const profile = await import("../../../data/profiles/record-targets-v1.json", { with: { type: "json" } }).then((m) => m.default);
+  const profile = await import(
+    "../../../data/profiles/record-targets-v1.json",
+    { with: { type: "json" } }
+  ).then((m) => m.default);
   expect(profile.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
   expect(profile.totalLengthM).toEqual([5200, 5400]);
-  expect(profile.diveDrop).toMatchObject({ heightM: 210, toleranceM: 3, angleDeg: 110, toleranceDeg: 1.5 });
+  expect(profile.diveDrop).toMatchObject({
+    heightM: 210,
+    toleranceM: 3,
+    angleDeg: 110,
+    toleranceDeg: 1.5,
+  });
 });
 ```
 
@@ -95,8 +113,12 @@ import { validateRecordTargetsProfile } from "./record-targets.js";
 import profile from "../../../data/profiles/record-targets-v1.json" with { type: "json" };
 test("valid profile passes and wrong provenance fails", () => {
   expect(() => validateRecordTargetsProfile(profile)).not.toThrow();
-  expect(() => validateRecordTargetsProfile({ ...profile, provenance: "SOURCE_VERIFIED" })).toThrow(/PROJECT_ENGINEERING_LIMIT/);
-  expect(() => validateRecordTargetsProfile({ ...profile, totalLengthM: [5100, 5400] })).toThrow();
+  expect(() =>
+    validateRecordTargetsProfile({ ...profile, provenance: "SOURCE_VERIFIED" }),
+  ).toThrow(/PROJECT_ENGINEERING_LIMIT/);
+  expect(() =>
+    validateRecordTargetsProfile({ ...profile, totalLengthM: [5100, 5400] }),
+  ).toThrow();
 });
 ```
 
@@ -129,9 +151,23 @@ test("valid profile passes and wrong provenance fails", () => {
 **Produced interfaces:** Added kinds `diveDrop`, `immelmann`, `verticalLoop` with exact shapes (all fields readonly, finite-validated):
 
 ```ts
-export interface DiveDropParameters { readonly dropHeight: number; readonly angleDeg: number; readonly approachRadius: number; readonly exitRadius: number; readonly bank: number; }
-export interface ImmelmannParameters { readonly height: number; readonly exitHeadingDeg: number; readonly bank: number; }
-export interface VerticalLoopParameters { readonly height: number; readonly referenceSpeed: number; readonly bank: number; }
+export interface DiveDropParameters {
+  readonly dropHeight: number;
+  readonly angleDeg: number;
+  readonly approachRadius: number;
+  readonly exitRadius: number;
+  readonly bank: number;
+}
+export interface ImmelmannParameters {
+  readonly height: number;
+  readonly exitHeadingDeg: number;
+  readonly bank: number;
+}
+export interface VerticalLoopParameters {
+  readonly height: number;
+  readonly referenceSpeed: number;
+  readonly bank: number;
+}
 ```
 
 `ElementParameterMap` extended with exactly those three entries. `validateParameters` gains three switch cases using the local `range`/`angle`/`finite` helpers (`elements.ts:51-68`; note `range()` appends " m" even for non-length fields — message wording only, no behavior change): `dropHeight` 40–250, `angleDeg` 90–135 (parser guard; the 108.5–111.5 record window is enforced only in Task 08), `approachRadius`/`exitRadius` 15–400, `height` 20–130, `exitHeadingDeg` -180–180, `referenceSpeed` 5–85, `bank` within ±π. `topHat` validator becomes `range("width", p.width, 10, 300)` plus `if (!Number.isFinite(p.height) || p.height < 80 || p.height > 92) throw new RangeError("height must be between 80 and 92 m")` with default `height: 80` preserved in `defaults`. `topHat` remains an existing kind, not a fourth new kind. `topHatSpans(pose, height, width, endBank, elementId)` replaces both hardcoded `80`s at `elements.ts:446-448` and `:462` (`const riseCoefficients = smoothRampCoefficients.map((c) => c * height)` and `const apex = worldPoint(pose, basis, vec3(halfWidth, height, 0))`; the inner `positionCoefficients(origin, verticalCoefficients)` helper at `:449-461` already takes per-row coefficients so scaling `riseCoefficients` scales both rise and fall rows with apex Y equal to `height`); `buildElement` topHat branch at `:630-632` calls `topHatSpans(normalizedPose, p.height, p.width, p.bank, element.id)` so `height: 91` compiles a 91 m local delta and default `height: 80` preserves existing behavior. `createAnyElement` passes the three kinds through to `createElement`. `coaster-file.ts` `supportedKinds` (`:156-167`) plus `parameterNames` (`:174-191`) gain `diveDrop: ["dropHeight", "angleDeg", "approachRadius", "exitRadius", "bank"]`, `immelmann: ["height", "exitHeadingDeg", "bank"]`, `verticalLoop: ["height", "referenceSpeed", "bank"]`; `numericParameters` set (`:193-206`) gains `dropHeight`, `angleDeg`, `approachRadius`, `exitRadius`, `exitHeadingDeg`; `validateSerializedSpan` kind list (`:499-513`) gains the same three kinds. Any fourth kind (for example `terrainSwoop`) is rejected by all four gates.
@@ -144,22 +180,73 @@ import { test, expect } from "vitest";
 import { createElement } from "./elements.js";
 import { parseDesignIntentV1 } from "@openvibecoaster/core";
 test("three new kinds parse with exact defaults and ranges", () => {
-  const dive = createElement("diveDrop", "diveDrop-000", { dropHeight: 210, angleDeg: 110, approachRadius: 90, exitRadius: 70, bank: 0 });
+  const dive = createElement("diveDrop", "diveDrop-000", {
+    dropHeight: 210,
+    angleDeg: 110,
+    approachRadius: 90,
+    exitRadius: 70,
+    bank: 0,
+  });
   expect(dive.parameters.dropHeight).toBe(210);
-  const imm = createElement("immelmann", "immelmann-000", { height: 81, exitHeadingDeg: 180, bank: 0 });
+  const imm = createElement("immelmann", "immelmann-000", {
+    height: 81,
+    exitHeadingDeg: 180,
+    bank: 0,
+  });
   expect(imm.parameters.height).toBe(81);
-  const loop = createElement("verticalLoop", "verticalLoop-000", { height: 67, referenceSpeed: 38, bank: 0 });
+  const loop = createElement("verticalLoop", "verticalLoop-000", {
+    height: 67,
+    referenceSpeed: 38,
+    bank: 0,
+  });
   expect(loop.parameters.referenceSpeed).toBe(38);
-  expect(() => createElement("diveDrop", "diveDrop-001", { dropHeight: 210, angleDeg: 140, approachRadius: 90, exitRadius: 70, bank: 0 })).toThrow(/angleDeg/);
+  expect(() =>
+    createElement("diveDrop", "diveDrop-001", {
+      dropHeight: 210,
+      angleDeg: 140,
+      approachRadius: 90,
+      exitRadius: 70,
+      bank: 0,
+    }),
+  ).toThrow(/angleDeg/);
 });
 test("topHat allows 80-92, still defaults to 80, rejects 73 and 93", () => {
   expect(createElement("topHat", "topHat-000", {}).parameters.height).toBe(80);
-  expect(createElement("topHat", "topHat-001", { height: 91, width: 60, bank: 0 }).parameters.height).toBe(91);
-  expect(() => createElement("topHat", "topHat-002", { height: 73, width: 60, bank: 0 })).toThrow();
-  expect(() => createElement("topHat", "topHat-003", { height: 93, width: 60, bank: 0 })).toThrow();
+  expect(
+    createElement("topHat", "topHat-001", { height: 91, width: 60, bank: 0 })
+      .parameters.height,
+  ).toBe(91);
+  expect(() =>
+    createElement("topHat", "topHat-002", { height: 73, width: 60, bank: 0 }),
+  ).toThrow();
+  expect(() =>
+    createElement("topHat", "topHat-003", { height: 93, width: 60, bank: 0 }),
+  ).toThrow();
 });
 test("unknown fourth kind rejected at intent parse", () => {
-  expect(() => parseDesignIntentV1(JSON.stringify({ schemaVersion: 1, generatorVersion: "g", seed: 1, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [{ id: "x", kind: "terrainSwoop", type: "terrainSwoop", parameters: {} }], gates: [], targets: [], constraints: [], pinnedElementIds: [] }))).toThrow(/supported element kind/);
+  expect(() =>
+    parseDesignIntentV1(
+      JSON.stringify({
+        schemaVersion: 1,
+        generatorVersion: "g",
+        seed: 1,
+        mode: "insta",
+        family: "steel-sitdown-lsm-v1",
+        elements: [
+          {
+            id: "x",
+            kind: "terrainSwoop",
+            type: "terrainSwoop",
+            parameters: {},
+          },
+        ],
+        gates: [],
+        targets: [],
+        constraints: [],
+        pinnedElementIds: [],
+      }),
+    ),
+  ).toThrow(/supported element kind/);
 });
 ```
 
@@ -168,11 +255,64 @@ test("unknown fourth kind rejected at intent parse", () => {
 import { test, expect } from "vitest";
 import { deserializeCoasterFileV1 } from "@openvibecoaster/core";
 test("coaster file accepts diveDrop span and rejects terrainSwoop element", () => {
-  const good = { schemaVersion: 1, name: "n", intent: { schemaVersion: 1, generatorVersion: "g", seed: 1, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [{ id: "diveDrop-000", kind: "diveDrop", type: "diveDrop", parameters: { dropHeight: 210, angleDeg: 110, approachRadius: 90, exitRadius: 70, bank: 0 } }], gates: [], targets: [], constraints: [], pinnedElementIds: [] }, solvedSpans: [{ id: "diveDrop-000#0", kind: "diveDrop", positionCoefficients: [[1, 0, 0, 0, 0, 0, 0, 0], [2, 0, 0, 0, 0, 0, 0, 0], [3, 0, 0, 0, 0, 0, 0, 0]], rollCoefficients: [0, 0, 0, 0, 0, 0], length: 120 }], seed: 1, generatorVersion: "g", profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"], compiledDataChecksum: "00000000" };
+  const good = {
+    schemaVersion: 1,
+    name: "n",
+    intent: {
+      schemaVersion: 1,
+      generatorVersion: "g",
+      seed: 1,
+      mode: "insta",
+      family: "steel-sitdown-lsm-v1",
+      elements: [
+        {
+          id: "diveDrop-000",
+          kind: "diveDrop",
+          type: "diveDrop",
+          parameters: {
+            dropHeight: 210,
+            angleDeg: 110,
+            approachRadius: 90,
+            exitRadius: 70,
+            bank: 0,
+          },
+        },
+      ],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    },
+    solvedSpans: [
+      {
+        id: "diveDrop-000#0",
+        kind: "diveDrop",
+        positionCoefficients: [
+          [1, 0, 0, 0, 0, 0, 0, 0],
+          [2, 0, 0, 0, 0, 0, 0, 0],
+          [3, 0, 0, 0, 0, 0, 0, 0],
+        ],
+        rollCoefficients: [0, 0, 0, 0, 0, 0],
+        length: 120,
+      },
+    ],
+    seed: 1,
+    generatorVersion: "g",
+    profileVersion: "record-targets-v1",
+    researchSnapshotIds: ["records-2026-09-01"],
+    compiledDataChecksum: "00000000",
+  };
   expect(() => deserializeCoasterFileV1(JSON.stringify(good))).not.toThrow();
   const bad = JSON.parse(JSON.stringify(good)) as typeof good;
-  (bad.intent.elements as unknown[]).push({ id: "t-0", kind: "terrainSwoop", type: "terrainSwoop", parameters: {} });
-  expect(() => deserializeCoasterFileV1(JSON.stringify(bad))).toThrow(/supported element kind/);
+  (bad.intent.elements as unknown[]).push({
+    id: "t-0",
+    kind: "terrainSwoop",
+    type: "terrainSwoop",
+    parameters: {},
+  });
+  expect(() => deserializeCoasterFileV1(JSON.stringify(bad))).toThrow(
+    /supported element kind/,
+  );
 });
 ```
 
@@ -202,7 +342,11 @@ test("topHat default 80 compiles an 80 m local delta on the compiled track (exis
   expect(Math.abs(maxY - minY - 80)).toBeLessThanOrEqual(1);
 });
 test("topHat height 91 threads through geometry to a 91 m compiled local delta", () => {
-  const el = createElement("topHat", "topHat-011", { height: 91, width: 60, bank: 0 });
+  const el = createElement("topHat", "topHat-011", {
+    height: 91,
+    width: 60,
+    bank: 0,
+  });
   const built = buildElement(el, defaultPose(), 34);
   expect(built.solvedSpans.length).toBe(2);
   const r = compileSemanticChain([el]);
@@ -249,9 +393,20 @@ test("topHat height 91 threads through geometry to a 91 m compiled local delta",
 ```ts
 // packages/generator/src/diveDrop.geometry.test.ts
 import { test, expect } from "vitest";
-import { buildElement, createElement, defaultPose, DIVE_DROP_SPAN_COUNT } from "./elements.js";
+import {
+  buildElement,
+  createElement,
+  defaultPose,
+  DIVE_DROP_SPAN_COUNT,
+} from "./elements.js";
 test("diveDrop emits 3 coefficient spans with mid-drop 110deg and 210m delta", () => {
-  const el = createElement("diveDrop", "diveDrop-000", { dropHeight: 210, angleDeg: 110, approachRadius: 90, exitRadius: 70, bank: 0 });
+  const el = createElement("diveDrop", "diveDrop-000", {
+    dropHeight: 210,
+    angleDeg: 110,
+    approachRadius: 90,
+    exitRadius: 70,
+    bank: 0,
+  });
   const { solvedSpans } = buildElement(el, defaultPose(), 34);
   expect(DIVE_DROP_SPAN_COUNT).toBe(3);
   expect(solvedSpans.length).toBe(3);
@@ -271,11 +426,18 @@ test("diveDrop emits 3 coefficient spans with mid-drop 110deg and 210m delta", (
   expect(Math.abs(dropM - 210)).toBeLessThanOrEqual(3);
 });
 test("diveDrop recovery span exits near level with driven-down exit curvature", () => {
-  const el = createElement("diveDrop", "diveDrop-000", { dropHeight: 210, angleDeg: 110, approachRadius: 90, exitRadius: 70, bank: 0 });
+  const el = createElement("diveDrop", "diveDrop-000", {
+    dropHeight: 210,
+    angleDeg: 110,
+    approachRadius: 90,
+    exitRadius: 70,
+    bank: 0,
+  });
   const { solvedSpans } = buildElement(el, defaultPose(), 34);
   const exit = solvedSpans[2]!.span;
   const d = exit.derivative(1, 1);
-  const exitPitchDeg = (Math.atan2(d[1], Math.hypot(d[0], d[2])) * 180) / Math.PI;
+  const exitPitchDeg =
+    (Math.atan2(d[1], Math.hypot(d[0], d[2])) * 180) / Math.PI;
   expect(Math.abs(exitPitchDeg)).toBeLessThanOrEqual(10);
   expect(solvedSpans[2]!.length).toBeGreaterThan(0);
 });
@@ -284,19 +446,41 @@ test("diveDrop recovery span exits near level with driven-down exit curvature", 
 ```ts
 // packages/generator/src/diveDrop.seam.test.ts
 import { test, expect } from "vitest";
-import { compileSemanticChain, diagnoseSeams, defaultTolerances } from "./solver.js";
+import {
+  compileSemanticChain,
+  diagnoseSeams,
+  defaultTolerances,
+} from "./solver.js";
 import { createElement, defaultPose, buildElement } from "./elements.js";
 test("diveDrop interior seams pass hard tolerances and infeasible variant fails", () => {
-  const el = createElement("diveDrop", "diveDrop-000", { dropHeight: 210, angleDeg: 110, approachRadius: 90, exitRadius: 70, bank: 0 });
+  const el = createElement("diveDrop", "diveDrop-000", {
+    dropHeight: 210,
+    angleDeg: 110,
+    approachRadius: 90,
+    exitRadius: 70,
+    bank: 0,
+  });
   const built = buildElement(el, defaultPose(), 34);
   const seams = diagnoseSeams(built.solvedSpans, {});
   expect(seams.length).toBe(2);
   for (const s of seams) {
     expect(s.positionM).toBeLessThanOrEqual(defaultTolerances.positionM);
-    expect(s.curvatureVectorJumpPerM).toBeLessThanOrEqual(defaultTolerances.curvatureVectorJumpPerM);
-    expect(s.curvatureGradientPerM2).toBeLessThanOrEqual(defaultTolerances.curvatureGradientPerM2);
+    expect(s.curvatureVectorJumpPerM).toBeLessThanOrEqual(
+      defaultTolerances.curvatureVectorJumpPerM,
+    );
+    expect(s.curvatureGradientPerM2).toBeLessThanOrEqual(
+      defaultTolerances.curvatureGradientPerM2,
+    );
   }
-  const bad = compileSemanticChain([createElement("diveDrop", "diveDrop-009", { dropHeight: 210, angleDeg: 135, approachRadius: 15, exitRadius: 15, bank: 0 })]);
+  const bad = compileSemanticChain([
+    createElement("diveDrop", "diveDrop-009", {
+      dropHeight: 210,
+      angleDeg: 135,
+      approachRadius: 15,
+      exitRadius: 15,
+      bank: 0,
+    }),
+  ]);
   expect(bad.feasible).toBe(false);
 });
 ```
@@ -331,33 +515,84 @@ test("diveDrop interior seams pass hard tolerances and infeasible variant fails"
 // packages/generator/src/immelmann.geometry.test.ts
 import { test, expect } from "vitest";
 import { transportFramesAlongPath } from "@openvibecoaster/core";
-import { buildElement, createElement, defaultPose, IMMELMANN_SPAN_COUNT } from "./elements.js";
+import {
+  buildElement,
+  createElement,
+  defaultPose,
+  IMMELMANN_SPAN_COUNT,
+} from "./elements.js";
 test("immelmann height 81 local delta and exit heading 180", () => {
-  const el = createElement("immelmann", "immelmann-000", { height: 81, exitHeadingDeg: 180, bank: 0 });
+  const el = createElement("immelmann", "immelmann-000", {
+    height: 81,
+    exitHeadingDeg: 180,
+    bank: 0,
+  });
   const { solvedSpans, endPose } = buildElement(el, defaultPose(), 30);
   expect(IMMELMANN_SPAN_COUNT).toBe(2);
   expect(solvedSpans.length).toBe(2);
   const ys: number[] = [];
-  for (const s of solvedSpans) for (let i = 0; i <= 32; i += 1) ys.push(s.span.position(i / 32)[1]);
+  for (const s of solvedSpans)
+    for (let i = 0; i <= 32; i += 1) ys.push(s.span.position(i / 32)[1]);
   expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThanOrEqual(80);
   expect(Math.max(...ys) - Math.min(...ys)).toBeLessThanOrEqual(82);
-  const yawDeg = (Math.atan2(endPose.tangent[0], endPose.tangent[2]) * 180) / Math.PI;
+  const yawDeg =
+    (Math.atan2(endPose.tangent[0], endPose.tangent[2]) * 180) / Math.PI;
   expect(Math.abs(Math.abs(yawDeg) - 180)).toBeLessThanOrEqual(1);
 });
 test("immelmann handedness preserved and RMF binormal continuous (frames, not tangents)", () => {
-  const left = buildElement(createElement("immelmann", "immelmann-010", { height: 81, exitHeadingDeg: 90, bank: 0 }), defaultPose(), 30);
-  const right = buildElement(createElement("immelmann", "immelmann-011", { height: 81, exitHeadingDeg: -90, bank: 0 }), defaultPose(), 30);
+  const left = buildElement(
+    createElement("immelmann", "immelmann-010", {
+      height: 81,
+      exitHeadingDeg: 90,
+      bank: 0,
+    }),
+    defaultPose(),
+    30,
+  );
+  const right = buildElement(
+    createElement("immelmann", "immelmann-011", {
+      height: 81,
+      exitHeadingDeg: -90,
+      bank: 0,
+    }),
+    defaultPose(),
+    30,
+  );
   expect(left.endPose.tangent[0]).toBeGreaterThan(0.5);
   expect(right.endPose.tangent[0]).toBeLessThan(-0.5);
   // RMF continuity: transport frames over the two-span path and compare
   // normals/binormals at the interior seam (u=1 of span 0 vs u=0 of span 1).
   for (const built of [left, right]) {
-    const pts = [built.solvedSpans[0]!.span.position(0.98), built.solvedSpans[0]!.span.position(1), built.solvedSpans[1]!.span.position(0), built.solvedSpans[1]!.span.position(0.02)];
-    const tans = [built.solvedSpans[0]!.span.derivative(0.98, 1), built.solvedSpans[0]!.span.derivative(1, 1), built.solvedSpans[1]!.span.derivative(0, 1), built.solvedSpans[1]!.span.derivative(0.02, 1)];
-    const norms = tans.map((t) => { const l = Math.hypot(t[0], t[1], t[2]); return [t[0] / l, t[1] / l, t[2] / l] as const; });
-    const frames = transportFramesAlongPath(pts as never, norms as never, [0, 1 / 3, 2 / 3, 1], [0, 0, 0, 0]);
-    const dotN = frames[1]!.normal[0] * frames[2]!.normal[0] + frames[1]!.normal[1] * frames[2]!.normal[1] + frames[1]!.normal[2] * frames[2]!.normal[2];
-    const dotB = frames[1]!.binormal[0] * frames[2]!.binormal[0] + frames[1]!.binormal[1] * frames[2]!.binormal[1] + frames[1]!.binormal[2] * frames[2]!.binormal[2];
+    const pts = [
+      built.solvedSpans[0]!.span.position(0.98),
+      built.solvedSpans[0]!.span.position(1),
+      built.solvedSpans[1]!.span.position(0),
+      built.solvedSpans[1]!.span.position(0.02),
+    ];
+    const tans = [
+      built.solvedSpans[0]!.span.derivative(0.98, 1),
+      built.solvedSpans[0]!.span.derivative(1, 1),
+      built.solvedSpans[1]!.span.derivative(0, 1),
+      built.solvedSpans[1]!.span.derivative(0.02, 1),
+    ];
+    const norms = tans.map((t) => {
+      const l = Math.hypot(t[0], t[1], t[2]);
+      return [t[0] / l, t[1] / l, t[2] / l] as const;
+    });
+    const frames = transportFramesAlongPath(
+      pts as never,
+      norms as never,
+      [0, 1 / 3, 2 / 3, 1],
+      [0, 0, 0, 0],
+    );
+    const dotN =
+      frames[1]!.normal[0] * frames[2]!.normal[0] +
+      frames[1]!.normal[1] * frames[2]!.normal[1] +
+      frames[1]!.normal[2] * frames[2]!.normal[2];
+    const dotB =
+      frames[1]!.binormal[0] * frames[2]!.binormal[0] +
+      frames[1]!.binormal[1] * frames[2]!.binormal[1] +
+      frames[1]!.binormal[2] * frames[2]!.binormal[2];
     expect(dotN).toBeGreaterThan(0.999);
     expect(dotB).toBeGreaterThan(0.999);
   }
@@ -367,14 +602,28 @@ test("immelmann handedness preserved and RMF binormal continuous (frames, not ta
 ```ts
 // packages/generator/src/immelmann.seam.test.ts
 import { test, expect } from "vitest";
-import { compileSemanticChain, diagnoseSeams, defaultTolerances } from "./solver.js";
+import {
+  compileSemanticChain,
+  diagnoseSeams,
+  defaultTolerances,
+} from "./solver.js";
 import { createElement } from "./elements.js";
 test("immelmann single interior seam passes hard tolerances", () => {
-  const r = compileSemanticChain([createElement("immelmann", "immelmann-000", { height: 81, exitHeadingDeg: 180, bank: 0 })]);
+  const r = compileSemanticChain([
+    createElement("immelmann", "immelmann-000", {
+      height: 81,
+      exitHeadingDeg: 180,
+      bank: 0,
+    }),
+  ]);
   expect(r.feasible).toBe(true);
   expect(r.seamDiagnostics.length).toBe(1);
-  expect(r.seamDiagnostics[0]!.positionM).toBeLessThanOrEqual(defaultTolerances.positionM);
-  expect(r.seamDiagnostics[0]!.curvatureGradientPerM2).toBeLessThanOrEqual(defaultTolerances.curvatureGradientPerM2);
+  expect(r.seamDiagnostics[0]!.positionM).toBeLessThanOrEqual(
+    defaultTolerances.positionM,
+  );
+  expect(r.seamDiagnostics[0]!.curvatureGradientPerM2).toBeLessThanOrEqual(
+    defaultTolerances.curvatureGradientPerM2,
+  );
 });
 ```
 
@@ -410,7 +659,13 @@ import { test, expect } from "vitest";
 import { compileSemanticChain } from "./solver.js";
 import { createElement } from "./elements.js";
 test("verticalLoop height 67 local delta with C3 seams from compiled track", () => {
-  const r = compileSemanticChain([createElement("verticalLoop", "verticalLoop-000", { height: 67, referenceSpeed: 38, bank: 0 })]);
+  const r = compileSemanticChain([
+    createElement("verticalLoop", "verticalLoop-000", {
+      height: 67,
+      referenceSpeed: 38,
+      bank: 0,
+    }),
+  ]);
   expect(r.feasible).toBe(true);
   const positions = r.track!.positions;
   const distances = r.track!.distances;
@@ -436,11 +691,19 @@ import { test, expect } from "vitest";
 import { compileSemanticChain } from "./solver.js";
 import { createElement } from "./elements.js";
 test("verticalLoop infeasible height variant fails honestly with error diagnostic", () => {
-  const r = compileSemanticChain([createElement("verticalLoop", "verticalLoop-009", { height: 130, referenceSpeed: 5, bank: 0 })]);
+  const r = compileSemanticChain([
+    createElement("verticalLoop", "verticalLoop-009", {
+      height: 130,
+      referenceSpeed: 5,
+      bank: 0,
+    }),
+  ]);
   expect(r.feasible).toBe(false);
   expect(r.solvedSpans.length).toBe(3);
   expect(r.seamDiagnostics.length).toBe(2);
-  const errors = r.diagnostics.filter((d) => d.severity === "error" || d.severity === "fatal");
+  const errors = r.diagnostics.filter(
+    (d) => d.severity === "error" || d.severity === "fatal",
+  );
   expect(errors.length).toBeGreaterThan(0);
   expect(typeof errors[0]!.actual).toBe("number");
   expect(typeof errors[0]!.limit).toBe("number");
@@ -479,12 +742,55 @@ test("verticalLoop infeasible height variant fails honestly with error diagnosti
 // packages/generator/src/recordHybrid.pipeline.test.ts
 import { test, expect } from "vitest";
 import { generateCoaster } from "./pipeline.js";
-import { compileCoasterFile, createDesignIntentV1, deserializeCoasterFileV1, serializeCoasterFileV1 } from "@openvibecoaster/core";
-import { createDefaultSimulatorConfig, operationZonesFromCoasterFile, simulateRide } from "@openvibecoaster/simulator";
-const RECORD_IDS = ["station-000", "launch-001", "transition-002", "airtimeHill-003", "overbankedTurn-004", "overbankedTurn-005", "launch-006", "brake-007", "diveDrop-008", "launch-009", "airtimeHill-010", "topHat-011", "immelmann-012", "verticalLoop-013", "overbankedTurn-014", "zeroGRoll-015", "stall-016", "brake-017", "brake-018", "station-019"];
+import {
+  compileCoasterFile,
+  createDesignIntentV1,
+  deserializeCoasterFileV1,
+  serializeCoasterFileV1,
+} from "@openvibecoaster/core";
+import {
+  createDefaultSimulatorConfig,
+  operationZonesFromCoasterFile,
+  simulateRide,
+} from "@openvibecoaster/simulator";
+const RECORD_IDS = [
+  "station-000",
+  "launch-001",
+  "transition-002",
+  "airtimeHill-003",
+  "overbankedTurn-004",
+  "overbankedTurn-005",
+  "launch-006",
+  "brake-007",
+  "diveDrop-008",
+  "launch-009",
+  "airtimeHill-010",
+  "topHat-011",
+  "immelmann-012",
+  "verticalLoop-013",
+  "overbankedTurn-014",
+  "zeroGRoll-015",
+  "stall-016",
+  "brake-017",
+  "brake-018",
+  "station-019",
+];
 test("insta route has 20 stable ids and length inside 5200-5400", () => {
-  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
-  const g = generateCoaster(intent, { profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"] });
+  const intent = createDesignIntentV1({
+    generatorVersion: "record-g",
+    seed: 42,
+    mode: "insta",
+    family: "steel-sitdown-lsm-v1",
+    elements: [],
+    gates: [],
+    targets: [],
+    constraints: [],
+    pinnedElementIds: [],
+  });
+  const g = generateCoaster(intent, {
+    profileVersion: "record-targets-v1",
+    researchSnapshotIds: ["records-2026-09-01"],
+  });
   expect(g.elements.map((e) => e.id)).toEqual(RECORD_IDS);
   expect(g.elements.length).toBe(20);
   expect(g.track.totalLength).toBeGreaterThanOrEqual(5200);
@@ -493,8 +799,21 @@ test("insta route has 20 stable ids and length inside 5200-5400", () => {
   expect(g.file.researchSnapshotIds).toEqual(["records-2026-09-01"]);
 });
 test("finale and terminal closure: overbank/roll/stall present, zones inside length, terminal brake stops train", () => {
-  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
-  const g = generateCoaster(intent, { profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"] });
+  const intent = createDesignIntentV1({
+    generatorVersion: "record-g",
+    seed: 42,
+    mode: "insta",
+    family: "steel-sitdown-lsm-v1",
+    elements: [],
+    gates: [],
+    targets: [],
+    constraints: [],
+    pinnedElementIds: [],
+  });
+  const g = generateCoaster(intent, {
+    profileVersion: "record-targets-v1",
+    researchSnapshotIds: ["records-2026-09-01"],
+  });
   const kinds = new Map(g.elements.map((e) => [e.id, e.kind]));
   expect(kinds.get("overbankedTurn-014")).toBe("overbankedTurn");
   expect(kinds.get("zeroGRoll-015")).toBe("zeroGRoll");
@@ -507,21 +826,44 @@ test("finale and terminal closure: overbank/roll/stall present, zones inside len
     expect(z.startDistanceM).toBeLessThan(z.endDistanceM);
   }
   const lastZone = zones[zones.length - 1]!;
-  expect(Math.abs(lastZone.endDistanceM - g.track.totalLength)).toBeLessThanOrEqual(1e-6);
+  expect(
+    Math.abs(lastZone.endDistanceM - g.track.totalLength),
+  ).toBeLessThanOrEqual(1e-6);
   const cfg = createDefaultSimulatorConfig();
-  const sim = simulateRide(g.track, { durationSeconds: 180, config: { ...cfg, zones }, initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 0 } });
+  const sim = simulateRide(g.track, {
+    durationSeconds: 180,
+    config: { ...cfg, zones },
+    initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 0 },
+  });
   const lastSpeed = sim.timeline.speedMps[sim.timeline.length - 1]!;
   expect(lastSpeed).toBeLessThanOrEqual(0.2 + 1e-6);
 });
 test("save reload preserves coefficients profile research and checksum", () => {
-  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
-  const g = generateCoaster(intent, { profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"] });
+  const intent = createDesignIntentV1({
+    generatorVersion: "record-g",
+    seed: 42,
+    mode: "insta",
+    family: "steel-sitdown-lsm-v1",
+    elements: [],
+    gates: [],
+    targets: [],
+    constraints: [],
+    pinnedElementIds: [],
+  });
+  const g = generateCoaster(intent, {
+    profileVersion: "record-targets-v1",
+    researchSnapshotIds: ["records-2026-09-01"],
+  });
   const json = serializeCoasterFileV1(g.file);
   const re = deserializeCoasterFileV1(json);
   expect(re.profileVersion).toBe("record-targets-v1");
   expect(re.researchSnapshotIds).toEqual(["records-2026-09-01"]);
-  expect(re.solvedSpans[0]!.positionCoefficients).toEqual(g.file.solvedSpans[0]!.positionCoefficients);
-  expect(re.solvedSpans[0]!.rollCoefficients).toEqual(g.file.solvedSpans[0]!.rollCoefficients);
+  expect(re.solvedSpans[0]!.positionCoefficients).toEqual(
+    g.file.solvedSpans[0]!.positionCoefficients,
+  );
+  expect(re.solvedSpans[0]!.rollCoefficients).toEqual(
+    g.file.solvedSpans[0]!.rollCoefficients,
+  );
   expect(compileCoasterFile(re).track.checksum).toBe(g.track.checksum);
 });
 ```
@@ -532,8 +874,22 @@ import { test, expect } from "vitest";
 import { generateCoaster } from "./pipeline.js";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
 test("same seed twice gives identical checksum and length", () => {
-  const mk = () => createDesignIntentV1({ generatorVersion: "record-g", seed: 7, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
-  const opts = { profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"] } as const;
+  const mk = () =>
+    createDesignIntentV1({
+      generatorVersion: "record-g",
+      seed: 7,
+      mode: "insta",
+      family: "steel-sitdown-lsm-v1",
+      elements: [],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    });
+  const opts = {
+    profileVersion: "record-targets-v1",
+    researchSnapshotIds: ["records-2026-09-01"],
+  } as const;
   const a = generateCoaster(mk(), opts);
   const b = generateCoaster(mk(), opts);
   expect(a.track.checksum).toBe(b.track.checksum);
@@ -550,7 +906,7 @@ test("candidate index advances the record sequence deterministically (insta maxC
 });
 ```
 
-```ts
+````ts
 // packages/generator/src/recordHybrid.physical-length.test.ts
 // Pins ad9d5b3: SerializedSolvedSpanV1.length is integrated arcLength(span.span),
 // never authored parameters.length. No pipeline edit in this task.
@@ -628,7 +984,7 @@ test("cliff-valley extent, summit height, and determinism (pure core)", () => {
   expect(a.heightAt(0, 980)).toBeLessThanOrEqual(226);
   expect(a.heightAt(0, 0)).toBeLessThan(0);
 });
-```
+````
 
 ```ts
 // packages/generator/src/clearance-cliff.test.ts
@@ -640,18 +996,45 @@ import { createDesignIntentV1 } from "@openvibecoaster/core";
 test("cliff-valley extent and certified terrain clearance with work budget sizing", () => {
   const env = createCliffValleyEnvironment();
   expect((env.width - 1) * env.cellSize).toBe(4190);
-  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 11, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
-  const g = generateCoaster(intent, { environment: env, profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"] });
-  const field = computeClearanceField(g.track, { environment: env, maxWork: 1000000 });
-  expect(field.diagnostics.some((d) => d.code === "CLEARANCE_UNCERTIFIED")).toBe(false);
+  const intent = createDesignIntentV1({
+    generatorVersion: "record-g",
+    seed: 11,
+    mode: "insta",
+    family: "steel-sitdown-lsm-v1",
+    elements: [],
+    gates: [],
+    targets: [],
+    constraints: [],
+    pinnedElementIds: [],
+  });
+  const g = generateCoaster(intent, {
+    environment: env,
+    profileVersion: "record-targets-v1",
+    researchSnapshotIds: ["records-2026-09-01"],
+  });
+  const field = computeClearanceField(g.track, {
+    environment: env,
+    maxWork: 1000000,
+  });
+  expect(
+    field.diagnostics.some((d) => d.code === "CLEARANCE_UNCERTIFIED"),
+  ).toBe(false);
   expect(field.work).toBeLessThan(1000000);
   expect(Number.isFinite(field.minClearanceM)).toBe(true);
-  const narrow = computeClearanceField(g.track, { environment: env, maxWork: 1 });
-  expect(narrow.diagnostics.some((d) => d.code === "CLEARANCE_UNCERTIFIED")).toBe(true);
+  const narrow = computeClearanceField(g.track, {
+    environment: env,
+    maxWork: 1,
+  });
+  expect(
+    narrow.diagnostics.some((d) => d.code === "CLEARANCE_UNCERTIFIED"),
+  ).toBe(true);
 });
 test("generator never imports apps/web terrain (package boundary)", async () => {
   const fs = await import("node:fs/promises");
-  const pipelineSrc = await fs.readFile(new URL("./pipeline.ts", import.meta.url), "utf8");
+  const pipelineSrc = await fs.readFile(
+    new URL("./pipeline.ts", import.meta.url),
+    "utf8",
+  );
   expect(pipelineSrc).not.toContain("apps/web");
 });
 ```
@@ -660,13 +1043,34 @@ test("generator never imports apps/web terrain (package boundary)", async () => 
 // packages/generator/src/gates-pins.test.ts
 import { test, expect } from "vitest";
 import { generateCoaster } from "./pipeline.js";
-import { createCliffValleyEnvironment, createDesignIntentV1 } from "@openvibecoaster/core";
+import {
+  createCliffValleyEnvironment,
+  createDesignIntentV1,
+} from "@openvibecoaster/core";
 import { operationZonesFromCoasterFile } from "@openvibecoaster/simulator";
 test("directed footprint infeasible returns relaxationEvidence, feasible honors gates", () => {
   const env = createCliffValleyEnvironment();
-  const tinyFootprint = [[-50, 0, -50], [50, 0, -50], [50, 0, 50], [-50, 0, 50]] as unknown as import("@openvibecoaster/core").Vec3[];
+  const tinyFootprint = [
+    [-50, 0, -50],
+    [50, 0, -50],
+    [50, 0, 50],
+    [-50, 0, 50],
+  ] as unknown as import("@openvibecoaster/core").Vec3[];
   const infeasible = generateCoaster(
-    createDesignIntentV1({ generatorVersion: "record-g", seed: 3, mode: "directed", family: "steel-sitdown-lsm-v1", elements: [], gates: [{ id: "g-0", position: [0, 0, 50] }], targets: [], constraints: [{ id: "c-fp", kind: "required-footprint", value: "tiny", hard: true }], footprint: tinyFootprint, pinnedElementIds: [] }),
+    createDesignIntentV1({
+      generatorVersion: "record-g",
+      seed: 3,
+      mode: "directed",
+      family: "steel-sitdown-lsm-v1",
+      elements: [],
+      gates: [{ id: "g-0", position: [0, 0, 50] }],
+      targets: [],
+      constraints: [
+        { id: "c-fp", kind: "required-footprint", value: "tiny", hard: true },
+      ],
+      footprint: tinyFootprint,
+      pinnedElementIds: [],
+    }),
     { environment: env },
   );
   expect(infeasible.feasible).toBe(false);
@@ -676,8 +1080,22 @@ test("directed footprint infeasible returns relaxationEvidence, feasible honors 
 test("record summit aligns with the ridge seed within one cliff wavelength (no exact-980 authority)", () => {
   const env = createCliffValleyEnvironment();
   const g = generateCoaster(
-    createDesignIntentV1({ generatorVersion: "record-g", seed: 11, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }),
-    { environment: env, profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"] },
+    createDesignIntentV1({
+      generatorVersion: "record-g",
+      seed: 11,
+      mode: "insta",
+      family: "steel-sitdown-lsm-v1",
+      elements: [],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    }),
+    {
+      environment: env,
+      profileVersion: "record-targets-v1",
+      researchSnapshotIds: ["records-2026-09-01"],
+    },
   );
   const zones = operationZonesFromCoasterFile(g.file);
   const summit = zones.find((z) => z.id === "brake-007")!;
@@ -740,41 +1158,103 @@ test("record summit aligns with the ridge seed within one cliff wavelength (no e
 // record-validation.integration.test.ts.
 import { test, expect } from "vitest";
 import { RideTimeline } from "./timeline.js";
-import { validateRecordTargets, localHeightForKind } from "./record-validation.js";
+import {
+  validateRecordTargets,
+  localHeightForKind,
+} from "./record-validation.js";
 import profile from "../../../data/profiles/record-targets-v1.json" with { type: "json" };
 // Duration-boundary placeholder only: synthetic timelines never enter a summit
 // zone, so this location carries no summit claim. Every route-derived test below
 // uses summitHoldWindow(g.file) for both centerS and toleranceM.
 const SYNTH_HOLD_S = 0;
-const synthTimeline = (verticalG: number[], speedMps?: number[]): RideTimeline => {
+const synthTimeline = (
+  verticalG: number[],
+  speedMps?: number[],
+): RideTimeline => {
   const n = verticalG.length;
-  const ones = (v: number): Float64Array => new Float64Array(Array.from({ length: n }, () => v));
-  return new RideTimeline({ sampleRateHz: 120, timeSeconds: ones(0).map((_, i) => i / 120), headDistanceM: ones(10), speedMps: speedMps ? new Float64Array(speedMps) : ones(30), verticalG: new Float64Array(verticalG), lateralG: ones(0), longitudinalG: ones(0), jerkMps3: ones(0), rollRateRadPerSec: ones(0), accumulatedDriveWorkJ: ones(0), kineticEnergyJ: ones(0), potentialEnergyJ: ones(0) });
+  const ones = (v: number): Float64Array =>
+    new Float64Array(Array.from({ length: n }, () => v));
+  return new RideTimeline({
+    sampleRateHz: 120,
+    timeSeconds: ones(0).map((_, i) => i / 120),
+    headDistanceM: ones(10),
+    speedMps: speedMps ? new Float64Array(speedMps) : ones(30),
+    verticalG: new Float64Array(verticalG),
+    lateralG: ones(0),
+    longitudinalG: ones(0),
+    jerkMps3: ones(0),
+    rollRateRadPerSec: ones(0),
+    accumulatedDriveWorkJ: ones(0),
+    kineticEnergyJ: ones(0),
+    potentialEnergyJ: ones(0),
+  });
 };
 test("RECORD_FORCE_NEG: -0.5 fails (never reaches achievement), -1.1 passes, -1.3 fails (breaches floor)", () => {
-  const track = { totalLength: 5300, positions: new Float64Array([0, 230, 0]), distances: new Float64Array([0]) } as never;
+  const track = {
+    totalLength: 5300,
+    positions: new Float64Array([0, 230, 0]),
+    distances: new Float64Array([0]),
+  } as never;
   const file = { intent: { elements: [] }, solvedSpans: [] } as never;
-  const weak = validateRecordTargets(track, synthTimeline([-0.5]), file, profile as never, { holdSeconds: 3, holdLocationS: SYNTH_HOLD_S });
-  expect(weak.some((d) => d.code === "RECORD_FORCE_NEG" && d.actual === -0.5 && d.limit === -1.0)).toBe(true);
-  const good = validateRecordTargets(track, synthTimeline([-1.1]), file, profile as never, { holdSeconds: 3, holdLocationS: SYNTH_HOLD_S });
+  const weak = validateRecordTargets(
+    track,
+    synthTimeline([-0.5]),
+    file,
+    profile as never,
+    { holdSeconds: 3, holdLocationS: SYNTH_HOLD_S },
+  );
+  expect(
+    weak.some(
+      (d) =>
+        d.code === "RECORD_FORCE_NEG" && d.actual === -0.5 && d.limit === -1.0,
+    ),
+  ).toBe(true);
+  const good = validateRecordTargets(
+    track,
+    synthTimeline([-1.1]),
+    file,
+    profile as never,
+    { holdSeconds: 3, holdLocationS: SYNTH_HOLD_S },
+  );
   expect(good.some((d) => d.code === "RECORD_FORCE_NEG")).toBe(false);
-  const breach = validateRecordTargets(track, synthTimeline([-1.3]), file, profile as never, { holdSeconds: 3, holdLocationS: SYNTH_HOLD_S });
+  const breach = validateRecordTargets(
+    track,
+    synthTimeline([-1.3]),
+    file,
+    profile as never,
+    { holdSeconds: 3, holdLocationS: SYNTH_HOLD_S },
+  );
   const neg = breach.filter((d) => d.code === "RECORD_FORCE_NEG");
   expect(neg.length).toBeGreaterThan(0);
   expect(neg[0]!.actual).toBe(-1.3);
   expect(neg[0]!.limit).toBe(-1.2);
-  for (const d of [...weak, ...breach]) if (d.code === "RECORD_FORCE_NEG") {
-    expect(d.severity).toBe("error");
-    expect(d.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
-    expect(typeof d.margin).toBe("number");
-  }
+  for (const d of [...weak, ...breach])
+    if (d.code === "RECORD_FORCE_NEG") {
+      expect(d.severity).toBe("error");
+      expect(d.provenance).toBe("PROJECT_ENGINEERING_LIMIT");
+      expect(typeof d.margin).toBe("number");
+    }
 });
 test("HOLD_DURATION uses timeline dwell proof, not frames: 2.9 s fails, 3.0 s passes", () => {
-  const track = { totalLength: 5300, positions: new Float64Array([0, 230, 0]), distances: new Float64Array([0]) } as never;
+  const track = {
+    totalLength: 5300,
+    positions: new Float64Array([0, 230, 0]),
+    distances: new Float64Array([0]),
+  } as never;
   const file = { intent: { elements: [] }, solvedSpans: [] } as never;
   const tl = synthTimeline(Array.from({ length: 120 }, () => 0));
-  expect(validateRecordTargets(track, tl, file, profile as never, { holdSeconds: 2.9, holdLocationS: SYNTH_HOLD_S }).some((d) => d.code === "HOLD_DURATION")).toBe(true);
-  expect(validateRecordTargets(track, tl, file, profile as never, { holdSeconds: 3, holdLocationS: SYNTH_HOLD_S }).some((d) => d.code === "HOLD_DURATION")).toBe(false);
+  expect(
+    validateRecordTargets(track, tl, file, profile as never, {
+      holdSeconds: 2.9,
+      holdLocationS: SYNTH_HOLD_S,
+    }).some((d) => d.code === "HOLD_DURATION"),
+  ).toBe(true);
+  expect(
+    validateRecordTargets(track, tl, file, profile as never, {
+      holdSeconds: 3,
+      holdLocationS: SYNTH_HOLD_S,
+    }).some((d) => d.code === "HOLD_DURATION"),
+  ).toBe(false);
 });
 ```
 
@@ -785,24 +1265,74 @@ import { compileSemanticChain } from "./solver.js";
 import { generateCoaster } from "./pipeline.js";
 import { createElement } from "./elements.js";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
-import { createDefaultSimulatorConfig, simulateRide } from "@openvibecoaster/simulator";
-import { localHeightForKind, summitHoldWindow, validateRecordTargets } from "@openvibecoaster/simulator";
+import {
+  createDefaultSimulatorConfig,
+  simulateRide,
+} from "@openvibecoaster/simulator";
+import {
+  localHeightForKind,
+  summitHoldWindow,
+  validateRecordTargets,
+} from "@openvibecoaster/simulator";
 import profile from "../../../data/profiles/record-targets-v1.json" with { type: "json" };
-const RECORD_OPTS = { profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"] } as const;
+const RECORD_OPTS = {
+  profileVersion: "record-targets-v1",
+  researchSnapshotIds: ["records-2026-09-01"],
+} as const;
 // Synthetic hold location for intent-cheat tests only (duration proof, no summit
 // claim); every route-derived dwell below uses summitHoldWindow(g.file).
 const CHEAT_HOLD_S = 0;
 test("localHeightForKind measures compiled local delta for 80 m and 91 m topHats (track samples, getter cached once)", () => {
-  const low = compileSemanticChain([createElement("topHat", "topHat-000", { height: 80, width: 60, bank: 0 })]);
+  const low = compileSemanticChain([
+    createElement("topHat", "topHat-000", { height: 80, width: 60, bank: 0 }),
+  ]);
   expect(low.feasible).toBe(true);
-  const lowFile = { intent: { elements: [{ id: "topHat-000", kind: "topHat", type: "topHat", parameters: { height: 80, width: 60, bank: 0 } }] }, solvedSpans: low.solvedSpans.map((s) => ({ id: s.id, kind: "topHat", positionCoefficients: s.positionCoefficients, rollCoefficients: s.rollCoefficients, length: s.length })) } as unknown as import("@openvibecoaster/core").CoasterFileV1;
+  const lowFile = {
+    intent: {
+      elements: [
+        {
+          id: "topHat-000",
+          kind: "topHat",
+          type: "topHat",
+          parameters: { height: 80, width: 60, bank: 0 },
+        },
+      ],
+    },
+    solvedSpans: low.solvedSpans.map((s) => ({
+      id: s.id,
+      kind: "topHat",
+      positionCoefficients: s.positionCoefficients,
+      rollCoefficients: s.rollCoefficients,
+      length: s.length,
+    })),
+  } as unknown as import("@openvibecoaster/core").CoasterFileV1;
   const lowM = localHeightForKind(low.track!, lowFile, "topHat");
   expect(Math.abs(lowM.deltaM - 80)).toBeLessThanOrEqual(1);
   expect(lowM.s).toBeGreaterThanOrEqual(0);
   expect(lowM.s).toBeLessThanOrEqual(low.track!.totalLength);
-  const high = compileSemanticChain([createElement("topHat", "topHat-011", { height: 91, width: 60, bank: 0 })]);
+  const high = compileSemanticChain([
+    createElement("topHat", "topHat-011", { height: 91, width: 60, bank: 0 }),
+  ]);
   expect(high.feasible).toBe(true);
-  const highFile = { intent: { elements: [{ id: "topHat-011", kind: "topHat", type: "topHat", parameters: { height: 91, width: 60, bank: 0 } }] }, solvedSpans: high.solvedSpans.map((s) => ({ id: s.id, kind: "topHat", positionCoefficients: s.positionCoefficients, rollCoefficients: s.rollCoefficients, length: s.length })) } as unknown as import("@openvibecoaster/core").CoasterFileV1;
+  const highFile = {
+    intent: {
+      elements: [
+        {
+          id: "topHat-011",
+          kind: "topHat",
+          type: "topHat",
+          parameters: { height: 91, width: 60, bank: 0 },
+        },
+      ],
+    },
+    solvedSpans: high.solvedSpans.map((s) => ({
+      id: s.id,
+      kind: "topHat",
+      positionCoefficients: s.positionCoefficients,
+      rollCoefficients: s.rollCoefficients,
+      length: s.length,
+    })),
+  } as unknown as import("@openvibecoaster/core").CoasterFileV1;
   const highM = localHeightForKind(high.track!, highFile, "topHat");
   expect(highM.deltaM).toBeGreaterThanOrEqual(90);
   expect(highM.deltaM).toBeLessThanOrEqual(92);
@@ -810,15 +1340,58 @@ test("localHeightForKind measures compiled local delta for 80 m and 91 m topHats
   expect(highM.s).toBeLessThanOrEqual(high.track!.totalLength);
 });
 test("authored-cheat both directions: geometry rules, intent never proves", () => {
-  const built80 = compileSemanticChain([createElement("topHat", "topHat-011", { height: 80, width: 60, bank: 0 })]);
+  const built80 = compileSemanticChain([
+    createElement("topHat", "topHat-011", { height: 80, width: 60, bank: 0 }),
+  ]);
   expect(built80.feasible).toBe(true);
-  const cheatFile = { intent: { elements: [{ id: "topHat-011", kind: "topHat", type: "topHat", parameters: { height: 91, width: 60, bank: 0 } }] }, solvedSpans: built80.solvedSpans.map((s) => ({ id: s.id, kind: "topHat", positionCoefficients: s.positionCoefficients, rollCoefficients: s.rollCoefficients, length: s.length })) } as unknown as import("@openvibecoaster/core").CoasterFileV1;
+  const cheatFile = {
+    intent: {
+      elements: [
+        {
+          id: "topHat-011",
+          kind: "topHat",
+          type: "topHat",
+          parameters: { height: 91, width: 60, bank: 0 },
+        },
+      ],
+    },
+    solvedSpans: built80.solvedSpans.map((s) => ({
+      id: s.id,
+      kind: "topHat",
+      positionCoefficients: s.positionCoefficients,
+      rollCoefficients: s.rollCoefficients,
+      length: s.length,
+    })),
+  } as unknown as import("@openvibecoaster/core").CoasterFileV1;
   const cheatM = localHeightForKind(built80.track!, cheatFile, "topHat");
   expect(Math.abs(cheatM.deltaM - 80)).toBeLessThanOrEqual(1);
-  const g = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }), RECORD_OPTS);
+  const g = generateCoaster(
+    createDesignIntentV1({
+      generatorVersion: "record-g",
+      seed: 42,
+      mode: "insta",
+      family: "steel-sitdown-lsm-v1",
+      elements: [],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    }),
+    RECORD_OPTS,
+  );
   const cfg = createDefaultSimulatorConfig();
-  const sim = simulateRide(g.track, { durationSeconds: 60, config: { ...cfg, zones: [] }, initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 5 } });
-  const diags = validateRecordTargets(built80.track!, sim.timeline, cheatFile, profile, { holdSeconds: 3, holdLocationS: CHEAT_HOLD_S });
+  const sim = simulateRide(g.track, {
+    durationSeconds: 60,
+    config: { ...cfg, zones: [] },
+    initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 5 },
+  });
+  const diags = validateRecordTargets(
+    built80.track!,
+    sim.timeline,
+    cheatFile,
+    profile,
+    { holdSeconds: 3, holdLocationS: CHEAT_HOLD_S },
+  );
   const inversion = diags.filter((d) => d.code === "RECORD_INVERSION");
   expect(inversion.length).toBeGreaterThan(0);
   expect(inversion[0]!.severity).toBe("error");
@@ -828,16 +1401,63 @@ test("authored-cheat both directions: geometry rules, intent never proves", () =
   expect(typeof inversion[0]!.margin).toBe("number");
   expect(inversion[0]!.relatedIds).toContain("topHat-011");
   // Reverse control: geometry 91 m with intent 80 m must still PASS (intent never gates).
-  const built91 = compileSemanticChain([createElement("topHat", "topHat-011", { height: 91, width: 60, bank: 0 })]);
-  const humbleFile = { intent: { elements: [{ id: "topHat-011", kind: "topHat", type: "topHat", parameters: { height: 80, width: 60, bank: 0 } }] }, solvedSpans: built91.solvedSpans.map((s) => ({ id: s.id, kind: "topHat", positionCoefficients: s.positionCoefficients, rollCoefficients: s.rollCoefficients, length: s.length })) } as unknown as import("@openvibecoaster/core").CoasterFileV1;
-  expect(localHeightForKind(built91.track!, humbleFile, "topHat").deltaM).toBeGreaterThanOrEqual(90);
-  expect(validateRecordTargets(built91.track!, sim.timeline, humbleFile, profile, { holdSeconds: 3, holdLocationS: CHEAT_HOLD_S }).filter((d) => d.code === "RECORD_INVERSION").length).toBe(0);
+  const built91 = compileSemanticChain([
+    createElement("topHat", "topHat-011", { height: 91, width: 60, bank: 0 }),
+  ]);
+  const humbleFile = {
+    intent: {
+      elements: [
+        {
+          id: "topHat-011",
+          kind: "topHat",
+          type: "topHat",
+          parameters: { height: 80, width: 60, bank: 0 },
+        },
+      ],
+    },
+    solvedSpans: built91.solvedSpans.map((s) => ({
+      id: s.id,
+      kind: "topHat",
+      positionCoefficients: s.positionCoefficients,
+      rollCoefficients: s.rollCoefficients,
+      length: s.length,
+    })),
+  } as unknown as import("@openvibecoaster/core").CoasterFileV1;
+  expect(
+    localHeightForKind(built91.track!, humbleFile, "topHat").deltaM,
+  ).toBeGreaterThanOrEqual(90);
+  expect(
+    validateRecordTargets(built91.track!, sim.timeline, humbleFile, profile, {
+      holdSeconds: 3,
+      holdLocationS: CHEAT_HOLD_S,
+    }).filter((d) => d.code === "RECORD_INVERSION").length,
+  ).toBe(0);
 });
 test("dive angle boundaries 108.5/110/111.5 enforced from compiled tangent", () => {
-  const g = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }), RECORD_OPTS);
+  const g = generateCoaster(
+    createDesignIntentV1({
+      generatorVersion: "record-g",
+      seed: 42,
+      mode: "insta",
+      family: "steel-sitdown-lsm-v1",
+      elements: [],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    }),
+    RECORD_OPTS,
+  );
   const cfg = createDefaultSimulatorConfig();
-  const sim = simulateRide(g.track, { durationSeconds: 60, config: { ...cfg, zones: [] }, initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 5 } });
-  const diags = validateRecordTargets(g.track, sim.timeline, g.file, profile, { holdSeconds: 3, holdLocationS: summitHoldWindow(g.file).centerS });
+  const sim = simulateRide(g.track, {
+    durationSeconds: 60,
+    config: { ...cfg, zones: [] },
+    initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 5 },
+  });
+  const diags = validateRecordTargets(g.track, sim.timeline, g.file, profile, {
+    holdSeconds: 3,
+    holdLocationS: summitHoldWindow(g.file).centerS,
+  });
   expect(diags.filter((d) => d.code === "RECORD_DIVE_ANGLE").length).toBe(0);
   expect(diags.filter((d) => d.code === "RECORD_DIVE_HEIGHT").length).toBe(0);
 });
@@ -848,18 +1468,45 @@ test("dive angle boundaries 108.5/110/111.5 enforced from compiled tangent", () 
 import { test, expect } from "vitest";
 import { generateCoaster } from "./pipeline.js";
 import { createDesignIntentV1 } from "@openvibecoaster/core";
-import { createDefaultSimulatorConfig, operationZonesFromCoasterFile, simulateRide } from "@openvibecoaster/simulator";
-import { summitHoldWindow, validateRecordTargets } from "@openvibecoaster/simulator";
+import {
+  createDefaultSimulatorConfig,
+  operationZonesFromCoasterFile,
+  simulateRide,
+} from "@openvibecoaster/simulator";
+import {
+  summitHoldWindow,
+  validateRecordTargets,
+} from "@openvibecoaster/simulator";
 import profile from "../../../data/profiles/record-targets-v1.json" with { type: "json" };
 test("launch work and brake margin measured from timeline; zones inside compiled length", () => {
-  const g = generateCoaster(createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] }), { profileVersion: "record-targets-v1", researchSnapshotIds: ["records-2026-09-01"] });
+  const g = generateCoaster(
+    createDesignIntentV1({
+      generatorVersion: "record-g",
+      seed: 42,
+      mode: "insta",
+      family: "steel-sitdown-lsm-v1",
+      elements: [],
+      gates: [],
+      targets: [],
+      constraints: [],
+      pinnedElementIds: [],
+    }),
+    {
+      profileVersion: "record-targets-v1",
+      researchSnapshotIds: ["records-2026-09-01"],
+    },
+  );
   const zones = operationZonesFromCoasterFile(g.file);
   for (const z of zones) {
     expect(z.endDistanceM).toBeLessThanOrEqual(g.track.totalLength);
     expect(z.startDistanceM).toBeLessThan(z.endDistanceM);
   }
   const cfg = createDefaultSimulatorConfig();
-  const sim = simulateRide(g.track, { durationSeconds: 180, config: { ...cfg, zones }, initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 0 } });
+  const sim = simulateRide(g.track, {
+    durationSeconds: 180,
+    config: { ...cfg, zones },
+    initial: { headDistanceM: cfg.train.spacingM * 5, speedMps: 0 },
+  });
   // Timeline-dwell hold proof for the worker path (compact has no frames),
   // using the single zone-derived summitHoldWindow (no 980/60/2 literals):
   const dwell = (() => {
@@ -867,7 +1514,8 @@ test("launch work and brake margin measured from timeline; zones inside compiled
     let best = 0;
     const speed = sim.timeline.speedMps;
     const head = sim.timeline.headDistanceM;
-    const { centerS: summitCenterS, toleranceM: summitToleranceM } = summitHoldWindow(g.file);
+    const { centerS: summitCenterS, toleranceM: summitToleranceM } =
+      summitHoldWindow(g.file);
     for (let i = 0; i < sim.timeline.length; i += 1) {
       const inSummit = Math.abs(head[i]! - summitCenterS) <= summitToleranceM;
       run = speed[i]! <= 0.05 && inSummit ? run + 1 / 120 : 0;
@@ -875,12 +1523,16 @@ test("launch work and brake margin measured from timeline; zones inside compiled
     }
     return best;
   })();
-  const diags = validateRecordTargets(g.track, sim.timeline, g.file, profile, { holdSeconds: dwell, holdLocationS: summitHoldWindow(g.file).centerS });
+  const diags = validateRecordTargets(g.track, sim.timeline, g.file, profile, {
+    holdSeconds: dwell,
+    holdLocationS: summitHoldWindow(g.file).centerS,
+  });
   const energy = diags.filter((d) => d.code === "ENERGY_LSM_REQUIRED_WORK");
   expect(energy.length).toBe(0);
   // Real energy numbers (Task 06 §Energy): drop E = 9000×9.80665×210 ≈ 18.53 MJ;
   // 79.16 m/s KE = ½×9000×79.16² ≈ 28.20 MJ, so LSM must supply ≈9.7 MJ + losses.
-  const driveWork = sim.timeline.accumulatedDriveWorkJ[sim.timeline.length - 1]!;
+  const driveWork =
+    sim.timeline.accumulatedDriveWorkJ[sim.timeline.length - 1]!;
   expect(Number.isFinite(driveWork)).toBe(true);
   expect(driveWork).toBeGreaterThan(9_000_000);
   expect(driveWork).toBeLessThanOrEqual(7.2e6 * 180);
@@ -895,7 +1547,7 @@ test("launch work and brake margin measured from timeline; zones inside compiled
 });
 ```
 
-```ts
+````ts
 // packages/generator/src/hold-rollback.integration.test.ts
 import { test, expect } from "vitest";
 import { generateCoaster } from "./pipeline.js";
@@ -1041,7 +1693,7 @@ test("real handleGenerate success carries recordValidated fields and strict vali
   expect(recordStatusLabel(false)).toBe("record target");
   expect(recordStatusLabel(true)).toBe("validated project record");
 });
-```
+````
 
 ```ts
 // apps/web/src/experienceController.record.test.ts
@@ -1051,10 +1703,24 @@ import { createDesignIntentV1 } from "@openvibecoaster/core";
 import { handleGenerate } from "./engineering/worker.js";
 import { hydrateEngineeringSuccess } from "./engineering/hydrate.js";
 test("controller stays on record target until validated result arrives", () => {
-  const ctrl = createExperienceController({ onGenerate: () => {}, onLocalRegenerate: () => {}, onCompileLoad: () => {} });
+  const ctrl = createExperienceController({
+    onGenerate: () => {},
+    onLocalRegenerate: () => {},
+    onCompileLoad: () => {},
+  });
   expect(ctrl.getState().status).toBe("pending");
   expect(ctrl.getState().epoch).toBe(0);
-  const intent = createDesignIntentV1({ generatorVersion: "record-g", seed: 42, mode: "insta", family: "steel-sitdown-lsm-v1", elements: [], gates: [], targets: [], constraints: [], pinnedElementIds: [] });
+  const intent = createDesignIntentV1({
+    generatorVersion: "record-g",
+    seed: 42,
+    mode: "insta",
+    family: "steel-sitdown-lsm-v1",
+    elements: [],
+    gates: [],
+    targets: [],
+    constraints: [],
+    pinnedElementIds: [],
+  });
   const res = handleGenerate("req-record-2", intent);
   expect(res.type).toBe("success");
   if (res.type !== "success") return;
@@ -1068,8 +1734,12 @@ test("controller stays on record target until validated result arrives", () => {
   // undefined.length throws). Truth relation plus finite hold proof plus no-alias.
   expect(typeof hydrated.recordValidated).toBe("boolean");
   expect(hydrated.recordValidated).toBe(res.recordValidated);
-  expect(hydrated.recordValidated).toBe(hydrated.recordDiagnostics.length === 0);
-  expect(Number.isFinite(hydrated.holdSeconds) && hydrated.holdSeconds >= 0).toBe(true);
+  expect(hydrated.recordValidated).toBe(
+    hydrated.recordDiagnostics.length === 0,
+  );
+  expect(
+    Number.isFinite(hydrated.holdSeconds) && hydrated.holdSeconds >= 0,
+  ).toBe(true);
   expect(Number.isFinite(hydrated.holdLocationS)).toBe(true);
   expect(hydrated.holdSeconds).toBe(res.holdSeconds);
   expect(hydrated.holdLocationS).toBe(res.holdLocationS);
@@ -1080,7 +1750,7 @@ test("controller stays on record target until validated result arrives", () => {
 });
 ```
 
-```ts
+````ts
 // apps/web/src/engineering/record-worker-determinism.test.ts
 import { test, expect } from "vitest";
 import { RideTimeline } from "@openvibecoaster/simulator";
@@ -1245,7 +1915,7 @@ test("trackGeometry module never imports generator", async () => {
   expect(src).not.toContain("@openvibecoaster/generator");
   expect(src).not.toContain("packages/generator");
 });
-```
+````
 
 **RED CI:** `npm run test -- apps/web/src/render/large-scale.test.ts` expect `far` mismatch (default far below 8000) or missing `spine`/`ties` assertion before this task.
 
@@ -1276,34 +1946,69 @@ test("trackGeometry module never imports generator", async () => {
 // tests/e2e/record-hybrid.spec.ts
 import { test, expect } from "@playwright/test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertNoObservability, attachObservability, waitForReady } from "./acceptance-helpers.js";
-const artifactPath = fileURLToPath(new URL("../../apps/web/dist/OpenVibeCoaster.html", import.meta.url));
+import {
+  assertNoObservability,
+  attachObservability,
+  waitForReady,
+} from "./acceptance-helpers.js";
+const artifactPath = fileURLToPath(
+  new URL("../../apps/web/dist/OpenVibeCoaster.html", import.meta.url),
+);
 const artifactFileUrl = pathToFileURL(artifactPath).href;
-test("record target vs validated state, five cameras, five marks, shortfalls cleared", async ({ page }) => {
+test("record target vs validated state, five cameras, five marks, shortfalls cleared", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   const obs = attachObservability(page);
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/");
-  await expect(page.getByTestId("record-target-pill")).toContainText("record target");
+  await expect(page.getByTestId("record-target-pill")).toContainText(
+    "record target",
+  );
   await page.locator("#generate-btn").click();
   await waitForReady(page, 120_000);
-  await expect(page.getByTestId("record-validated-pill")).toContainText("validated project record");
-  expect(await page.locator('#diagnostics-list li[data-severity="error"], #diagnostics-list li[data-severity="fatal"]').count()).toBe(0);
+  await expect(page.getByTestId("record-validated-pill")).toContainText(
+    "validated project record",
+  );
+  expect(
+    await page
+      .locator(
+        '#diagnostics-list li[data-severity="error"], #diagnostics-list li[data-severity="fatal"]',
+      )
+      .count(),
+  ).toBe(0);
   expect(await page.locator("#element-list li").count()).toBe(20);
   for (const cam of ["front", "middle", "rear", "chase", "orbit"] as const) {
     await page.locator(`input[name="camera"][value="${cam}"]`).check();
     await page.waitForTimeout(250);
   }
-  for (const mark of ["ovc:generation-total", "ovc:simulation", "ovc:worker-transfer", "ovc:mesh-create", "ovc:frame"] as const) {
-    expect(await page.evaluate((m) => performance.getEntriesByName(m).length, mark), `mark ${mark} present`).toBeGreaterThan(0);
+  for (const mark of [
+    "ovc:generation-total",
+    "ovc:simulation",
+    "ovc:worker-transfer",
+    "ovc:mesh-create",
+    "ovc:frame",
+  ] as const) {
+    expect(
+      await page.evaluate((m) => performance.getEntriesByName(m).length, mark),
+      `mark ${mark} present`,
+    ).toBeGreaterThan(0);
   }
-  const lengthM = Number.parseFloat((await page.locator('[data-testid="track-length"]').getAttribute("data-length-m")) ?? "NaN");
+  const lengthM = Number.parseFloat(
+    (await page
+      .locator('[data-testid="track-length"]')
+      .getAttribute("data-length-m")) ?? "NaN",
+  );
   expect(lengthM).toBeGreaterThanOrEqual(5200);
   expect(lengthM).toBeLessThanOrEqual(5400);
-  await page.screenshot({ path: "tests/e2e/__screenshots__/record-hybrid-validated.png" });
+  await page.screenshot({
+    path: "tests/e2e/__screenshots__/record-hybrid-validated.png",
+  });
   assertNoObservability(obs, "record validated");
 });
-test("pause scrub speed reset, plot-track sync, colors, seam inspector, audio, keyboard, reduced motion, responsive", async ({ page }) => {
+test("pause scrub speed reset, plot-track sync, colors, seam inspector, audio, keyboard, reduced motion, responsive", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   const obs = attachObservability(page);
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -1315,7 +2020,13 @@ test("pause scrub speed reset, plot-track sync, colors, seam inspector, audio, k
   await page.locator("#pause-btn").click();
   const scrub = page.locator("#scrubber");
   await scrub.fill("50");
-  expect(Number.parseFloat((await page.locator('[data-testid="train-position"]').getAttribute("data-distance-m")) ?? "NaN")).toBeGreaterThan(0);
+  expect(
+    Number.parseFloat(
+      (await page
+        .locator('[data-testid="train-position"]')
+        .getAttribute("data-distance-m")) ?? "NaN",
+    ),
+  ).toBeGreaterThan(0);
   await page.locator("#playback-speed").selectOption("2");
   await expect(page.locator("#playback-speed")).toHaveValue("2");
   await page.locator("#reset-btn").click();
@@ -1338,12 +2049,20 @@ test("pause scrub speed reset, plot-track sync, colors, seam inspector, audio, k
   await page.locator('input[name="camera"][value="orbit"]').check();
   await page.waitForTimeout(250);
   await page.setViewportSize({ width: 390, height: 844 });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.screenshot({ path: "tests/e2e/__screenshots__/record-hybrid-controls.png" });
+  await page.screenshot({
+    path: "tests/e2e/__screenshots__/record-hybrid-controls.png",
+  });
   assertNoObservability(obs, "record controls");
 });
-test("pin-local regeneration, directed, save-reload (two generations: coherent 300 s budget)", async ({ page }) => {
+test("pin-local regeneration, directed, save-reload (two generations: coherent 300 s budget)", async ({
+  page,
+}) => {
   // Two waitForReady(page, 120_000) generations plus interactions cannot fit in
   // 180 s, so this split test carries its own 300 s enclosing budget. The 90 s
   // portable acceptance bound (ENGINEERING_READY_TIMEOUT) is untouched.
@@ -1362,23 +2081,35 @@ test("pin-local regeneration, directed, save-reload (two generations: coherent 3
   const download = await downloadPromise;
   const savePath = await download.path();
   expect(savePath).toBeTruthy();
-  await page.screenshot({ path: "tests/e2e/__screenshots__/record-hybrid-pinsave.png" });
+  await page.screenshot({
+    path: "tests/e2e/__screenshots__/record-hybrid-pinsave.png",
+  });
   assertNoObservability(obs, "record pin and save");
 });
-test("portable file:// artifact reaches Ready with zero errors (Blob worker, no runtime fetch)", async ({ page }) => {
+test("portable file:// artifact reaches Ready with zero errors (Blob worker, no runtime fetch)", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   const obs = attachObservability(page);
   const disallowed: string[] = [];
   page.on("request", (req) => {
     const url = req.url();
-    const allowed = url === artifactFileUrl || url.startsWith("data:") || url.startsWith("blob:");
+    const allowed =
+      url === artifactFileUrl ||
+      url.startsWith("data:") ||
+      url.startsWith("blob:");
     if (!allowed) disallowed.push(url);
   });
   await page.goto(artifactFileUrl, { waitUntil: "domcontentloaded" });
   await page.locator("#generate-btn").click();
   await waitForReady(page, 120_000);
-  await expect(page.getByTestId("record-validated-pill")).toContainText("validated project record");
-  expect(disallowed, `only artifact + data:/blob: allowed (Blob-backed inline worker): ${disallowed.join(", ")}`).toEqual([]);
+  await expect(page.getByTestId("record-validated-pill")).toContainText(
+    "validated project record",
+  );
+  expect(
+    disallowed,
+    `only artifact + data:/blob: allowed (Blob-backed inline worker): ${disallowed.join(", ")}`,
+  ).toEqual([]);
   assertNoObservability(obs, "portable file");
   // Note: `playwright.portable.config.ts` (`test:e2e:portable`) separately runs `offline.spec.ts` (artifact existence
   // + file:// Ready + checksum + no-fetch) on edge/webkit; this chromium file:// test proves the record pills
@@ -1389,14 +2120,20 @@ test.describe("webgl fallback (WebGL-disabled)", () => {
   // `Browser.newContext` takes BrowserContextOptions, never `launchOptions`
   // (F8a); WebGL flags belong in `test.use({ launchOptions })`.
   test.use({ launchOptions: { args: ["--disable-webgl", "--disable-gpu"] } });
-  test("WebGL fallback shows message with retry and no errors", async ({ page }) => {
+  test("WebGL fallback shows message with retry and no errors", async ({
+    page,
+  }) => {
     const errors: string[] = [];
-    page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+    page.on("console", (m) => {
+      if (m.type() === "error") errors.push(m.text());
+    });
     page.on("pageerror", (e) => errors.push(String(e)));
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto("/");
     await expect(page.locator("#webgl-fallback")).toBeVisible();
-    await expect(page.locator("#webgl-fallback h2")).toHaveText("3D view unavailable");
+    await expect(page.locator("#webgl-fallback h2")).toHaveText(
+      "3D view unavailable",
+    );
     await expect(page.locator("#webgl-retry")).toBeEnabled();
     expect(errors).toEqual([]);
   });

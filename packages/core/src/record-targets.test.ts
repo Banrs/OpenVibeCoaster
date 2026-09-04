@@ -1,7 +1,5 @@
 import { expect, test } from "vitest";
-import profile from "../../../data/profiles/record-targets-v1.json" with {
-  type: "json",
-};
+import profile from "../../../data/profiles/record-targets-v1.json" with { type: "json" };
 import { validateRecordTargetsProfile } from "./record-targets.js";
 
 test("accepts the exact project engineering record targets", () => {
@@ -60,7 +58,9 @@ test("rejects non-project provenance and every target range outside its exact wi
   ];
 
   for (const change of invalidRanges)
-    expect(() => validateRecordTargetsProfile({ ...profile, ...change })).toThrow();
+    expect(() =>
+      validateRecordTargetsProfile({ ...profile, ...change }),
+    ).toThrow();
 });
 
 test("rejects exact target values when they are changed", () => {
@@ -88,5 +88,7 @@ test("rejects exact target values when they are changed", () => {
   ];
 
   for (const change of invalidTargets)
-    expect(() => validateRecordTargetsProfile({ ...profile, ...change })).toThrow();
+    expect(() =>
+      validateRecordTargetsProfile({ ...profile, ...change }),
+    ).toThrow();
 });
