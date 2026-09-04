@@ -61,54 +61,54 @@ const semanticIntent = createDesignIntentV1({
   pinnedElementIds: [],
 });
 
-function getZones(): SimulatorConfig["zones"] | undefined {
-  const call = vi.mocked(simulateRide).mock.calls[0];
-  return call?.[1]?.config?.zones;
+function getZones(): NonNullable<SimulatorConfig["zones"]> {
+  const calls = vi.mocked(simulateRide).mock.calls;
+  if (calls.length !== 1) throw new Error("expected one simulateRide call");
+  const call = calls[0];
+  if (call === undefined) throw new Error("expected simulateRide call");
+  const request = call[1];
+  if (request === undefined) throw new Error("expected simulateRide request");
+  const zones = request.config.zones;
+  if (zones === undefined) throw new Error("expected simulateRide zones");
+  return zones;
 }
 
+// Single `#digits` owner contract, matching operationZonesFromCoasterFile.
 function semanticOwnerOf(spanId: string): string {
   const match = spanId.match(/#\d+$/);
   return match ? spanId.slice(0, -match[0].length) : spanId;
 }
 
-function physicalOwnerLayout(file: CoasterFileV1): {
-  boundaries: Set<number>;
-  startByOwner: Map<string, number>;
-  widthByOwner: Map<string, number>;
-  totalLengthM: number;
-} {
+function expectPhysicalOperationZones(
+  file: CoasterFileV1,
+  zones: NonNullable<SimulatorConfig["zones"]>,
+  totalLengthM: number,
+): void {
   let cumulative = 0;
-  const boundaries = new Set<number>([0]);
   const startByOwner = new Map<string, number>();
-  const widthByOwner = new Map<string, number>();
+  const endByOwner = new Map<string, number>();
   for (const span of file.solvedSpans) {
     const start = cumulative;
     const end = start + span.length;
-    boundaries.add(end);
     const owner = semanticOwnerOf(span.id);
     if (!startByOwner.has(owner)) startByOwner.set(owner, start);
-    widthByOwner.set(owner, (widthByOwner.get(owner) ?? 0) + span.length);
+    endByOwner.set(owner, end);
     cumulative = end;
   }
-  return { boundaries, startByOwner, widthByOwner, totalLengthM: cumulative };
-}
-
-function expectPhysicalOperationZoneAuthority(
-  file: CoasterFileV1,
-  zones: NonNullable<SimulatorConfig["zones"]>,
-): void {
-  const { boundaries, startByOwner, widthByOwner, totalLengthM } =
-    physicalOwnerLayout(file);
+  expect(Math.abs(cumulative - totalLengthM)).toBeLessThan(1e-9);
   for (const zone of zones) {
-    expect(boundaries.has(zone.startDistanceM)).toBe(true);
-    expect(boundaries.has(zone.endDistanceM)).toBe(true);
-    expect(zone.startDistanceM).toBe(startByOwner.get(zone.id));
-    expect(zone.endDistanceM).toBe(
-      startByOwner.get(zone.id)! + widthByOwner.get(zone.id)!,
-    );
+    const expectedStart = startByOwner.get(zone.id);
+    const expectedEnd = endByOwner.get(zone.id);
+    expect(expectedStart, `missing physical start for ${zone.id}`).toBeDefined();
+    expect(expectedEnd, `missing physical end for ${zone.id}`).toBeDefined();
+    if (expectedStart === undefined || expectedEnd === undefined) {
+      throw new Error(`missing physical range for ${zone.id}`);
+    }
+    expect(zone.startDistanceM).toBe(expectedStart);
+    expect(zone.endDistanceM).toBe(expectedEnd);
     expect(zone.startDistanceM).toBeGreaterThanOrEqual(0);
-    expect(zone.endDistanceM).toBeLessThanOrEqual(totalLengthM);
     expect(zone.endDistanceM).toBeGreaterThan(zone.startDistanceM);
+    expect(zone.endDistanceM).toBeLessThanOrEqual(totalLengthM);
   }
 }
 
@@ -125,85 +125,28 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
       expect(result.type).toBe("success");
       if (result.type !== "success") throw new Error("expected success");
       expect(vi.mocked(simulateRide).mock.calls).toHaveLength(1);
-      const expected = operationZonesFromCoasterFile(result.file);
       const actual = getZones();
-      expect(actual).toBeDefined();
-      expect(actual!).toEqual(expected);
+      // Worker-wiring assertion only (not independent physical authority).
+      expect(actual).toEqual(operationZonesFromCoasterFile(result.file));
+      expectPhysicalOperationZones(result.file, actual, result.track.totalLength);
 
       // semantic IDs, not heuristic kind-index
-      const ids = actual!.map((z) => z.id);
+      const ids = actual.map((z) => z.id);
       expect(ids).toContain("launch-1");
       expect(ids).toContain("brake-2");
       expect(ids).not.toContain("launch-0");
       expect(ids).not.toContain("brake-0");
 
       // heuristic would invent brake target 5 and leave launch undefined; semantic preserves authored values
-      const launch = actual!.find((z) => z.id === "launch-1")!;
+      const launch = actual.find((z) => z.id === "launch-1");
+      if (launch === undefined) throw new Error("expected launch-1 zone");
       expect(launch.kind).toBe("launch");
       expect(launch.targetSpeedMps).toBe(27);
 
-      const brake = actual!.find((z) => z.id === "brake-2")!;
+      const brake = actual.find((z) => z.id === "brake-2");
+      if (brake === undefined) throw new Error("expected brake-2 zone");
       expect(brake.targetSpeedMps).toBe(7.5);
       expect(brake.targetSpeedMps).not.toBe(5);
-
-      // authored intent lengths as separate evidence, not physical boundaries
-      for (const id of ["station-0", "launch-1", "brake-2", "station-3"]) {
-        const element = result.file.intent.elements.find((e) => e.id === id);
-        expect(element?.parameters?.length).toBe(100);
-      }
-
-      // physical authority: solved-span cumulative sums, owner widths, end within track
-      expectPhysicalOperationZoneAuthority(result.file, actual!);
-
-      // semantic owners resolve to physical sums without authored constants
-      const layout = physicalOwnerLayout(result.file);
-      const station0 = actual!.find((z) => z.id === "station-0")!;
-      expect(station0.startDistanceM).toBe(
-        layout.startByOwner.get("station-0"),
-      );
-      expect(station0.endDistanceM).toBe(
-        layout.startByOwner.get("station-0")! +
-          layout.widthByOwner.get("station-0")!,
-      );
-      expect(station0.targetSpeedMps).toBeUndefined();
-
-      const launchZone = actual!.find((z) => z.id === "launch-1")!;
-      expect(launchZone.startDistanceM).toBe(
-        layout.startByOwner.get("launch-1"),
-      );
-      expect(launchZone.endDistanceM).toBe(
-        layout.startByOwner.get("launch-1")! +
-          layout.widthByOwner.get("launch-1")!,
-      );
-
-      const brakeZone = actual!.find((z) => z.id === "brake-2")!;
-      expect(brakeZone.startDistanceM).toBe(
-        layout.startByOwner.get("brake-2"),
-      );
-      expect(brakeZone.endDistanceM).toBe(
-        layout.startByOwner.get("brake-2")! +
-          layout.widthByOwner.get("brake-2")!,
-      );
-
-      const station3 = actual!.find((z) => z.id === "station-3")!;
-      expect(station3.startDistanceM).toBe(
-        layout.startByOwner.get("station-3"),
-      );
-      expect(station3.endDistanceM).toBe(
-        layout.startByOwner.get("station-3")! +
-          layout.widthByOwner.get("station-3")!,
-      );
-      expect(station3.targetSpeedMps).toBeUndefined();
-      expect(station3.endDistanceM).toBeLessThanOrEqual(
-        layout.totalLengthM,
-      );
-
-      // exact span lengths proven by equality to helper which uses cumulative solvedSpans lengths
-      for (const z of expected) {
-        const found = actual!.find((a) => a.id === z.id)!;
-        expect(found.startDistanceM).toBe(z.startDistanceM);
-        expect(found.endDistanceM).toBe(z.endDistanceM);
-      }
     },
   );
 
@@ -217,11 +160,12 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
       expect(result.type).toBe("success");
       if (result.type !== "success") throw new Error("expected success");
       expect(vi.mocked(simulateRide).mock.calls).toHaveLength(1);
-      const expected = operationZonesFromCoasterFile(gen.file);
       const actual = getZones();
-      expect(actual).toEqual(expected);
-      expectPhysicalOperationZoneAuthority(gen.file, actual!);
-      const brake = actual!.find((z) => z.id === "brake-2")!;
+      // Worker-wiring assertion only (not independent physical authority).
+      expect(actual).toEqual(operationZonesFromCoasterFile(gen.file));
+      expectPhysicalOperationZones(gen.file, actual, result.track.totalLength);
+      const brake = actual.find((z) => z.id === "brake-2");
+      if (brake === undefined) throw new Error("expected brake-2 zone");
       expect(brake.targetSpeedMps).toBe(7.5);
       expect(brake.kind).toBe("brake");
     },
@@ -240,13 +184,15 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
           `regenerate failed: ${JSON.stringify(result.diagnostics)}`,
         );
       expect(vi.mocked(simulateRide).mock.calls).toHaveLength(1);
-      const expected = operationZonesFromCoasterFile(result.file);
       const actual = getZones();
-      expect(actual).toEqual(expected);
-      expectPhysicalOperationZoneAuthority(result.file, actual!);
-      const launch = actual!.find((z) => z.id === "launch-1")!;
+      // Worker-wiring assertion only (not independent physical authority).
+      expect(actual).toEqual(operationZonesFromCoasterFile(result.file));
+      expectPhysicalOperationZones(result.file, actual, result.track.totalLength);
+      const launch = actual.find((z) => z.id === "launch-1");
+      if (launch === undefined) throw new Error("expected launch-1 zone");
       expect(launch.targetSpeedMps).toBe(27);
-      const brake = actual!.find((z) => z.id === "brake-2")!;
+      const brake = actual.find((z) => z.id === "brake-2");
+      if (brake === undefined) throw new Error("expected brake-2 zone");
       expect(brake.targetSpeedMps).toBe(7.5);
     },
   );
