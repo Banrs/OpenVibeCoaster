@@ -40,9 +40,7 @@ jobs:
       - name: Lint
         run: npm run lint
       - name: Format check
-        run: |
-          npx prettier --write packages/simulator/src/record-validation.ts packages/simulator/src/record-validation.unit.test.ts
-          git diff --exit-code
+        run: npm run format:check
       - name: Task 08 focused tests
         run: npx vitest run packages/simulator/src/record-validation.unit.test.ts
 

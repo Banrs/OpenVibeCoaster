@@ -9,10 +9,7 @@ import { operationZonesFromCoasterFile } from "./operation-zones.js";
 import type { RideTimeline } from "./timeline.js";
 
 export type RecordElementKind =
-  | "topHat"
-  | "immelmann"
-  | "verticalLoop"
-  | "diveDrop";
+  "topHat" | "immelmann" | "verticalLoop" | "diveDrop";
 
 export interface LocalHeightMeasurement {
   readonly deltaM: number;
@@ -84,8 +81,7 @@ export function summitHoldWindow(
   if (!zone) throw new RangeError("Missing brake-007 summit hold zone");
   return {
     centerS: (zone.startDistanceM + zone.endDistanceM) / 2,
-    toleranceM:
-      (zone.endDistanceM - zone.startDistanceM) / 2 + trainFootprintM,
+    toleranceM: (zone.endDistanceM - zone.startDistanceM) / 2 + trainFootprintM,
   };
 }
 
@@ -107,7 +103,10 @@ function extremum(values: Float64Array, mode: "min" | "max"): number {
   if (values.length === 0) return 0;
   let result = values[0]!;
   for (let index = 1; index < values.length; index += 1)
-    result = mode === "min" ? Math.min(result, values[index]!) : Math.max(result, values[index]!);
+    result =
+      mode === "min"
+        ? Math.min(result, values[index]!)
+        : Math.max(result, values[index]!);
   return result;
 }
 
@@ -163,7 +162,9 @@ function upperDiagnostic(
 function measuredDiveAngle(
   track: CompiledTrackData,
   file: CoasterFileV1,
-): { angleDeg: number; s: number; position: Vec3; relatedIds: string[] } | undefined {
+):
+  | { angleDeg: number; s: number; position: Vec3; relatedIds: string[] }
+  | undefined {
   const boundaries = track.elementBoundaries;
   const parameters = track.parameters;
   const tangents = track.tangents;
@@ -202,10 +203,7 @@ function measuredDiveAngle(
   };
 }
 
-function measureHold(
-  timeline: RideTimeline,
-  file: CoasterFileV1,
-): HoldProof {
+function measureHold(timeline: RideTimeline, file: CoasterFileV1): HoldProof {
   const { centerS, toleranceM } = summitHoldWindow(file);
   const speeds = timeline.speedMps;
   const distances = timeline.headDistanceM;
@@ -244,27 +242,95 @@ export function validateRecordTargets(
     if (diagnostic) diagnostics.push(diagnostic);
   };
 
-  add(rangeDiagnostic("RECORD_LENGTH", track.totalLength, profile.totalLengthM, 0, positionAt(track, 0), allIds));
-  add(rangeDiagnostic("RECORD_HEIGHT", maximumHeight, profile.maxHeightM, globalS, globalPosition, allIds));
-  add(rangeDiagnostic("RECORD_SPEED", extremum(timeline.speedMps, "max"), [profile.maxSpeedKmh[0] / 3.6, profile.maxSpeedKmh[1] / 3.6], 0, positionAt(track, 0), allIds));
+  add(
+    rangeDiagnostic(
+      "RECORD_LENGTH",
+      track.totalLength,
+      profile.totalLengthM,
+      0,
+      positionAt(track, 0),
+      allIds,
+    ),
+  );
+  add(
+    rangeDiagnostic(
+      "RECORD_HEIGHT",
+      maximumHeight,
+      profile.maxHeightM,
+      globalS,
+      globalPosition,
+      allIds,
+    ),
+  );
+  add(
+    rangeDiagnostic(
+      "RECORD_SPEED",
+      extremum(timeline.speedMps, "max"),
+      [profile.maxSpeedKmh[0] / 3.6, profile.maxSpeedKmh[1] / 3.6],
+      0,
+      positionAt(track, 0),
+      allIds,
+    ),
+  );
 
-  const heightTargets: readonly [RecordElementKind, string, readonly [number, number]][] = [
+  const heightTargets: readonly [
+    RecordElementKind,
+    string,
+    readonly [number, number],
+  ][] = [
     ["topHat", "RECORD_INVERSION", profile.invertedTopHatM],
     ["immelmann", "RECORD_IMMELMANN", profile.immelmannM],
     ["verticalLoop", "RECORD_LOOP", profile.verticalLoopM],
-    ["diveDrop", "RECORD_DIVE_HEIGHT", [profile.diveDrop.heightM - profile.diveDrop.toleranceM, profile.diveDrop.heightM + profile.diveDrop.toleranceM]],
+    [
+      "diveDrop",
+      "RECORD_DIVE_HEIGHT",
+      [
+        profile.diveDrop.heightM - profile.diveDrop.toleranceM,
+        profile.diveDrop.heightM + profile.diveDrop.toleranceM,
+      ],
+    ],
   ];
   for (const [kind, code, range] of heightTargets) {
     const measurement = localHeightForKind(track, file, kind);
     if (measurement.relatedIds.length === 0) continue;
-    add(rangeDiagnostic(code, measurement.deltaM, range, measurement.s, positionAt(track, 0), measurement.relatedIds));
+    add(
+      rangeDiagnostic(
+        code,
+        measurement.deltaM,
+        range,
+        measurement.s,
+        positionAt(track, 0),
+        measurement.relatedIds,
+      ),
+    );
   }
 
   const dive = measuredDiveAngle(track, file);
   if (dive)
-    add(rangeDiagnostic("RECORD_DIVE_ANGLE", dive.angleDeg, [profile.diveDrop.angleDeg - profile.diveDrop.toleranceDeg, profile.diveDrop.angleDeg + profile.diveDrop.toleranceDeg], dive.s, dive.position, dive.relatedIds));
+    add(
+      rangeDiagnostic(
+        "RECORD_DIVE_ANGLE",
+        dive.angleDeg,
+        [
+          profile.diveDrop.angleDeg - profile.diveDrop.toleranceDeg,
+          profile.diveDrop.angleDeg + profile.diveDrop.toleranceDeg,
+        ],
+        dive.s,
+        dive.position,
+        dive.relatedIds,
+      ),
+    );
 
-  add(rangeDiagnostic("RECORD_FORCE_PEAK_POS", extremum(timeline.verticalG, "max"), profile.force.verticalPeakG, 0, positionAt(track, 0), allIds));
+  add(
+    rangeDiagnostic(
+      "RECORD_FORCE_PEAK_POS",
+      extremum(timeline.verticalG, "max"),
+      profile.force.verticalPeakG,
+      0,
+      positionAt(track, 0),
+      allIds,
+    ),
+  );
   const minimumVerticalG = extremum(timeline.verticalG, "min");
   if (minimumVerticalG > -1) {
     diagnostics.push({
@@ -291,10 +357,38 @@ export function validateRecordTargets(
       relatedIds: allIds,
     });
   }
-  add(upperDiagnostic("RECORD_FORCE_LAT", maximumMagnitude(timeline.lateralG), profile.force.lateralMaxG, allIds));
-  add(upperDiagnostic("RECORD_FORCE_LONG", maximumMagnitude(timeline.longitudinalG), profile.force.longitudinalMaxG, allIds));
-  add(upperDiagnostic("RECORD_JERK", maximumMagnitude(timeline.jerkMps3), profile.force.jerkMps3, allIds));
-  add(upperDiagnostic("RECORD_ROLL", maximumMagnitude(timeline.rollRateRadPerSec), profile.force.rollRateRadPerSec, allIds));
+  add(
+    upperDiagnostic(
+      "RECORD_FORCE_LAT",
+      maximumMagnitude(timeline.lateralG),
+      profile.force.lateralMaxG,
+      allIds,
+    ),
+  );
+  add(
+    upperDiagnostic(
+      "RECORD_FORCE_LONG",
+      maximumMagnitude(timeline.longitudinalG),
+      profile.force.longitudinalMaxG,
+      allIds,
+    ),
+  );
+  add(
+    upperDiagnostic(
+      "RECORD_JERK",
+      maximumMagnitude(timeline.jerkMps3),
+      profile.force.jerkMps3,
+      allIds,
+    ),
+  );
+  add(
+    upperDiagnostic(
+      "RECORD_ROLL",
+      maximumMagnitude(timeline.rollRateRadPerSec),
+      profile.force.rollRateRadPerSec,
+      allIds,
+    ),
+  );
 
   const hold = holdProof ?? measureHold(timeline, file);
   if (hold.holdSeconds < profile.holdSeconds)
@@ -311,11 +405,20 @@ export function validateRecordTargets(
     });
 
   const launchActivity = timeline.launchActivity;
-  const launchSamples = Array.from(launchActivity).filter((value) => value > 0).length;
+  const launchSamples = Array.from(launchActivity).filter(
+    (value) => value > 0,
+  ).length;
   const availableDriveWork = (launchSamples / timeline.sampleRateHz) * 7.2e6;
   const driveWork = timeline.accumulatedDriveWorkJ[timeline.length - 1] ?? 0;
   if (launchSamples > 0)
-    add(upperDiagnostic("ENERGY_LSM_REQUIRED_WORK", driveWork, availableDriveWork, allIds));
+    add(
+      upperDiagnostic(
+        "ENERGY_LSM_REQUIRED_WORK",
+        driveWork,
+        availableDriveWork,
+        allIds,
+      ),
+    );
 
   const terminalSpeed = Math.abs(timeline.speedMps[timeline.length - 1] ?? 0);
   add(upperDiagnostic("BRAKE_MARGIN", terminalSpeed, 0.2, ["brake-018"]));

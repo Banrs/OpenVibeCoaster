@@ -5,9 +5,7 @@ import {
   type CompiledTrackData,
   type RecordTargetProfile,
 } from "@openvibecoaster/core";
-import profile from "../../../data/profiles/record-targets-v1.json" with {
-  type: "json",
-};
+import profile from "../../../data/profiles/record-targets-v1.json" with { type: "json" };
 import { RideTimeline } from "./timeline.js";
 import {
   summitHoldWindow,
@@ -91,9 +89,7 @@ test("hold validation consumes numeric timeline-dwell proof", () => {
   expect(resultFor(2.9).some(({ code }) => code === "HOLD_DURATION")).toBe(
     true,
   );
-  expect(resultFor(3).some(({ code }) => code === "HOLD_DURATION")).toBe(
-    false,
-  );
+  expect(resultFor(3).some(({ code }) => code === "HOLD_DURATION")).toBe(false);
 });
 
 test("summit hold authority derives its center from brake-007", () => {
