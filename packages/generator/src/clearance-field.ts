@@ -105,19 +105,12 @@ function effectiveCapFor(
   displayCap: number,
   hard: number,
   thresholds: readonly number[],
-  softThresholds: readonly number[] = [],
 ): number {
   let cap = Math.max(finite(displayCap, "displayCap"), 0.5, hard);
   for (const t of thresholds) {
     finite(t, "threshold");
     if (t < 0 || !Number.isFinite(t))
       throw new RangeError("explicit threshold must be non-negative finite");
-    cap = Math.max(cap, t);
-  }
-  for (const t of softThresholds) {
-    finite(t, "softThreshold");
-    if (t < 0 || !Number.isFinite(t))
-      throw new RangeError("soft threshold must be non-negative finite");
     cap = Math.max(cap, t);
   }
   return cap;
@@ -358,12 +351,7 @@ export function computeClearanceField(
     finite(t, "softThreshold");
     if (t < 0) throw new RangeError("soft threshold must be non-negative");
   }
-  const effectiveCap = effectiveCapFor(
-    displayCap,
-    hard,
-    thresholds,
-    softThresholds,
-  );
+  const effectiveCap = effectiveCapFor(displayCap, hard, thresholds);
   const maxWork = options.maxWork ?? 1_000_000;
   if (!Number.isSafeInteger(maxWork) || maxWork < 1)
     throw new RangeError("maxWork must be positive safe integer");
@@ -464,12 +452,12 @@ export function computeClearanceField(
       if (bMin[0]! > bMax[0]! || bMin[1]! > bMax[1]! || bMin[2]! > bMax[2]!) {
         throw new RangeError("bounds min greater than max");
       }
-      envMaxY = bMax[1]!;
+      envMaxY = nextUp(bMax[1]!);
       let minSweptY = Infinity;
       for (let i = 0; i < count - 1; i++) {
         minSweptY = Math.min(minSweptY, sweptAabbs[i]!.min[1]!);
       }
-      const proven = nextDown(minSweptY - nextUp(bMax[1]!));
+      const proven = nextDown(minSweptY - envMaxY);
       if (proven >= effectiveCap) terrainBroadPhaseProven = true;
     } catch {
       terrainBroadPhaseProven = false;
@@ -520,7 +508,7 @@ export function computeClearanceField(
       const fallbackS = snapshot.distances[segIdx]!;
       if (envMaxY !== undefined) {
         const sweptMinY = sweptAabbs[segIdx]!.min[1]!;
-        if (nextDown(sweptMinY - nextUp(envMaxY)) >= effectiveCap) {
+        if (nextDown(sweptMinY - envMaxY) >= effectiveCap) {
           perSegmentLower[segIdx] = effectiveCap;
           perSegmentUpper[segIdx] = effectiveCap;
           perSegmentWitnessS[segIdx] = fallbackS;
