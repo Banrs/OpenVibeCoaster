@@ -169,6 +169,19 @@ describe("full-ride simulation", () => {
       expect(timeline.length).toBeGreaterThan(0);
       const head = timeline.headDistanceM;
       const lastHead = head[head.length - 1]!;
+      let maxHeadIndex = 0;
+      for (let index = 1; index < head.length; index += 1) {
+        if (head[index]! > head[maxHeadIndex]!) maxHeadIndex = index;
+      }
+      const maxHead = head[maxHeadIndex]!;
+      let maxHeadSample = 0;
+      while (
+        maxHeadSample + 1 < hydrated.track.distances.length &&
+        hydrated.track.distances[maxHeadSample + 1]! <= maxHead
+      ) {
+        maxHeadSample += 1;
+      }
+      const maxSpanIndex = hydrated.track.elementIndices[maxHeadSample]!;
       console.error(
         "FLAGSHIP_TERMINAL_STATE",
         JSON.stringify({
@@ -177,6 +190,13 @@ describe("full-ride simulation", () => {
           lastSpeed: timeline.speedMps[timeline.speedMps.length - 1],
           duration: timeline.timeSeconds[timeline.timeSeconds.length - 1],
           finalStartSample: hydrated.track.elementBoundaries.at(-2),
+          maxHead,
+          maxHeadTime: timeline.timeSeconds[maxHeadIndex],
+          speedAtMaxHead: timeline.speedMps[maxHeadIndex],
+          maxHeadSample,
+          maxSpanIndex,
+          maxSpanId: result.file.solvedSpans[maxSpanIndex]?.id,
+          maxZoneMask: hydrated.track.zoneMask[maxHeadSample],
         }),
       );
       expect(lastHead).toBeGreaterThan(hydrated.track.totalLength * 0.85);
