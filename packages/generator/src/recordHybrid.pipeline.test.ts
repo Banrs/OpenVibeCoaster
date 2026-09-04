@@ -79,6 +79,13 @@ describe("record-hybrid default pipeline", () => {
           finale: generated.elements.find(
             (element) => element.id === "overbankedTurn-014",
           )?.parameters,
+          finaleSpans: generated.file.solvedSpans
+            .filter((span) => span.id.startsWith("overbankedTurn-014"))
+            .map((span) => ({
+              id: span.id,
+              length: span.length,
+              kind: span.kind,
+            })),
           diagnostics: generated.diagnostics,
         }),
       ).toBe(true);
