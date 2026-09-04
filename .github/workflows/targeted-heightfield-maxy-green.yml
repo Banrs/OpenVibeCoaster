@@ -1,0 +1,29 @@
+name: Targeted heightfield maximum-y GREEN
+
+on:
+  push:
+    branches:
+      - codex/heightfield-certified-maxy-green-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify maximum-y capability and fail-closed controls
+        run: >-
+          npm run test --
+          packages/core/src/environment-certified-bounds.test.ts
+          packages/generator/src/clearance-field.heightfield-fastproof.test.ts
+          packages/generator/src/clearance-field.fastproof.test.ts
+          packages/generator/src/clearance-field.test.ts
+          -t "certified|penetration has real witness|arbitrary environment"
+      - name: Typecheck engineering packages
+        run: npm run typecheck -w @openvibecoaster/core && npm run typecheck -w @openvibecoaster/generator
