@@ -97,7 +97,7 @@ describe("clearance field – terrain hard-only certification", () => {
       environment: env,
       hardClearanceM: 0.5,
       displayCapM: 10,
-      explicitThresholds: [8],
+      explicitThresholds: [9],
       maxWork,
       segmentIds: ["seg-0"],
     });
@@ -106,8 +106,8 @@ describe("clearance field – terrain hard-only certification", () => {
     expect(seg.work).toBeLessThanOrEqual(512);
     expect(seg.work % 2).toBe(1);
     expect(field.work).toBeLessThan(maxWork);
-    expect(seg.lowerM).toBeLessThan(8);
-    expect(seg.upperM).toBeGreaterThanOrEqual(8);
+    expect(seg.lowerM).toBeLessThan(9);
+    expect(seg.upperM).toBeGreaterThanOrEqual(9);
     expect(seg.lowerM).toBeLessThan(seg.upperM);
     expect(seg.certified).toBe(false);
     expect(
@@ -116,15 +116,15 @@ describe("clearance field – terrain hard-only certification", () => {
       ),
     ).toBe(true);
     const diags = projectClearanceDiagnostics(field, [
-      { id: "hard-8", hard: true, threshold: 8 },
+      { id: "hard-9", hard: true, threshold: 9 },
     ]);
-    const err = diags.find((d) => d.relatedIds?.includes("hard-8") ?? false);
+    const err = diags.find((d) => d.relatedIds?.includes("hard-9") ?? false);
     expect(err).toBeDefined();
     expect(err!.code).toBe("CLEARANCE_UNCERTIFIED");
     expect(err!.severity).toBe("fatal");
     expect((err as { actual?: unknown }).actual).toBeUndefined();
     expect((err as { margin?: unknown }).margin).toBeUndefined();
-    expect(field.globalLowerM).toBeLessThan(8);
-    expect(field.globalUpperM).toBeGreaterThanOrEqual(8);
+    expect(field.globalLowerM).toBeLessThan(9);
+    expect(field.globalUpperM).toBeGreaterThanOrEqual(9);
   });
 });
