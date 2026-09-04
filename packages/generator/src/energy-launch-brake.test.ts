@@ -133,6 +133,7 @@ test(
           value: samples[index],
           time: simulation.timeline.timeSeconds[timelineIndex],
           s: head[timelineIndex],
+          speed: speed[timelineIndex],
           owner: ownerAt(head[timelineIndex]),
         };
       }),

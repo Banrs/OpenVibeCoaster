@@ -707,6 +707,20 @@ const diveDropSpans = (
   );
   const recoveryDerivativeScale = parameters.exitRadius * recoveryAngle;
   const dropExitDerivative = vec3Scale(dropDirection, recoveryDerivativeScale);
+  const recoveryStartNormal = vec3Normalize(
+    vec3Add(
+      vec3Scale(basis.tangent, Math.sin(recoveryAngle)),
+      vec3Scale(basis.normal, Math.cos(recoveryAngle)),
+    ),
+  );
+  const recoveryStartSecond = vec3Scale(
+    recoveryStartNormal,
+    parameters.exitRadius * recoveryAngle ** 2,
+  );
+  const recoveryStartThird = vec3Scale(
+    dropDirection,
+    -parameters.exitRadius * recoveryAngle ** 3,
+  );
   const levelDerivative = vec3Scale(basis.tangent, recoveryDerivativeScale);
   const canonicalPosition = (
     span: SeventhOrderHermiteSpan<Vec3>,
@@ -733,16 +747,16 @@ const diveDropSpans = (
         d30: zero,
         p1: bottom,
         d11: dropExitDerivative,
-        d21: zero,
-        d31: zero,
+        d21: recoveryStartSecond,
+        d31: recoveryStartThird,
       }),
     ),
     canonicalPosition(
       new SeventhOrderHermiteSpan({
         p0: bottom,
         d10: dropExitDerivative,
-        d20: zero,
-        d30: zero,
+        d20: recoveryStartSecond,
+        d30: recoveryStartThird,
         p1: recoveryEnd,
         d11: levelDerivative,
         d21: zero,
@@ -829,7 +843,7 @@ const immelmannSpans = (
       vec3Scale(basis.binormal, -Math.sin(headingRad)),
     ),
   );
-  const exitScale = parameters.height * 3;
+  const exitScale = parameters.height * 2;
   const secondEnd = vec3Add(
     apex,
     vec3Add(

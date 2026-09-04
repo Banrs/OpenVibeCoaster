@@ -184,13 +184,13 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("transition", "transition-002", {
-      length: 420 + variation,
+      length: 320 + variation,
       rise: 60,
       pitch: 0.1,
       bank: 0,
     }),
   );
-  appendForceHill("airtimeHill-003", 300 + variation, 0.9, 44);
+  appendForceHill("airtimeHill-003", 245 + variation, 0.9, 44);
   append(
     createElement("overbankedTurn", "overbankedTurn-004", {
       radius: 120 + variation,
@@ -231,7 +231,7 @@ export const recordHybridDefaultElements = (
   append(
     createElement("launch", "launch-009", {
       length: 380,
-      targetSpeed: 70,
+      targetSpeed: 55,
     }),
     80,
   );
@@ -245,7 +245,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("immelmann", "immelmann-012", {
-      height: 81.9,
+      height: 81.4,
       exitHeadingDeg: 90,
       bank: 0,
     }),
@@ -308,7 +308,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("brake", "brake-018", {
-      length: 420,
+      length: 320,
       targetSpeed: 0,
       bank: 0,
     }),
