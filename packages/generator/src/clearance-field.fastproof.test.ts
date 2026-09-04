@@ -179,12 +179,18 @@ describe("clearance field per-interval fast proof", () => {
       expect(firstCalls).toBe(0);
       expect(secondCalls).toBe(0);
       expect(first.globalLowerM).toBeGreaterThanOrEqual(0.5);
+      expect(first.globalLowerM).toBeLessThan(10);
       expect(Number.isFinite(first.globalLowerM)).toBe(true);
       expect(Number.isFinite(first.globalUpperM)).toBe(true);
+      expect(first.globalLowerM).toBeLessThanOrEqual(first.globalUpperM);
       expect(
         first.segments.every(
           (segment) =>
-            Number.isFinite(segment.lowerM) && Number.isFinite(segment.upperM),
+            Number.isFinite(segment.lowerM) &&
+            Number.isFinite(segment.upperM) &&
+            segment.lowerM <= segment.upperM &&
+            segment.source !== "cap" &&
+            segment.certified === false,
         ),
       ).toBe(true);
       expect(
