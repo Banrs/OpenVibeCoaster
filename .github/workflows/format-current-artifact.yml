@@ -1,0 +1,42 @@
+name: Current format artifact
+
+on:
+  push:
+    branches:
+      - codex/format-current-ci
+
+permissions:
+  contents: read
+
+jobs:
+  prettier-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Format only CI-reported files with pinned Prettier
+        run: >-
+          npx prettier --write
+          apps/web/src/engineering/worker.operation-zones.test.ts
+          docs/superpowers/plans/2026-09-01-record-hybrid-flagship.md
+          docs/superpowers/specs/2026-09-01-record-hybrid-flagship-design.md
+          packages/core/src/record-snapshot.test.ts
+          packages/core/src/record-targets.test.ts
+          packages/core/src/record-targets.ts
+          packages/generator/src/clearance-field.fastproof.test.ts
+          packages/generator/src/coaster-file-record-kinds.test.ts
+          packages/generator/src/elements-record.test.ts
+      - name: Create product-only patch
+        run: |
+          git diff --binary -- . ':(exclude).github/workflows/format-current-artifact.yml' > prettier.patch
+          test -s prettier.patch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prettier-patch-${{ github.sha }}
+          path: prettier.patch
+          if-no-files-found: error
