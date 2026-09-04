@@ -242,20 +242,20 @@ export const recordHybridDefaultElements = (
   append(
     createElement("topHat", "topHat-011", {
       height: 88.5,
-      width: 300,
+      width: 440,
       bank: 0,
     }),
   );
   append(
     createElement("immelmann", "immelmann-012", {
-      height: 81.4,
+      height: 80,
       exitHeadingDeg: 180,
       bank: 0,
     }),
   );
   append(
     createElement("verticalLoop", "verticalLoop-013", {
-      height: 67,
+      height: 65.5,
       referenceSpeed: 38,
       bank: Math.PI,
     }),
@@ -290,7 +290,7 @@ export const recordHybridDefaultElements = (
   );
   append(
     createElement("zeroGRoll", "zeroGRoll-015", {
-      length: 400,
+      length: 280,
       roll: Math.PI * 2,
     }),
   );

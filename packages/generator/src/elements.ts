@@ -125,7 +125,7 @@ const validateParameters = <K extends ElementKind>(
       const p = parameters as ElementParameterMap["topHat"];
       if (!Number.isFinite(p.height) || p.height < 80 || p.height > 92)
         throw new RangeError("height must be between 80 and 92 m");
-      range("width", p.width, 10, 300);
+      range("width", p.width, 10, 500);
       angle("bank", p.bank, -Math.PI, Math.PI);
       break;
     }
@@ -509,6 +509,8 @@ const topHatSpans = (
     ),
   ] as const;
   const apexBank = pose.bank + Math.PI;
+  const exitBank = endBank + Math.PI * 2;
+  const apexBankDerivative = (exitBank - pose.bank) * 0.9375;
   const banks = [
     QuinticScalarSpan.fromCoefficients(
       new QuinticScalarSpan({
@@ -516,16 +518,16 @@ const topHatSpans = (
         d10: 0,
         d20: 0,
         v1: apexBank,
-        d11: 0,
+        d11: apexBankDerivative,
         d21: 0,
       }).coefficients,
     ),
     QuinticScalarSpan.fromCoefficients(
       new QuinticScalarSpan({
         v0: apexBank,
-        d10: 0,
+        d10: apexBankDerivative,
         d20: 0,
-        v1: endBank,
+        v1: exitBank,
         d11: 0,
         d21: 0,
       }).coefficients,
@@ -554,7 +556,7 @@ const topHatSpans = (
       position: last.span.position(1),
       tangent: vec3Normalize(last.span.derivative(1, 1)),
       normal: basis.normal,
-      bank: endBank,
+      bank: exitBank,
     }),
   };
 };
