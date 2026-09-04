@@ -129,7 +129,7 @@ describe("clearance field per-interval fast proof", () => {
     expect(field.segments[0]!.source).not.toBe("cap");
   });
 
-  it("proves terrain clearance against hard thresholds without querying a display-cap-only gap", () => {
+  it("queries the SDF when bounds prove only a below-cap vertical gap", () => {
     const track = compileTrack(
       [
         {
@@ -154,9 +154,9 @@ describe("clearance field per-interval fast proof", () => {
     const first = computeClearanceField(track, {
       ...options,
       environment: {
-        signedDistance: () => {
+        signedDistance: (point) => {
           firstCalls += 1;
-          throw new Error("display-cap-only terrain query");
+          return point[1] + 8;
         },
         bounds: () => ({ min: vec3(-1, -9, -1), max: vec3(1, -8, 1) }),
         raycast: () => undefined,
@@ -165,22 +165,22 @@ describe("clearance field per-interval fast proof", () => {
     const second = computeClearanceField(track, {
       ...options,
       environment: {
-        signedDistance: () => {
+        signedDistance: (point) => {
           secondCalls += 1;
-          throw new Error("display-cap-only terrain query");
+          return point[1] + 8;
         },
         bounds: () => ({ min: vec3(-1, -9, -1), max: vec3(1, -8, 1) }),
         raycast: () => undefined,
       },
     });
 
-    expect(firstCalls).toBe(0);
-    expect(secondCalls).toBe(0);
+    expect(firstCalls).toBeGreaterThan(0);
+    expect(secondCalls).toBe(firstCalls);
     expect(first.globalLowerM).toBeGreaterThanOrEqual(0.5);
     expect(first.globalLowerM).toBeLessThan(10);
     expect(Number.isFinite(first.globalLowerM)).toBe(true);
     expect(Number.isFinite(first.globalUpperM)).toBe(true);
-    expect(first.globalUpperM).toBeGreaterThanOrEqual(10);
+    expect(first.globalUpperM).toBeLessThan(10);
     expect(first.globalLowerM).toBeLessThanOrEqual(first.globalUpperM);
     expect(
       first.segments.every(
@@ -189,7 +189,7 @@ describe("clearance field per-interval fast proof", () => {
           Number.isFinite(segment.upperM) &&
           segment.lowerM <= segment.upperM &&
           segment.source === "terrain" &&
-          segment.certified === false,
+          segment.certified === true,
       ),
     ).toBe(true);
     expect(
@@ -201,7 +201,6 @@ describe("clearance field per-interval fast proof", () => {
     expect(second.work).toBe(first.work);
     expect(second.globalLowerM).toBe(first.globalLowerM);
     expect(second.globalUpperM).toBe(first.globalUpperM);
-    expect(second.globalUpperM).toBeGreaterThanOrEqual(10);
     expect(first.globalSource).toBe("terrain");
     expect(second.globalSource).toBe("terrain");
     expect(first.globalLowerSource).toBe("terrain");
