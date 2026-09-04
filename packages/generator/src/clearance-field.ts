@@ -565,7 +565,7 @@ export function computeClearanceField(
         perSegmentLowerSource[segIdx] = "terrain";
         continue;
       }
-      const terrain = prepareTerrainSegmentEvaluator(seg);
+      let terrain: PreparedTerrainSegmentEvaluator;
       let rootEval: {
         lowerM: number;
         upperM: number;
@@ -573,6 +573,7 @@ export function computeClearanceField(
         witnessS: number;
       };
       try {
+        terrain = prepareTerrainSegmentEvaluator(seg);
         rootEval = evaluateTerrainSubinterval(seg, 0, 1, terrain, env, radius);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
