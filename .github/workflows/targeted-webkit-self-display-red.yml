@@ -1,0 +1,24 @@
+name: Targeted WebKit self-display RED
+
+on:
+  push:
+    branches:
+      - codex/webkit-self-display-red-ci
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Prove terrain correction and self-display fastproof are RED
+        run: >-
+          npm run test --
+          packages/generator/src/clearance-field.fastproof.test.ts
+          packages/generator/src/clearance-field.self-fastproof.test.ts
