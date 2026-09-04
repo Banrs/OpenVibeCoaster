@@ -2025,6 +2025,17 @@ export const simulateRide = (
   const work: WorkState = { driveJ: 0, lossJ: 0 };
   const frames: SimulationFrame[] = [];
   const events: SimulationEvent[] = [];
+  const cadenceRatio = config.timelineStepSeconds / config.fixedStepSeconds;
+  const roundedCadenceRatio = Math.round(cadenceRatio);
+  const compactFrameStride =
+    request.compactTimeline &&
+    roundedCadenceRatio >= 1 &&
+    Math.abs(cadenceRatio - roundedCadenceRatio) <= 1e-12
+      ? roundedCadenceRatio
+      : 1;
+  const sparseCompactFrames =
+    Boolean(request.compactTimeline) && compactFrameStride > 1;
+  let integrationStepIndex = 0;
   let timeSeconds = 0;
   let distanceM = initial.headDistanceM;
   let speedMps = initial.speedMps;
@@ -2262,6 +2273,7 @@ export const simulateRide = (
       break;
     }
     timeSeconds += elapsedStep;
+    integrationStepIndex += 1;
     if (request.durationSeconds - timeSeconds < 1e-12)
       timeSeconds = request.durationSeconds;
     events.push(
@@ -2276,18 +2288,31 @@ export const simulateRide = (
         elapsedStep,
       ),
     );
-    try {
-      addFrame(
-        timeSeconds,
-        distanceM,
-        speedMps,
+    const finalStep = timeSeconds >= request.durationSeconds - 1e-12;
+    const outputStep = integrationStepIndex % compactFrameStride === 0;
+    if (!sparseCompactFrames || outputStep || finalStep) {
+      try {
+        addFrame(
+          timeSeconds,
+          distanceM,
+          speedMps,
+          previousSpeed,
+          currentDynamics,
+        );
+      } catch (error) {
+        diagnostics.push(diagnosticFromError(error));
+        break;
+      }
+    } else if (
+      statusFor(
         previousSpeed,
-        currentDynamics,
-      );
-    } catch (error) {
-      diagnostics.push(diagnosticFromError(error));
-      break;
-    }
+        speedMps,
+        currentDynamics.accelerationMps2,
+        currentDynamics.totalForce,
+        currentDynamics.staticStictionCapacityN,
+      ) === "stall"
+    )
+      hasStalled = true;
     integrationCache.clear();
     if (boundaryError) {
       diagnostics.push({
@@ -2339,7 +2364,7 @@ export const simulateRide = (
     });
   }
   return {
-    frames: completedFrames,
+    frames: request.compactTimeline ? [] : completedFrames,
     timeline,
     events: uniqueEvents,
     operationState: operationStateFor(finalZones),
