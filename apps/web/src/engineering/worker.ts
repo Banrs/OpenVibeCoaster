@@ -799,9 +799,10 @@ if (
     }
     try {
       let response: EngineeringWorkerSuccess | EngineeringWorkerFailure;
-      if (req.type === "generate")
+      if (req.type === "generate") {
         response = handleGenerate(req.requestId, req.intent);
-      else if (req.type === "regenerate")
+        console.log("[OVC_WORKER_PROBE] handle-return");
+      } else if (req.type === "regenerate")
         response = handleRegenerate(req.requestId, req.file, req.elementId);
       else response = handleCompileSimulate(req.requestId, req.file);
 
@@ -810,6 +811,9 @@ if (
         // in the immediately-next step before the actual postMessage, as
         // required by the User Timing contract. Must include clearanceM buffer exactly once.
         const transfers = collectTransferables(response);
+        console.log(
+          `[OVC_WORKER_PROBE] transfer-list buffers=${transfers.length}`,
+        );
         const refreshed: EngineeringWorkerSuccess = {
           ...response,
           timings: {
@@ -818,6 +822,7 @@ if (
           },
         };
         g.postMessage(refreshed, transfers);
+        console.log("[OVC_WORKER_PROBE] posted");
         void transfers;
       } else {
         g.postMessage(response);

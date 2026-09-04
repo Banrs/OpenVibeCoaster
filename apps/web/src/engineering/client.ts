@@ -350,6 +350,7 @@ export class EngineeringWorkerClient {
 
   private handleMessage(event: MessageEvent): void {
     try {
+      console.log("[OVC_CLIENT_PROBE] message-received");
       const receiptEpochMs = this.clientEpochMs();
       const response = (event.data ?? event) as EngineeringWorkerResponse;
       if (!response || typeof response.requestId !== "string") return;
@@ -364,6 +365,7 @@ export class EngineeringWorkerClient {
       if (entry.postedEpoch !== this.epoch) return;
       try {
         validateEngineeringWorkerResponse(response);
+        console.log("[OVC_CLIENT_PROBE] response-validated");
       } catch (error) {
         this.pending.delete(response.requestId);
         entry.reject(error instanceof Error ? error : new Error(String(error)));
@@ -391,6 +393,7 @@ export class EngineeringWorkerClient {
           response.timings.simulationMs,
           Math.max(0, transferMs),
         );
+        console.log("[OVC_CLIENT_PROBE] resolving");
         entry.resolve(response);
       } else if (response.type === "failure") {
         entry.reject(

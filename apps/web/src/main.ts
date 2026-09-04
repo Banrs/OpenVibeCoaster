@@ -1072,8 +1072,10 @@ const controller = createExperienceController({
       }
       // Await worker
       const response = await engineeringClient.generate(workerId, intent);
+      console.log("[OVC_MAIN_PROBE] response-awaited");
       // Stale check already via controller, but also check activeWorkerRequestId
       const hydrated = hydrateEngineeringSuccess(response);
+      console.log("[OVC_MAIN_PROBE] response-hydrated");
       const result: AuthoritativeExperienceResult = {
         file: hydrated.file,
         track: hydrated.track,
@@ -1084,6 +1086,7 @@ const controller = createExperienceController({
         clearanceM: hydrated.clearanceM,
       };
       controller.setResult(result, numericId);
+      console.log("[OVC_MAIN_PROBE] result-published");
       // Clear failure caches on success
       lastFailureDiagnostics = [];
       lastFailureRelaxations = [];
