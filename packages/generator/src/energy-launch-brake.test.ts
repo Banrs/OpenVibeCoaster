@@ -54,6 +54,8 @@ test(
     const trimBrake = zones.find(({ id }) => id === "airtimeHill-010");
     expect(trimBrake?.kind).toBe("brake");
     expect(trimBrake?.targetSpeedMps).toBe(60);
+    const terminalBrake = zones.find(({ id }) => id === "brake-018");
+    expect(terminalBrake).toBeDefined();
 
     const config = createDefaultSimulatorConfig();
     const simulation = simulateRide(generated.track, {
@@ -150,6 +152,21 @@ test(
     expect(driveWork, evidence).toBeLessThanOrEqual(7.2e6 * 180);
     expect(maxSpeed, evidence).toBeGreaterThanOrEqual(79.16 - 1e-6);
     expect(maxSpeed, evidence).toBeLessThanOrEqual(81.94 + 1e-6);
+    expect(maxHeadDistance, evidence).toBeGreaterThanOrEqual(
+      terminalBrake!.startDistanceM,
+    );
+    const dynamicsCodes = new Set([
+      "RECORD_FORCE_PEAK_POS",
+      "RECORD_FORCE_NEG",
+      "RECORD_FORCE_LAT",
+      "RECORD_FORCE_LONG",
+      "RECORD_JERK",
+      "RECORD_ROLL",
+    ]);
+    expect(
+      diagnostics.filter(({ code }) => dynamicsCodes.has(code)),
+      evidence,
+    ).toHaveLength(0);
     expect(
       diagnostics.filter(({ code }) => code === "ENERGY_LSM_REQUIRED_WORK"),
       evidence,
