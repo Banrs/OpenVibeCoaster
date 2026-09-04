@@ -23,11 +23,11 @@ function highTrack() {
     [
       {
         id: "seg-0",
-        span: SeventhOrderHermiteSpan.line(vec3(0, 15, 0), vec3(0, 15, 5)),
+        span: SeventhOrderHermiteSpan.line(vec3(0, 15, 0), vec3(0, 15, 2)),
       },
       {
         id: "seg-1",
-        span: SeventhOrderHermiteSpan.line(vec3(0, 15, 5), vec3(0, 15, 10)),
+        span: SeventhOrderHermiteSpan.line(vec3(0, 15, 2), vec3(0, 15, 4)),
       },
     ],
     { samples: 2 },

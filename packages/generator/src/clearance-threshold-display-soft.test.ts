@@ -134,9 +134,9 @@ describe("threshold completeness – display cap and soft prevent premature sepa
   it("soft threshold prevents premature separation – terrain and self use same complete set", () => {
     const track = lineTrack([
       [0, 2, 0],
-      [5, 2, 0],
-      [10, 2, 0],
-      [15, 2, 0],
+      [2, 2, 0],
+      [4, 2, 0],
+      [6, 2, 0],
     ]);
     const ids = ["a", "b", "c"];
     const env = {
