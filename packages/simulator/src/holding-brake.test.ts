@@ -45,10 +45,21 @@ test("a holding brake captures, dwells, and releases under powered drive", () =>
       frame.speedMps > 0.1,
   );
   expect(resumed).toBeDefined();
-  const maximumJerk = Math.max(
-    ...result.frames
-      .slice(2, -2)
-      .map(({ telemetry }) => Math.hypot(...telemetry.jerkMps3)),
+  const measured = result.frames.slice(2, -2).map((frame) => ({
+    frame,
+    magnitude: Math.hypot(...frame.telemetry.jerkMps3),
+  }));
+  const peak = measured.reduce((current, candidate) =>
+    candidate.magnitude > current.magnitude ? candidate : current,
   );
-  expect(maximumJerk).toBeLessThanOrEqual(15);
+  expect(
+    peak.magnitude,
+    JSON.stringify({
+      timeSeconds: peak.frame.timeSeconds,
+      speedMps: peak.frame.speedMps,
+      status: peak.frame.status,
+      longitudinalG: peak.frame.telemetry.longitudinalG,
+      jerkMps3: peak.frame.telemetry.jerkMps3,
+    }),
+  ).toBeLessThanOrEqual(15);
 });
