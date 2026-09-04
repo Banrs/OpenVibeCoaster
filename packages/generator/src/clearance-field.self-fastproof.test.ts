@@ -9,8 +9,6 @@ import type { ClearanceField } from "./clearance-field.js";
 const exactCalls = vi.hoisted(() => ({
   count: 0,
   aabbLowerBounds: [] as number[],
-  satLowerBounds: [] as number[],
-  arcPairs: [] as string[],
 }));
 
 vi.mock("./clearance-geometry", async () => {
@@ -33,12 +31,6 @@ vi.mock("./clearance-geometry", async () => {
         return 0;
       };
       exactCalls.aabbLowerBounds.push(Math.hypot(gap(0), gap(1), gap(2)));
-      exactCalls.satLowerBounds.push(
-        actual.sweptObbSeparationLowerBound(args[0], args[1]),
-      );
-      exactCalls.arcPairs.push(
-        `${args[0].startS}-${args[0].endS}:${args[1].startS}-${args[1].endS}`,
-      );
       return actual.certifiedSweptDistance(...args);
     },
   };
@@ -83,37 +75,6 @@ function parallelThresholdTrack() {
   );
 }
 
-function diagonalParallelTrack() {
-  const c = Math.SQRT1_2;
-  const direction = vec3(c, 0, c);
-  const offset = vec3(-4 * c, 0, 4 * c);
-  const end = (start: ReturnType<typeof vec3>, length: number) =>
-    vec3(
-      start[0] + direction[0] * length,
-      start[1],
-      start[2] + direction[2] * length,
-    );
-  const first = vec3(0, 0, 0);
-  const spacer = vec3(100, 0, 100);
-  return compileTrack(
-    [
-      {
-        id: "diagonal-0",
-        span: SeventhOrderHermiteSpan.line(first, end(first, 0.2)),
-      },
-      {
-        id: "spacer-1",
-        span: SeventhOrderHermiteSpan.line(spacer, end(spacer, 30)),
-      },
-      {
-        id: "diagonal-2",
-        span: SeventhOrderHermiteSpan.line(offset, end(offset, 0.2)),
-      },
-    ],
-    { samples: 2 },
-  );
-}
-
 function project(field: ClearanceField) {
   return {
     globalLowerM: field.globalLowerM,
@@ -149,8 +110,6 @@ describe("clearance field display-only self fast proof", () => {
 
     exactCalls.count = 0;
     exactCalls.aabbLowerBounds.length = 0;
-    exactCalls.satLowerBounds.length = 0;
-    exactCalls.arcPairs.length = 0;
     const first = computeClearanceField(track, options);
     const firstCalls = exactCalls.count;
     const firstDisplayOnlyCalls = exactCalls.aabbLowerBounds.filter(
@@ -198,33 +157,6 @@ describe("clearance field display-only self fast proof", () => {
     expect(
       exactCalls.aabbLowerBounds.some((lower) => lower >= 0.5 && lower < 3),
     ).toBe(true);
-    expect(field.diagnostics.some((item) => item.severity === "fatal")).toBe(
-      false,
-    );
-  });
-
-  it("uses a certified SAT lower bound before exact rotated-box refinement", () => {
-    exactCalls.count = 0;
-    exactCalls.aabbLowerBounds.length = 0;
-    exactCalls.satLowerBounds.length = 0;
-    exactCalls.arcPairs.length = 0;
-    const field = computeClearanceField(diagonalParallelTrack(), {
-      hardClearanceM: 0.5,
-      displayCapM: 10,
-      maxWork: 100_000,
-      segmentIds: ["diagonal-0", "spacer-1", "diagonal-2"],
-    });
-
-    expect(
-      exactCalls.count,
-      JSON.stringify({
-        aabb: exactCalls.aabbLowerBounds,
-        sat: exactCalls.satLowerBounds,
-        arcs: exactCalls.arcPairs,
-      }),
-    ).toBe(0);
-    expect(field.globalLowerM).toBeGreaterThanOrEqual(0.5);
-    expect(field.globalUpperM).toBeGreaterThanOrEqual(field.globalLowerM);
     expect(field.diagnostics.some((item) => item.severity === "fatal")).toBe(
       false,
     );

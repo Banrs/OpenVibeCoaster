@@ -3,7 +3,9 @@ import { vec3, type Vec3 } from "@openvibecoaster/core";
 import {
   createOrientedBox,
   interpolatePose,
+  staticObbDistance,
   sweptAabb,
+  sweptObbSeparationLowerBound,
   type ClearanceTrainGeometry,
   type SweptClearanceSegment,
 } from "./clearance-geometry.js";
@@ -71,5 +73,52 @@ describe("swept AABB tight rotation bound", () => {
           expect(vertex[axis]).toBeGreaterThanOrEqual(bounds.min[axis]);
           expect(vertex[axis]).toBeLessThanOrEqual(bounds.max[axis]);
         }
+  });
+
+  it("certifies rotated parallel sweeps whose world AABBs overlap", () => {
+    const c = Math.SQRT1_2;
+    const tangent = vec3(c, 0, c);
+    const normal = vec3(0, 1, 0);
+    const binormal = vec3(-c, 0, c);
+    const offset = scale(binormal, 4);
+    const makeSegment = (start: Vec3, startS: number): SweptClearanceSegment => ({
+      start: { position: start, tangent, normal, binormal },
+      end: {
+        position: add(start, scale(tangent, 0.2)),
+        tangent,
+        normal,
+        binormal,
+      },
+      startS,
+      endS: startS + 0.2,
+      geometry,
+    });
+    const first = makeSegment(vec3(0, 0, 0), 0);
+    const second = makeSegment(offset, 30);
+    const firstBounds = sweptAabb(first);
+    const secondBounds = sweptAabb(second);
+    const axisGap = (axis: 0 | 1 | 2): number =>
+      Math.max(
+        0,
+        secondBounds.min[axis] - firstBounds.max[axis],
+        firstBounds.min[axis] - secondBounds.max[axis],
+      );
+    expect(Math.hypot(axisGap(0), axisGap(1), axisGap(2))).toBe(0);
+
+    const lower = sweptObbSeparationLowerBound(first, second);
+    expect(lower).toBeGreaterThanOrEqual(0.5);
+    let sampledMinimum = Number.POSITIVE_INFINITY;
+    for (let firstSample = 0; firstSample <= 16; firstSample += 1)
+      for (let secondSample = 0; secondSample <= 16; secondSample += 1) {
+        const distance = staticObbDistance(
+          createOrientedBox(interpolatePose(first, firstSample / 16), geometry),
+          createOrientedBox(
+            interpolatePose(second, secondSample / 16),
+            geometry,
+          ),
+        ).distance;
+        sampledMinimum = Math.min(sampledMinimum, distance);
+      }
+    expect(lower).toBeLessThanOrEqual(sampledMinimum);
   });
 });
