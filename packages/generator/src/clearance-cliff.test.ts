@@ -57,6 +57,9 @@ test(
 );
 
 test("generator never imports web terrain", async () => {
-  const source = await readFile(new URL("./pipeline.ts", import.meta.url), "utf8");
+  const source = await readFile(
+    new URL("./pipeline.ts", import.meta.url),
+    "utf8",
+  );
   expect(source).not.toContain("apps/web");
 });

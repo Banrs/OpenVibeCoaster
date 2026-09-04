@@ -187,11 +187,11 @@ export const recordHybridDefaultElements = (
     createElement("transition", "transition-002", {
       length: 420 + variation,
       rise: 60,
-      pitch: 0,
+      pitch: 0.1,
       bank: 0,
     }),
   );
-  appendForceHill("airtimeHill-003", 300 + variation, 1.1, 44);
+  appendForceHill("airtimeHill-003", 300 + variation, 0.9, 44);
   append(
     createElement("overbankedTurn", "overbankedTurn-004", {
       radius: 120 + variation,
@@ -234,7 +234,7 @@ export const recordHybridDefaultElements = (
     }),
     80,
   );
-  appendForceHill("airtimeHill-010", 190, 1.15, 44);
+  appendForceHill("airtimeHill-010", 190, 0.945, 44);
   append(
     createElement("topHat", "topHat-011", {
       height: 91,
@@ -1691,8 +1691,7 @@ const evaluateCandidate = (
       diagnostics.some(
         (diagnostic) =>
           diagnostic.relatedIds?.includes(constraint.id) &&
-          (diagnostic.severity === "error" ||
-            diagnostic.severity === "fatal"),
+          (diagnostic.severity === "error" || diagnostic.severity === "fatal"),
       )
     )
       failedHardRequirementIds.add(constraint.id);
@@ -1819,7 +1818,11 @@ const evaluateCandidate = (
     if (validationDiagnostics.length > 0) {
       diagnostics.push(...validationDiagnostics);
     }
-    if (track && validationDiagnostics.length === 0) {
+    const hasPriorHardFailure = diagnostics.some(
+      (diagnostic) =>
+        diagnostic.severity === "error" || diagnostic.severity === "fatal",
+    );
+    if (track && validationDiagnostics.length === 0 && !hasPriorHardFailure) {
       const displayCap = Math.max(10, 0.5, ...explicitValues);
       const closed = isClosedChain(elements);
       const segmentIds = canonicalSpansForCandidate.map((s) => s.id);
