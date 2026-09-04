@@ -788,6 +788,124 @@ const diveDropSpans = (
   };
 };
 
+export const IMMELMANN_SPAN_COUNT = 2;
+
+const immelmannSpans = (
+  pose: Pose,
+  parameters: ElementParameterMap["immelmann"],
+  elementId: string,
+): ElementBuildResult => {
+  const basis = basisFor(pose);
+  const zero = vec3(0, 0, 0);
+  const riseLaw = [0, 0, 0, 0, 35, -84, 70, -20].map(
+    (coefficient) => coefficient * parameters.height,
+  );
+  const loopScale = parameters.height * 1.2;
+  const localHalfLoop = new SeventhOrderHermiteSpan({
+    p0: zero,
+    d10: vec3(loopScale, 0, 0),
+    d20: zero,
+    d30: zero,
+    p1: vec3(0, parameters.height, 0),
+    d11: vec3(-loopScale, 0, 0),
+    d21: zero,
+    d31: zero,
+  });
+  const localRows = [
+    localHalfLoop.coefficients[0]!,
+    riseLaw,
+    [0, 0, 0, 0, 0, 0, 0, 0],
+  ] as const;
+  const worldRows = [0, 1, 2].map((component) =>
+    Array.from(
+      { length: 8 },
+      (_, power) =>
+        (power === 0 ? pose.position[component]! : 0) +
+        basis.tangent[component]! * localRows[0][power]! +
+        basis.normal[component]! * localRows[1][power]! +
+        basis.binormal[component]! * localRows[2][power]!,
+    ),
+  );
+  const first = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(worldRows);
+  const apex = first.position(1);
+  const apexD1 = first.derivative(1, 1);
+  const apexD2 = first.derivative(1, 2);
+  const apexD3 = first.derivative(1, 3);
+  const headingRad = (parameters.exitHeadingDeg * Math.PI) / 180;
+  const exitTangent = vec3Normalize(
+    vec3Add(
+      vec3Scale(basis.tangent, Math.cos(headingRad)),
+      vec3Scale(basis.binormal, -Math.sin(headingRad)),
+    ),
+  );
+  const exitScale = parameters.height * 0.75;
+  const secondEnd = vec3Add(
+    apex,
+    vec3Add(
+      vec3Scale(vec3Normalize(apexD1), exitScale * 0.5),
+      vec3Scale(exitTangent, exitScale * 0.5),
+    ),
+  );
+  const secondRaw = new SeventhOrderHermiteSpan({
+    p0: apex,
+    d10: apexD1,
+    d20: apexD2,
+    d30: apexD3,
+    p1: secondEnd,
+    d11: vec3Scale(exitTangent, exitScale),
+    d21: zero,
+    d31: zero,
+  });
+  const second = SeventhOrderHermiteSpan.fromCoefficients<Vec3>(
+    secondRaw.coefficients,
+  );
+  const apexBank = pose.bank + Math.PI;
+  const canonicalRoll = (from: number, to: number): QuinticScalarSpan =>
+    QuinticScalarSpan.fromCoefficients(
+      new QuinticScalarSpan({
+        v0: from,
+        d10: 0,
+        d20: 0,
+        v1: to,
+        d11: 0,
+        d21: 0,
+      }).coefficients,
+    );
+  const spans = [first, second] as const;
+  const rolls = [
+    canonicalRoll(pose.bank, apexBank),
+    canonicalRoll(apexBank, parameters.bank),
+  ] as const;
+  const solvedSpans = spans.map((span, index): SolvedSpan => {
+    const bank = rolls[index]!;
+    return {
+      id: `${elementId}#${index}`,
+      kind: "immelmann",
+      span,
+      bank,
+      zones: ["immelmann"],
+      bounds: aabbFromPoints(
+        Array.from({ length: 33 }, (_, sample) =>
+          span.position(sample / 32),
+        ),
+      ),
+      length: arcLength(span),
+      positionCoefficients: span.coefficients,
+      rollCoefficients: bank.coefficients,
+    };
+  });
+  const last = solvedSpans[IMMELMANN_SPAN_COUNT - 1]!;
+  return {
+    solvedSpans,
+    endPose: orthonormalizePose({
+      position: last.span.position(1),
+      tangent: vec3Normalize(last.span.derivative(1, 1)),
+      normal: basis.normal,
+      bank: parameters.bank,
+    }),
+  };
+};
+
 export const buildElement = (
   element: AnySemanticElement,
   pose: Pose,
@@ -801,6 +919,10 @@ export const buildElement = (
   if (element.type === "diveDrop") {
     const p = element.parameters as ElementParameterMap["diveDrop"];
     return diveDropSpans(normalizedPose, p, element.id);
+  }
+  if (element.type === "immelmann") {
+    const p = element.parameters as ElementParameterMap["immelmann"];
+    return immelmannSpans(normalizedPose, p, element.id);
   }
   let span: ParametricSpan<Vec3>;
   let endPose: Pose;
@@ -934,7 +1056,6 @@ export const buildElement = (
       endBank = normalizedPose.bank + p.roll;
       break;
     }
-    case "immelmann":
     case "verticalLoop":
       throw new RangeError(`${element.type} geometry is not available`);
     case "stall": {
