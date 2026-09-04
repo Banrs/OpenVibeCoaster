@@ -905,7 +905,8 @@ const verticalLoopSpans = (
 ): ElementBuildResult => {
   const basis = basisFor(pose);
   const zero = vec3(0, 0, 0);
-  const shapeRadius = parameters.referenceSpeed ** 2 / (2 * gravity);
+  const shapeRadius =
+    (parameters.height / 2.05) * (parameters.referenceSpeed / 38) ** 2;
   const apexSecondDerivative = vec3Scale(basis.normal, -shapeRadius * 0.5);
   const entryDerivative = vec3Scale(basis.tangent, shapeRadius);
   const invertedDerivative = vec3Scale(basis.tangent, -shapeRadius);
