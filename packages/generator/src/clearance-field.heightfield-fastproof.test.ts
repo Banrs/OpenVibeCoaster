@@ -4,7 +4,6 @@ import {
   HeightfieldEnvironment,
   SeventhOrderHermiteSpan,
   vec3,
-  type Aabb,
   type EnvironmentQuery,
   type Vec3,
 } from "@openvibecoaster/core";
@@ -42,8 +41,9 @@ function certifiedHeightfield() {
     origin: [-10, -10],
     heights: Array.from({ length: 9 }, () => -8),
   });
+  Reflect.set(environment, "certifiedSurfaceBounds", undefined);
   return Object.assign(environment, {
-    certifiedSurfaceBounds: (): Aabb => environment.bounds(),
+    certifiedSurfaceMaximumY: (): number => environment.bounds().max[1],
   });
 }
 
