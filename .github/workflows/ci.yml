@@ -35,8 +35,8 @@ jobs:
           test "$(npm --version)" = "11.17.0"
       - name: Install dependencies (exact lockfile)
         run: npm ci
-      - name: Compact timeline regression
-        run: npx vitest run packages/simulator/src/compact.timeline.test.ts
+      - name: Dive-drop geometry RED
+        run: npx vitest run packages/generator/src/diveDrop.geometry.test.ts packages/generator/src/diveDrop.seam.test.ts
 
   portable:
     if: false
