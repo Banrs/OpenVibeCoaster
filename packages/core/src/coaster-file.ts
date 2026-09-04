@@ -164,6 +164,9 @@ const validateElement = (value: unknown, path: string): void => {
     "overbankedTurn",
     "zeroGRoll",
     "stall",
+    "diveDrop",
+    "immelmann",
+    "verticalLoop",
   ]);
   const kind = string(element.kind, `${path}.kind`);
   const type = string(element.type, `${path}.type`);
@@ -188,6 +191,15 @@ const validateElement = (value: unknown, path: string): void => {
       overbankedTurn: ["radius", "angle", "bank"],
       zeroGRoll: ["length", "roll"],
       stall: ["length", "height", "bank"],
+      diveDrop: [
+        "dropHeight",
+        "angleDeg",
+        "approachRadius",
+        "exitRadius",
+        "bank",
+      ],
+      immelmann: ["height", "exitHeadingDeg", "bank"],
+      verticalLoop: ["height", "referenceSpeed", "bank"],
     };
     exactKeys(parameters, parameterNames[kind]!, `${path}.parameters`);
     const numericParameters = new Set([
@@ -203,6 +215,11 @@ const validateElement = (value: unknown, path: string): void => {
       "radius",
       "angle",
       "roll",
+      "dropHeight",
+      "angleDeg",
+      "approachRadius",
+      "exitRadius",
+      "exitHeadingDeg",
     ]);
     for (const [key, parameter] of Object.entries(parameters)) {
       if (key === "closed") boolean(parameter, `${path}.parameters.${key}`);
@@ -508,6 +525,9 @@ const validateSerializedSpan = (value: unknown, path: string): void => {
       "overbankedTurn",
       "zeroGRoll",
       "stall",
+      "diveDrop",
+      "immelmann",
+      "verticalLoop",
     ].includes(kind)
   )
     fail(`${path}.kind`, "known element kind");

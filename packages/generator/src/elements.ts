@@ -46,6 +46,15 @@ const defaults: ElementParameterMap = {
   overbankedTurn: { radius: 28, angle: Math.PI / 2, bank: 0.6 },
   zeroGRoll: { length: 28, roll: Math.PI * 2 },
   stall: { length: 32, height: 18, bank: 0 },
+  diveDrop: {
+    dropHeight: 210,
+    angleDeg: 110,
+    approachRadius: 90,
+    exitRadius: 70,
+    bank: 0,
+  },
+  immelmann: { height: 81, exitHeadingDeg: 180, bank: 0 },
+  verticalLoop: { height: 67, referenceSpeed: 38, bank: 0 },
 };
 
 const finite = (name: string, value: number): void => {
@@ -109,8 +118,8 @@ const validateParameters = <K extends ElementKind>(
     }
     case "topHat": {
       const p = parameters as ElementParameterMap["topHat"];
-      finite("height", p.height);
-      if (p.height !== 80) throw new RangeError("height must be exactly 80 m");
+      if (!Number.isFinite(p.height) || p.height < 80 || p.height > 92)
+        throw new RangeError("height must be between 80 and 92 m");
       range("width", p.width, 10, 300);
       angle("bank", p.bank, -Math.PI, Math.PI);
       break;
@@ -142,6 +151,29 @@ const validateParameters = <K extends ElementKind>(
       const p = parameters as ElementParameterMap["stall"];
       range("length", p.length, 4, 500);
       finite("height", p.height);
+      angle("bank", p.bank, -Math.PI, Math.PI);
+      break;
+    }
+    case "diveDrop": {
+      const p = parameters as ElementParameterMap["diveDrop"];
+      range("dropHeight", p.dropHeight, 40, 250);
+      range("angleDeg", p.angleDeg, 90, 135);
+      range("approachRadius", p.approachRadius, 15, 400);
+      range("exitRadius", p.exitRadius, 15, 400);
+      angle("bank", p.bank, -Math.PI, Math.PI);
+      break;
+    }
+    case "immelmann": {
+      const p = parameters as ElementParameterMap["immelmann"];
+      range("height", p.height, 20, 130);
+      range("exitHeadingDeg", p.exitHeadingDeg, -180, 180);
+      angle("bank", p.bank, -Math.PI, Math.PI);
+      break;
+    }
+    case "verticalLoop": {
+      const p = parameters as ElementParameterMap["verticalLoop"];
+      range("height", p.height, 20, 130);
+      range("referenceSpeed", p.referenceSpeed, 5, 85);
       angle("bank", p.bank, -Math.PI, Math.PI);
       break;
     }
@@ -437,6 +469,7 @@ const forceProfileSpan = (
 
 const topHatSpans = (
   pose: Pose,
+  height: number,
   width: number,
   endBank: number,
   elementId: string,
@@ -444,7 +477,7 @@ const topHatSpans = (
   const basis = basisFor(pose);
   const halfWidth = width / 2;
   const riseCoefficients = smoothRampCoefficients.map(
-    (coefficient) => coefficient * 80,
+    (coefficient) => coefficient * height,
   );
   const positionCoefficients = (
     origin: Vec3,
@@ -459,7 +492,7 @@ const topHatSpans = (
           basis.normal[component]! * (verticalCoefficients[power] ?? 0),
       ),
     );
-  const apex = worldPoint(pose, basis, vec3(halfWidth, 80, 0));
+  const apex = worldPoint(pose, basis, vec3(halfWidth, height, 0));
   const rows = [
     positionCoefficients(pose.position, riseCoefficients),
     positionCoefficients(
@@ -629,7 +662,7 @@ export const buildElement = (
   const normalizedPose = orthonormalizePose(pose);
   if (element.type === "topHat") {
     const p = element.parameters as ElementParameterMap["topHat"];
-    return topHatSpans(normalizedPose, p.width, p.bank, element.id);
+    return topHatSpans(normalizedPose, p.height, p.width, p.bank, element.id);
   }
   let span: ParametricSpan<Vec3>;
   let endPose: Pose;
@@ -763,6 +796,10 @@ export const buildElement = (
       endBank = normalizedPose.bank + p.roll;
       break;
     }
+    case "diveDrop":
+    case "immelmann":
+    case "verticalLoop":
+      throw new RangeError(`${element.type} geometry is not available`);
     case "stall": {
       const p = element.parameters as ElementParameterMap["stall"];
       const profile = profileSpan(normalizedPose, p.length, p.height);
@@ -854,6 +891,24 @@ export const createAnyElement = (
         "zeroGRoll",
         id,
         params as Partial<ElementParameters<"zeroGRoll">>,
+      );
+    case "diveDrop":
+      return createElement(
+        "diveDrop",
+        id,
+        params as Partial<ElementParameters<"diveDrop">>,
+      );
+    case "immelmann":
+      return createElement(
+        "immelmann",
+        id,
+        params as Partial<ElementParameters<"immelmann">>,
+      );
+    case "verticalLoop":
+      return createElement(
+        "verticalLoop",
+        id,
+        params as Partial<ElementParameters<"verticalLoop">>,
       );
     default:
       throw new Error(`Unknown element kind ${kind}`);
