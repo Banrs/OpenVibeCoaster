@@ -1,0 +1,33 @@
+name: Swept SAT format artifact
+
+on:
+  push:
+    branches:
+      - codex/swept-sat-format-ci
+  workflow_dispatch:
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Format swept-clearance files
+        run: >-
+          npx prettier --write
+          packages/generator/src/clearance-geometry.ts
+          packages/generator/src/clearance-field.ts
+          packages/generator/src/clearance-geometry.swept-aabb.test.ts
+          packages/generator/src/clearance-field.self-fastproof.test.ts
+      - name: Create patch
+        run: git diff --binary > swept-sat-format.patch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swept-sat-format-patch
+          path: swept-sat-format.patch
+          if-no-files-found: error
