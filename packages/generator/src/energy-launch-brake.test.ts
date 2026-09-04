@@ -88,6 +88,33 @@ test(
       terminalSpeed,
       holdSeconds,
       diagnostics,
+      extrema: (
+        [
+          ["verticalMax", simulation.timeline.verticalG, "max"],
+          ["verticalMin", simulation.timeline.verticalG, "min"],
+          ["lateral", simulation.timeline.lateralG, "magnitude"],
+          ["jerk", simulation.timeline.jerkMps3, "magnitude"],
+          ["roll", simulation.timeline.rollRateRadPerSec, "magnitude"],
+        ] as const
+      ).map(([name, samples, mode]) => {
+        let index = 0;
+        for (let candidate = 1; candidate < samples.length; candidate += 1) {
+          const current = samples[index]!;
+          const next = samples[candidate]!;
+          if (
+            (mode === "max" && next > current) ||
+            (mode === "min" && next < current) ||
+            (mode === "magnitude" && Math.abs(next) > Math.abs(current))
+          )
+            index = candidate;
+        }
+        return {
+          name,
+          value: samples[index],
+          time: simulation.timeline.timeSeconds[index],
+          s: head[index],
+        };
+      }),
     });
 
     expect(Number.isFinite(driveWork), evidence).toBe(true);
