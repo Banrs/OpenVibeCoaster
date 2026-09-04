@@ -814,13 +814,26 @@ const diveDropSpans = (
     vec3Scale(basis.tangent, Math.cos(pitchRad)),
     vec3Scale(basis.normal, Math.sin(pitchRad)),
   );
-  const approachDerivativeScale = parameters.approachRadius;
-  const lip = vec3Add(
-    pose.position,
-    vec3Scale(
-      vec3Add(basis.tangent, dropDirection),
-      approachDerivativeScale / 2,
-    ),
+  const approachDerivativeScale =
+    parameters.approachRadius * Math.abs(pitchRad) * 1.3;
+  const approachSteps = 128;
+  const approachStep = 1 / approachSteps;
+  let approachTangent = 0;
+  let approachNormal = 0;
+  for (let index = 0; index <= approachSteps; index += 1) {
+    const weight =
+      index === 0 || index === approachSteps ? 1 : index % 2 ? 4 : 2;
+    const heading =
+      pitchRad *
+      polynomialDerivative(smoothRampCoefficients, index * approachStep, 0);
+    approachTangent += weight * Math.cos(heading);
+    approachNormal += weight * Math.sin(heading);
+  }
+  const approachScale = (approachDerivativeScale * approachStep) / 3;
+  const lip = worldPoint(
+    pose,
+    basis,
+    vec3(approachTangent * approachScale, approachNormal * approachScale, 0),
   );
   const recoveryAngle = Math.abs(pitchRad);
   const recoveryDrop = parameters.exitRadius * (1 - Math.cos(recoveryAngle));
