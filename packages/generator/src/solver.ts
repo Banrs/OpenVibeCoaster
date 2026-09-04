@@ -650,7 +650,7 @@ const buildChain = (
               ...geometryElement,
               parameters: {
                 ...geometryElement.parameters,
-                angle: Math.PI / 4,
+                angle: Math.PI / 2,
                 bank: 0,
               },
             } as AnySemanticElement;
@@ -658,7 +658,7 @@ const buildChain = (
               ...firstDoglegElement,
               parameters: {
                 ...firstDoglegElement.parameters,
-                angle: -Math.PI / 4,
+                angle: -Math.PI / 2,
               },
             } as AnySemanticElement;
             const halfElement = {
