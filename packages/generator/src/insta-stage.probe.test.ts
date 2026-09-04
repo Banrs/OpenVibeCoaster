@@ -1,5 +1,28 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HeightfieldEnvironment, createDesignIntentV1 } from "@openvibecoaster/core";
+
+const exactProbe = vi.hoisted(() => ({
+  calls: 0,
+  work: 0,
+  maximumWork: 0,
+}));
+
+vi.mock("./clearance-geometry.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./clearance-geometry.js")>();
+  return {
+    ...actual,
+    certifiedSweptDistance: (
+      ...args: Parameters<typeof actual.certifiedSweptDistance>
+    ): ReturnType<typeof actual.certifiedSweptDistance> => {
+      const result = actual.certifiedSweptDistance(...args);
+      exactProbe.calls += 1;
+      exactProbe.work += result.work;
+      exactProbe.maximumWork = Math.max(exactProbe.maximumWork, result.work);
+      return result;
+    },
+  };
+});
+
 import {
   generateCoasterForBenchmark,
   type GenerationBenchmarkEvent,
@@ -59,6 +82,9 @@ describe("diagnostic-only Insta stage profile", () => {
       const field = result.clearanceField;
       console.log(
         `CLEARANCE work=${field?.work ?? -1} segments=${field?.segments.length ?? -1} terrainWork=${field?.segments.filter((segment) => segment.source === "terrain").reduce((sum, segment) => sum + segment.work, 0) ?? -1} selfWork=${field?.segments.filter((segment) => segment.source === "self").reduce((sum, segment) => sum + segment.work, 0) ?? -1} uncertified=${field?.segments.filter((segment) => !segment.certified).length ?? -1}`,
+      );
+      console.log(
+        `EXACT calls=${exactProbe.calls} work=${exactProbe.work} maximumWork=${exactProbe.maximumWork}`,
       );
       expect(events.at(-1)).toBe("total:end");
     },
