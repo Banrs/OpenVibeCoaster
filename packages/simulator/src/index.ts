@@ -814,8 +814,15 @@ const rk4 = (
   speedMps: number,
   stepSeconds: number,
   sampleAt?: (distanceM: number) => TrackSample,
+  initialDynamics?: DynamicsSample,
 ): readonly [number, number] => {
-  const k1 = derivative(track, config, distanceM, speedMps, sampleAt);
+  const k1 = initialDynamics
+    ? Math.abs(speedMps) <= SPEED_EPSILON &&
+      Math.abs(initialDynamics.totalForce) <=
+        initialDynamics.staticStictionCapacityN
+      ? ([0, 0] as const)
+      : ([speedMps, initialDynamics.accelerationMps2] as const)
+    : derivative(track, config, distanceM, speedMps, sampleAt);
   const k2 = derivative(
     track,
     config,
@@ -851,6 +858,7 @@ const boundedRk4 = (
   speedMps: number,
   stepSeconds: number,
   sampleAt?: (distanceM: number) => TrackSample,
+  initialDynamics?: DynamicsSample,
 ): {
   readonly distanceM: number;
   readonly speedMps: number;
@@ -865,6 +873,7 @@ const boundedRk4 = (
       speedMps,
       elapsedSeconds,
       sampleAt,
+      initialDynamics,
     );
     if (!finite(state[0]) || !finite(state[1]))
       throw new SimulatorRangeError(
@@ -2057,14 +2066,8 @@ export const simulateRide = (
     currentDistance: number,
     currentSpeed: number,
     previousSpeed: number,
+    dynamics: DynamicsSample,
   ): void => {
-    const dynamics = dynamicsAt(
-      track,
-      config,
-      currentDistance,
-      currentSpeed,
-      integrationSampleAt,
-    );
     const cars = makeCars(
       track,
       config,
@@ -2112,7 +2115,7 @@ export const simulateRide = (
     });
   };
   try {
-    addFrame(0, distanceM, speedMps, speedMps);
+    addFrame(0, distanceM, speedMps, speedMps, initialDynamics);
   } catch (error) {
     diagnostics.push(diagnosticFromError(error));
     return {
@@ -2133,6 +2136,7 @@ export const simulateRide = (
     };
   }
   integrationCache.clear();
+  let currentDynamics = initialDynamics;
   while (timeSeconds < request.durationSeconds - 1e-12) {
     const step = Math.min(
       config.fixedStepSeconds,
@@ -2150,19 +2154,7 @@ export const simulateRide = (
     }
     const previousDistance = distanceM;
     const previousSpeed = speedMps;
-    let previousDynamics: DynamicsSample;
-    try {
-      previousDynamics = dynamicsAt(
-        track,
-        config,
-        distanceM,
-        speedMps,
-        integrationSampleAt,
-      );
-    } catch (error) {
-      diagnostics.push(diagnosticFromError(error));
-      break;
-    }
+    const previousDynamics = currentDynamics;
     let elapsedStep = step;
     let boundaryError: OpenTrackBoundaryError | undefined;
     try {
@@ -2173,6 +2165,7 @@ export const simulateRide = (
         speedMps,
         step,
         integrationSampleAt,
+        previousDynamics,
       );
       distanceM = advanced.distanceM;
       speedMps = advanced.speedMps;
@@ -2223,9 +2216,11 @@ export const simulateRide = (
         0,
         integrationSampleAt,
       );
-      if (Math.abs(atRest.totalForce) <= atRest.staticStictionCapacityN)
+      if (Math.abs(atRest.totalForce) <= atRest.staticStictionCapacityN) {
         speedMps = 0;
-    }
+        currentDynamics = atRest;
+      } else currentDynamics = nextDynamics;
+    } else currentDynamics = nextDynamics;
     const averageForces = previousDynamics.forces.map((force, index) => {
       const next = nextDynamics.forces[index];
       return {
@@ -2282,7 +2277,13 @@ export const simulateRide = (
       ),
     );
     try {
-      addFrame(timeSeconds, distanceM, speedMps, previousSpeed);
+      addFrame(
+        timeSeconds,
+        distanceM,
+        speedMps,
+        previousSpeed,
+        currentDynamics,
+      );
     } catch (error) {
       diagnostics.push(diagnosticFromError(error));
       break;
