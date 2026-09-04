@@ -248,7 +248,7 @@ function simulateForTrack(
   );
   if (!headSelection.ok)
     return { ok: false, diagnostic: headSelection.diagnostic };
-  const zones = operationZonesFromCoasterFile(file);
+  const zones = operationZonesFromCoasterFile(file, track.totalLength);
   const durationSeconds = durationForTrack(track);
   const config = {
     ...baseConfig,

@@ -38,7 +38,10 @@ test(
         researchSnapshotIds: ["records-2026-09-01"],
       },
     );
-    const zones = operationZonesFromCoasterFile(generated.file);
+    const zones = operationZonesFromCoasterFile(
+      generated.file,
+      generated.track.totalLength,
+    );
     for (const zone of zones) {
       expect(zone.startDistanceM).toBeLessThan(zone.endDistanceM);
       expect(zone.endDistanceM).toBeLessThanOrEqual(

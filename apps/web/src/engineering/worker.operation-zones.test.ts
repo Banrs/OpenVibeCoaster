@@ -130,7 +130,9 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
       expect(vi.mocked(simulateRide).mock.calls).toHaveLength(1);
       const actual = getZones();
       // Worker-wiring assertion only (not independent physical authority).
-      expect(actual).toEqual(operationZonesFromCoasterFile(result.file));
+      expect(actual).toEqual(
+        operationZonesFromCoasterFile(result.file, result.track.totalLength),
+      );
       expectPhysicalOperationZones(
         result.file,
         actual,
@@ -169,7 +171,9 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
       expect(vi.mocked(simulateRide).mock.calls).toHaveLength(1);
       const actual = getZones();
       // Worker-wiring assertion only (not independent physical authority).
-      expect(actual).toEqual(operationZonesFromCoasterFile(gen.file));
+      expect(actual).toEqual(
+        operationZonesFromCoasterFile(gen.file, result.track.totalLength),
+      );
       expectPhysicalOperationZones(gen.file, actual, result.track.totalLength);
       const brake = actual.find((z) => z.id === "brake-2");
       if (brake === undefined) throw new Error("expected brake-2 zone");
@@ -193,7 +197,9 @@ describe("worker operation zones are semantic CoasterFileV1 authority", () => {
       expect(vi.mocked(simulateRide).mock.calls).toHaveLength(1);
       const actual = getZones();
       // Worker-wiring assertion only (not independent physical authority).
-      expect(actual).toEqual(operationZonesFromCoasterFile(result.file));
+      expect(actual).toEqual(
+        operationZonesFromCoasterFile(result.file, result.track.totalLength),
+      );
       expectPhysicalOperationZones(
         result.file,
         actual,

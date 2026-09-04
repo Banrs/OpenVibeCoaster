@@ -26,7 +26,13 @@ type MutableOperationZone = {
 
 export function operationZonesFromCoasterFile(
   file: CoasterFileV1,
+  compiledTotalLengthM?: number,
 ): readonly OperationZone[] {
+  if (
+    compiledTotalLengthM !== undefined &&
+    (!Number.isFinite(compiledTotalLengthM) || compiledTotalLengthM <= 0)
+  )
+    throw new RangeError("Compiled track length must be positive and finite");
   const intentElements = file.intent.elements;
   const intentById = new Map<string, (typeof intentElements)[number]>();
   for (const element of intentElements) {
@@ -110,6 +116,12 @@ export function operationZonesFromCoasterFile(
   const zones = [...zonesByOwner.values()].sort(
     (a, b) => a.startDistanceM - b.startDistanceM,
   );
+
+  if (compiledTotalLengthM !== undefined && zones.length > 0) {
+    const last = zones[zones.length - 1]!;
+    if (last.endDistanceM > compiledTotalLengthM)
+      last.endDistanceM = compiledTotalLengthM;
+  }
 
   for (const zone of zones) {
     Object.freeze(zone);
