@@ -1,0 +1,21 @@
+name: Insta generation stage probe
+
+on:
+  push:
+    branches:
+      - codex/webkit-stage-probe-ci
+  workflow_dispatch:
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Profile seed 1337 generation stages
+        run: npm run test -- packages/generator/src/insta-stage.probe.test.ts --reporter=verbose
