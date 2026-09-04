@@ -73,6 +73,9 @@ describe("record-hybrid default pipeline", () => {
         generated.feasible,
         JSON.stringify({
           length: generated.track.totalLength,
+          finale: generated.elements.find(
+            (element) => element.id === "overbankedTurn-014",
+          )?.parameters,
           diagnostics: generated.diagnostics,
         }),
       ).toBe(true);
