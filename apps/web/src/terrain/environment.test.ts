@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CLIFF_VALLEY_TERRAIN_PROFILE_ID,
   resolveTerrainEnvironment,
   ROLLING_TERRAIN_PROFILE_ID,
   BLOCKING_TERRAIN_PROFILE_ID,
@@ -8,6 +9,17 @@ import { createDesignIntentV1 } from "@openvibecoaster/core";
 import { handleGenerate } from "../engineering/worker";
 
 describe("terrain profiles deterministic", () => {
+  it("delegates cliff-valley to the pure core profile", () => {
+    const environment = resolveTerrainEnvironment(
+      CLIFF_VALLEY_TERRAIN_PROFILE_ID,
+    )!;
+    expect(environment.width).toBe(420);
+    expect(environment.depth).toBe(280);
+    expect(environment.cellSize).toBe(10);
+    expect(environment.origin).toEqual([-2095, -1395]);
+    expect(environment.heightAt(0, 980)).toBeGreaterThanOrEqual(224.4);
+  });
+
   it("seeded determinism – same profile returns identical heights", () => {
     const a = resolveTerrainEnvironment(ROLLING_TERRAIN_PROFILE_ID)!;
     const b = resolveTerrainEnvironment(ROLLING_TERRAIN_PROFILE_ID)!;
