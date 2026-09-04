@@ -646,21 +646,6 @@ const buildChain = (
         Math.abs(Math.abs(element.parameters.angle) - Math.PI) < 1e-6;
       const geometry = antipodal
         ? (() => {
-            const firstDoglegElement = {
-              ...geometryElement,
-              parameters: {
-                ...geometryElement.parameters,
-                angle: Math.PI / 2,
-                bank: 0,
-              },
-            } as AnySemanticElement;
-            const secondDoglegElement = {
-              ...firstDoglegElement,
-              parameters: {
-                ...firstDoglegElement.parameters,
-                angle: -Math.PI / 2,
-              },
-            } as AnySemanticElement;
             const halfElement = {
               ...geometryElement,
               parameters: {
@@ -668,41 +653,22 @@ const buildChain = (
                 angle: element.parameters.angle / 2,
               },
             } as AnySemanticElement;
-            const firstDogleg = buildElement(
-              firstDoglegElement,
-              pose,
-              referenceSpeed,
-            );
-            const secondDogleg = buildElement(
-              secondDoglegElement,
-              firstDogleg.endPose,
-              referenceSpeed,
-            );
-            const left = buildElement(
-              halfElement,
-              secondDogleg.endPose,
-              referenceSpeed,
-            );
+            const left = buildElement(halfElement, pose, referenceSpeed);
             const right = buildElement(
               halfElement,
               left.endPose,
               referenceSpeed,
             );
             return {
-              solvedSpans: [
-                firstDogleg.solvedSpans[0]!,
-                secondDogleg.solvedSpans[0]!,
-                left.solvedSpans[0]!,
-                right.solvedSpans[0]!,
-              ],
+              solvedSpans: [left.solvedSpans[0]!, right.solvedSpans[0]!],
               endPose: right.endPose,
             };
           })()
         : buildElement(geometryElement, pose, referenceSpeed);
       const startBank = pose.bank;
       const peakBank = element.parameters.bank;
-      const leftSourceSpan = geometry.solvedSpans[antipodal ? 2 : 0]!;
-      const rightSourceSpan = geometry.solvedSpans[antipodal ? 3 : 0]!;
+      const leftSourceSpan = geometry.solvedSpans[0]!;
+      const rightSourceSpan = geometry.solvedSpans[antipodal ? 1 : 0]!;
       const leftBank = new QuinticScalarSpan({
         v0: startBank,
         d10: 0,
@@ -733,7 +699,7 @@ const buildChain = (
       );
       const leftSpan: SolvedSpan = {
         ...leftSourceSpan,
-        id: `${element.id}#${antipodal ? 2 : 0}`,
+        id: `${element.id}#0`,
         span: leftGeometry,
         bank: leftBank,
         rollCoefficients: leftBank.coefficients,
@@ -741,34 +707,14 @@ const buildChain = (
       };
       const rightSpan: SolvedSpan = {
         ...rightSourceSpan,
-        id: `${element.id}#${antipodal ? 3 : 1}`,
+        id: `${element.id}#1`,
         span: rightGeometry,
         bank: rightBank,
         rollCoefficients: rightBank.coefficients,
         bounds: aabbFromPoints(rightPoints),
       };
-      const leadSpans = antipodal
-        ? geometry.solvedSpans.slice(0, 2).map((lead, index) => {
-            const leadBank = QuinticScalarSpan.fromCoefficients([
-              startBank,
-              0,
-              0,
-              0,
-              0,
-              0,
-            ]);
-            return {
-              ...lead,
-              id: `${element.id}#${index}`,
-              kind: "overbankedTurn",
-              zones: ["overbankedTurn"],
-              bank: leadBank,
-              rollCoefficients: leadBank.coefficients,
-            } as SolvedSpan;
-          })
-        : [];
       built = {
-        solvedSpans: [...leadSpans, leftSpan, rightSpan],
+        solvedSpans: [leftSpan, rightSpan],
         endPose: { ...geometry.endPose, bank: startBank },
       };
     }
