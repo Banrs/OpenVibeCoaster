@@ -2399,7 +2399,7 @@ export const simulateRide = (
     `[OVC_SIM_PROBE] timeline ${Date.now() - simulationProbeStart}ms length=${timeline.length}`,
   );
   return {
-    frames: request.compactTimeline ? [] : completedFrames,
+    frames: completedFrames,
     timeline,
     events: uniqueEvents,
     operationState: operationStateFor(finalZones),
