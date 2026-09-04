@@ -56,6 +56,10 @@ describe("diagnostic-only Insta stage profile", () => {
       console.log(
         `RESULT feasible=${result.feasible} length=${result.track.totalLength.toFixed(3)} diagnostics=${result.diagnostics.length}`,
       );
+      const field = result.clearanceField;
+      console.log(
+        `CLEARANCE work=${field?.work ?? -1} segments=${field?.segments.length ?? -1} terrainWork=${field?.segments.filter((segment) => segment.source === "terrain").reduce((sum, segment) => sum + segment.work, 0) ?? -1} selfWork=${field?.segments.filter((segment) => segment.source === "self").reduce((sum, segment) => sum + segment.work, 0) ?? -1} uncertified=${field?.segments.filter((segment) => !segment.certified).length ?? -1}`,
+      );
       expect(events.at(-1)).toBe("total:end");
     },
   );
