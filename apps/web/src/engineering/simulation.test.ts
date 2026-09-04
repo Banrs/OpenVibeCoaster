@@ -196,7 +196,7 @@ describe("full-ride simulation", () => {
           maxHeadSample,
           maxSpanIndex,
           maxSpanId: result.file.solvedSpans[maxSpanIndex]?.id,
-          maxZoneMask: hydrated.track.zoneMask[maxHeadSample],
+          maxZoneMask: hydrated.track.zoneMasks[maxHeadSample],
         }),
       );
       expect(lastHead).toBeGreaterThan(hydrated.track.totalLength * 0.85);
