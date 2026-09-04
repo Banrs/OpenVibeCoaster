@@ -520,7 +520,8 @@ export function computeClearanceField(
       const fallbackS = snapshot.distances[segIdx]!;
       if (envMaxY !== undefined) {
         const sweptMinY = sweptAabbs[segIdx]!.min[1]!;
-        if (nextDown(sweptMinY - nextUp(envMaxY)) >= effectiveCap) {
+        const verticalLower = nextDown(sweptMinY - nextUp(envMaxY));
+        if (verticalLower >= effectiveCap) {
           perSegmentLower[segIdx] = effectiveCap;
           perSegmentUpper[segIdx] = effectiveCap;
           perSegmentWitnessS[segIdx] = fallbackS;
@@ -532,6 +533,23 @@ export function computeClearanceField(
           perSegmentSource[segIdx] = "cap";
           perSegmentLowerRelatedIds[segIdx] = [segId];
           perSegmentLowerSource[segIdx] = "cap";
+          continue;
+        }
+        if (
+          verticalLower < effectiveCap &&
+          terrainHardThresholds.every((threshold) => verticalLower >= threshold)
+        ) {
+          perSegmentLower[segIdx] = Math.min(verticalLower, effectiveCap);
+          perSegmentUpper[segIdx] = effectiveCap;
+          perSegmentWitnessS[segIdx] = fallbackS;
+          perSegmentWitnessPos[segIdx] = fallbackPos;
+          perSegmentLowerWitnessS[segIdx] = fallbackS;
+          perSegmentLowerWitnessPos[segIdx] = fallbackPos;
+          perSegmentWork[segIdx] = 0;
+          perSegmentRelatedIds[segIdx] = [segId];
+          perSegmentSource[segIdx] = "terrain";
+          perSegmentLowerRelatedIds[segIdx] = [segId];
+          perSegmentLowerSource[segIdx] = "terrain";
           continue;
         }
       }
