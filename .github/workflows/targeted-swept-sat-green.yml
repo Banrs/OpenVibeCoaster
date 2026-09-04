@@ -25,6 +25,6 @@ jobs:
           packages/generator/src/clearance-geometry.test.ts
           packages/generator/src/clearance-geometry.reference-differential.test.ts
           packages/generator/src/clearance-field.test.ts
-          -t "certified SAT lower bound|swept AABB|rigid|translation|rotation|deterministic and subquadratic"
+          -t "certifies rotated parallel|swept AABB|rigid|translation|rotation|deterministic and subquadratic"
       - name: Typecheck generator
         run: npm run typecheck -w @openvibecoaster/generator
