@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { parseDesignIntentV1 } from "@openvibecoaster/core";
 import { createElement } from "./elements.js";
+import { ELEMENT_KINDS } from "./types.js";
 
 const createRecordElement = createElement as unknown as (
   kind: string,
@@ -118,6 +119,18 @@ test("the three record kinds have only their exact defaults and parameter bounds
             [name]: invalidValue,
           }),
         ).toThrow();
+    for (const invalidValue of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ])
+      for (const name of Object.keys(entry.defaults))
+        expect(() =>
+          createRecordElement(entry.kind, `${entry.kind}-non-finite-${name}`, {
+            ...entry.defaults,
+            [name]: invalidValue,
+          }),
+        ).toThrow();
   }
 });
 
@@ -130,6 +143,13 @@ test("topHat preserves the 80 m default and accepts precisely the extended range
       bank: 0,
     }).parameters.height,
   ).toBe(91);
+  expect(
+    createElement("topHat", "topHat-upper-bound", {
+      height: 92,
+      width: 60,
+      bank: 0,
+    }).parameters.height,
+  ).toBe(92);
   expect(() =>
     createElement("topHat", "topHat-too-low", {
       height: 79.999,
@@ -146,7 +166,14 @@ test("topHat preserves the 80 m default and accepts precisely the extended range
   ).toThrow(/height/);
 });
 
-test("a fourth terrainSwoop kind remains invalid at the intent boundary", () => {
+test("a fourth terrainSwoop kind remains invalid at generator and intent boundaries", () => {
+  expect(ELEMENT_KINDS).not.toContain("terrainSwoop");
+  expect(() =>
+    createRecordElement("terrainSwoop", "terrainSwoop-000", {
+      length: 20,
+      height: 10,
+    }),
+  ).toThrow(/Unknown element kind: terrainSwoop/);
   expect(() =>
     parseDesignIntentV1(
       intentWith("terrainSwoop", { length: 20, height: 10 }),
