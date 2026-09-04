@@ -45,4 +45,10 @@ test("a holding brake captures, dwells, and releases under powered drive", () =>
       frame.speedMps > 0.1,
   );
   expect(resumed).toBeDefined();
+  const maximumJerk = Math.max(
+    ...result.frames
+      .slice(2, -2)
+      .map(({ telemetry }) => Math.hypot(...telemetry.jerkMps3)),
+  );
+  expect(maximumJerk).toBeLessThanOrEqual(15);
 });
